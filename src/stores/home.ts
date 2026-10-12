@@ -22,9 +22,6 @@ export const useHomeStore = defineStore('home', () => {
   /** 原 js/app.js:560 —— 设备面板下钻到的设备，null 表示列表 */
   const eqNode = ref<Equip | null>(null)
 
-  /** 原 js/app.js:261 —— 预警轮播当前位置 */
-  const alarmFeedIdx = ref(0)
-
   /** 原 js/app.js:320-332 */
   const peopleTree = ref<PeopleNode[]>([
     { id: 'yard', name: '场布', count: 38 },
@@ -105,7 +102,6 @@ export const useHomeStore = defineStore('home', () => {
     homeMod,
     peopleNode,
     eqNode,
-    alarmFeedIdx,
     peopleTree,
     siteEquip,
     siteBuildings,
