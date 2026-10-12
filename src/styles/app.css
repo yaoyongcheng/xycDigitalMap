@@ -9,7 +9,21 @@
   --warn: #F77234;
   --danger: #F53F3F;
   --safe-bot: 8px;
-  --status-h: 32px;
+  /*
+   * 顶部留白高度。
+   *
+   * 内置假状态栏（中国电信 / 4G / 86%）已移除，但**保留原有的 32px 顶距**，
+   * 使各页面内容的垂直位置与移除前完全一致，只去掉那条视觉行本身。
+   *
+   * 用 max() 而非直接写 32px：刘海屏真机上若安全区更高（iPhone 约 47px），
+   * 取更大值以免导航栏被摄像头挖孔遮挡；桌面端与无刘海设备恒为 32px，
+   * 与移除前逐像素一致。
+   *
+   * 该变量被 4 个全屏覆盖层（inset）、.app 内边距、.subpage 定位共 6 处复用，
+   * 故改这一处即可整体生效。兼容基线为 iOS ≥14 / Chromium ≥80，
+   * 二者均支持 max() 与 env()。
+   */
+  --status-h: max(32px, env(safe-area-inset-top, 0px));
   --navbar-h: 44px;
   --tabbar-h: 50px;
 }
@@ -111,85 +125,63 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .app.home-mode .subpage .navbar { display: grid; }
 .app.home-mode .subpage { top: var(--status-h); }
 
+/*
+ * 顶部状态栏区域
+ *
+ * 原设计稿在这里画了一条模拟系统状态栏（中国电信 / 4G / 86%），
+ * 真机全屏后会与系统真实状态栏重叠造成视觉穿帮，故**内容已全部移除**。
+ *
+ * 但这条区域本身保留：
+ *   1. 它承担 32px 的顶部留白（--status-h），去掉会让所有页面内容上移
+ *   2. 它有随视图切换的配色联动（下方 5 组 :has() 规则），去掉会让
+ *      首页透明底、监控白底、横屏黑底等效果丢失
+ * 因此这里只清空内容、保留底色与布局，视觉表现与移除前一致。
+ *
+ * 副作用：原「覆盖层必须常驻 DOM、不可用 v-if」的约束**部分**解除。
+ * 下方 :has() 规则依赖覆盖层的 .open 状态，但 v-if 下「存在即有 .open」，
+ * 匹配条件依然成立，故该约束不再是阻碍；但若真要用 v-if，仍需重新评估
+ * .phone.is-landscape 相关规则（原 app.css:3124-3216，横屏布局依赖覆盖层结构）。
+ */
+
 .status-bar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: var(--status-h);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 14px;
-  background: #fff;
-  color: #1D2129;
-  font-size: 11px;
-  font-weight: 600;
   z-index: 200;
+  /* 基类白底：工作台 / 消息 / 我的等非首页视图都走这个默认值。
+     内容已移除，故不再设 color / font-size。 */
+  background: #fff;
   pointer-events: none;
 }
 
+/* 首页（home-mode）：透明，让地图透上来 */
 .phone-screen:has(.app.home-mode) .status-bar {
   background: transparent;
-  color: #fff;
-  text-shadow: 0 1px 4px rgba(5, 10, 21, 0.55);
 }
 
+/* 子页（非预警详情）：白底 */
 .phone-screen:has(.subpage.open):not(:has(.subpage.is-alarm.open)) .status-bar {
   background: #fff;
-  color: #1D2129;
-  text-shadow: none;
 }
 
+/* 各全屏覆盖层打开时：白底 */
 .phone-screen:has(.cam-player.open) .status-bar,
 .phone-screen:has(.air-player.open) .status-bar,
 .phone-screen:has(.hazard-page.open) .status-bar,
 .phone-screen:has(.subpage.is-alarm.open) .status-bar {
   background: #fff;
-  color: #1D2129;
-  text-shadow: none;
 }
 
+/* 监控横屏：黑底 */
 .phone-screen:has(.cam-player.is-land.open) .status-bar {
   background: #000;
-  color: #fff;
-  text-shadow: none;
 }
 
+/* 横屏地图：深色底 */
 .phone-screen:has(.map-land.open) .status-bar {
   background: #0b0f14;
-  color: #fff;
-  text-shadow: none;
-}
-
-.status-left,
-.status-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.status-carrier {
-  font-weight: 500;
-  letter-spacing: 0.2px;
-}
-
-.status-net {
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.status-right svg { display: block; }
-
-.status-battery {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.status-battery b {
-  font-size: 10px;
-  font-weight: 600;
 }
 
 .navbar {
