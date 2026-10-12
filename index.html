@@ -5,6 +5,11 @@
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>工地数字地图移动端标准版</title>
+  <!-- PWA：主题色影响地址栏/状态栏配色；apple 图标用于 iOS 添加到主屏 -->
+  <meta name="theme-color" content="#0b1a2b" />
+  <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <!-- manifest 与 SW 注册脚本由 vite-plugin-pwa 在构建期自动注入，无需手写 -->
 </head>
 <body>
   <div id="app"></div>
