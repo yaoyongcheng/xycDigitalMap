@@ -62,7 +62,16 @@
   height: 0;
 }
 
-html, body { height: 100%; }
+html, body {
+  height: 100%;
+  /* 页面本身不可上下拖动：
+     overflow: hidden 杜绝页面级滚动；
+     overscroll-behavior: none 关闭滚动链传递与 iOS 橡皮筋回弹
+     （即使内容未溢出，iOS 仍会跟着手指上下弹动，故必须显式关闭）。
+     内容滚动交给内部的 .page / 各覆盖层自行处理。 */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 
 body {
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -74,13 +83,18 @@ body {
 button, input, textarea { font-family: inherit; color: inherit; }
 
 .stage {
-  min-height: 100%;
+  /* 由 min-height 改为固定等于视口高度：min-height 只保证「至少」，
+     内容超出时仍会把 body 撑高并产生页面级滚动。
+     用 dvh 而非 vh，跟随移动端地址栏收放，避免高度跳变。 */
+  height: 100dvh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
   padding: 16px;
+  box-sizing: border-box;
 }
 
 .stage-title {
@@ -90,7 +104,15 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .phone {
-  width: min(390px, 46vh, calc(100vw - 24px));
+  /*
+   * 宽度取三者最小值：设计稿宽度 390px、可用宽度、以及「由可用高度反推的宽度」。
+   * 第三项是关键：原写法用 46vh，只考虑了 2×宽 ≤ 视口高，漏算了 .stage 的
+   * 上下 padding(32) + 标题(约 20) + gap(12) —— 短视口下手机壳会高出视口，
+   * 把 body 撑出滚动条。
+   * 常量 80 = 上述占用 + 16px 余量；height 由 aspect-ratio 推出，故永不溢出。
+   * 用 dvh 跟随移动端地址栏收放。
+   */
+  width: min(390px, calc((100dvh - 80px) / 2), calc(100vw - 24px));
   aspect-ratio: 1 / 2;
   height: auto;
   background: var(--page);
@@ -100,8 +122,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
   box-shadow: 0 12px 40px rgba(22, 58, 120, 0.16);
 }
 
+/* 横屏 2:1，高 = 宽 / 2，故宽的上界是「可用高度 × 2」 */
 .phone.is-landscape {
-  width: min(780px, calc(100vw - 24px), 92vh);
+  width: min(780px, calc(100vw - 24px), calc((100dvh - 80px) * 2));
   aspect-ratio: 2 / 1;
 }
 
@@ -248,6 +271,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
   padding: 12px 16px 16px;
   display: none;
   -webkit-overflow-scrolling: touch;
+  /* 页面内滚动到底后不再把滚动传给外层（避免带动整页/触发橡皮筋） */
+  overscroll-behavior: contain;
 }
 
 .page.active { display: block; }
@@ -4525,16 +4550,50 @@ button, input, textarea { font-family: inherit; color: inherit; }
 #page-home .cam-star { color: #4A5C72; }
 #page-home .cam-grid .cam-card-hd strong { color: #E8EEF6; }
 
-@media (max-width: 480px) {
+/*
+ * 小屏：手机壳铺满视口，去掉圆角阴影与演示标题。
+ *
+ * 判定条件由「仅看宽度」改为「窄 或 矮」，两者取或：
+ *   max-width  480px  → 竖屏手机
+ *   max-height 480px  → 横屏手机（如 844×390，宽度超 480 但高度很小）
+ * 原先只判宽度，横屏手机会落到「桌面手机壳」分支，算出 179×359 的小壳
+ * 并从视口溢出 30px（实测）。
+ *
+ * .phone.is-landscape 一并覆盖：它是横屏地图模式，在横屏手机上同样应铺满。
+ * 注意它选择器权重更高（两个类），不显式覆盖会被上面的 .phone 规则漏掉。
+ */
+@media (max-width: 480px), (max-height: 480px) {
   .stage { padding: 0; background: var(--page); }
   .stage-title { display: none; }
-  .phone {
+  .phone,
+  .phone.is-landscape {
     width: 100%;
     height: 100vh;
-    height: 100dvh;
+    height: 100dvh;      /* 后写覆盖前写：旧内核用 vh，新内核用 dvh */
     aspect-ratio: auto;
     border-radius: 0;
     box-shadow: none;
   }
+}
+
+/*
+ * 内层滚动容器：滚动到底后不向外传递
+ *
+ * 根元素已设 overflow: hidden + overscroll-behavior: none，整页本就不可滚动；
+ * 这里逐个兜住，是为了避免 iOS 在内层滚到底时把回弹传递给外层 ——
+ * 那种情况下整屏内容会跟着手指上下晃动，观感上就是「页面被拖动了」。
+ *
+ * 统一写在此处：各选择器权重与上方原有规则相同，位置靠后即生效，
+ * 免去在 7 处 overflow: auto 旁边各加一行。
+ * （.cam-list-body 未列入 —— 它属于未实现的监控搜索列表，是死 CSS。）
+ */
+.page,
+.home-sheet,
+.cam-player-switch,
+.cam-shots,
+.air-grid,
+.hazard-body,
+.subpage-body {
+  overscroll-behavior: contain;
 }
 
