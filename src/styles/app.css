@@ -358,7 +358,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   top: 0;
   height: calc(42% + 20px);
   background-color: rgb(5, 10, 21);
-  background-image: url("../img/site-map.jpg");
+  background-image: url("/img/site-map.jpg");
   background-repeat: no-repeat;
   background-size: cover;
   background-position: center center;
