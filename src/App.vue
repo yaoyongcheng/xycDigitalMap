@@ -4,6 +4,10 @@ import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
 import TabBar from '@/components/shell/TabBar.vue'
 import Toast from '@/components/shell/Toast.vue'
+import HomePage from '@/views/HomePage.vue'
+import WorkPage from '@/views/WorkPage.vue'
+import MsgPage from '@/views/MsgPage.vue'
+import MinePage from '@/views/MinePage.vue'
 
 /**
  * 应用外壳
@@ -47,14 +51,10 @@ const shell = useShellStore()
             <NavBar />
 
             <main class="pages">
-              <section
-                class="page"
-                id="page-home"
-                :class="{ active: shell.activeTab === 'home', 'is-sheet-up': shell.sheetUp }"
-              ></section>
-              <section class="page" id="page-work" :class="{ active: shell.activeTab === 'work' }"></section>
-              <section class="page" id="page-msg" :class="{ active: shell.activeTab === 'msg' }"></section>
-              <section class="page" id="page-mine" :class="{ active: shell.activeTab === 'mine' }"></section>
+              <HomePage />
+              <WorkPage />
+              <MsgPage />
+              <MinePage />
             </main>
 
             <!-- 覆盖层 5：子页栈（待迁移 SubPage.vue） -->

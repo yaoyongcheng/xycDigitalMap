@@ -55,5 +55,37 @@ export const useShellStore = defineStore('shell', () => {
   /** #page-home.is-sheet-up —— 首页半屏抽屉。原版初值为 true（L925） */
   const sheetUp = ref(true)
 
-  return { activeTab, navTitle, toast, toastVisible, showToast, isLandscape, isLand, sheetUp }
+  /** 原为 #mapLand 的 .open / hidden */
+  const mapLandOpen = ref(false)
+
+  /**
+   * 原 js/app.js:1701-1706 openMapLand()
+   * 同时给 .phone 加 is-landscape —— 注意 cam 的 setCamLand(false) 会把它清掉，
+   * 这是原版的既存缺陷（打开/关闭任意 cam 播放器会无条件清除地图横屏态），
+   * 1:1 复刻下保留。
+   */
+  function openMapLand(): void {
+    isLandscape.value = true
+    mapLandOpen.value = true
+  }
+
+  /** 原 js/app.js:1708-1713 closeMapLand() */
+  function closeMapLand(): void {
+    isLandscape.value = false
+    mapLandOpen.value = false
+  }
+
+  return {
+    activeTab,
+    navTitle,
+    toast,
+    toastVisible,
+    showToast,
+    isLandscape,
+    isLand,
+    sheetUp,
+    mapLandOpen,
+    openMapLand,
+    closeMapLand,
+  }
 })
