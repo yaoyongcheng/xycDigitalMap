@@ -26,7 +26,13 @@ export default defineConfig({
         lang: 'zh-CN',
         display: 'standalone',
         orientation: 'any',
-        theme_color: '#0b1a2b',
+        /**
+         * theme_color 决定系统状态栏区域底色，也是 iOS 判断状态栏文字颜色的依据
+         * （深底配白字、浅底配黑字）。取浅色与导航栏 #fff 一致，避免工作台等
+         * 浅色页面顶部出现一条黑带；首页与横屏覆盖层运行时会由
+         * src/utils/themeColor.ts 动态改回深色。
+         */
+        theme_color: '#ffffff',
         background_color: '#0b1a2b',
         icons: [
           { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },

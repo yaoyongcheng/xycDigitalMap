@@ -5,8 +5,15 @@
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>工地数字地图移动端标准版</title>
-  <!-- PWA：主题色影响地址栏/状态栏配色；apple 图标用于 iOS 添加到主屏 -->
-  <meta name="theme-color" content="#0b1a2b" />
+  <!--
+    PWA 主题色：决定系统状态栏区域的底色。
+    这里给的是首屏默认值（浅色，与导航栏 #fff 一致，iOS 会配深色文字）；
+    运行后由 src/utils/themeColor.ts 按当前视图动态更新 ——
+    首页与横屏覆盖层是深色顶，需要切回深色，避免切出白边。
+  -->
+  <meta name="theme-color" content="#ffffff" />
+  <!-- apple 图标用于 iOS 添加到主屏 -->
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <!-- manifest 与 SW 注册脚本由 vite-plugin-pwa 在构建期自动注入，无需手写 -->

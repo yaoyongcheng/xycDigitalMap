@@ -1,5 +1,11 @@
 <script setup lang="ts">
+import { watchEffect } from 'vue'
+
+import { useAirHazardStore } from '@/stores/airHazard'
+import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
+import { useSubpageStore } from '@/stores/subpage'
+import { setThemeColor, THEME_COLORS } from '@/utils/themeColor'
 import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
 import TabBar from '@/components/shell/TabBar.vue'
@@ -34,6 +40,42 @@ import MinePage from '@/views/MinePage.vue'
  *   - .app.home-mode 由当前 tab 决定（原 app.js:66）
  */
 const shell = useShellStore()
+const cam = useCamStore()
+const air = useAirHazardStore()
+const sub = useSubpageStore()
+
+/**
+ * 系统状态栏区域的底色
+ *
+ * PWA 独立窗口下，屏幕最顶端约 43~59pt 是系统状态栏区，**不属于网页内容**，
+ * 其底色由 theme-color 决定；iOS 还会按该底色亮度自动选状态栏文字颜色
+ * （深底配白字、浅底配黑字）。
+ *
+ * 这里按当前视图动态取值，判断顺序与 src/styles/app.css 中
+ * .phone-screen:has(...) .status-bar 的 5 组规则逐一对应，后写的覆盖先写的。
+ */
+watchEffect(() => {
+  let color: string = THEME_COLORS.light // ① 基类白底
+
+  // ② 首页：home-mode 深色主题
+  if (shell.activeTab === 'home') color = THEME_COLORS.home
+
+  // ③ 子页（非预警详情）
+  if (sub.isOpen && !sub.isAlarm) color = THEME_COLORS.light
+
+  // ④ 各全屏覆盖层打开
+  if (cam.isOpen || air.isOpen || air.hazardOpen || (sub.isOpen && sub.isAlarm)) {
+    color = THEME_COLORS.light
+  }
+
+  // ⑤ 监控横屏（后于 ④，故横屏时取黑）
+  if (cam.isOpen && shell.isLand) color = THEME_COLORS.camLandscape
+
+  // ⑥ 横屏地图（最后，优先级最高）
+  if (shell.mapLandOpen) color = THEME_COLORS.mapLand
+
+  setThemeColor(color)
+})
 </script>
 
 <template>
