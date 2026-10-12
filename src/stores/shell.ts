@@ -23,8 +23,28 @@ export const useShellStore = defineStore('shell', () => {
   /** 导航栏标题，原 navTitle.textContent = titles[tab] */
   const navTitle = computed(() => titles[activeTab.value])
 
-  /** Toast 文案，对应原 showToast()。空串表示不显示 */
+  /** Toast 文案，对应原 showToast() 写入的 el.textContent */
   const toast = ref('')
+
+  /** Toast 是否可见，对应原 #toast 的 .show 类 */
+  const toastVisible = ref(false)
+
+  let toastTimer = 0
+
+  /**
+   * 原 js/app.js:863-869 showToast(text)
+   * 原版把句柄挂在函数属性 showToast._t 上（非标准做法），这里用闭包变量，
+   * 行为一致：连续调用会取消上一个定时器，1.6s 后隐藏。
+   * 注意原版只移除 .show，不清空文本，这里保持一致。
+   */
+  function showToast(text: string): void {
+    toast.value = text
+    toastVisible.value = true
+    window.clearTimeout(toastTimer)
+    toastTimer = window.setTimeout(() => {
+      toastVisible.value = false
+    }, 1600)
+  }
 
   /** .phone.is-landscape —— 真横屏伪适配开关 */
   const isLandscape = ref(false)
@@ -35,5 +55,5 @@ export const useShellStore = defineStore('shell', () => {
   /** #page-home.is-sheet-up —— 首页半屏抽屉。原版初值为 true（L925） */
   const sheetUp = ref(true)
 
-  return { activeTab, navTitle, toast, isLandscape, isLand, sheetUp }
+  return { activeTab, navTitle, toast, toastVisible, showToast, isLandscape, isLand, sheetUp }
 })

@@ -37,3 +37,9 @@ pnpm-debug.log*
 
 # Vite / PWA 生成物
 dev-dist/
+
+# 视觉验证产物（Playwright 截图与会话记录）
+.playwright-mcp/
+*.png.tmp
+shell-step*.png
+
