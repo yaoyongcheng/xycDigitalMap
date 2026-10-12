@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
+import HomeProgress from '@/components/ui/HomeProgress.vue'
 import { useHomeStore } from '@/stores/home'
 import { useShellStore } from '@/stores/shell'
 import type { HomeMod } from '@/types'
@@ -102,13 +103,7 @@ function onMapFull(): void {
             全屏
           </button>
         </div>
-        <div class="home-progress">
-          <div class="home-progress-hd">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4.2l3 1.6"/></svg>
-            项目总进度 <b>53%</b>
-          </div>
-          <span class="home-progress-bar"><i></i></span>
-        </div>
+        <HomeProgress />
       </div>
     </div>
 

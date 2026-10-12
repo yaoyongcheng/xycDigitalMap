@@ -32,8 +32,15 @@ export const useSubpageStore = defineStore('subpage', () => {
   /** 上一级视图，对应原 subBack */
   const back = ref<SubView | null>(null)
 
-  /** .subpage.is-alarm —— 控制深色导航栏与通栏 hero（CSS app.css:2357-2369） */
-  const isAlarm = ref(false)
+  /**
+   * .subpage.is-alarm —— 控制深色导航栏与通栏 hero（CSS app.css:2357-2369）。
+   *
+   * 原版把 is-alarm 当作独立状态在 openAlarmDetail 加、在 openInspectList/
+   * openSub/closeSub 里移除。实测它完全由当前视图决定，故这里改为派生：
+   * 若照原版做成独立 ref，close() 回退到列表时就会忘记移除，导致列表页
+   * 仍带深色导航栏与零 padding（实测确实复现过该 bug）。
+   */
+  const isAlarm = computed(() => view.value.kind === 'alarm-detail')
 
   /** .subpage.open */
   const isOpen = computed(() => view.value.kind !== 'none')
@@ -59,7 +66,6 @@ export const useSubpageStore = defineStore('subpage', () => {
   function openInspectList(tab?: 'today' | 'hist'): void {
     if (tab === 'today' || tab === 'hist') alarm.inspTab = tab
     back.value = null
-    isAlarm.value = false
     alarm.inspCalOpen = false
     view.value = { kind: 'inspect-list' }
   }
@@ -71,14 +77,12 @@ export const useSubpageStore = defineStore('subpage', () => {
   function openAlarmDetail(id: string, fromList = true): void {
     if (!alarm.byId(id)) return
     back.value = fromList ? { kind: 'inspect-list' } : null
-    isAlarm.value = true
     view.value = { kind: 'alarm-detail', id }
   }
 
   /** 原 openSub(title, html) —— 「我的」菜单入口，内容为占位文案 */
   function openSub(name: string): void {
     back.value = null
-    isAlarm.value = false
     view.value = { kind: 'placeholder', name }
   }
 

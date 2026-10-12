@@ -81,3 +81,15 @@ export function monthStart(d: Date | number): Date {
   const x = startOfDay(d)
   return startOfDay(new Date(x.getFullYear(), x.getMonth(), 1))
 }
+
+/**
+ * 原 js/app.js:74-79 camStamp()
+ * 监控画面时间戳，输出形如「2026-10-12 星期日 15:30:05 4G」。
+ * 被三处消费：首页监控卡片、监控播放器、tick() 定时器。
+ */
+export function camStamp(): string {
+  const d = new Date()
+  const days = '日一二三四五六'
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} 星期${days[d.getDay()]} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} 4G`
+}

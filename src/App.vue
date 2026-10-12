@@ -4,6 +4,11 @@ import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
 import TabBar from '@/components/shell/TabBar.vue'
 import Toast from '@/components/shell/Toast.vue'
+import MapLand from '@/components/overlays/MapLand.vue'
+import CamPlayer from '@/components/overlays/CamPlayer.vue'
+import AirPlayer from '@/components/overlays/AirPlayer.vue'
+import HazardPage from '@/components/overlays/HazardPage.vue'
+import SubPage from '@/components/overlays/SubPage.vue'
 import HomePage from '@/views/HomePage.vue'
 import WorkPage from '@/views/WorkPage.vue'
 import MsgPage from '@/views/MsgPage.vue'
@@ -34,17 +39,10 @@ const shell = useShellStore()
       <div class="phone-screen">
         <StatusBar />
 
-        <!-- 覆盖层 1：横屏地图（待迁移 MapLand.vue） -->
-        <div class="map-land" id="mapLand" aria-hidden="true" hidden></div>
-
-        <!-- 覆盖层 2：监控播放器（待迁移 CamPlayer.vue） -->
-        <div class="cam-player" id="camPlayer" hidden></div>
-
-        <!-- 覆盖层 3：无人机巡检（待迁移 AirPlayer.vue） -->
-        <div class="air-player" id="airPlayer" hidden></div>
-
-        <!-- 覆盖层 4：隐患上报（待迁移 HazardPage.vue） -->
-        <div class="hazard-page" id="hazardPage" hidden></div>
+        <MapLand />
+        <CamPlayer />
+        <AirPlayer />
+        <HazardPage />
 
         <div class="app" id="app" :class="{ 'home-mode': shell.activeTab === 'home' }">
           <div class="stack">
@@ -57,8 +55,7 @@ const shell = useShellStore()
               <MinePage />
             </main>
 
-            <!-- 覆盖层 5：子页栈（待迁移 SubPage.vue） -->
-            <section class="subpage" id="subpage"></section>
+            <SubPage />
           </div>
 
           <TabBar />
