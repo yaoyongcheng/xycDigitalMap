@@ -154,7 +154,7 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
 
     <div class="cam-live-view" id="camLiveView" :class="{ hide: cam.camMode !== 'live' }">
       <div class="cam-player-stage" id="camPlayerStage">
-        <img id="camPlayerFrame" ref="stageImgEl" :src="cam.currentCam.img" :class="cam.currentCam.pos" alt="" />
+        <img id="camPlayerFrame" :src="cam.currentCam.img" :class="cam.currentCam.pos" alt="" loading="lazy" />
         <span class="cam-time" id="camPlayerTime">{{ stamp }}</span>
         <button class="cam-play" id="btnCamPlay" type="button" aria-label="播放" @click="onPlay"></button>
         <div class="cam-stage-acts">
@@ -212,7 +212,7 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
             :data-shot="i"
             @click="onShotClick(i)"
           >
-            <img :class="s.pos" :src="s.img" :alt="`${s.time} 抓拍`" />
+            <img :class="s.pos" :src="s.img" :alt="`${s.time} 抓拍`" loading="lazy" />
             <span>{{ shotLabel }} {{ s.time }}</span>
           </button>
         </div>
@@ -234,7 +234,7 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
       :aria-hidden="!cam.shotPopOpen"
     >
       <button class="cam-shot-close" id="btnShotClose" type="button" @click="onShotClose">关闭</button>
-      <img id="camShotImg" :src="currentShot?.img" :class="currentShot?.pos" alt="" />
+      <img id="camShotImg" :src="currentShot?.img" :class="currentShot?.pos" alt="" loading="lazy" />
       <p id="camShotMeta">{{ shotMeta }}</p>
     </div>
   </div>

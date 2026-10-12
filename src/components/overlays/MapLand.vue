@@ -25,7 +25,7 @@ const shell = useShellStore()
   >
     <div class="map-land-stage">
       <div class="map-land-fit">
-        <img src="/img/site-map.jpg" alt="工地数字地图" />
+        <img src="/img/site-map.jpg" alt="工地数字地图" loading="lazy" />
       </div>
     </div>
     <div class="land-top">

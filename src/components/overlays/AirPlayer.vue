@@ -116,7 +116,7 @@ const popMeta = computed(() => {
         :data-air="i"
         @click="onPhotoClick(i)"
       >
-        <img :class="s.pos" :src="s.img" :alt="`${label} ${s.time} 航拍`" />
+        <img :class="s.pos" :src="s.img" :alt="`${label} ${s.time} 航拍`" loading="lazy" />
         <span>{{ label }} {{ s.time }}</span>
       </button>
     </div>
@@ -129,7 +129,7 @@ const popMeta = computed(() => {
       :aria-hidden="!air.airPopOpen"
     >
       <button class="cam-shot-close" id="btnAirClose" type="button" @click="onPopClose">关闭</button>
-      <img id="airPopImg" :src="currentShot?.img" :class="currentShot?.pos" alt="" />
+      <img id="airPopImg" :src="currentShot?.img" :class="currentShot?.pos" alt="" loading="lazy" />
       <p id="airPopMeta">{{ popMeta }}</p>
     </div>
   </div>
