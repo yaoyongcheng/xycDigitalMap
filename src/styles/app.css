@@ -8,7 +8,20 @@
   --ok: #00B386;
   --warn: #F77234;
   --danger: #F53F3F;
-  --safe-bot: 8px;
+  /*
+   * 底部安全区。
+   *
+   * 原为硬编码 8px。Face ID 机型（iPhone X 及以后，含灵动岛）屏幕最底部
+   * 34px 属 home indicator 手势区，标签栏文字实测距物理底仅 9px，
+   * 会被系统横条压住，底部约 26px 也落进手势区导致点按被手势拦截。
+   *
+   * 同样用 max() 而非直接写 34px：有安全区的设备取 env()（iPhone 为 34px），
+   * Home 键机型（SE / 8）与 Android 常规浏览器 env() 为 0，取 8px ——
+   * 后者与改动前逐像素一致。
+   *
+   * 唯一消费方是 .tabbar 的高度与下内边距，见 .tabbar 规则。
+   */
+  --safe-bot: max(8px, env(safe-area-inset-bottom, 0px));
   /*
    * 顶部留白高度。
    *
