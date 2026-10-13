@@ -2170,13 +2170,23 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .alarm-feed {
+  /*
+   * 轮播单条高度 —— 唯一来源：.alarm-feed-item 的高度、.alarm-feed-win 的
+   * 窗口高度，以及 JS 计算滚动步长都读它。
+   *
+   * 不要再让 JS 用 item.offsetHeight 实测后写 win.style.height：组件挂载时
+   * 样式表可能尚未应用，量到的是内容撑开的高度，写进内联样式后会被固化，
+   * 窗口随即变高、露出列表末尾的回卷副本（表现为"预警重复"）。
+   */
+  --feed-item-h: 54px;
   margin-top: 8px;
   padding: 2px 8px;
 }
 
 .alarm-feed-win {
   overflow: hidden;
-  height: 162px;
+  /* 倍数 = ALARM_FEED_SHOW（src/data/config.ts），改一处要同步另一处 */
+  height: calc(var(--feed-item-h) * 3);
 }
 
 .alarm-feed-track {
@@ -2187,7 +2197,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 54px;
+  height: var(--feed-item-h);
   padding: 0 4px;
   cursor: pointer;
 }

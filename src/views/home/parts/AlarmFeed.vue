@@ -14,11 +14,12 @@ import { useAlarmStore } from '@/stores/alarm'
  * requestAnimationFrame(startAlarmFeed)）。组件化后改为面板挂载即启动、
  * 卸载即停止 —— 因为该轮播只存在于安全管理面板中，两者等价。
  *
- * 动画需要读取 .alarm-feed-item 的真实高度并写 style，故保留直接 DOM 操作
- * （这是测量与逐帧变换，不是状态）。
+ * 滚动靠逐帧写 track.style.transform 驱动，故保留直接 DOM 操作（这是动画，
+ * 不是状态）。但**尺寸一律不靠实测**：窗口高度交给 CSS，滚动步长读 CSS
+ * 变量 —— 原因见 feedItemHeight() 的注释。
  *
- * 已保留的原版缺陷：轮播回卷用的 setTimeout 句柄未保存，
- * stopAlarmFeed 清不掉它（app.js:309）。
+ * 原版缺陷（已修）：回卷用的 setTimeout 句柄未保存，stopAlarmFeed 清不掉
+ * （app.js:309）。迁移版在 onUnmounted 里补了 clearTimeout(wrapTimer)。
  */
 const alarm = useAlarmStore()
 
@@ -46,15 +47,29 @@ function stop(): void {
   idx.value = 0
 }
 
+/**
+ * 滚动步长 = 单条高度，取自 CSS 变量 --feed-item-h（app.css 的 .alarm-feed 下）。
+ *
+ * 刻意不用 item.offsetHeight 实测：组件挂载时样式表可能尚未应用，量到的是
+ * 内容撑开的高度；原实现据此写死 win 的内联高度，窗口随即变高、露出列表
+ * 末尾的回卷副本（表现为"预警重复"），又因只在挂载时测一次而永久保留。
+ * 取不到变量时返回 0，调用方跳过本轮启动 —— 此时窗口高度仍是 CSS 的
+ * calc(--feed-item-h * 3)，只会静止显示首屏 3 条，不会露出副本。
+ */
+function feedItemHeight(): number {
+  const track = trackEl.value
+  if (!track) return 0
+  const n = Number.parseFloat(getComputedStyle(track).getPropertyValue('--feed-item-h'))
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
 function start(): void {
   stop()
   const track = trackEl.value
-  const win = track?.parentElement
-  if (!track || !win || list.value.length <= ALARM_FEED_SHOW) return
-  const item = track.querySelector('.alarm-feed-item') as HTMLElement | null
-  if (!item) return
-  const h = item.offsetHeight
-  win.style.height = h * ALARM_FEED_SHOW + 'px'
+  if (!track || list.value.length <= ALARM_FEED_SHOW) return
+  const h = feedItemHeight()
+  if (!h) return
+  // 窗口高度由 CSS 负责（.alarm-feed-win 的 height），此处不再写内联值
   track.style.transform = 'translateY(0)'
   timer = window.setInterval(() => {
     idx.value += 1
