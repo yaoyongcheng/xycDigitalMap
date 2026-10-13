@@ -7,6 +7,11 @@ import { createPinia } from 'pinia'
 import './styles/app.css'
 
 import App from './App.vue'
+import { registerServiceWorker } from './utils/pwa'
 
 createApp(App).use(createPinia()).mount('#app')
+
+// PWA 离线与更新。注册行为受 vite.config.ts 的 injectRegister: null 约束 ——
+// 自动注入脚本已停用，注册完全由这里接管，详见 utils/pwa.ts。
+registerServiceWorker()
 

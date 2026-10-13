@@ -19,6 +19,25 @@ export default defineConfig({
       // 这些图标同时用于 <link rel="icon">，需一并纳入预缓存清单
       includeAssets: ['favicon-64.png', 'apple-touch-icon.png'],
 
+      /**
+       * 关闭自动注入注册脚本，改为 src/utils/pwa.ts 手动注册。
+       *
+       * 动因：注入的 registerSW.js 是写死的 register(url, { scope })，
+       * 没有任何回调入口，无法挂「回到前台/定时主动检查更新」，也无法显式
+       * 声明 updateViaCache（详见 pwa.ts 顶部注释与实测说明）。
+       *
+       * 影响面（实测）：
+       *   构建产物不再有 dist/registerSW.js；index.html 不再注入该 script；
+       *   预缓存清单从 9 条降到 8 条。
+       *   注册逻辑全部由 pwa.ts 接管，且只在生产构建下执行。
+       *
+       * 顺带：dev 下也不再注入（插件据此判断，见 chunk-I2Z7IWCN.js:656），
+       * 此前 dev 的 SW 会缓存旧外壳、干扰本地调试。
+       * 注：devOptions 仍保留 enabled —— 开发期还要靠它注入 manifest 调试；
+       * 已注册过 dev SW 的浏览器需清除一次站点数据。
+       */
+      injectRegister: null,
+
       manifest: {
         name: '工地数字地图移动端标准版',
         short_name: '数字地图',
