@@ -19,7 +19,8 @@
    * 取更大值以免导航栏被摄像头挖孔遮挡；桌面端与无刘海设备恒为 32px，
    * 与移除前逐像素一致。
    *
-   * 该变量被 4 个全屏覆盖层（inset）、.app 内边距、.subpage 定位共 6 处复用，
+   * 该变量被 5 处复用：4 个全屏覆盖层的 inset、.status-bar 高度、
+   * 以及 .navbar 的 padding-top（顶栏自己撑开顶部留白，见 .navbar 注释）。
    * 故改这一处即可整体生效。兼容基线为 iOS ≥14 / Chromium ≥80，
    * 二者均支持 max() 与 env()。
    */
@@ -137,16 +138,12 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .app {
   display: flex;
   flex-direction: column;
-  padding-top: var(--status-h);
-}
-
-.app.home-mode {
-  padding-top: 0;
+  /* 顶部留白（--status-h）不在这里撑，改由 .navbar 自己用 padding-top 承担，
+     理由见下方 .navbar 注释。 */
 }
 
 .app.home-mode .navbar { display: none; }
 .app.home-mode .subpage .navbar { display: grid; }
-.app.home-mode .subpage { top: var(--status-h); }
 
 /*
  * 顶部状态栏区域
@@ -207,13 +204,29 @@ button, input, textarea { font-family: inherit; color: inherit; }
   background: #0b0f14;
 }
 
+/*
+ * 顶栏白底自屏幕顶端（y=0）铺起，把 --status-h 那段顶部留白一并盖住。
+ *
+ * 原写法是「.app 加 padding-top: var(--status-h)，顶栏从 y = --status-h 开始」，
+ * 于是 y = --status-h 处是两块白底的**上下相邻**：上方 .status-bar
+ * （绝对定位、z-index 200、由 :has() 切换底色），下方 .navbar。
+ * 两者分属不同定位上下文，一旦出现 1px 舍入差就会露出背后的首页地图，
+ * 表现为顶栏上沿多出一条细线 —— 真机上「首次从首页进入巡检预警必现、
+ * 退出再进即消失」，正是 display:none 切到 flex 那一帧最容易产生该舍入差。
+ *
+ * 改为顶栏自己从 y=0 起铺白：两块白底变成**叠压**关系，缝隙背后仍是顶栏白底，
+ * 舍入差再大也看不出来。
+ *
+ * 内容行位置与改动前逐像素一致：height = status-h + navbar-h，
+ * 扣掉 padding-top 与下边框后内容盒仍为 navbar-h - 1，纵向居中结果不变。
+ */
 .navbar {
-  height: var(--navbar-h);
+  height: calc(var(--status-h) + var(--navbar-h));
   flex-shrink: 0;
   display: grid;
   grid-template-columns: 48px 1fr 48px;
   align-items: center;
-  padding: 0 8px;
+  padding: var(--status-h) 8px 0;
   background: #fff;
   border-bottom: 1px solid var(--line);
 }
