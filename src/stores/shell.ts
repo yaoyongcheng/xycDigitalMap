@@ -1,8 +1,25 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { titles } from '@/data/config'
 import type { TabId } from '@/types'
+
+/** 首页抽屉展开状态的持久化键 */
+const SHEET_UP_KEY = 'xyc.sheetUp'
+
+/**
+ * 读取上次的抽屉状态。
+ * 无记录时回退为展开（原版 app.js:925 的初值 true）；
+ * localStorage 不可用（隐私模式、配额满）时同样回退，不让读取失败影响启动。
+ */
+function readSheetUp(): boolean {
+  try {
+    const v = localStorage.getItem(SHEET_UP_KEY)
+    return v === null ? true : v === '1'
+  } catch {
+    return true
+  }
+}
 
 /**
  * 应用外壳状态
@@ -52,8 +69,22 @@ export const useShellStore = defineStore('shell', () => {
   /** #camPlayer.is-land —— 监控播放器的全屏态 */
   const isLand = ref(false)
 
-  /** #page-home.is-sheet-up —— 首页半屏抽屉。原版初值为 true（L925） */
-  const sheetUp = ref(true)
+  /**
+   * #page-home.is-sheet-up —— 首页半屏抽屉。
+   *
+   * 原版初值为 true（L925）。此处改为沿用上次的展开状态并写回存储：
+   * 现场用户习惯固定用一种高度，每次重开都弹回默认值很别扭。
+   * 用 watch 而非在调用方写存储 —— 保持 `shell.sheetUp = x` 的既有写法不变。
+   */
+  const sheetUp = ref(readSheetUp())
+
+  watch(sheetUp, (v) => {
+    try {
+      localStorage.setItem(SHEET_UP_KEY, v ? '1' : '0')
+    } catch {
+      // 存储不可用（隐私模式/配额满）时静默降级：本次会话内切换仍正常
+    }
+  })
 
   /** 原为 #mapLand 的 .open / hidden */
   const mapLandOpen = ref(false)

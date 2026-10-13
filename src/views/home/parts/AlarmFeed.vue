@@ -48,19 +48,23 @@ function stop(): void {
 }
 
 /**
- * 滚动步长 = 单条高度，取自 CSS 变量 --feed-item-h（app.css 的 .alarm-feed 下）。
+ * 滚动步长 = 单条高度。
  *
- * 刻意不用 item.offsetHeight 实测：组件挂载时样式表可能尚未应用，量到的是
- * 内容撑开的高度；原实现据此写死 win 的内联高度，窗口随即变高、露出列表
- * 末尾的回卷副本（表现为"预警重复"），又因只在挂载时测一次而永久保留。
- * 取不到变量时返回 0，调用方跳过本轮启动 —— 此时窗口高度仍是 CSS 的
- * calc(--feed-item-h * 3)，只会静止显示首屏 3 条，不会露出副本。
+ * 首选 CSS 变量 --feed-item-h（app.css 的 .alarm-feed 下）：它与条目实际高度
+ * 同源，是正确性的保证。
+ *
+ * 变量读不到时（样式表尚未就绪）退回实测，而不是返回 0 —— 后者会让轮播整个
+ * 不启动，表现为「预警有时候不滚动」。这个兜底值只用于算 translateY 的步长，
+ * 窗口高度始终由 CSS 的 calc(--feed-item-h * 3) 决定，故即便它有偏差，
+ * 也只是滚动节奏略有出入，不会像原实现那样被固化进内联尺寸、露出回卷副本。
  */
 function feedItemHeight(): number {
   const track = trackEl.value
   if (!track) return 0
-  const n = Number.parseFloat(getComputedStyle(track).getPropertyValue('--feed-item-h'))
-  return Number.isFinite(n) && n > 0 ? n : 0
+  const fromVar = Number.parseFloat(getComputedStyle(track).getPropertyValue('--feed-item-h'))
+  if (Number.isFinite(fromVar) && fromVar > 0) return fromVar
+  const item = track.querySelector('.alarm-feed-item') as HTMLElement | null
+  return item?.offsetHeight ?? 0
 }
 
 function start(): void {

@@ -1176,13 +1176,21 @@ button, input, textarea { font-family: inherit; color: inherit; }
   --sheet-up-top: 118px;
 }
 
+/*
+ * 展开态的抽屉位置。
+ *
+ * var() 的第二个参数只在 --sheet-up-top 完全未定义时兜底；若它被写成了
+ * 无效值（如 NaNpx），整条 top 声明会变成 unset，抽屉反而不受控。所以真正
+ * 的防线是 HomePage.vue 的 applySheetTop 里那道范围校验 —— 不合理的测量结果
+ * 一律不写入，让下面这条 CSS 默认值（118px）继续生效。
+ */
 #page-home.is-sheet-up .home-sheet,
 #page-home.is-sheet-up .home-sheet-toggle {
-  top: var(--sheet-up-top);
+  top: var(--sheet-up-top, 118px);
 }
 
 #page-home.is-sheet-up .home-gutter-mask {
-  top: calc(var(--sheet-up-top) - 96px);
+  top: calc(var(--sheet-up-top, 118px) - 96px);
 }
 
 .home-mods {

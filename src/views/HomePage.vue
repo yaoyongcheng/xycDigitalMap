@@ -27,7 +27,18 @@ function applySheetTop(): void {
   if (!prog) return
   const pageRect = el.getBoundingClientRect()
   const progRect = prog.getBoundingClientRect()
-  el.style.setProperty('--sheet-up-top', Math.round(progRect.bottom - pageRect.top + 12) + 'px')
+  const top = Math.round(progRect.bottom - pageRect.top + 12)
+  /*
+   * 只接受落在合理区间的结果，否则保留 CSS 里 --sheet-up-top 的默认值（118px）。
+   *
+   * 布局未就绪时 rect 会整体为 0（元素尚未参与布局，或所在页面正处于
+   * display:none），此时算出的值会把抽屉顶到错误位置：偏小会贴到顶栏，
+   * 偏大会沉到接近收起态的位置 —— 后者在真机上表现为「展开态却停在低位」。
+   * 而 --sheet-up-top 一旦被写成坏值，top 声明本身仍合法，不会回退到默认值，
+   * 抽屉就永久停在错误位置。
+   */
+  if (top <= 24 || top >= pageRect.height * 0.35) return
+  el.style.setProperty('--sheet-up-top', top + 'px')
 }
 
 function onResize(): void {
@@ -79,8 +90,15 @@ function onMapFull(): void {
     <button class="home-sheet-toggle" id="btnSheetToggle" type="button" @click="onSheetToggle">
       <svg class="ico-pull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14l6-6 6 6"/></svg>
       <svg class="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10l6 6 6-6"/></svg>
+      <!--
+        文案随状态切换（显隐规则见 app.css 的 #page-home.is-sheet-up 那组）：
+          收起态 -> 上箭头 +「拉起」；展开态 -> 下箭头 +「收回」。
+        原版展开态写的是「展开」，与本按钮此刻的含义正好相反 —— 抽屉已经展开了，
+        按钮该表达的是「点它可收回」，否则用户会误以为当前是收起状态。
+        类名沿用了旧的 expand 命名，读代码时以文案为准。
+      -->
       <span class="lab-pull">拉起</span>
-      <span class="lab-expand">展开</span>
+      <span class="lab-expand">收回</span>
     </button>
 
     <HomeSheet />
