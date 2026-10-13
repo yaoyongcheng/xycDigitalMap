@@ -17,6 +17,19 @@ const shell = useShellStore()
 const pageEl = ref<HTMLElement | null>(null)
 
 /**
+ * --sheet-up-top 的合理上限（px）。
+ *
+ * .home-progress 恒定在首页顶部区域，正常结果约 110~150px，300px 已相当宽松。
+ * 这里刻意用绝对值而不是「页面高度的百分比」：真机诊断显示，出问题的那一刻
+ * 页面高度本身也会异常（Safari 恢复标签页时先以错误的视口高度渲染一瞬），
+ * 百分比阈值会跟着一起放大而失效 —— 实测放行过一个 505px 的坏值。
+ */
+const SHEET_TOP_MAX = 300
+
+/** 布局稳定后的补测句柄 */
+let recalibrateTimer = 0
+
+/**
  * 原 js/app.js:927-939 setSheetUp() 中写 --sheet-up-top 的那段。
  * 需要真实测量 .home-progress 的位置，故直接操作 DOM（这是测量，不是状态）。
  */
@@ -37,7 +50,7 @@ function applySheetTop(): void {
    * 而 --sheet-up-top 一旦被写成坏值，top 声明本身仍合法，不会回退到默认值，
    * 抽屉就永久停在错误位置。
    */
-  if (top <= 24 || top >= pageRect.height * 0.35) return
+  if (top <= 24 || top >= SHEET_TOP_MAX) return
   el.style.setProperty('--sheet-up-top', top + 'px')
 }
 
@@ -48,11 +61,23 @@ function onResize(): void {
 
 onMounted(() => {
   nextTick(applySheetTop)
+  /*
+   * 首次测量可能早于布局稳定 —— Safari 恢复标签页时，地址栏的收放会改变
+   * 100dvh，页面高度在最初几帧是错的，此时测出的值会被上面的校验拦下，
+   * 抽屉停在 CSS 默认位置（视觉正确但不精确）。
+   * 下面两处补测让它在布局稳定后自动校准回来。
+   */
+  recalibrateTimer = window.setTimeout(applySheetTop, 600)
+
   window.addEventListener('resize', onResize)
+  // Safari 的地址栏收放只改 visualViewport，未必触发 window 的 resize
+  window.visualViewport?.addEventListener('resize', onResize)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
+  window.visualViewport?.removeEventListener('resize', onResize)
+  window.clearTimeout(recalibrateTimer)
 })
 
 watch(
