@@ -40,7 +40,39 @@ function snapshot(): string {
     `来源=${pg?.style.getPropertyValue('--sheet-up-top') ? 'JS内联' : 'CSS默认(118px)'}`,
     // 元素计数：用于发现重复节点（多一份就会让定位表现错乱）
     `计数 #page-home=${document.querySelectorAll('#page-home').length} .home-sheet=${document.querySelectorAll('.home-sheet').length} .home-map=${document.querySelectorAll('.home-map').length} .home-progress=${document.querySelectorAll('.home-progress').length}`,
+    ...feedLines(pg),
   ].join('\n')
+}
+
+/**
+ * 预警轮播的对齐情况。
+ *
+ * 窗口高度由 CSS 的 calc(--feed-item-h * 3) 决定，轨道位移由 JS 按同一个变量
+ * 计算 —— 两者必须严格同源。一旦错位，窗口里就会露出半截条目和底部空行。
+ * 这里把两边的实际值都打出来，便于一眼看出偏差。
+ */
+function feedLines(pg: HTMLElement | null): string[] {
+  const win = pg?.querySelector<HTMLElement>('.alarm-feed-win') ?? null
+  const track = pg?.querySelector<HTMLElement>('.alarm-feed-track') ?? null
+  const items = pg ? [...pg.querySelectorAll<HTMLElement>('.alarm-feed-item')] : []
+  if (!win || !track || !items.length) return ['预警=未挂载']
+
+  const wr = win.getBoundingClientRect()
+  const overlaps = items
+    .map((it) => {
+      const b = it.getBoundingClientRect()
+      const o = Math.min(b.bottom, wr.bottom) - Math.max(b.top, wr.top)
+      return o > 1 ? Math.round(o) : 0
+    })
+    .filter((v) => v > 0)
+  const blank = Math.round(wr.height - overlaps.reduce((a, b) => a + b, 0))
+  const firstRect = items[0].getBoundingClientRect()
+
+  return [
+    `预警 变量=${getComputedStyle(track).getPropertyValue('--feed-item-h').trim() || '(读不到)'} 窗口高=${Math.round(wr.height)} 首条rect高=${firstRect.height.toFixed(1)} 首条offsetH=${items[0].offsetHeight}`,
+    `预警 transform=${track.style.transform || '(none)'} 过渡=${track.style.transition || '(none)'}`,
+    `预警 可见条=${overlaps.length} 各条可见=[${overlaps.join(',')}] 底部空行=${blank}`,
+  ]
 }
 
 export function mountDiag(): void {
@@ -52,7 +84,7 @@ export function mountDiag(): void {
     'background:rgba(0,0,0,.88)', 'color:#4ade80',
     'font:11px/1.6 ui-monospace,Menlo,monospace',
     'padding:6px 8px', 'white-space:pre-wrap', 'word-break:break-all',
-    'max-height:50vh', 'overflow:auto', 'pointer-events:auto',
+    'max-height:70vh', 'overflow:auto', 'pointer-events:auto',
   ].join(';')
   document.body.appendChild(el)
 

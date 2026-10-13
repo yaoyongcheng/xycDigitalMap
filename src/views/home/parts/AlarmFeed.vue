@@ -48,31 +48,33 @@ function stop(): void {
 }
 
 /**
- * 滚动步长 = 单条高度。
+ * 滚动步长 = 单条高度，取自 CSS 变量 --feed-item-h（app.css 的 .alarm-feed 下）。
  *
- * 首选 CSS 变量 --feed-item-h（app.css 的 .alarm-feed 下）：它与条目实际高度
- * 同源，是正确性的保证。
- *
- * 变量读不到时（样式表尚未就绪）退回实测，而不是返回 0 —— 后者会让轮播整个
- * 不启动，表现为「预警有时候不滚动」。这个兜底值只用于算 translateY 的步长，
- * 窗口高度始终由 CSS 的 calc(--feed-item-h * 3) 决定，故即便它有偏差，
- * 也只是滚动节奏略有出入，不会像原实现那样被固化进内联尺寸、露出回卷副本。
+ * 必须与窗口高度同源：窗口是 calc(var(--feed-item-h) * 3)，步长也必须取同一个
+ * 变量。若改成实测 item.offsetHeight，两者基准可能差之毫厘（亚像素、边框、
+ * 字体回退），轨道与窗口就会错位 —— 表现为窗口里露出半截条目和底部空行。
+ * 所以这里只认变量，读不到就交给调用方重试，不做实测兜底。
  */
 function feedItemHeight(): number {
   const track = trackEl.value
   if (!track) return 0
-  const fromVar = Number.parseFloat(getComputedStyle(track).getPropertyValue('--feed-item-h'))
-  if (Number.isFinite(fromVar) && fromVar > 0) return fromVar
-  const item = track.querySelector('.alarm-feed-item') as HTMLElement | null
-  return item?.offsetHeight ?? 0
+  const n = Number.parseFloat(getComputedStyle(track).getPropertyValue('--feed-item-h'))
+  return Number.isFinite(n) && n > 0 ? n : 0
 }
 
-function start(): void {
+/**
+ * @param retry 已重试次数。样式表尚未就绪时变量读不到，此时重试而不是放弃
+ *              （放弃会让轮播彻底不动），也不是退回实测（会让轨道错位）。
+ */
+function start(retry = 0): void {
   stop()
   const track = trackEl.value
   if (!track || list.value.length <= ALARM_FEED_SHOW) return
   const h = feedItemHeight()
-  if (!h) return
+  if (!h) {
+    if (retry < 20) window.setTimeout(() => start(retry + 1), 100)
+    return
+  }
   // 窗口高度由 CSS 负责（.alarm-feed-win 的 height），此处不再写内联值
   track.style.transform = 'translateY(0)'
   timer = window.setInterval(() => {
