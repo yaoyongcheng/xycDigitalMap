@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
+import { crewKpis } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendSvg, peopleHourSvg } from '@/utils/chart'
@@ -27,19 +28,11 @@ const trendSvg = computed(() => alarmTrendSvg('alarmFill', alarm.latest.length))
  */
 const hourSvg = computed(() => peopleHourSvg(new Date().getHours()))
 
-/** 原 renderSafety 内联的四个指标（硬编码常量，非接口数据） */
-const crewKpis: [string, string, string][] = [
-  ['160', '人', '项目人数'],
-  ['40', '人', '正在上班'],
-  ['76', '人', '今日出勤'],
-  ['47.5', '%', '出勤率'],
-]
-
-/** 数值滚动用的解析结果（与 crewKpis 同源） */
-const crewNums = crewKpis.map(([n]) => {
-  const v = Number.parseFloat(n)
-  return { value: Number.isFinite(v) ? v : 0, decimals: n.includes('.') ? 1 : 0 }
-})
+/** 数值滚动用的解析结果（crewKpis 与横屏 KPI 坞同源；小数位按原始值决定） */
+const crewNums = crewKpis.map(([n]) => ({
+  value: n,
+  decimals: Number.isInteger(n) ? 0 : 1,
+}))
 
 /**
  * 数据时效戳（2026-10 改造新增）——面板挂载时刻。

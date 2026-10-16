@@ -2,12 +2,13 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import HomeProgress from '@/components/ui/HomeProgress.vue'
+import MapInfoCard from '@/components/ui/MapInfoCard.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { mapPoints } from '@/data/config'
 import { useCamStore } from '@/stores/cam'
 import { useHomeStore } from '@/stores/home'
 import { useShellStore } from '@/stores/shell'
-import type { MapPoint } from '@/types'
+import type { Building, MapPoint } from '@/types'
 import HomeSheet from './home/HomeSheet.vue'
 
 /**
@@ -210,15 +211,18 @@ function onMapFull(): void {
   shell.openMapLand()
 }
 
-/** 地图点位点击：监控/塔吊直接打开对应点位画面，楼栋弹进度摘要 */
+/** 楼栋撒点的信息卡（2026-10 第二轮改造：Toast 升级为地图内底部信息卡） */
+const infoBuilding = ref<Building | null>(null)
+
+/** 地图点位点击：监控/塔吊直接打开对应点位画面，楼栋弹信息卡 */
 function onMapPoint(p: MapPoint): void {
   if ((p.kind === 'cam' || p.kind === 'crane') && p.camId) {
+    infoBuilding.value = null
     cam.openCam(p.camId)
     return
   }
   if (p.kind === 'building') {
-    const b = home.siteBuildings.find((x) => x.name === p.name)
-    shell.showToast(b ? `${b.name}：已建 ${b.done}/${b.total}F · 进度达标率 ${b.rate}%` : p.name)
+    infoBuilding.value = home.siteBuildings.find((x) => x.name === p.name) ?? null
   }
 }
 </script>
@@ -233,6 +237,7 @@ function onMapPoint(p: MapPoint): void {
     <div class="home-scene">
       <div class="home-map">
         <MapViewer :points="mapPoints" fit="cover" compact @select="onMapPoint" />
+        <MapInfoCard :building="infoBuilding" @close="infoBuilding = null" />
       </div>
       <div class="home-top">
         <div class="home-project-row">

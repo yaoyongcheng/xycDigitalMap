@@ -5153,3 +5153,476 @@ button, input, textarea { font-family: inherit; color: inherit; }
   from { transform: scale(0.4); }
   to { transform: scale(1); }
 }
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第六轮（追加，不触碰既有级联链）
+ *
+ *   K. 撒点信息卡（MapInfoCard）：楼栋详情底部卡，玻璃拟态
+ *   L. 全屏地图 KPI 数据坞动效（复用原版 .land-dock/.land-kpis 样式）
+ *   M. 首页地图科技感：网格层 + 扫描线
+ *   N. 全局微动效：面板 tab 下划线生长/图标弹跳、tabbar 图标弹跳、
+ *      Toast 滑入
+ * ===================================================================== */
+
+/* ---------- K. 撒点信息卡 ---------- */
+
+.map-info-card {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 4;
+  padding: 12px 14px 12px;
+  border-radius: 14px;
+  background: rgba(9, 18, 33, 0.88);
+  border: 1px solid rgba(110, 168, 255, 0.22);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  color: #E8EEF6;
+  cursor: default;
+}
+
+.mic-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mic-head strong {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.mic-badge {
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.mic-badge.ok { color: #2EE6A6; background: rgba(46, 230, 166, 0.12); }
+.mic-badge.warn { color: #F5C14A; background: rgba(245, 193, 74, 0.12); }
+
+.mic-close {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #A8B8CC;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.mic-close svg { width: 13px; height: 13px; }
+
+.mic-body {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  margin-top: 10px;
+}
+
+.mic-metric b {
+  display: block;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: #F2F6FB;
+}
+
+.mic-metric b em {
+  margin-left: 1px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  color: #8A9BB0;
+}
+
+.mic-metric span {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #8A9BB0;
+}
+
+/* 迷你进度条：吃掉剩余宽度 */
+.mic-bar {
+  flex: 1;
+  height: 6px;
+  margin-bottom: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.mic-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #2f7cff, #6EE7FF);
+  transform-origin: left center;
+  animation: micBarGrow 0.6s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+/* 首页小地图里更紧凑一点 */
+.home-map .map-info-card { padding: 10px 12px; bottom: 10px; }
+.home-map .mic-metric b { font-size: 19px; }
+
+/* 全屏地图里抬高，避开底部 KPI 数据坞 */
+.map-land .map-info-card { bottom: 128px; }
+
+/* 信息卡进出过渡（Vue Transition name=mic） */
+.mic-enter-active,
+.mic-leave-active { transition: opacity 0.26s ease, transform 0.26s ease; }
+.mic-enter-from,
+.mic-leave-to { opacity: 0; transform: translateY(16px); }
+
+/* ---------- L. KPI 数据坞动效 ---------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 数据坞随全屏层入场：自底部滑入 */
+  .map-land.open .land-dock {
+    animation: dockUp 0.42s 0.12s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  }
+
+  /* 右侧开关按钮淡入 */
+  .map-land.open .land-side {
+    animation: fadeIn 0.3s 0.25s backwards;
+  }
+}
+
+/* ---------- M. 首页地图科技感 ---------- */
+
+/* 网格层：细蓝网格营造「数字孪生底座」观感，低透明度不喧宾 */
+.home-map::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(110, 168, 255, 0.05) 0 1px, transparent 1px 34px),
+    repeating-linear-gradient(90deg, rgba(110, 168, 255, 0.05) 0 1px, transparent 1px 34px);
+}
+
+/* 全屏地图同样加网格（挂在 viewer 的 ::before，::after 已被暗角占用） */
+.map-land-stage .map-viewer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, rgba(110, 168, 255, 0.04) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(90deg, rgba(110, 168, 255, 0.04) 0 1px, transparent 1px 48px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 扫描线：一道横向光带自上而下缓慢扫过（雷达扫描既视感） */
+  .home-map::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 22%;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(180deg,
+      transparent 0%,
+      rgba(110, 168, 255, 0.08) 42%,
+      rgba(140, 200, 255, 0.13) 50%,
+      transparent 100%);
+    animation: mapScan 6.5s linear infinite;
+  }
+}
+
+/* ---------- N. 全局微动效 ---------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 面板 tab：选中时图标弹跳 + 下划线自中心生长 */
+  .home-mod.on svg { animation: iconPop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1); }
+  .home-mod.on::after { animation: barIn 0.28s ease; }
+
+  /* tabbar：切换 tab 时图标弹跳 */
+  .tab.active svg { animation: iconPop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1); }
+}
+
+/* Toast：在原淡入基础上加自上而下滑入（保留水平居中的 translateX） */
+.toast {
+  transform: translateX(-50%) translateY(-10px);
+  transition: opacity 0.2s ease, transform 0.24s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+}
+
+@keyframes micBarGrow { from { transform: scaleX(0); } }
+@keyframes dockUp {
+  from { opacity: 0; transform: translateY(22px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes mapScan {
+  from { transform: translateY(-110%); }
+  to { transform: translateY(560%); }
+}
+@keyframes iconPop {
+  from { transform: scale(0.72); }
+  to { transform: scale(1); }
+}
+@keyframes barIn { from { transform: scaleX(0); } }
+
+/* KPI 坞补充：land-pair 内的单位符号（与 land-crew b em 同规格） */
+.land-pair b em {
+  margin-left: 1px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  color: #8A9BB0;
+}
+
+/* KPI 坞收起时，信息卡回落到贴底 */
+.map-land.kpis-off .map-info-card { bottom: 12px; }
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第七轮（追加，不触碰既有级联链）
+ *
+ *   O. KPI 卡片对齐修复 + 竖屏横滑卡片：
+ *      ① 卡片内数字与单位的基线对齐（b 改 flex + baseline，
+ *         指标项改纵向 flex，各行起点一致）
+ *      ② 竖屏下 4 张分组卡片改为横向滑动（每张定宽 172px，
+ *         scroll-snap 吸附），高度约占屏盒一半，可滑动逐张查看
+ * ===================================================================== */
+
+/* ---------- ① 对齐修复（横竖屏共用） ---------- */
+
+.land-kpi h5 {
+  align-items: center;
+  margin: 0 0 8px;
+}
+
+.land-crew div,
+.land-pair div {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+/* 数字与单位基线对齐：47.5% 与 160人 这类混合内容不再高低错落 */
+.land-crew b,
+.land-pair b {
+  display: flex;
+  align-items: baseline;
+  line-height: 1.1;
+}
+
+.land-crew b em,
+.land-pair b em {
+  margin-left: 2px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  color: #8A9BB0;
+  white-space: nowrap;
+}
+
+.land-crew span,
+.land-pair span {
+  margin-top: 3px;
+  line-height: 1.2;
+}
+
+/* ---------- ② 竖屏横滑卡片 ---------- */
+
+@media (orientation: portrait) {
+  .map-land .land-dock {
+    left: 8px;
+    right: 8px;
+    bottom: 6px;
+  }
+
+  .map-land .land-kpis {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 2px 2px 4px;
+  }
+
+  .map-land .land-kpis::-webkit-scrollbar { display: none; }
+
+  .map-land .land-kpi {
+    flex: 0 0 auto;
+    width: 172px;
+    scroll-snap-align: start;
+    padding: 9px 11px 8px;
+  }
+
+  /* 竖屏字号微收，卡片高度压到 ~92px（屏盒高约 180px，地图仍露出大半） */
+  .map-land .land-kpi h5 { font-size: 11px; margin-bottom: 6px; }
+  .map-land .land-kpi h5 svg { width: 12px; height: 12px; }
+  .map-land .land-crew b,
+  .map-land .land-pair.three b { font-size: 15px; }
+  .map-land .land-pair b { font-size: 16px; }
+  .map-land .land-crew span,
+  .map-land .land-pair span { font-size: 10px; }
+  .map-land .land-crew { gap: 4px 10px; }
+
+  /* 信息卡避开横滑卡片（卡片高 ~92px + 底距 6px） */
+  .map-land .map-info-card { bottom: 108px; }
+}
+
+.map-land.kpis-off .map-info-card { bottom: 12px; }
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第七轮补充
+ *
+ *   P. 全屏地图缩放控件避开底部数据坞：
+ *      .map-ctrls 原为 right:8 + 垂直居中，屏盒高 280px 时控件列
+ *      （高约 110px）下端会压住 KPI 坞右侧的第 4 张卡片。
+ *      改为横向排列，挂在右侧「数据」开关按钮旁/下方，
+ *      与底部数据坞彻底错开。
+ * ===================================================================== */
+
+@media (orientation: portrait) {
+  /* 竖屏：与「数据」按钮并排（按钮在 right:12 宽 40，控件在其左侧） */
+  .map-land .map-ctrls {
+    top: 50px;
+    right: 62px;
+    transform: none;
+    flex-direction: row;
+  }
+}
+
+@media (orientation: landscape) {
+  /* 横屏：置于「数据」按钮正下方、数据坞上方的空档（约 104~140px） */
+  .map-land .map-ctrls {
+    top: 110px;
+    right: 12px;
+    transform: none;
+    flex-direction: row;
+  }
+}
+
+/* 横排后按钮保持方形，总览/复位自适应宽度 */
+.map-land .map-ctrls button { height: 30px; }
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第七轮补充 2
+ *
+ *   Q. KPI 卡片多机型适配（iPhone / 华为 / 小米 / vivo / OPPO）：
+ *      横屏时屏盒宽 = 2*(视口高-80)，即由视口高度决定 —— 各机型
+ *      横屏视口高 360(SE/中端安卓)~430(Pro Max)，屏盒宽 560~700，
+ *      每张卡 128~146px。原固定字号在 360 档会挤压换行。
+ *      方案：横屏下卡片全部排版量（字号/间距/内边距）用 clamp+vh
+ *      随视口高连续缩放，无断点跳变；竖屏横滑卡同理用 vw 缩放。
+ * ===================================================================== */
+
+@media (orientation: landscape) {
+  .map-land .land-kpi {
+    padding: clamp(7px, 2.6vh, 10px) clamp(8px, 1.9vh, 10px) clamp(6px, 2.1vh, 8px);
+  }
+
+  .map-land .land-kpi h5 {
+    font-size: clamp(10.5px, 3.1vh, 12px);
+    gap: clamp(4px, 1.2vh, 5px);
+    margin-bottom: clamp(5px, 2.4vh, 8px);
+  }
+
+  .map-land .land-kpi h5 svg {
+    width: clamp(11px, 3.4vh, 14px);
+    height: clamp(11px, 3.4vh, 14px);
+  }
+
+  .map-land .land-crew {
+    gap: clamp(3px, 1.7vh, 6px) clamp(6px, 2.6vh, 8px);
+  }
+
+  .map-land .land-pair,
+  .map-land .land-pair.three {
+    gap: clamp(3px, 1.7vh, 6px) clamp(6px, 2.4vh, 8px);
+  }
+
+  .map-land .land-crew b { font-size: clamp(14px, 4.2vh, 18px); }
+  .map-land .land-pair b { font-size: clamp(15px, 5.6vh, 22px); }
+  .map-land .land-pair.three b { font-size: clamp(13px, 4.6vh, 18px); }
+
+  .map-land .land-crew b em,
+  .map-land .land-pair b em { font-size: clamp(9px, 2.6vh, 11px); }
+
+  .map-land .land-crew span,
+  .map-land .land-pair span {
+    font-size: clamp(9.5px, 2.9vh, 11px);
+    margin-top: clamp(2px, 1vh, 3px);
+  }
+}
+
+@media (orientation: portrait) {
+  /* 竖屏盒宽 ≈ 视口宽-24（336~406），横滑卡按 vw 微调宽度 */
+  .map-land .land-kpi {
+    width: clamp(150px, 46vw, 176px);
+  }
+
+  .map-land .land-crew b,
+  .map-land .land-pair.three b { font-size: clamp(13px, 3.9vw, 15px); }
+  .map-land .land-pair b { font-size: clamp(14px, 4.2vw, 16px); }
+
+  .map-land .land-crew b em,
+  .map-land .land-pair b em { font-size: clamp(9px, 2.6vw, 10px); }
+
+  .map-land .land-crew span,
+  .map-land .land-pair span { font-size: clamp(9px, 2.6vw, 10px); }
+
+  .map-land .land-kpi h5 { font-size: clamp(10.5px, 3vw, 11px); }
+
+  /* 窄机型（360 档）：人员卡 2×2 改 1×4 单列，彻底避免「47.5%」挤压 */
+  @media (max-width: 379px) {
+    .map-land .land-crew { grid-template-columns: 1fr 1fr; gap: 4px 8px; }
+  }
+}
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第八轮（追加，不触碰既有级联链）
+ *
+ *   R. 角标描边随 tabbar 底色切换：
+ *      首页进子页（巡检预警等）时，tabbar 已由 4453 行规则切回白底，
+ *      但下方 5143 行的深色描边（#0B1626）仍生效 —— 白底上就是
+ *      一圈黑边。改为仅在「首页且无子页打开」时使用深色描边。
+ * ===================================================================== */
+
+/* 子页打开时 tabbar 是白底：覆盖上方 5143 行的深色描边，恢复纯浅色投影 */
+.app.home-mode:has(.subpage.open) .tab .badge {
+  box-shadow: 0 1px 4px rgba(255, 77, 79, 0.4);
+}
+
+/*   S. CountUp 数字降级修复：
+ *      CountUp 渲染的 <span class="count-up"> 会命中各卡片「span=标签文字」
+ *      的裸标签规则（.home-stat span 13px 灰 / .crew-kpi span 11px 灰 /
+ *      .eq-count-item span 等），滚动数字被降级成小灰字 —— 首页「今日预警数」
+ *      与巡检预警页字号不一致即源于此（巡检页是裸文本，不受该规则影响）。
+ *      强制继承父级 <b> 的排版（28px/700/语义色），两处渲染对齐。
+ */
+.home-stat .count-up,
+.crew-kpi .count-up,
+.eq-count-item .count-up,
+.eq-status-leg .count-up,
+#page-home .home-stat .count-up,
+#page-home .crew-kpi .count-up,
+#page-home .eq-count-item .count-up,
+#page-home .eq-status-leg .count-up {
+  display: inline;
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  color: inherit;
+}
