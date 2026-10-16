@@ -8,8 +8,12 @@ import { addDays, startOfDay } from './date'
  *   peopleHourSvg  原本内部取 new Date().getHours()，改为入参 nowHour
  * 两处都只是把隐式依赖显式化，输出字符串逐字节不变。
  *
- * 输出形态是 HTML 字符串，组件侧用 v-html 渲染 —— 与原版 innerHTML 写法一致，
- * 保证 DOM 逐字节相同。
+ * 输出形态是 HTML 字符串，组件侧用 v-html 渲染 —— 与原版 innerHTML 写法一致。
+ *
+ * 2026-10 改造：折线加 class="dl" + pathLength="1"（描边入场动画），
+ * 面积加 class="fa"（淡入），数据点带递增 animation-delay —— 仅附加
+ * 动效钩子，几何与配色与原版逐字节一致。动画规则在 app.css 末尾，
+ * 整体包裹在 prefers-reduced-motion: no-preference 内。
  */
 
 /** 控制点类型 [x, y] */
@@ -87,7 +91,11 @@ export function alarmTrendSvg(fillId: string, latestCount: number): string {
     .map((d, i) => `<text x="${xAt(i).toFixed(1)}" y="${h - 1}" text-anchor="middle">${d}</text>`)
     .join('')
   const dots = pts
-    .map(([x, y]) => `<circle class="alarm-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.3"/>`)
+    .map(
+      ([x, y], i) =>
+        // 描边动画的入场延迟随点位递增，形成「画线 → 落点」的节奏
+        `<circle class="alarm-dot" style="animation-delay:${350 + i * 70}ms" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.3"/>`,
+    )
     .join('')
   const gid = fillId || 'alarmFill'
   return `<svg class="alarm-svg" viewBox="0 0 ${w} ${h}">
@@ -98,8 +106,8 @@ export function alarmTrendSvg(fillId: string, latestCount: number): string {
         </linearGradient>
       </defs>
       <g class="alarm-grid">${grids}</g>
-      <path d="${area}" fill="url(#${gid})"/>
-      <path d="${line}" fill="none" stroke="#4C9FFF" stroke-width="1.6" stroke-linejoin="round"/>
+      <path class="fa" d="${area}" fill="url(#${gid})"/>
+      <path class="dl" pathLength="1" d="${line}" fill="none" stroke="#4C9FFF" stroke-width="1.6" stroke-linejoin="round"/>
       ${dots}
       <g class="alarm-x">${labels}</g>
     </svg>`
@@ -160,9 +168,9 @@ export function peopleHourSvg(nowHour: number): string {
         </linearGradient>
       </defs>
       <g class="alarm-grid">${grids}</g>
-      <path d="${area}" fill="url(#peopleFill)"/>
-      <path d="${wLine}" fill="none" stroke="#3DDC97" stroke-width="2"/>
-      <path d="${mLine}" fill="none" stroke="#4C9FFF" stroke-width="2"/>
+      <path class="fa" d="${area}" fill="url(#peopleFill)"/>
+      <path class="dl" pathLength="1" d="${wLine}" fill="none" stroke="#3DDC97" stroke-width="2"/>
+      <path class="dl" pathLength="1" style="animation-delay:.25s" d="${mLine}" fill="none" stroke="#4C9FFF" stroke-width="2"/>
       <g class="alarm-x">${labels}</g>
     </svg>`
 }

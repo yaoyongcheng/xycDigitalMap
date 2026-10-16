@@ -71,6 +71,25 @@ export function registerServiceWorker(): void {
         })
 
         window.setInterval(check, UPDATE_CHECK_INTERVAL)
+
+        /*
+         * 更新可感知（2026-10 改造新增）：
+         * autoUpdate 下新 SW 装好即接管（skipWaiting + clientsClaim），
+         * controllerchange 触发时向页面广播事件，由 UpdateBanner 弹
+         * 「新版本已就绪，点此刷新」—— 把「下一次冷启动才生效」的静默
+         * 行为变成用户可决策的一次刷新。
+         *
+         * 首次安装也会触发 controllerchange（clientsClaim 接管空控制器），
+         * 此时并无「旧版本」可言，故以注册时刻是否已有 controller 作守卫。
+         */
+        if (navigator.serviceWorker.controller) {
+          let notified = false
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (notified) return
+            notified = true
+            window.dispatchEvent(new CustomEvent('xyc:sw-updated'))
+          })
+        }
       })
       .catch(() => {
         // 注册失败（如隐私模式、不支持）不阻断应用启动

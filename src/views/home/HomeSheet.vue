@@ -22,6 +22,18 @@ import type { HomeMod } from '@/types'
  */
 const home = useHomeStore()
 
+/**
+ * 抽屉跟手拖拽（2026-10 改造新增）
+ * dragTop 非空时以 inline top 覆盖 CSS 档位定位（拖拽中/半开档）；
+ * grab 事件由顶部抓手条上抛，拖拽逻辑在 HomePage 统一处理。
+ */
+defineProps<{ dragTop: number | null }>()
+const emit = defineEmits<{ grab: [e: PointerEvent] }>()
+
+function onGrab(e: PointerEvent): void {
+  emit('grab', e)
+}
+
 const mods: { id: HomeMod; label: string; svg: string }[] = [
   {
     id: 'safety',
@@ -47,7 +59,8 @@ const mods: { id: HomeMod; label: string; svg: string }[] = [
 </script>
 
 <template>
-  <div class="home-sheet">
+  <div class="home-sheet" :style="dragTop !== null ? { top: dragTop + 'px' } : undefined">
+    <div class="sheet-grab" aria-hidden="true" @pointerdown="onGrab"><i></i></div>
     <div class="home-mods" id="homeMods">
       <button
         v-for="m in mods"

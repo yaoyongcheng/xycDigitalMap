@@ -4,20 +4,28 @@ import { defineStore } from 'pinia'
 import { titles } from '@/data/config'
 import type { TabId } from '@/types'
 
-/** 首页抽屉展开状态的持久化键 */
+/** 首页抽屉展开状态的持久化键（旧版布尔键，仅用于迁移读取） */
 const SHEET_UP_KEY = 'xyc.sheetUp'
 
+/** 首页抽屉档位（2026-10 改造新增）：0 收起 / 1 半开 / 2 全开 */
+const SHEET_LEVEL_KEY = 'xyc.sheetLevel'
+
+export type SheetLevel = 0 | 1 | 2
+
 /**
- * 读取上次的抽屉状态。
- * 无记录时回退为展开（原版 app.js:925 的初值 true）；
+ * 读取上次的抽屉档位。
+ * 优先读新的档位键；不存在时迁移旧布尔键（'1'→2 全开，'0'→0 收起）；
+ * 都没有则回退全开（原版 app.js:925 的初值 true）。
  * localStorage 不可用（隐私模式、配额满）时同样回退，不让读取失败影响启动。
  */
-function readSheetUp(): boolean {
+function readSheetLevel(): SheetLevel {
   try {
-    const v = localStorage.getItem(SHEET_UP_KEY)
-    return v === null ? true : v === '1'
+    const v = localStorage.getItem(SHEET_LEVEL_KEY)
+    if (v === '0' || v === '1' || v === '2') return Number(v) as SheetLevel
+    const old = localStorage.getItem(SHEET_UP_KEY)
+    return old === '0' ? 0 : 2
   } catch {
-    return true
+    return 2
   }
 }
 
@@ -70,17 +78,28 @@ export const useShellStore = defineStore('shell', () => {
   const isLand = ref(false)
 
   /**
-   * #page-home.is-sheet-up —— 首页半屏抽屉。
+   * 首页半屏抽屉档位（0 收起 / 1 半开 / 2 全开），持久化到 localStorage。
    *
-   * 原版初值为 true（L925）。此处改为沿用上次的展开状态并写回存储：
-   * 现场用户习惯固定用一种高度，每次重开都弹回默认值很别扭。
-   * 用 watch 而非在调用方写存储 —— 保持 `shell.sheetUp = x` 的既有写法不变。
+   * 原 sheetUp 布尔值的演进：拖拽改造（2026-10）引入中间档后，
+   * 布尔量不足以表达三档，故底层改为档位 ref；sheetUp 保留为
+   * 计算属性访问器（get: level > 0；set: true→2 / false→0），
+   * `shell.sheetUp = x` 的既有写法与 #page-home.is-sheet-up 的
+   * CSS 语义（抬起即 true）均不变。
    */
-  const sheetUp = ref(readSheetUp())
+  const sheetLevel = ref<SheetLevel>(readSheetLevel())
 
-  watch(sheetUp, (v) => {
+  const sheetUp = computed<boolean>({
+    get: () => sheetLevel.value > 0,
+    set: (v: boolean) => {
+      sheetLevel.value = v ? 2 : 0
+    },
+  })
+
+  watch(sheetLevel, (v) => {
     try {
-      localStorage.setItem(SHEET_UP_KEY, v ? '1' : '0')
+      localStorage.setItem(SHEET_LEVEL_KEY, String(v))
+      // 同步写旧键，回退旧版本时状态不丢失
+      localStorage.setItem(SHEET_UP_KEY, v > 0 ? '1' : '0')
     } catch {
       // 存储不可用（隐私模式/配额满）时静默降级：本次会话内切换仍正常
     }
@@ -88,6 +107,17 @@ export const useShellStore = defineStore('shell', () => {
 
   /** 原为 #mapLand 的 .open / hidden */
   const mapLandOpen = ref(false)
+
+  /**
+   * 「返回全屏地图」约定（2026-10 新增体验逻辑，非原版行为）。
+   *
+   * 从全屏地图的撒点跳进监控时，地图层必须先关闭（openCam 的
+   * setCamLand(false) 会无条件清掉横屏态，留着会看到布局错乱的地图层，
+   * 见 openMapLand 注释）。此标记让监控的返回键在关闭播放器后
+   * 重新拉起全屏地图，形成「地图 → 监控 → 返回 → 地图」的自然回路。
+   * 不持久化：刷新后回到首页属预期。
+   */
+  const mapLandReturn = ref(false)
 
   /**
    * 原 js/app.js:1701-1706 openMapLand()
@@ -98,12 +128,24 @@ export const useShellStore = defineStore('shell', () => {
   function openMapLand(): void {
     isLandscape.value = true
     mapLandOpen.value = true
+    mapLandReturn.value = false
   }
 
   /** 原 js/app.js:1708-1713 closeMapLand() */
   function closeMapLand(): void {
     isLandscape.value = false
     mapLandOpen.value = false
+    mapLandReturn.value = false
+  }
+
+  /**
+   * 覆盖层返回键的收尾钩子：若本次覆盖层是从全屏地图跳进来的，
+   * 关闭后重新打开全屏地图。无约定时是空操作。
+   */
+  function backToMapLand(): void {
+    if (!mapLandReturn.value) return
+    mapLandReturn.value = false
+    openMapLand()
   }
 
   return {
@@ -115,8 +157,11 @@ export const useShellStore = defineStore('shell', () => {
     isLandscape,
     isLand,
     sheetUp,
+    sheetLevel,
     mapLandOpen,
+    mapLandReturn,
     openMapLand,
     closeMapLand,
+    backToMapLand,
   }
 })

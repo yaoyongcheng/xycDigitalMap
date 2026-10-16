@@ -36,17 +36,34 @@ npm run typecheck  # 仅做类型检查
 └── src/
     ├── main.ts
     ├── App.vue                 三层壳 .stage / .phone / .phone-screen
-    ├── types.ts                12 个领域接口
-    ├── data/                   纯静态配置常量
+    ├── types.ts                13 个领域接口（含新增 MapPoint）
+    ├── data/                   纯静态配置常量（含新增 mapPoints 撒点坐标）
     ├── stores/                 7 个 Pinia store
     ├── components/
-    │   ├── shell/              StatusBar / NavBar / TabBar / Toast
+    │   ├── shell/              StatusBar / NavBar / TabBar / Toast / UpdateBanner
     │   ├── overlays/           5 个全屏覆盖层
-    │   └── ui/                 共享组件（返回栏 / 日历 / 日期芯片 / 环形图等）
+    │   └── ui/                 共享组件（返回栏 / 日历 / 日期芯片 / 环形图 /
+    │                           交互地图 MapViewer / 数字滚动 CountUp 等）
     ├── views/                  4 个 tab 页 + 首页 4 面板 + 子页内容
-    ├── utils/                  日期 / 图表（纯函数）
-    └── styles/app.css          777 条规则，单文件全局样式
+    ├── utils/                  日期 / 图表（纯函数）/ PWA / 主题色
+    └── styles/app.css          单文件全局样式（末尾有「2026-10 改造」分组）
 ```
+
+## 2026-10 体验改造（新增能力说明）
+
+| 能力 | 入口 | 实现 |
+|---|---|---|
+| 交互地图：拖拽/捏合/滚轮缩放、双击放大 | 首页顶部地图、横屏全屏地图 | `ui/MapViewer.vue`，点位坐标在 `data/config.ts` 的 `mapPoints` |
+| 地图撒点：摄像头/塔吊点开监控，楼栋弹进度摘要 | 点位针标 | HomePage / MapLand 的 `onMapPoint` |
+| 抽屉跟手拖拽（收起/半开/全开三档吸附） | 抓手胶囊或「拉起/收回」按钮直接拖 | `shell.sheetLevel`，`HomePage` 拖拽逻辑；点按仍是收起↔全开 |
+| 数据动效 | 数字滚动 / 折线描边 / 柱条生长 / 预警呼吸点 | `ui/CountUp.vue` + app.css 末尾 C 组（尊重系统减弱动效设置） |
+| 占位功能反馈 | 消息页非巡检项、工作台工具卡 | Toast 提示「接入中」 |
+| 数据时效戳 | 安全面板「预警」标题旁 | 面板挂载时刻 |
+| PWA 更新可感知 | 新版本就绪弹条 | 见下方 PWA 节 |
+
+> 撒点坐标是按 site-map.jpg 底图目测的演示标定值，接后端时应由接口下发。
+> 两条架构约束（单文件 CSS 级联 / 覆盖层 .open 常驻）本次改造均遵守：
+> 新增样式全部追加在 app.css 末尾，覆盖层结构未动。
 
 ## 两条架构约束（改动前必读）
 
@@ -78,7 +95,9 @@ npm run typecheck  # 仅做类型检查
 
 - **预缓存（应用外壳）**：9 项 / 191.7 KB — `js` / `css` / `html` / 图标
 - **运行时缓存（业务图片）**：`/img/*` → `CacheFirst`，60 条 / 30 天
-- **更新策略**：`autoUpdate`，新版本静默生效
+- **更新策略**：`autoUpdate` + 可感知提示。新 SW 后台就绪并接管后，
+  `utils/pwa.ts` 广播 `xyc:sw-updated`，`shell/UpdateBanner` 弹「新版本已就绪」操作条，
+  由用户决定何时刷新（首次安装不打扰，靠「注册时是否已有 controller」守卫）
 - **离线能力**：完全断网后硬刷新仍可渲染应用外壳
 
 ### 部署

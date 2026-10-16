@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import CountUp from '@/components/ui/CountUp.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendSvg, peopleHourSvg } from '@/utils/chart'
@@ -34,6 +35,22 @@ const crewKpis: [string, string, string][] = [
   ['47.5', '%', '出勤率'],
 ]
 
+/** 数值滚动用的解析结果（与 crewKpis 同源） */
+const crewNums = crewKpis.map(([n]) => {
+  const v = Number.parseFloat(n)
+  return { value: Number.isFinite(v) ? v : 0, decimals: n.includes('.') ? 1 : 0 }
+})
+
+/**
+ * 数据时效戳（2026-10 改造新增）——面板挂载时刻。
+ * 静态演示数据容易被误认为实时数据，标注时间降低误读。
+ */
+const updTime = (() => {
+  const d = new Date()
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
+})()
+
 /** 原 homePanels 委托的 [data-alarm] 分支：跳到今日巡检列表 */
 function onAlarmOpen(): void {
   subpage.openInspectList('today')
@@ -42,9 +59,9 @@ function onAlarmOpen(): void {
 
 <template>
   <div class="safe-block">
-    <h4>预警</h4>
+    <h4>预警<span class="upd-time">更新于 {{ updTime }}</span></h4>
     <div class="home-stats alarm-row">
-      <div class="home-stat alert"><b>{{ alarm.latest.length }}</b><span>今日预警数</span></div>
+      <div class="home-stat alert"><b><CountUp :value="alarm.latest.length" /></b><span>今日预警数</span></div>
       <div class="home-chart-card alarm-mini">
         <span class="home-card-lab">近7日预警趋势</span>
         <span v-html="trendSvg"></span>
@@ -59,8 +76,8 @@ function onAlarmOpen(): void {
       <div class="home-chart-card crew-card">
         <span class="home-card-lab">作业人数</span>
         <div class="crew-overview">
-          <div v-for="([n, unit, name], i) in crewKpis" :key="i" class="crew-kpi">
-            <b>{{ n }}<em>{{ unit }}</em></b><span>{{ name }}</span>
+          <div v-for="([, unit, name], i) in crewKpis" :key="i" class="crew-kpi">
+            <b><CountUp :value="crewNums[i].value" :decimals="crewNums[i].decimals" /><em>{{ unit }}</em></b><span>{{ name }}</span>
           </div>
         </div>
       </div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import CountUp from '@/components/ui/CountUp.vue'
 import { useHomeStore } from '@/stores/home'
 import type { Equip } from '@/types'
 
@@ -54,16 +55,16 @@ function canDrill(d: Equip): boolean {
   <template v-else>
     <div class="home-stats alarm-row">
       <div class="home-chart-card eq-count">
-        <div class="eq-count-item"><b>{{ kinds }}<em>种</em></b><span>设备种类</span></div>
-        <div class="eq-count-item"><b>{{ qty }}<em>台</em></b><span>设备数量</span></div>
+        <div class="eq-count-item"><b><CountUp :value="kinds" /><em>种</em></b><span>设备种类</span></div>
+        <div class="eq-count-item"><b><CountUp :value="qty" /><em>台</em></b><span>设备数量</span></div>
       </div>
       <div class="home-chart-card eq-status">
         <span class="alarm-mini-lab">设备状态</span>
         <div class="eq-status-body">
           <i class="donut eq-status-donut" :style="{ background: statusPie }"></i>
           <div class="eq-status-leg">
-            <div><i class="on"></i><span>在线</span><b>{{ onCount }}</b></div>
-            <div><i class="off"></i><span>离线</span><b>{{ offCount }}</b></div>
+            <div><i class="on"></i><span>在线</span><b><CountUp :value="onCount" /></b></div>
+            <div><i class="off"></i><span>离线</span><b><CountUp :value="offCount" /></b></div>
           </div>
         </div>
       </div>

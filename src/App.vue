@@ -10,6 +10,7 @@ import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
 import TabBar from '@/components/shell/TabBar.vue'
 import Toast from '@/components/shell/Toast.vue'
+import UpdateBanner from '@/components/shell/UpdateBanner.vue'
 import MapLand from '@/components/overlays/MapLand.vue'
 import CamPlayer from '@/components/overlays/CamPlayer.vue'
 import AirPlayer from '@/components/overlays/AirPlayer.vue'
@@ -108,6 +109,7 @@ watchEffect(() => {
         </div>
 
         <Toast />
+        <UpdateBanner />
       </div>
     </div>
   </div>

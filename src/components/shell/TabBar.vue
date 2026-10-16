@@ -65,7 +65,14 @@ function onTabClick(id: TabId): void {
     >
       <svg viewBox="0 0 24 24" v-html="t.svg" />
       <span>{{ t.label }}</span>
-      <b v-if="t.id === 'msg' && msg.unreadTotal" class="badge">{{ msg.unreadTotal }}</b>
+      <!--
+        角标数字随消息页实际未读数联动（inspect 点击即清）。
+        :key 让数字变化时元素重挂载，触发 app.css 的 badgePop 弹跳动画；
+        超过 99 封顶显示 99+。
+      -->
+      <b v-if="t.id === 'msg' && msg.unreadTotal" :key="msg.unreadTotal" class="badge">
+        {{ msg.unreadTotal > 99 ? '99+' : msg.unreadTotal }}
+      </b>
     </button>
   </nav>
 </template>

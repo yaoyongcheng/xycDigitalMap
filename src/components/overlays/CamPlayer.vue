@@ -71,6 +71,8 @@ function onBack(): void {
     return
   }
   cam.closeCam()
+  // 若本次监控是从全屏地图的撒点进来的，回到全屏地图而非首页
+  shell.backToMapLand()
 }
 
 /** 原 js/app.js:1251-1256 */

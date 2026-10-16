@@ -3,6 +3,7 @@ import { useMsgStore } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { msgIco } from '@/data/icons'
+import type { Message } from '@/types'
 
 /**
  * 消息页
@@ -18,8 +19,15 @@ const shell = useShellStore()
 const subpage = useSubpageStore()
 
 function onItemClick(kind: string): void {
-  // 原版仅「巡检预警」可点，其余为普通展示项
-  if (kind === 'inspect') subpage.openInspectList('today')
+  // 点击即视为已读：无论是否可进详情，该条未读都清掉，
+  // tabbar 角标与列表内角标同步减少
+  msg.markRead(kind as Message['kind'])
+  if (kind === 'inspect') {
+    subpage.openInspectList('today')
+  } else {
+    // 其余类型暂无详情页，给出口提示而非静默
+    shell.showToast('该类消息详情接入中，敬请期待')
+  }
 }
 </script>
 

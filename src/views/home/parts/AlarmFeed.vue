@@ -120,7 +120,7 @@ onUnmounted(() => {
         >
           <img class="alarm-feed-pic" :src="a.img" :alt="a.type" />
           <div class="alarm-feed-meta">
-            <strong>{{ a.title }}</strong>
+            <strong>{{ a.title }}<i v-if="i === 0" class="feed-live" aria-hidden="true"></i></strong>
             <p>{{ a.desc }}</p>
           </div>
           <span class="alarm-feed-time">{{ a.rel }}</span>

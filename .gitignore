@@ -9,6 +9,9 @@ Desktop.ini
 .vscode/
 *.bak
 
+# WorkBuddy 本地工作记忆（会话日志/项目笔记，不随仓库发布）
+.workbuddy/
+
 # OS
 .DS_Store
 

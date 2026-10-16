@@ -9,7 +9,8 @@ import { useShellStore } from '@/stores/shell'
  * 对应原 index.html:235-294 + 快捷入口委托（app.js:997-1005）。
  * .work-short ×4 与 .tool-card ×3 均为逐字重复结构，改 v-for（渲染 DOM 相同）。
  *
- * 注：原版 3 个 .tool-card 在 JS 中无任何事件绑定，属纯展示，故不带点击行为。
+ * 注：原版 3 个 .tool-card 在 JS 中无任何事件绑定（纯展示）；
+ * 2026-10 改造补了「接入中」Toast 反馈作为点击出口（见 onToolClick）。
  */
 const shell = useShellStore()
 const cam = useCamStore()
@@ -70,6 +71,15 @@ function onShortClick(work: string): void {
   else if (work === 'hazard') air.openHazard()
   else shell.showToast('功能待定')
 }
+
+/**
+ * 工具卡点击反馈（2026-10 改造新增）。
+ * 原版 3 个 .tool-card 无任何事件绑定（纯展示），点击静默无反馈，
+ * 现补「接入中」提示作为明确出口；接入后端后替换为真实跳转。
+ */
+function onToolClick(title: string): void {
+  shell.showToast(`「${title}」接入中，敬请期待`)
+}
 </script>
 
 <template>
@@ -91,7 +101,7 @@ function onShortClick(work: string): void {
     </div>
 
     <div class="tool-list">
-      <div v-for="t in tools" :key="t.title" class="tool-card">
+      <div v-for="t in tools" :key="t.title" class="tool-card" role="button" @click="onToolClick(t.title)">
         <div class="tool-ico" :class="t.color">
           <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="t.svg" />
         </div>

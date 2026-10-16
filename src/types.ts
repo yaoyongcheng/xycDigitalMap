@@ -126,3 +126,22 @@ export interface CalCell {
   /** 是否禁用（超出可选范围） */
   off: boolean
 }
+
+/** 地图点位类别：摄像头 / 塔吊 / 楼栋 */
+export type MapPointKind = 'cam' | 'crane' | 'building'
+
+/**
+ * 地图撒点（交互地图层新增）
+ *
+ * x/y 为相对底图宽高的百分比（0-100），与底图内容绑定，
+ * 与容器尺寸、缩放级别无关 —— 缩放/平移由 MapViewer 统一处理。
+ */
+export interface MapPoint {
+  id: string
+  kind: MapPointKind
+  name: string
+  x: number
+  y: number
+  /** cam / crane 点位关联的监控 id（cameras 中的点位） */
+  camId?: string
+}

@@ -4641,3 +4641,515 @@ button, input, textarea { font-family: inherit; color: inherit; }
   overscroll-behavior: contain;
 }
 
+
+/* =====================================================================
+ * 2026-10 体验改造新增（全部追加在文件末尾，不触碰既有级联链）
+ *
+ * 分组：
+ *   A. 交互地图层（MapViewer：缩放/拖拽/撒点/控件）
+ *   B. 抽屉跟手拖拽（抓手条 + 拖拽中关过渡）
+ *   C. 数据动效（数字滚动由组件实现；此处为描边/生长/淡入/脉冲动画）
+ *   D. 微交互与反馈（页面切换、按压反馈、时效戳）
+ *   E. PWA 更新提示条
+ *
+ * 动效均包裹在 prefers-reduced-motion: no-preference 内，尊重系统设置。
+ * ===================================================================== */
+
+/* ---------- A. 交互地图层 ---------- */
+
+.map-viewer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #050a15;
+  /* 容器内手势完全接管：不滚动页面、不触发浏览器捏合缩放 */
+  touch-action: none;
+  cursor: grab;
+}
+
+.map-viewer:active { cursor: grabbing; }
+
+.map-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.map-canvas img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+/* 点位：按钮自身零尺寸仅作锚点，视觉体在 .pin-body 内做反比缩放 */
+.map-pin {
+  position: absolute;
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: visible;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.pin-body {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.pin-dot {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.pin-dot svg {
+  width: 15px;
+  height: 15px;
+}
+
+.map-pin.cam .pin-dot { background: linear-gradient(135deg, #2f7cff, #5aa2ff); }
+.map-pin.crane .pin-dot { background: linear-gradient(135deg, #f7a134, #f77234); }
+.map-pin.building .pin-dot { background: linear-gradient(135deg, #12b5a5, #2ee6a6); }
+
+.pin-name {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 99px;
+  color: #fff;
+  background: rgba(5, 12, 24, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  white-space: nowrap;
+}
+
+.map-ctrls {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.map-ctrls button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(8, 18, 32, 0.72);
+  color: #e8eef6;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map-ctrls .map-ctrl-reset {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+/* 挂载点：首页顶部地图区 / 横屏全屏层 */
+.home-map .map-viewer,
+.map-land-stage .map-viewer {
+  position: absolute;
+  inset: 0;
+}
+
+/* 横屏层原来的暗角渐变（原挂在 .map-land-fit::after 上），改挂到地图层 */
+.map-land-stage .map-viewer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(180deg,
+    rgba(5, 10, 21, 0.5) 0%,
+    rgba(5, 10, 21, 0.08) 24%,
+    rgba(5, 10, 21, 0.04) 70%,
+    rgba(5, 10, 21, 0.22) 100%);
+}
+
+/* 让覆盖在地图上的标题栏不挡手势，仅按钮可点 */
+.home-top { pointer-events: none; }
+.home-top .home-full { pointer-events: auto; }
+
+.land-top { pointer-events: none; }
+.land-top .land-actions { pointer-events: auto; }
+
+/* ---------- B. 抽屉跟手拖拽 ---------- */
+
+/* 抓手条：抽屉顶部的拖拽热区（视觉是居中胶囊） */
+.sheet-grab {
+  margin: -14px -16px 6px;
+  height: 22px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+}
+
+.sheet-grab i {
+  margin-top: 8px;
+  width: 40px;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(110, 168, 255, 0.35);
+}
+
+/* 切换按钮同样可拖拽，关掉滚动手势冲突 */
+#page-home .home-sheet-toggle { touch-action: none; }
+
+/* 拖拽中关掉位置过渡，保证跟手 */
+#page-home.is-dragging .home-sheet,
+#page-home.is-dragging .home-sheet-toggle {
+  transition: none !important;
+}
+
+/* ---------- C. 数据动效 ---------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* SVG 折线描边入场（pathLength=1 归一化后 dash 动画） */
+  .alarm-svg .dl,
+  .people-hour-svg .dl {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: lineDraw 1.1s ease-out forwards;
+  }
+
+  .alarm-svg .fa,
+  .people-hour-svg .fa {
+    opacity: 0;
+    animation: fadeIn 0.7s 0.55s forwards;
+  }
+
+  .alarm-dot {
+    opacity: 0;
+    animation: fadeIn 0.3s forwards;
+  }
+
+  /* 项目总进度条生长 */
+  .home-progress-bar i {
+    transform-origin: left center;
+    animation: barGrow 1s cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+
+  /* 楼栋进度条生长 */
+  .pg-bar i {
+    transform-origin: left center;
+    animation: barGrow 0.7s ease;
+  }
+
+  /* 合格率柱生长（成对柱轻微错开） */
+  .qa-pass-pair b {
+    transform-origin: center bottom;
+    animation: growY 0.55s ease backwards;
+  }
+  .qa-pass-pair b.now { animation-delay: 0.08s; }
+
+  /* 环形图淡入缩放 */
+  .donut { animation: fadeScale 0.6s ease backwards; }
+
+  /* 面板切换入场（v-if 重新挂载时触发） */
+  .home-panels > * { animation: panelIn 0.28s ease; }
+
+  /* tab 页面切换入场 */
+  .page.active { animation: pageIn 0.26s ease; }
+
+  /* 最新预警呼吸红点 */
+  .feed-live {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 5px;
+    border-radius: 50%;
+    background: #ff5b5b;
+    vertical-align: middle;
+    animation: feedPing 1.6s ease-out infinite;
+  }
+
+  /* 地图点位光环脉冲（摄像头/塔吊） */
+  .map-pin.cam .pin-dot::after,
+  .map-pin.crane .pin-dot::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    opacity: 0;
+    color: rgba(110, 168, 255, 0.9);
+    animation: pinPing 2.4s ease-out infinite;
+  }
+  .map-pin.crane .pin-dot::after { color: rgba(247, 161, 52, 0.9); }
+}
+
+@keyframes lineDraw { to { stroke-dashoffset: 0; } }
+@keyframes fadeIn { to { opacity: 1; } }
+@keyframes barGrow { from { transform: scaleX(0); } }
+@keyframes growY { from { transform: scaleY(0); } }
+@keyframes fadeScale {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes feedPing {
+  0% { box-shadow: 0 0 0 0 rgba(255, 91, 91, 0.55); }
+  70% { box-shadow: 0 0 0 6px rgba(255, 91, 91, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 91, 91, 0); }
+}
+@keyframes pinPing {
+  0% { opacity: 0.8; transform: scale(0.7); }
+  70% { opacity: 0; transform: scale(1.5); }
+  100% { opacity: 0; transform: scale(1.5); }
+}
+
+/* ---------- D. 微交互与反馈 ---------- */
+
+/* 按压反馈（只加 :active 缩放，不改各元素既有 transition） */
+.work-short:active,
+.tool-card:active,
+.eq-card:active,
+.cam-chip:active,
+.msg-item.is-link:active,
+.menu-item:active,
+.map-ctrls button:active {
+  transform: scale(0.96);
+}
+
+/* 工具卡现在可点了，补光标与箭头色提示 */
+.tool-card { cursor: pointer; }
+
+/* 数据时效戳 */
+.upd-time {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+}
+#page-home .upd-time { color: #6b7e96; }
+
+/* ---------- E. PWA 更新提示条 ---------- */
+
+.upd-banner {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--tabbar-h) + var(--safe-bot) + 10px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(11, 22, 38, 0.94);
+  border: 1px solid rgba(110, 168, 255, 0.28);
+  color: #e8eef6;
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: bannerUp 0.3s ease;
+}
+
+.upd-banner-text { flex: 1; }
+
+.upd-banner-btn {
+  height: 28px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.upd-banner-dismiss {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: #86909c;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+@keyframes bannerUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第二轮微调（追加，不触碰既有级联链）
+ *
+ *   F. 撒点紧凑模式（首页小地图）：针标与字号整体缩小
+ *   G. 全屏地图沉浸化：侧边压暗大幅减淡（原 22% 双侧实心渐变
+ *      是为 contain 黑边融合而生的，cover 铺满后只剩遮挡感）
+ *   H. 全屏层入场动画 + 撒点按压反馈
+ * ===================================================================== */
+
+/* ---------- F. 撒点紧凑模式 ---------- */
+
+.map-viewer.is-compact .pin-body { gap: 2px; }
+
+.map-viewer.is-compact .pin-dot {
+  width: 19px;
+  height: 19px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+}
+
+.map-viewer.is-compact .pin-dot svg {
+  width: 11px;
+  height: 11px;
+}
+
+.map-viewer.is-compact .pin-name {
+  font-size: 9px;
+  padding: 2px 5px;
+  letter-spacing: 0;
+}
+
+/* 光环脉冲同步收小，避免溢出观感 */
+.map-viewer.is-compact .map-pin.cam .pin-dot::after,
+.map-viewer.is-compact .map-pin.crane .pin-dot::after {
+  inset: -3px;
+}
+
+/* 缩放控件同步收小 */
+.map-viewer.is-compact .map-ctrls { right: 6px; gap: 4px; }
+
+.map-viewer.is-compact .map-ctrls button {
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  border-radius: 7px;
+}
+
+.map-viewer.is-compact .map-ctrls .map-ctrl-reset { font-size: 10px; }
+
+/* ---------- G. 全屏地图沉浸化 ---------- */
+
+/*
+ * 原版两侧各 22% 宽的「实心→透明」渐变是为 contain 模式融合黑边设计的；
+ * 底图改为 cover 铺满后，它们只会压暗地图内容本身，形成「窗口被框住」
+ * 的错觉。减淡为 12% 宽的轻雾，保留一点氛围但不再遮挡。
+ */
+.map-land::before {
+  width: 12%;
+  background: linear-gradient(90deg, rgba(5, 10, 21, 0.4) 0%, rgba(5, 10, 21, 0) 100%);
+}
+
+.map-land::after {
+  width: 12%;
+  background: linear-gradient(270deg, rgba(5, 10, 21, 0.4) 0%, rgba(5, 10, 21, 0) 100%);
+}
+
+/* 上下暗角同步减淡：仅保留托住标题/底部文字的可读性所需的量 */
+.map-land-stage .map-viewer::after {
+  background: linear-gradient(180deg,
+    rgba(5, 10, 21, 0.34) 0%,
+    rgba(5, 10, 21, 0.02) 18%,
+    rgba(5, 10, 21, 0.02) 72%,
+    rgba(5, 10, 21, 0.24) 100%);
+}
+
+/* ---------- H. 动效细节 ---------- */
+
+.pin-dot { transition: transform 0.16s ease; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 撒点按压缩放反馈 */
+  .map-pin:active .pin-dot { transform: scale(1.22); }
+
+  /* 全屏地图层入场：轻微放大淡入，弱化 display 切换的生硬感 */
+  .map-land.open .map-land-stage {
+    animation: mapLandIn 0.38s cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+}
+
+@keyframes mapLandIn {
+  from { opacity: 0; transform: scale(1.045); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第三轮修复（追加，不触碰既有级联链）
+ *
+ *   I. 信息卡（Toast）与更新提示条提级：
+ *      原 .toast z-index 50 被全屏地图层（80）/监控层（90）盖住，
+ *      且 top:12px 的上半截还会被状态条（z-index 200 的不透明色条）
+ *      切掉 —— 全屏地图里点撒点看不到任何反馈即源于此。
+ *      提到 210（高于状态条 200，低于无更高层），全场景可见。
+ * ===================================================================== */
+
+.toast { z-index: 210; }
+
+.upd-banner { z-index: 210; }
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第四轮（追加，不触碰既有级联链）
+ *
+ *   J. tabbar 消息角标：红点 → 数字胶囊
+ *      原 .tab .badge（app.css:343）是 8px 圆点 + font-size:0 的纯红点，
+ *      数字被隐藏。此处以同特异性后置规则覆盖为数字胶囊，
+ *      数字来自 msgStore.unreadTotal（随消息页点击已读实时联动）。
+ * ===================================================================== */
+
+.tab .badge {
+  top: 0;
+  right: calc(50% - 22px);
+  width: auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 99px;
+  background: var(--danger);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(255, 77, 79, 0.4);
+}
+
+/* 深色 tabbar（首页模式）下给胶囊一道深色描边，与浅色底形成区隔 */
+.app.home-mode .tab .badge {
+  box-shadow: 0 0 0 2px #0B1626, 0 1px 4px rgba(255, 77, 79, 0.4);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 数字变化时（元素经 :key 重挂载）弹跳一次，提醒“又少了一条” */
+  .tab .badge { animation: badgePop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1); }
+}
+
+@keyframes badgePop {
+  from { transform: scale(0.4); }
+  to { transform: scale(1); }
+}

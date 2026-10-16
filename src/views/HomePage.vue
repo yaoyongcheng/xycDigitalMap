@@ -2,7 +2,12 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import HomeProgress from '@/components/ui/HomeProgress.vue'
+import MapViewer from '@/components/ui/MapViewer.vue'
+import { mapPoints } from '@/data/config'
+import { useCamStore } from '@/stores/cam'
+import { useHomeStore } from '@/stores/home'
 import { useShellStore } from '@/stores/shell'
+import type { MapPoint } from '@/types'
 import HomeSheet from './home/HomeSheet.vue'
 
 /**
@@ -11,8 +16,17 @@ import HomeSheet from './home/HomeSheet.vue'
  * 对应原 index.html:185-233 + setSheetUp()（app.js:927-939）
  * + 全屏按钮（app.js:1715）。
  * 抽屉与其内的四个面板交由 HomeSheet 组件。
+ *
+ * 2026-10 改造新增：
+ *   ① .home-map 内嵌 MapViewer —— 静态底图升级为可拖拽/缩放/撒点的
+ *      交互地图层（点位点击：cam/crane 打开监控，building 弹进度摘要）
+ *   ② 抽屉支持跟手拖拽 + 三档吸附（收起/半开/全开），档位状态在
+ *      shell.sheetLevel；拖拽中的临时位置走 dragTop 内联样式，
+ *      松手吸附后全开/收起仍交还 CSS 变量与 class 体系
  */
 const shell = useShellStore()
+const cam = useCamStore()
+const home = useHomeStore()
 
 const pageEl = ref<HTMLElement | null>(null)
 
@@ -30,33 +44,132 @@ const SHEET_TOP_MAX = 300
 let recalibrateTimer = 0
 
 /**
- * 原 js/app.js:927-939 setSheetUp() 中写 --sheet-up-top 的那段。
+ * 测量全开档的抽屉顶位置（原 js/app.js:927-939 setSheetUp 的取值部分）。
  * 需要真实测量 .home-progress 的位置，故直接操作 DOM（这是测量，不是状态）。
+ * 测量不合法（布局未就绪/异常视口）时返回 null，由调用方决定回退。
  */
-function applySheetTop(): void {
+function measureExpandedTop(): number | null {
   const el = pageEl.value
-  if (!el || !shell.sheetUp) return
+  if (!el) return null
   const prog = el.querySelector('.home-progress')
-  if (!prog) return
+  if (!prog) return null
   const pageRect = el.getBoundingClientRect()
   const progRect = prog.getBoundingClientRect()
   const top = Math.round(progRect.bottom - pageRect.top + 12)
   /*
-   * 只接受落在合理区间的结果，否则保留 CSS 里 --sheet-up-top 的默认值（118px）。
-   *
-   * 布局未就绪时 rect 会整体为 0（元素尚未参与布局，或所在页面正处于
-   * display:none），此时算出的值会把抽屉顶到错误位置：偏小会贴到顶栏，
-   * 偏大会沉到接近收起态的位置 —— 后者在真机上表现为「展开态却停在低位」。
-   * 而 --sheet-up-top 一旦被写成坏值，top 声明本身仍合法，不会回退到默认值，
+   * 只接受落在合理区间的结果：布局未就绪时 rect 会整体为 0（元素尚未参与
+   * 布局，或所在页面正处于 display:none），此时算出的值会把抽屉顶到错误位置。
+   */
+  if (top <= 24 || top >= SHEET_TOP_MAX) return null
+  return top
+}
+
+/** 原 setSheetUp() 中写 --sheet-up-top 的那段 */
+function applySheetTop(): void {
+  const el = pageEl.value
+  if (!el || !shell.sheetUp) return
+  const top = measureExpandedTop()
+  /*
+   * 测量失败时保留 CSS 里 --sheet-up-top 的默认值（118px）。
+   * 该变量一旦被写成坏值，top 声明本身仍合法，不会回退到默认值，
    * 抽屉就永久停在错误位置。
    */
-  if (top <= 24 || top >= SHEET_TOP_MAX) return
+  if (top === null) return
   el.style.setProperty('--sheet-up-top', top + 'px')
 }
 
+/* ---------------- 抽屉三档与跟手拖拽（新增） ---------------- */
+
+/** 拖拽中的临时顶位置（px）；null 表示交还 CSS（class/变量）控制 */
+const dragTop = ref<number | null>(null)
+
+/** 拖拽进行中（用于关闭 CSS transition，避免跟手迟滞） */
+const dragging = ref(false)
+
+/** 三档吸附位置（px，相对页面顶部） */
+function sheetAnchors(): { expanded: number; mid: number; collapsed: number } {
+  const h = pageEl.value?.getBoundingClientRect().height ?? 0
+  const expanded = measureExpandedTop() ?? 118
+  const collapsed = Math.round(h * 0.42)
+  return { expanded, collapsed, mid: Math.round((expanded + collapsed) / 2) }
+}
+
+/** 当前档位对应的顶位置（px） */
+function currentLevelTop(): number {
+  const a = sheetAnchors()
+  if (shell.sheetLevel === 2) return a.expanded
+  if (shell.sheetLevel === 1) return a.mid
+  return a.collapsed
+}
+
+let dragStartY = 0
+let dragStartTop = 0
+let dragMoved = false
+let suppressToggleClick = false
+
+/** 拖拽入口：切换按钮的 pointerdown 与 HomeSheet 抓手条的 grab 事件共用 */
+function onDragStart(e: PointerEvent): void {
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  dragStartY = e.clientY
+  dragStartTop = dragTop.value ?? currentLevelTop()
+  dragMoved = false
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragEnd)
+  window.addEventListener('pointercancel', onDragEnd)
+}
+
+function onDragMove(e: PointerEvent): void {
+  const dy = e.clientY - dragStartY
+  if (!dragMoved && Math.abs(dy) > 4) {
+    dragMoved = true
+    dragging.value = true
+  }
+  if (!dragMoved) return
+  const a = sheetAnchors()
+  // 允许轻微越界（±20px）提供拖拽弹性，松手后吸附回档位
+  dragTop.value = Math.min(a.collapsed + 20, Math.max(a.expanded - 20, dragStartTop + dy))
+}
+
+function onDragEnd(): void {
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', onDragEnd)
+  window.removeEventListener('pointercancel', onDragEnd)
+  if (!dragMoved) return
+  // 抑制拖拽后合成 click 误触切换按钮的收放
+  suppressToggleClick = true
+  window.setTimeout(() => {
+    suppressToggleClick = false
+  }, 50)
+
+  const a = sheetAnchors()
+  const t = dragTop.value ?? dragStartTop
+  // 吸附到最近档位
+  const candidates: { level: 0 | 1 | 2; top: number }[] = [
+    { level: 2, top: a.expanded },
+    { level: 1, top: a.mid },
+    { level: 0, top: a.collapsed },
+  ]
+  candidates.sort((x, y) => Math.abs(x.top - t) - Math.abs(y.top - t))
+  const target = candidates[0]
+
+  dragging.value = false
+  shell.sheetLevel = target.level
+  if (target.level === 1) {
+    // 半开档无对应 CSS 规则，常驻内联位置
+    dragTop.value = target.top
+  } else {
+    // 全开/收起交还 CSS（is-sheet-up + --sheet-up-top / 42%），
+    // 摘掉内联值后由 transition 完成吸附动画
+    dragTop.value = null
+    if (target.level === 2) nextTick(applySheetTop)
+  }
+}
+
 function onResize(): void {
-  // 原 js/app.js:950 —— 仅在抽屉展开时重算
+  // 原 js/app.js:950 —— 仅在抽屉抬起时重测全开档位置
   if (shell.sheetUp) nextTick(applySheetTop)
+  // 半开档位置依赖页面高度，窗口变化时重算内联值
+  if (shell.sheetLevel === 1) dragTop.value = sheetAnchors().mid
 }
 
 onMounted(() => {
@@ -78,6 +191,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   window.visualViewport?.removeEventListener('resize', onResize)
   window.clearTimeout(recalibrateTimer)
+  onDragEnd()
 })
 
 watch(
@@ -86,18 +200,40 @@ watch(
 )
 
 function onSheetToggle(): void {
-  shell.sheetUp = !shell.sheetUp
+  if (suppressToggleClick) return
+  // 点按在收起 ↔ 全开间切换（半开档仅通过拖拽到达）
+  shell.sheetLevel = shell.sheetLevel === 0 ? 2 : 0
+  dragTop.value = null
 }
 
 function onMapFull(): void {
   shell.openMapLand()
 }
+
+/** 地图点位点击：监控/塔吊直接打开对应点位画面，楼栋弹进度摘要 */
+function onMapPoint(p: MapPoint): void {
+  if ((p.kind === 'cam' || p.kind === 'crane') && p.camId) {
+    cam.openCam(p.camId)
+    return
+  }
+  if (p.kind === 'building') {
+    const b = home.siteBuildings.find((x) => x.name === p.name)
+    shell.showToast(b ? `${b.name}：已建 ${b.done}/${b.total}F · 进度达标率 ${b.rate}%` : p.name)
+  }
+}
 </script>
 
 <template>
-  <section class="page home-page" id="page-home" ref="pageEl" :class="{ active: shell.activeTab === 'home', 'is-sheet-up': shell.sheetUp }">
+  <section
+    class="page home-page"
+    id="page-home"
+    ref="pageEl"
+    :class="{ active: shell.activeTab === 'home', 'is-sheet-up': shell.sheetUp, 'is-dragging': dragging }"
+  >
     <div class="home-scene">
-      <div class="home-map" role="img" aria-label="工地数字地图"></div>
+      <div class="home-map">
+        <MapViewer :points="mapPoints" fit="cover" compact @select="onMapPoint" />
+      </div>
       <div class="home-top">
         <div class="home-project-row">
           <div class="home-project">向阳村项目智能建造管理平台</div>
@@ -112,20 +248,24 @@ function onMapFull(): void {
 
     <div class="home-gutter-mask" aria-hidden="true"></div>
 
-    <button class="home-sheet-toggle" id="btnSheetToggle" type="button" @click="onSheetToggle">
+    <button
+      class="home-sheet-toggle"
+      id="btnSheetToggle"
+      type="button"
+      :style="dragTop !== null ? { top: dragTop + 'px' } : undefined"
+      @pointerdown="onDragStart"
+      @click="onSheetToggle"
+    >
       <svg class="ico-pull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14l6-6 6 6"/></svg>
       <svg class="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10l6 6 6-6"/></svg>
       <!--
         文案随状态切换（显隐规则见 app.css 的 #page-home.is-sheet-up 那组）：
-          收起态 -> 上箭头 +「拉起」；展开态 -> 下箭头 +「收回」。
-        原版展开态写的是「展开」，与本按钮此刻的含义正好相反 —— 抽屉已经展开了，
-        按钮该表达的是「点它可收回」，否则用户会误以为当前是收起状态。
-        类名沿用了旧的 expand 命名，读代码时以文案为准。
+          收起态 -> 上箭头 +「拉起」；抬起态（半开/全开）-> 下箭头 +「收回」。
       -->
       <span class="lab-pull">拉起</span>
       <span class="lab-expand">收回</span>
     </button>
 
-    <HomeSheet />
+    <HomeSheet :drag-top="dragTop" @grab="onDragStart" />
   </section>
 </template>

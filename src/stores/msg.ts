@@ -21,5 +21,11 @@ export const useMsgStore = defineStore('msg', () => {
   /** 底部 tabbar 的消息角标数（index.html:339 的 <b class="badge">2</b> 为硬编码，此处保持同值） */
   const unreadTotal = computed(() => messages.value.reduce((sum, m) => sum + (m.unread || 0), 0))
 
-  return { messages, unreadTotal }
+  /** 标记某类消息已读（2026-10 改造新增，角标随接口接入后自动联动） */
+  function markRead(kind: Message['kind']): void {
+    const m = messages.value.find((x) => x.kind === kind)
+    if (m) m.unread = 0
+  }
+
+  return { messages, unreadTotal, markRead }
 })

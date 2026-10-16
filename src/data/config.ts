@@ -1,4 +1,4 @@
-import type { MineMenu, Milestone, QaStep, TabId } from '@/types'
+import type { MapPoint, MineMenu, Milestone, QaStep, TabId } from '@/types'
 
 /**
  * 纯静态配置常量
@@ -71,3 +71,29 @@ export const airPos = [
 
 /** 原 js/app.js:1401 */
 export const hazardKindList = ['安全防护', '文明施工', '用电隐患', '消防通道', '其他']
+
+/**
+ * 地图撒点（交互地图层新增，非原版内容）
+ *
+ * 坐标为相对底图 site-map.jpg（1024×735）的百分比，按底图内容目测定标：
+ *   - cam/crane 点位关联 cameras 中的真实点位 id，点击直接打开监控
+ *   - building 点位关联 siteBuildings 的楼栋名，点击弹出进度摘要
+ * 接入后端后应由接口返回坐标，此处为演示标定值。
+ */
+export const mapPoints: MapPoint[] = [
+  // 出入口摄像头
+  { id: 'mp-g1', kind: 'cam', name: '1#门', x: 44, y: 90, camId: 'g1' },
+  { id: 'mp-g4', kind: 'cam', name: '4#门', x: 9, y: 62, camId: 'g4' },
+  { id: 'mp-g2a', kind: 'cam', name: '2#门', x: 93, y: 57, camId: 'g2a' },
+  { id: 'mp-cama', kind: 'cam', name: '场内A', x: 55, y: 58, camId: 'cama' },
+  // 塔吊
+  { id: 'mp-crane2', kind: 'crane', name: '2#塔吊', x: 48, y: 41, camId: 'crane2' },
+  { id: 'mp-crane4', kind: 'crane', name: '4#塔吊', x: 72, y: 33, camId: 'crane4' },
+  // 楼栋
+  { id: 'mp-hotel', kind: 'building', name: '酒店', x: 25, y: 53 },
+  { id: 'mp-b1', kind: 'building', name: '1#楼', x: 42, y: 26 },
+  { id: 'mp-b2', kind: 'building', name: '2#楼', x: 61, y: 71 },
+  { id: 'mp-b3', kind: 'building', name: '3#楼', x: 81, y: 27 },
+  { id: 'mp-b4', kind: 'building', name: '4#楼', x: 78, y: 54 },
+  { id: 'mp-kg', kind: 'building', name: '幼儿园', x: 60, y: 49 },
+]
