@@ -76,7 +76,13 @@ function feedLines(pg: HTMLElement | null): string[] {
 }
 
 export function mountDiag(): void {
-  if (!location.search.includes('diag')) return
+  /*
+   * 必须精确匹配「存在名为 diag 的查询参数」。
+   * 曾用 location.search.includes('diag') —— 子串匹配，会被 ?dialog=1、
+   * ?x=diag、?diagfoo 等任意 URL 触发，等于把「元素计数 + 布局数值 +
+   * CSS 变量」的常驻浮层开放给所有链接，同时白烧移动端 CPU。
+   */
+  if (!new URLSearchParams(location.search).has('diag')) return
 
   const el = document.createElement('div')
   el.style.cssText = [

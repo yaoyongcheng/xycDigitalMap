@@ -3,7 +3,7 @@ import { computed } from 'vue'
 
 import InspectItem from '@/components/ui/InspectItem.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
-import { calIco } from '@/data/icons'
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendSvg } from '@/utils/chart'
@@ -103,7 +103,7 @@ function onItemOpen(id: string): void {
         </div>
         <button class="cam-day cam-day-pick on" type="button" data-insp-cal-open="1" @click="onCalToggle">
           {{ pickLabel }}
-          <span v-html="calIco"></span>
+          <span><SvgIcon name="cal" /></span>
         </button>
       </div>
 

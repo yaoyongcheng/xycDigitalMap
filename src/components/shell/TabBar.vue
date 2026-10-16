@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useMsgStore } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
+import type { IconName } from '@/data/icons'
 import type { TabId } from '@/types'
 
 /**
@@ -12,6 +14,9 @@ import type { TabId } from '@/types'
  *
  * 角标：原版为硬编码 <b class="badge">2</b>，这里改读 msgStore.unreadTotal
  * （当前 2 条未读消息，和为 2，渲染结果一致），以便接入接口后自动更新。
+ *
+ * 2026-10：图标由「HTML 字符串 + v-html」改为 SvgIcon 直出（几何不变，
+ * 配色仍由 app.css 的 .tab svg 规则提供），消除 innerHTML 解析。
  */
 
 const shell = useShellStore()
@@ -20,31 +25,15 @@ const msg = useMsgStore()
 interface TabDef {
   id: TabId
   label: string
-  /** 原样保留的 SVG 源码，保证输出 DOM 逐字节一致 */
-  svg: string
+  /** 图标名（几何见 data/icons.ts），由 SvgIcon 直出 SVG 元素 */
+  icon: IconName
 }
 
 const tabs: TabDef[] = [
-  {
-    id: 'home',
-    label: '首页',
-    svg: '<path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/>',
-  },
-  {
-    id: 'work',
-    label: '工作台',
-    svg: '<rect x="4" y="4" width="7" height="7" rx="1.4"/><rect x="13" y="4" width="7" height="7" rx="1.4"/><rect x="4" y="13" width="7" height="7" rx="1.4"/><rect x="13" y="13" width="7" height="7" rx="1.4"/>',
-  },
-  {
-    id: 'msg',
-    label: '消息',
-    svg: '<path d="M5 5.5h14v10.5H8.5L5 19.5V5.5z"/>',
-  },
-  {
-    id: 'mine',
-    label: '我的',
-    svg: '<circle cx="12" cy="8" r="3"/><path d="M5.5 19.5c1.2-3.2 3.6-4.7 6.5-4.7s5.3 1.5 6.5 4.7"/>',
-  },
+  { id: 'home', label: '首页', icon: 'tab-home' },
+  { id: 'work', label: '工作台', icon: 'tab-work' },
+  { id: 'msg', label: '消息', icon: 'tab-msg' },
+  { id: 'mine', label: '我的', icon: 'tab-mine' },
 ]
 
 function onTabClick(id: TabId): void {
@@ -63,7 +52,7 @@ function onTabClick(id: TabId): void {
       type="button"
       @click="onTabClick(t.id)"
     >
-      <svg viewBox="0 0 24 24" v-html="t.svg" />
+      <SvgIcon :name="t.icon" />
       <span>{{ t.label }}</span>
       <!--
         角标数字随消息页实际未读数联动（inspect 点击即清）。

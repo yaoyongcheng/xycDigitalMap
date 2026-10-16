@@ -35,6 +35,11 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      # 测试先于构建：用例不通过就直接失败，不发布半成品
+      # （含手势/图标/图片引用的回归守卫，详见 tests/）
+      - name: 运行测试
+        run: npm run test
+
       # package.json 的 build 脚本为 vue-tsc --noEmit && vite build，
       # 类型检查不通过则构建失败、不会发布，属预期保护行为
       - name: 构建

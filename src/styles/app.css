@@ -401,7 +401,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   top: 0;
   height: calc(42% + 20px);
   background-color: rgb(5, 10, 21);
-  background-image: url("/img/site-map.jpg");
+  background-image: url("/img/site-map.webp");
   background-repeat: no-repeat;
   background-size: cover;
   background-position: center center;
@@ -5625,4 +5625,235 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-weight: inherit;
   line-height: inherit;
   color: inherit;
+}
+
+/* =====================================================================
+ * 2026-10 体验改造 · 第九轮：图表触控交互（追加，不触碰既有级联链）
+ *
+ *   T. 三类图表的触控层样式：
+ *      - TouchChart：折线图滑动吸附（参考线 / 放大点 / 气泡）
+ *      - DonutTouch：环形图扇区点击（命中环 / 选中着色 / 气泡 / 图例联动）
+ *      - 合格率柱状图：点击/横滑选中列（其余淡化 / 气泡对比）
+ *      气泡统一为暗色玻璃风（与撒点信息卡同族），首页暗色卡上清晰，
+ *      浅色页面（若后续复用）也可读。动效尊重 prefers-reduced-motion。
+ * ===================================================================== */
+
+/* ---------- T1. 折线图触控层 ---------- */
+
+.touch-chart {
+  position: relative;
+  /* 基图 svg（.alarm-svg/.people-hour-svg）撑起高度，交互层绝对铺满 */
+}
+
+.tc-base svg {
+  display: block;
+}
+
+.tc-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* 横滑归图表选点，纵滑交还页面滚动 */
+  touch-action: pan-y;
+  cursor: crosshair;
+}
+
+.tc-guide {
+  stroke: rgba(110, 168, 255, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+/* 选中点放大圆：深色描边与撒点针标同族 */
+.tc-dot {
+  stroke: #0B1626;
+  stroke-width: 1.5;
+}
+
+/* 气泡：贴图表区顶部居中于选中点（水平位置由组件内联 left 控制） */
+.tc-tip {
+  position: absolute;
+  top: -2px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: rgba(9, 18, 33, 0.92);
+  border: 1px solid rgba(110, 168, 255, 0.28);
+  color: #E8EEF6;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tc-lab {
+  color: #8A9BB0;
+}
+
+.tc-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.tc-val i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+
+.tc-enter-active,
+.tc-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.tc-enter-from,
+.tc-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+/* ---------- T2. 环形图扇区点击 ---------- */
+
+/* 根元素随容器 flex 块化，内部 .donut 作为 flex 子项恢复盒模型 */
+.donut-touch {
+  position: relative;
+  display: inline-flex;
+}
+
+.donut-touch .donut {
+  display: block;
+  font-style: normal;
+}
+
+/* 命中环：铺满 donut，扇形 path 透明填充仍可命中 */
+.dt-hit {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  touch-action: pan-y;
+}
+
+.dt-seg {
+  fill: transparent;
+  cursor: pointer;
+}
+
+/* 选中扇区着色（半透明叠加在 conic-gradient 上形成高亮） */
+.dt-sel {
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+.dt-tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: rgba(9, 18, 33, 0.92);
+  border: 1px solid rgba(110, 168, 255, 0.28);
+  color: #E8EEF6;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.dt-enter-active,
+.dt-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.dt-enter-from,
+.dt-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+/* 图例联动高亮：可点 + 选中态胶囊底 */
+.eq-status-leg div {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.18s ease;
+}
+
+.qa-legend-item {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.18s ease;
+}
+
+.leg-on {
+  background: rgba(110, 168, 255, 0.14);
+}
+
+#page-home .leg-on span,
+#page-home .leg-on {
+  color: #F2F6FB;
+}
+
+/* ---------- T3. 合格率柱状图选中 ---------- */
+
+.qa-pass-cols {
+  position: relative;
+  touch-action: pan-y;
+}
+
+.qa-pass-col {
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+/* 选中态：其余列淡化，选中列保持并轻微上提 */
+.qa-pass-cols.pick .qa-pass-col:not(.on) {
+  opacity: 0.38;
+}
+
+.bar-tip {
+  position: absolute;
+  top: -6px;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: rgba(9, 18, 33, 0.92);
+  border: 1px solid rgba(110, 168, 255, 0.28);
+  color: #E8EEF6;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.bt-enter-active,
+.bt-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.bt-enter-from,
+.bt-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tc-enter-active,
+  .tc-leave-active,
+  .dt-enter-active,
+  .dt-leave-active,
+  .bt-enter-active,
+  .bt-leave-active,
+  .qa-pass-col,
+  .eq-status-leg div,
+  .qa-legend-item {
+    transition: none;
+  }
 }

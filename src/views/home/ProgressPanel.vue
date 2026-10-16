@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { milestones } from '@/data/config'
-import { msFlag } from '@/data/icons'
 import { useHomeStore } from '@/stores/home'
 import type { Building } from '@/types'
 
@@ -31,7 +31,7 @@ const buildings = computed(() => home.siteBuildings)
     <div class="home-chart-card ms-card">
       <div class="ms-list">
         <div v-for="m in milestones" :key="m.name" class="ms-item" :class="m.state">
-          <i class="ms-ico" v-html="msFlag"></i>
+          <i class="ms-ico"><SvgIcon name="ms-flag" /></i>
           <div class="ms-body">
             <strong>{{ m.name }}</strong>
             <p>计划完成 <b>{{ m.plan }}</b></p>

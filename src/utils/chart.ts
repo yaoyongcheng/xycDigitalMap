@@ -14,10 +14,36 @@ import { addDays, startOfDay } from './date'
  * 面积加 class="fa"（淡入），数据点带递增 animation-delay —— 仅附加
  * 动效钩子，几何与配色与原版逐字节一致。动画规则在 app.css 末尾，
  * 整体包裹在 prefers-reduced-motion: no-preference 内。
+ *
+ * 2026-10 触控改造：新增 *Model 函数 —— 在生成 SVG 字符串的同时返回
+ * 点位元数据（刻度/系列/坐标），供 TouchChart 的触控热区、参考线与
+ * 气泡使用；svg 字符串与既有输出逐字节一致，v-html 渲染路径不受影响。
  */
 
 /** 控制点类型 [x, y] */
 export type Pt = [number, number]
+
+/** 折线图交互层的一条系列 */
+export interface LineSeriesInfo {
+  name: string
+  color: string
+  /** 与 ticks 对齐的数值；null 表示该刻度无数据（未到时段） */
+  values: (number | null)[]
+}
+
+/** 折线图交互层模型：SVG 底图 + 点位元数据 */
+export interface LineModel {
+  svg: string
+  w: number
+  h: number
+  /** 横轴刻度标签（与 xs 对齐） */
+  ticks: string[]
+  /** 每个刻度的 viewBox x 坐标 */
+  xs: number[]
+  series: LineSeriesInfo[]
+  /** series[i] 每个刻度的 viewBox y 坐标（null 对应无数据） */
+  ys: (number | null)[][]
+}
 
 /** 原 js/app.js:113-130 —— Catmull-Rom 风格平滑折线，输出 path 的 d */
 export function lineThrough(pts: Pt[], tension?: number): string {
@@ -50,11 +76,11 @@ export function smoothPath(pts: Pt[]): string {
 }
 
 /**
- * 原 js/app.js:132-181 alarmTrendSvg(fillId)
+ * 原 js/app.js:132-181 alarmTrendSvg(fillId) 的模型版。
  * 近 7 日预警趋势折线。历史值取自原版硬编码的 hist 字典，
  * 最后一天（i === 0）用当日预警条数，即原版的 latestAlarms.length。
  */
-export function alarmTrendSvg(fillId: string, latestCount: number): string {
+export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): LineModel {
   const hist: Record<string, number> = {
     '10/2': 2, '10/3': 3, '10/4': 6, '10/5': 16, '10/6': 13, '10/7': 8, '10/8': 4,
   }
@@ -98,7 +124,7 @@ export function alarmTrendSvg(fillId: string, latestCount: number): string {
     )
     .join('')
   const gid = fillId || 'alarmFill'
-  return `<svg class="alarm-svg" viewBox="0 0 ${w} ${h}">
+  const svg = `<svg class="alarm-svg" viewBox="0 0 ${w} ${h}">
       <defs>
         <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#4C9FFF" stop-opacity="0.32"/>
@@ -111,14 +137,28 @@ export function alarmTrendSvg(fillId: string, latestCount: number): string {
       ${dots}
       <g class="alarm-x">${labels}</g>
     </svg>`
+  return {
+    svg,
+    w,
+    h,
+    ticks: days,
+    xs: pts.map((p) => p[0]),
+    series: [{ name: '预警', color: '#4C9FFF', values: vals }],
+    ys: [pts.map((p) => p[1])],
+  }
+}
+
+/** 兼容旧签名：只取 SVG 字符串（v-html 渲染路径） */
+export function alarmTrendSvg(fillId: string, latestCount: number): string {
+  return alarmTrendModel(latestCount, fillId || 'alarmFill').svg
 }
 
 /**
- * 原 js/app.js:192-244 peopleHourSvg()
+ * 原 js/app.js:192-244 peopleHourSvg() 的模型版。
  * 按时段的人员在场曲线（工人在职绿线 + 管理人员蓝线）。
  * 只画到当前小时为止，未到的时段标签淡化处理。
  */
-export function peopleHourSvg(nowHour: number): string {
+export function peopleHourModel(nowHour: number): LineModel {
   const hourNums = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
   const hours = hourNums.map((h) => h + ':00')
   const workersAll = [2, 2, 2, 8, 36, 33, 18, 24, 27, 12, 4, 2]
@@ -160,7 +200,7 @@ export function peopleHourSvg(nowHour: number): string {
       return `<text x="${xAt(i).toFixed(1)}" y="${h - 4}" text-anchor="${anchor}"${dim}>${hourNums[i]}:00</text>`
     })
     .join('')
-  return `<svg class="people-hour-svg" viewBox="0 0 ${w} ${h}">
+  const svg = `<svg class="people-hour-svg" viewBox="0 0 ${w} ${h}">
       <defs>
         <linearGradient id="peopleFill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#3DDC97" stop-opacity="0.45"/>
@@ -173,4 +213,24 @@ export function peopleHourSvg(nowHour: number): string {
       <path class="dl" pathLength="1" style="animation-delay:.25s" d="${mLine}" fill="none" stroke="#4C9FFF" stroke-width="2"/>
       <g class="alarm-x">${labels}</g>
     </svg>`
+  /** 未到时段填 null（交互层显示 —，线本身照旧只画到当前小时） */
+  const pad = (arr: number[]): (number | null)[] => arr.map((v, i) => (i < liveN ? v : null))
+  const yOf = (v: number | null): number | null => (v == null ? null : yAt(v))
+  return {
+    svg,
+    w,
+    h,
+    ticks: hours,
+    xs: hourNums.map((_, i) => xAt(i)),
+    series: [
+      { name: '工人', color: '#3DDC97', values: pad(workersAll) },
+      { name: '管理', color: '#4C9FFF', values: pad(managersAll) },
+    ],
+    ys: [pad(workersAll).map(yOf), pad(managersAll).map(yOf)],
+  }
+}
+
+/** 兼容旧签名：只取 SVG 字符串（v-html 渲染路径） */
+export function peopleHourSvg(nowHour: number): string {
+  return peopleHourModel(nowHour).svg
 }

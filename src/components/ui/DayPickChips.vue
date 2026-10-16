@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import { calIco } from '@/data/icons'
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { addDays, dayOffsetOf, formatMD, sameDay, startOfDay } from '@/utils/date'
 
 /**
@@ -35,13 +35,10 @@ const isToday = computed(() => sameDay(props.selected, today.value))
 const isYesterday = computed(() => sameDay(props.selected, yesterday.value))
 
 /**
- * 第三个芯片的内部内容。原版是模板字符串直接拼进去的
- * （app.js:1099-1102），这里用 v-html 复刻，避免多包一层 span 破坏 DOM 结构。
+ * 第三个芯片的内容：文案 + 日历图标。
+ * 改造前是模板字符串拼 HTML 再 v-html 注入，现在文案直出、图标由
+ * SvgIcon 渲染（原版就是「文本节点 + svg」两个子节点，结构不变）。
  */
-const pickInner = computed(
-  () => `\n        ${picked.value ? formatMD(props.selected) : '选日期'}\n        ${calIco}\n      `,
-)
-
 /** 动态属性名绑定，复刻原版拼在字符串里的 openAttr */
 const openAttrs = computed(() => ({ [props.openAttrName]: '1' }))
 </script>
@@ -54,7 +51,9 @@ const openAttrs = computed(() => ({ [props.openAttrName]: '1' }))
     :class="{ on: picked }"
     type="button"
     v-bind="openAttrs"
-    v-html="pickInner"
     @click="emit('open')"
-  ></button>
+  >
+    {{ picked ? formatMD(props.selected) : '选日期' }}
+    <SvgIcon name="cal" />
+  </button>
 </template>

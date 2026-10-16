@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useHomeStore } from '@/stores/home'
 import EquipPanel from './EquipPanel.vue'
 import ProgressPanel from './ProgressPanel.vue'
 import QualityPanel from './QualityPanel.vue'
 import SafetyPanel from './SafetyPanel.vue'
+import type { IconName } from '@/data/icons'
 import type { HomeMod } from '@/types'
 
 /**
@@ -34,27 +36,11 @@ function onGrab(e: PointerEvent): void {
   emit('grab', e)
 }
 
-const mods: { id: HomeMod; label: string; svg: string }[] = [
-  {
-    id: 'safety',
-    label: '安全管理',
-    svg: '<path d="M12 3.5 19 6.2v5.4c0 4.4-3 7.4-7 8.9-4-1.5-7-4.5-7-8.9V6.2z"/><path d="M8.8 12.2 11 14.4l4.4-4.6"/>',
-  },
-  {
-    id: 'quality',
-    label: '质量管理',
-    svg: '<rect x="6.2" y="3.8" width="11.6" height="16.4" rx="2"/><path d="M9 3.8h6v2.6H9z"/><path d="M8.7 12.4 10.8 14.5l4.6-4.8"/>',
-  },
-  {
-    id: 'progress',
-    label: '进度管理',
-    svg: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4.2l3 1.6"/>',
-  },
-  {
-    id: 'equip',
-    label: '装备管控',
-    svg: '<path d="M4.5 20h15"/><path d="M7 20V7.5h3.2V20"/><path d="M8.6 7.5H20l-3.2 6.2"/><path d="M16.8 13.7V20"/><circle cx="16.8" cy="11.2" r="1.1"/>',
-  },
+const mods: { id: HomeMod; label: string; icon: IconName }[] = [
+  { id: 'safety', label: '安全管理', icon: 'mod-safety' },
+  { id: 'quality', label: '质量管理', icon: 'mod-quality' },
+  { id: 'progress', label: '进度管理', icon: 'mod-progress' },
+  { id: 'equip', label: '装备管控', icon: 'mod-equip' },
 ]
 </script>
 
@@ -71,7 +57,7 @@ const mods: { id: HomeMod; label: string; svg: string }[] = [
         type="button"
         @click="home.homeMod = m.id"
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" v-html="m.svg" />
+        <SvgIcon :name="m.icon" />
         <span>{{ m.label }}</span>
       </button>
     </div>

@@ -67,8 +67,11 @@ export default defineConfig({
          * 图标不在此列，由上面的 includeAssets 负责 —— 两处都写会导致
          * 同一个图标在预缓存清单里出现两次（实测 13 条中有 4 条是重复项）。
          *
-         * 刻意排除 img/ 下的业务图片（10 张 / 3.3 MB，最大单张 cam-kitchen.png
-         * 818 KB）—— 进预缓存会让首次安装流量暴涨，且这些图并非每次都需要。
+         * 刻意排除 img/ 下的业务图片（8 张 / 1.1 MB）—— 进预缓存会让首次安装
+         * 流量暴涨，且这些图并非每次都需要。
+         * 2026-10：业务图已由 jpg/png 统一转为 WebP（原 1.8 MB → 1.1 MB）；
+         * 原先两张零引用的 cam-kitchen.png / cam-frame.png（共 1.5 MB）已移出
+         * public/，不再进发布产物。
          */
         globPatterns: ['**/*.{js,css,html,woff2}'],
 

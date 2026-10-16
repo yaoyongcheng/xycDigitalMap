@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
+import DonutTouch from '@/components/ui/DonutTouch.vue'
 import { useHomeStore } from '@/stores/home'
 import type { Equip } from '@/types'
 
@@ -21,10 +22,14 @@ const kinds = computed(() => home.siteEquip.length)
 const qty = computed(() => home.siteEquip.reduce((s, d) => s + d.units.length, 0))
 const onCount = computed(() => home.siteEquip.reduce((s, d) => s + d.units.filter((u) => u.on).length, 0))
 const offCount = computed(() => qty.value - onCount.value)
-const statusPie = computed(() => {
-  const pct = qty.value ? (onCount.value / qty.value) * 100 : 0
-  return `conic-gradient(#2EE6A6 0% ${pct}%, #3A4E66 ${pct}% 100%)`
-})
+/** 触控版环形图分段（颜色与原 conic-gradient 一致） */
+const statusSegs = computed(() => [
+  { label: '在线', value: onCount.value, color: '#2EE6A6' },
+  { label: '离线', value: offCount.value, color: '#3A4E66' },
+])
+
+/** 选中段（扇区点击与图例点击双向联动；null = 未选中） */
+const eqSel = ref<number | null>(null)
 
 /** 原版仅 units.length > 1 的设备可下钻 */
 function canDrill(d: Equip): boolean {
@@ -61,10 +66,19 @@ function canDrill(d: Equip): boolean {
       <div class="home-chart-card eq-status">
         <span class="alarm-mini-lab">设备状态</span>
         <div class="eq-status-body">
-          <i class="donut eq-status-donut" :style="{ background: statusPie }"></i>
+          <DonutTouch
+            :segments="statusSegs"
+            donut-class="eq-status-donut"
+            :selected="eqSel"
+            @select="eqSel = $event"
+          />
           <div class="eq-status-leg">
-            <div><i class="on"></i><span>在线</span><b><CountUp :value="onCount" /></b></div>
-            <div><i class="off"></i><span>离线</span><b><CountUp :value="offCount" /></b></div>
+            <div :class="{ 'leg-on': eqSel === 0 }" @click="eqSel = eqSel === 0 ? null : 0">
+              <i class="on"></i><span>在线</span><b><CountUp :value="onCount" /></b>
+            </div>
+            <div :class="{ 'leg-on': eqSel === 1 }" @click="eqSel = eqSel === 1 ? null : 1">
+              <i class="off"></i><span>离线</span><b><CountUp :value="offCount" /></b>
+            </div>
           </div>
         </div>
       </div>

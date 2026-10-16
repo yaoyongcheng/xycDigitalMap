@@ -22,8 +22,11 @@ export const mineMenus: MineMenu[] = [
   { id: 'about', name: '关于' },
 ]
 
-/** 原 js/app.js:50 —— 抓拍池，3 项均为同一张图 */
-export const camShotPool = ['img/cam-crane2.jpg', 'img/cam-crane2.jpg', 'img/cam-crane2.jpg']
+/**
+ * 原 js/app.js:50 —— 抓拍池，3 项均为同一张图
+ * 图片统一为 WebP（2026-10 图片压缩，原 .jpg 源图移入 legacy/img-unused/）
+ */
+export const camShotPool = ['img/cam-crane2.webp', 'img/cam-crane2.webp', 'img/cam-crane2.webp']
 
 /** 原 js/app.js:51 */
 export const camShotTimes = ['08:12', '12:36', '16:50']
@@ -59,7 +62,7 @@ export const milestones: Milestone[] = [
 ]
 
 /** 原 js/app.js:1331-1333 —— 无人机巡检素材 */
-export const airImgs = ['img/aerial-a.jpg', 'img/aerial-b.jpg']
+export const airImgs = ['img/aerial-a.webp', 'img/aerial-b.webp']
 export const airTimes = [
   '07:22', '08:15', '09:08', '10:32', '11:46',
   '13:18', '14:55', '16:12', '17:38', '18:21',
@@ -86,7 +89,7 @@ export const crewKpis: [number, string, string][] = [
 /**
  * 地图撒点（交互地图层新增，非原版内容）
  *
- * 坐标为相对底图 site-map.jpg（1024×735）的百分比，按底图内容目测定标：
+ * 坐标为相对底图 site-map.webp（1024×735）的百分比，按底图内容目测定标：
  *   - cam/crane 点位关联 cameras 中的真实点位 id，点击直接打开监控
  *   - building 点位关联 siteBuildings 的楼栋名，点击弹出进度摘要
  * 接入后端后应由接口返回坐标，此处为演示标定值。

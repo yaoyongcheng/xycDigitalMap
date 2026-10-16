@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useMsgStore } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
-import { msgIco } from '@/data/icons'
+import type { IconName } from '@/data/icons'
 import type { Message } from '@/types'
 
 /**
@@ -12,11 +13,17 @@ import type { Message } from '@/types'
  * + 列表点击委托（app.js:877-881）。
  *
  * 原版通过 innerHTML 全量重渲染，这里改为 v-for；
- * 图标字符经 v-html 输出，保证 DOM 逐字节一致。
+ * 图标几何见 data/icons.ts，由 SvgIcon 直出 SVG 元素（不再走 v-html）。
  */
 const msg = useMsgStore()
 const shell = useShellStore()
 const subpage = useSubpageStore()
+
+/** 消息类型 → 图标名（原 msgIco；inspect 与工作台「航拍照片」共用 drone 几何） */
+const msgIcon: Record<Message['kind'], IconName> = {
+  people: 'msg-people',
+  inspect: 'drone',
+}
 
 function onItemClick(kind: string): void {
   // 点击即视为已读：无论是否可进详情，该条未读都清掉，
@@ -42,7 +49,7 @@ function onItemClick(kind: string): void {
         :data-kind="m.kind"
         @click="onItemClick(m.kind)"
       >
-        <div class="msg-ico" :class="m.kind" v-html="msgIco[m.kind]" />
+        <div class="msg-ico" :class="m.kind"><SvgIcon :name="msgIcon[m.kind]" /></div>
         <div class="meta">
           <h4>{{ m.title }}</h4>
           <p>{{ m.desc }}</p>

@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { mineMenus } from '@/data/config'
-import { icon, menuSvg } from '@/data/icons'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
+import type { IconName } from '@/data/icons'
 
 /**
  * 我的页
@@ -12,6 +13,13 @@ import { useSubpageStore } from '@/stores/subpage'
  */
 const shell = useShellStore()
 const subpage = useSubpageStore()
+
+/** 菜单 id → 图标名（原 menuSvg 的三个 path，几何见 data/icons.ts） */
+const menuIcon: Record<string, IconName> = {
+  sites: 'menu-sites',
+  setting: 'menu-setting',
+  about: 'menu-about',
+}
 
 function onMenuClick(name: string): void {
   // 原版 openSub(name, pageHtml(name))，pageHtml 是纯占位文案
@@ -43,7 +51,7 @@ function onLogout(): void {
         :data-name="m.name"
         @click="onMenuClick(m.name)"
       >
-        <span class="menu-ico" v-html="icon(menuSvg[m.id])" />
+        <span class="menu-ico"><SvgIcon :name="menuIcon[m.id]" /></span>
         <strong>{{ m.name }}</strong>
         <span class="arrow">›</span>
       </button>

@@ -27,7 +27,7 @@ export const useCamStore = defineStore('cam', () => {
 
   /**
    * 原 js/app.js:30-49
-   * 注意尾部 .map((c) => Object.assign(c, { img: 'img/cam-crane2.jpg', pos: '' }))
+   * 注意尾部 .map((c) => Object.assign(c, { img: 'img/cam-crane2.webp', pos: '' }))
    * 会把 18 个点位的 img 统一成同一张图、pos 统一置空 —— 这是原版现状，
    * 1:1 复刻下如实保留（接口接入后此处应改为真实点位图与裁切位置）。
    */
@@ -51,7 +51,7 @@ export const useCamStore = defineStore('cam', () => {
       { id: 'talk', name: '安全讲台', group: '场内' },
       { id: 'crane2', name: '2#塔吊', group: '塔吊' },
       { id: 'crane4', name: '4#塔吊', group: '塔吊' },
-    ].map((c) => Object.assign(c, { img: 'img/cam-crane2.jpg', pos: '' }) as Camera),
+    ].map((c) => Object.assign(c, { img: 'img/cam-crane2.webp', pos: '' }) as Camera),
   )
 
   /** 原 js/app.js:1026 —— 当前点位，初值为首个 */

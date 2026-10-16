@@ -19,7 +19,7 @@ export interface Camera {
   id: string
   name: string
   group: CamGroup
-  /** 原始数据中被 .map() 统一覆盖为 'img/cam-crane2.jpg' */
+  /** 原始数据中被 .map() 统一覆盖为 'img/cam-crane2.webp' */
   img: string
   /** 原始数据中被 .map() 统一覆盖为 '' */
   pos: string

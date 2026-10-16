@@ -2,10 +2,11 @@
 import { computed } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
+import TouchChart from '@/components/ui/TouchChart.vue'
 import { crewKpis } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
-import { alarmTrendSvg, peopleHourSvg } from '@/utils/chart'
+import { alarmTrendModel, peopleHourModel } from '@/utils/chart'
 import AlarmFeed from './parts/AlarmFeed.vue'
 import PeopleDist from './parts/PeopleDist.vue'
 
@@ -18,15 +19,15 @@ import PeopleDist from './parts/PeopleDist.vue'
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
 
-/** 原 alarmTrendSvg() 无参调用，fillId 走默认值 'alarmFill' */
-const trendSvg = computed(() => alarmTrendSvg('alarmFill', alarm.latest.length))
+/** 原 alarmTrendSvg() 无参调用，fillId 走默认值 'alarmFill'（触控层用模型版） */
+const trendModel = computed(() => alarmTrendModel(alarm.latest.length))
 
 /**
  * 原 js/app.js:197 —— 内部取 new Date().getHours()，此处显式传入。
  * 用 computed 而非常量：跨小时停留时原版每次重渲染都会重算，
  * 这里面板重新挂载时也会重算，行为一致。
  */
-const hourSvg = computed(() => peopleHourSvg(new Date().getHours()))
+const hourModel = computed(() => peopleHourModel(new Date().getHours()))
 
 /** 数值滚动用的解析结果（crewKpis 与横屏 KPI 坞同源；小数位按原始值决定） */
 const crewNums = crewKpis.map(([n]) => ({
@@ -57,7 +58,7 @@ function onAlarmOpen(): void {
       <div class="home-stat alert"><b><CountUp :value="alarm.latest.length" /></b><span>今日预警数</span></div>
       <div class="home-chart-card alarm-mini">
         <span class="home-card-lab">近7日预警趋势</span>
-        <span v-html="trendSvg"></span>
+        <TouchChart :model="trendModel" />
       </div>
     </div>
     <AlarmFeed @open="onAlarmOpen" />
@@ -91,7 +92,7 @@ function onAlarmOpen(): void {
           </div>
         </div>
         <div class="people-hour-y">人数</div>
-        <span v-html="hourSvg"></span>
+        <TouchChart :model="hourModel" />
       </div>
     </div>
   </div>

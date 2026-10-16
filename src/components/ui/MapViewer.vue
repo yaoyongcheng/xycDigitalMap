@@ -6,7 +6,7 @@ import type { MapPoint } from '@/types'
 /**
  * 交互地图层（新增组件，非原版内容）
  *
- * 把原本静态的 site-map.jpg 升级为可交互地图：
+ * 把原本静态的 site-map 底图升级为可交互地图：
  *   - 单指拖拽平移、双指捏合缩放、滚轮缩放、双击在 1x/2.4x 间切换
  *   - 点位撒点（摄像头/塔吊/楼栋），点击经 select 事件上抛
  *   - 点位为恒定屏幕尺寸（px），坐标以底图百分比标定；小容器可传
@@ -27,7 +27,7 @@ const props = withDefaults(
     points: MapPoint[]
     /** cover：铺满容器（裁切多余部分）；contain：完整容纳（留白） */
     fit?: 'cover' | 'contain'
-    /** 底图地址，默认取 PWA base 下的 site-map.jpg */
+    /** 底图地址，默认取 PWA base 下的 site-map.webp */
     src?: string
     /**
      * 紧凑模式：小容器（首页顶部地图区）用更小的针标与字号，
@@ -44,7 +44,7 @@ const props = withDefaults(
   }>(),
   {
     fit: 'cover',
-    src: `${import.meta.env.BASE_URL}img/site-map.jpg`,
+    src: `${import.meta.env.BASE_URL}img/site-map.webp`,
     compact: false,
     allowZoomOut: false,
   },
@@ -54,7 +54,7 @@ const emit = defineEmits<{ select: [p: MapPoint] }>()
 
 const boxEl = ref<HTMLElement | null>(null)
 
-/** 底图自然尺寸，onload 后校准（默认值与 site-map.jpg 一致） */
+/** 底图自然尺寸，onload 后校准（默认值与 site-map.webp 一致） */
 const natW = ref(1024)
 const natH = ref(735)
 
@@ -174,18 +174,28 @@ let pinchStart: PinchStart | null = null
 let movedFar = false
 let suppressClick = false
 
+/**
+ * 手势期间锁定的容器矩形。
+ *
+ * 手势进行中容器在屏幕上不会移动，矩形只需在 pointerdown 时取一次。
+ * 原先 onPointerMove 每次触发都 getBoundingClientRect() —— 配合随后写入
+ * tx/ty，每一枚 pointermove 都会触发「读布局 → 写样式」的强制同步；捏合时
+ * 一轮可达 3~5 次，是首页拖拽最先被感知到的掉帧来源。
+ * 非手势期（滚轮 / 双击）保持 null，走实时读取即可，那两种事件本就是离散的。
+ */
+let gestureRect: DOMRect | null = null
+
 /** 容器内坐标（相对容器中心） */
 function relPos(clientX: number, clientY: number): { x: number; y: number } {
-  const r = boxEl.value?.getBoundingClientRect()
+  const r = gestureRect ?? boxEl.value?.getBoundingClientRect()
   if (!r) return { x: 0, y: 0 }
   return { x: clientX - r.left - r.width / 2, y: clientY - r.top - r.height / 2 }
 }
 
 function pairDist(): { dist: number; midX: number; midY: number } | null {
   const [a, b] = [...pointers.values()]
-  if (!a || !b) return null
-  const r = boxEl.value?.getBoundingClientRect()
-  if (!r) return null
+  if (!a || !b || !gestureRect) return null
+  const r = gestureRect
   return {
     dist: Math.hypot(a.x - b.x, a.y - b.y),
     midX: (a.x + b.x) / 2 - r.left - r.width / 2,
@@ -193,8 +203,30 @@ function pairDist(): { dist: number; midX: number; midY: number } | null {
   }
 }
 
+/**
+ * 位移结算合并到每帧一次。
+ *
+ * 触屏一次刷新可能派发多枚 pointermove，逐枚写 tx/ty/scale 会触发多轮
+ * 渲染调度。这里 pointermove 只更新坐标快照，真正的计算交给 rAF 回调
+ * （回调读取的始终是最新的快照，故不丢位移）。
+ */
+let rafId = 0
+
+function scheduleMove(): void {
+  if (rafId) return
+  rafId = window.requestAnimationFrame(applyMove)
+}
+
+function cancelMove(): void {
+  if (!rafId) return
+  window.cancelAnimationFrame(rafId)
+  rafId = 0
+}
+
 function onPointerDown(e: PointerEvent): void {
   if (e.pointerType === 'mouse' && e.button !== 0) return
+  // 手势起点：锁定矩形，后续 move 全部复用它
+  gestureRect = boxEl.value?.getBoundingClientRect() ?? null
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
   movedFar = false
   if (pointers.size === 1) {
@@ -216,6 +248,12 @@ function onPointerDown(e: PointerEvent): void {
 function onPointerMove(e: PointerEvent): void {
   if (!pointers.has(e.pointerId)) return
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+  scheduleMove()
+}
+
+/** 每帧结算一次：按最新指针快照算出 tx / ty / scale */
+function applyMove(): void {
+  rafId = 0
 
   if (pinchStart && pointers.size === 2) {
     const m = pairDist()
@@ -232,7 +270,9 @@ function onPointerMove(e: PointerEvent): void {
   }
 
   if (panStart && pointers.size === 1) {
-    const p = relPos(e.clientX, e.clientY)
+    const [cur] = [...pointers.values()]
+    if (!cur) return
+    const p = relPos(cur.x, cur.y)
     const dx = p.x - panStart.x
     const dy = p.y - panStart.y
     if (Math.hypot(dx, dy) > 6) movedFar = true
@@ -246,10 +286,12 @@ function onPointerUp(e: PointerEvent): void {
   pointers.delete(e.pointerId)
   if (pointers.size < 2) pinchStart = null
   if (pointers.size === 0) {
+    cancelMove()
     window.removeEventListener('pointermove', onPointerMove)
     window.removeEventListener('pointerup', onPointerUp)
     window.removeEventListener('pointercancel', onPointerUp)
     panStart = null
+    gestureRect = null
     if (movedFar) {
       // 拖拽后的合成 click 不应触发点位跳转；50ms 兜底清除防止误锁
       suppressClick = true
@@ -259,6 +301,7 @@ function onPointerUp(e: PointerEvent): void {
     }
   } else if (pointers.size === 1) {
     // 双指抬起一指：切换回单指拖拽基准，避免画面跳变
+    cancelMove()
     const [rest] = [...pointers.values()]
     if (rest) {
       const p = relPos(rest.x, rest.y)
@@ -316,6 +359,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  cancelMove()
   ro?.disconnect()
   boxEl.value?.removeEventListener('wheel', onWheel)
   window.removeEventListener('pointermove', onPointerMove)
@@ -323,11 +367,18 @@ onUnmounted(() => {
   window.removeEventListener('pointercancel', onPointerUp)
 })
 
-const pinIcons: Record<MapPoint['kind'], string> = {
-  cam: '<path d="M4.5 8.2h10.2v9.2H4.5z"/><path d="M14.7 11.2 19.5 8.8v8.2l-4.8-2.4z"/>',
-  crane:
-    '<path d="M9 20V5l9-2v3l-6 1.4"/><path d="M9 8h13"/><path d="M18 8v3h2v3h-2z"/><path d="M6 20h6"/>',
-  building: '<path d="M5 20V6l7-2.5V20"/><path d="M12 8l7 2v10"/><path d="M3.5 20h17"/>',
+/**
+ * 扎针图标（每个 kind 一组 path 的 d）。
+ *
+ * 原先存的是拼好的 `<path .../>` HTML 片段，模板里靠 v-html 注入 ——
+ * 该 svg 位于 props.points 的 v-for 内（首页 + 全屏地图两处共约 24 枚），
+ * 每一枚都要走一次 innerHTML 解析，拖拽重渲染时还会重复解析。
+ * 改为纯 path 数据 + 模板直出，零解析、零 v-html。
+ */
+const PIN_PATHS: Record<MapPoint['kind'], string[]> = {
+  cam: ['M4.5 8.2h10.2v9.2H4.5z', 'M14.7 11.2 19.5 8.8v8.2l-4.8-2.4z'],
+  crane: ['M9 20V5l9-2v3l-6 1.4', 'M9 8h13', 'M18 8v3h2v3h-2z', 'M6 20h6'],
+  building: ['M5 20V6l7-2.5V20', 'M12 8l7 2v10', 'M3.5 20h17'],
 }
 </script>
 
@@ -353,7 +404,16 @@ const pinIcons: Record<MapPoint['kind'], string> = {
       >
         <span class="pin-body">
           <i class="pin-dot">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="pinIcons[p.kind]" />
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path v-for="(d, i) in PIN_PATHS[p.kind]" :key="i" :d="d" />
+            </svg>
           </i>
           <span class="pin-name">{{ p.name }}</span>
         </span>

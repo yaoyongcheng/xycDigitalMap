@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 
 import BackBar from '@/components/ui/BackBar.vue'
 import DayPickChips from '@/components/ui/DayPickChips.vue'
@@ -31,16 +31,38 @@ function refreshStamp(): void {
   stamp.value = camStamp()
 }
 
-onMounted(() => {
-  // 原 tick()（app.js:1720-1722）在播放器打开时每秒刷新其时间戳
-  timer = window.setInterval(() => {
-    if (cam.isOpen) refreshStamp()
-  }, 1000)
-})
+/*
+ * 原 tick()（app.js:1720-1722）在播放器打开时每秒刷新其时间戳。
+ *
+ * 定时器只在播放器可见时存在：本组件常驻 DOM（覆盖层靠 class 切换），
+ * 若在 onMounted 就起 1s interval，回调里再判断 cam.isOpen，
+ * 等于全天候空转（每次都是一次无意义的闭包调用 + ref 读取）。
+ */
+function startTick(): void {
+  if (timer) return
+  timer = window.setInterval(refreshStamp, 1000)
+}
 
-onUnmounted(() => {
-  if (timer) window.clearInterval(timer)
-})
+function stopTick(): void {
+  if (!timer) return
+  window.clearInterval(timer)
+  timer = 0
+}
+
+watch(
+  () => cam.isOpen,
+  (open) => {
+    if (open) {
+      // 先立刻对齐一次，避免沿用上一次打开时的旧时间戳整秒
+      refreshStamp()
+      startTick()
+    } else {
+      stopTick()
+    }
+  },
+)
+
+onUnmounted(stopTick)
 
 /** 原 js/app.js:1225-1228 —— 点播放按钮进入 .live 并刷新时间戳 */
 function onPlay(): void {
