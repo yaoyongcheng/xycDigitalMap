@@ -2427,7 +2427,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .subpage.is-alarm .nav-title { color: var(--text); }
 .subpage.is-alarm .nav-btn { color: #4E5969; }
 
-.subpage.is-alarm .subpage-body { padding: 0; }
+/* 预警详情是通栏 hero（左右 0 padding），但底部同样要避开 Home Indicator */
+.subpage.is-alarm .subpage-body { padding: 0 0 var(--safe-bot); }
 
 .alarm-hero {
   position: relative;
@@ -4418,7 +4419,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .subpage-body {
   flex: 1;
   overflow: auto;
-  padding: 14px 16px;
+  /* 底栏在子页里是隐藏的，内容直接顶到屏幕底 —— 底部留出 Home Indicator 安全区 */
+  padding: 14px 16px calc(14px + var(--safe-bot));
 }
 
 .empty-note {
@@ -4454,13 +4456,19 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .app.home-mode .tab { color: #5C6E86; }
 .app.home-mode .tab.active { color: #4C9FFF; }
 
-.app.home-mode:has(.subpage.open) .tabbar {
-  background: #fff;
-  border-top-color: var(--line);
-}
+/*
+ * 二级页面（子页）打开时底栏让位 —— 微信式交互：只有一级页面才有 tab。
+ *
+ * tabbar 一隐藏，.stack（flex:1）自动撑满 .app，子页的 inset:0 就覆盖到
+ * 屏幕底部。改造前子页只盖住 .stack，详情页底下始终压着一条 tab，
+ * 既割裂又让人误以为「点了 tab 没反应」（实际是子页把 .pages 盖住了）。
+ */
+.app:has(.subpage.open) .tabbar { display: none; }
 
-.app.home-mode:has(.subpage.open) .tab { color: #9AA3B2; }
-.app.home-mode:has(.subpage.open) .tab.active { color: var(--blue); }
+/* 底栏不在时，更新提示条不该再按 tabbar 高度避让 */
+.app:has(.subpage.open) .upd-banner {
+  bottom: calc(var(--safe-bot) + 10px);
+}
 
 #page-home .home-gutter-mask {
   top: calc(42% - 96px);
@@ -5597,16 +5605,10 @@ button, input, textarea { font-family: inherit; color: inherit; }
 /* =====================================================================
  * 2026-10 体验改造 · 第八轮（追加，不触碰既有级联链）
  *
- *   R. 角标描边随 tabbar 底色切换：
- *      首页进子页（巡检预警等）时，tabbar 已由 4453 行规则切回白底，
- *      但下方 5143 行的深色描边（#0B1626）仍生效 —— 白底上就是
- *      一圈黑边。改为仅在「首页且无子页打开」时使用深色描边。
+ *   R. （已废弃）角标描边随 tabbar 底色切换。
+ *      原先子页打开时 tabbar 会切回白底，需要覆盖首页深色描边；
+ *      现在子页打开时底栏整体隐藏（见 4453 行），该覆盖不再需要。
  * ===================================================================== */
-
-/* 子页打开时 tabbar 是白底：覆盖上方 5143 行的深色描边，恢复纯浅色投影 */
-.app.home-mode:has(.subpage.open) .tab .badge {
-  box-shadow: 0 1px 4px rgba(255, 77, 79, 0.4);
-}
 
 /*   S. CountUp 数字降级修复：
  *      CountUp 渲染的 <span class="count-up"> 会命中各卡片「span=标签文字」

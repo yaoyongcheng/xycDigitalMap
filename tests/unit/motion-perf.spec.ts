@@ -262,6 +262,32 @@ describe('第二轮体验优化回归', () => {
     })
   })
 
+  describe('二级页面（子页）的底栏契约', () => {
+    /*
+     * 微信式交互：只有一级页面才有底栏。子页打开时底栏必须让位 ——
+     * 否则子页只盖住 .pages，底栏仍然压在下面，既割裂，也会让用户
+     * 误以为「点 tab 没反应」（实际是子页挡住了页面）。
+     * 底栏隐藏后 .stack 自动撑满，子页的 inset:0 才能覆盖到屏幕底部。
+     */
+    it('子页打开时隐藏 tabbar，且更新提示条不再按 tabbar 高度避让', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      const tabbar = css.match(/\.app:has\(\.subpage\.open\)\s+\.tabbar\s*\{([^}]*)\}/)
+      expect(tabbar).not.toBeNull()
+      expect(tabbar![1]).toMatch(/display:\s*none/)
+
+      const banner = css.match(/\.app:has\(\.subpage\.open\)\s+\.upd-banner\s*\{([^}]*)\}/)
+      expect(banner).not.toBeNull()
+      expect(banner![1]).toMatch(/var\(--safe-bot\)/)
+    })
+
+    it('子页内容底部留出安全区（底栏不在，不能被 Home Indicator 咬住）', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      const body = css.match(/\.subpage-body\s*\{([^}]*)\}/)
+      expect(body).not.toBeNull()
+      expect(body![1]).toMatch(/var\(--safe-bot\)/)
+    })
+  })
+
   describe('图例类可点元素的键盘可达', () => {
     it('装备图例：Enter 与点击等价', async () => {
       const wrapper = mount(EquipPanel)
