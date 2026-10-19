@@ -106,5 +106,33 @@ export const useSubpageStore = defineStore('subpage', () => {
     view.value = { kind: 'none' }
   }
 
-  return { view, back, isAlarm, isOpen, title, openInspectList, openAlarmDetail, openSub, close }
+  /**
+   * 直接退出到根（2026-10 新增）。
+   *
+   * 与 close() 的区别是没有分级语义：底栏是根级导航，用户点 tab 就是想
+   * 去另一个一级页面，不该先「收日历 → 回列表 → 再关闭」地倒退三步。
+   *
+   * 之前缺这一步，点 tab 后 .subpage 仍 open、盖在 .pages 上，activeTab
+   * 其实已经变了 —— 表现就是「点底栏没反应」。
+   */
+  function dismiss(): void {
+    // 本来就在根上就别再写一遍，免得每次点 tab 都触发一次无意义更新
+    if (view.value.kind === 'none' && !back.value && !alarm.inspCalOpen) return
+    alarm.inspCalOpen = false
+    back.value = null
+    view.value = { kind: 'none' }
+  }
+
+  return {
+    view,
+    back,
+    isAlarm,
+    isOpen,
+    title,
+    openInspectList,
+    openAlarmDetail,
+    openSub,
+    close,
+    dismiss,
+  }
 })

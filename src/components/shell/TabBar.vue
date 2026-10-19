@@ -2,6 +2,7 @@
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useMsgStore } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
+import { useSubpageStore } from '@/stores/subpage'
 import type { IconName } from '@/data/icons'
 import type { TabId } from '@/types'
 
@@ -21,6 +22,7 @@ import type { TabId } from '@/types'
 
 const shell = useShellStore()
 const msg = useMsgStore()
+const sub = useSubpageStore()
 
 interface TabDef {
   id: TabId
@@ -37,6 +39,14 @@ const tabs: TabDef[] = [
 ]
 
 function onTabClick(id: TabId): void {
+  /*
+   * 底栏是根级导航，切 tab 前必须先把子页收掉。
+   * .subpage 是盖在 .pages 之上的绝对定位层，不关它的话 activeTab 虽然变了，
+   * 用户看到的还是原来的详情页 —— 表现就是「点底栏没反应」。
+   * 用 dismiss 而不是 close：这里是「换根」不是「后退一级」，
+   * 不该先收日历、再回列表地倒退三步。
+   */
+  sub.dismiss()
   shell.activeTab = id
 }
 </script>

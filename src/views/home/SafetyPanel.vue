@@ -51,12 +51,15 @@ const updTime = (() => {
  * 2026-10 交互优化（修正路径冗余）：
  *   改造前这里丢弃了 AlarmFeed emit 出来的预警 id，一律跳「今日预警列表」，
  *   用户在轮播里点中某一条后，还得在列表里再找一遍、再点一次才看得到详情。
- *   现在直接用 id 打开对应详情，返回键回到列表（openAlarmDetail 的
- *   fromList=true 已保证这条回路）。
- *   数据异常（id 已失效）时退回列表，不让用户卡在空详情页。
+ *   现在直接用 id 打开对应详情。
+ *
+ * 返回目标必须是**首页**（fromList=false）而不是巡检列表：
+ * 上一页就是首页安全面板，用户没经过列表，凭空多插一层会让人觉得迷路。
+ * 从巡检列表点进详情的那条路径仍走 InspectList 的 fromList=true。
+ * 数据异常（id 已失效）时退回列表，不让用户卡在空详情页。
  */
 function onAlarmOpen(id: string): void {
-  if (alarm.byId(id)) subpage.openAlarmDetail(id, true)
+  if (alarm.byId(id)) subpage.openAlarmDetail(id, false)
   else subpage.openInspectList('today')
 }
 </script>
