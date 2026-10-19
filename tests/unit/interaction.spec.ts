@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import SmartImg from '@/components/ui/SmartImg.vue'
+import TabBar from '@/components/shell/TabBar.vue'
 import Toast from '@/components/shell/Toast.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAlarmStore } from '@/stores/alarm'
@@ -80,8 +81,11 @@ describe('交互优化回归', () => {
 
       await w.find('.alarm-feed-item').trigger('click')
       expect(sub.view).toEqual({ kind: 'alarm-detail', id: alarm.latest[0].id })
-      // 返回键仍回到列表（回路不能断）
-      expect(sub.back).toEqual({ kind: 'inspect-list' })
+      /*
+       * 返回键回首页，不回巡检列表：用户是从首页安全面板点进来的，
+       * 上一页就是首页。凭空插一层列表会让人觉得迷路（2026-10 修正）。
+       */
+      expect(sub.back).toBeNull()
     })
 
     it('id 失效时退回列表，不让用户卡在空详情页', async () => {
@@ -90,6 +94,38 @@ describe('交互优化回归', () => {
       sub.openAlarmDetail('no-such-id')
       expect(sub.view).toEqual({ kind: 'none' })
       expect(w.exists()).toBe(true)
+    })
+  })
+
+  /*
+   * 子页是盖在 .pages 上的绝对定位层。改造前切 tab 只改 activeTab，
+   * 子页不关 —— 底栏高亮变了、画面还停在详情页，用户看到的就是
+   * 「点底栏没反应」。
+   */
+  describe('底栏切换会退出子页', () => {
+    it('子页打开时点 tab：子页关闭且切到目标 tab', async () => {
+      const sub = useSubpageStore()
+      const shell = useShellStore()
+      const alarm = useAlarmStore()
+      sub.openAlarmDetail(alarm.latest[0].id, false)
+      expect(sub.isOpen).toBe(true)
+
+      const w = mount(TabBar)
+      await w.find('.tab[data-tab="work"]').trigger('click')
+      expect(sub.isOpen).toBe(false)
+      expect(shell.activeTab).toBe('work')
+    })
+
+    it('巡检日历展开时切 tab，日历也被收起', async () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openInspectList('hist')
+      alarm.inspCalOpen = true
+
+      const w = mount(TabBar)
+      await w.find('.tab[data-tab="msg"]').trigger('click')
+      expect(alarm.inspCalOpen).toBe(false)
+      expect(sub.isOpen).toBe(false)
     })
   })
 
