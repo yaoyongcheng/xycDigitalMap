@@ -56,11 +56,17 @@ export function dateKey(d: Date | number): string {
 }
 
 /**
- * 原 js/app.js:678 —— 原型基准日，固定为 2026-10-08。
- * 原版所有历史数据的相对日期都以它为锚点。
+ * 原 js/app.js:678 —— 原型基准日（「今天」）。
+ *
+ * 偏离原版：原版硬编码 2026-10-08，而趋势图（alarmTrendModel）、监控抓拍
+ * （camShotDate）、航拍（airDate）、日历「今天」高亮全部取 new Date()。
+ * 结果是只有巡检历史这一条链路停在 2026-10：日历可选上界永远是 10-07、
+ * 默认选中日永远标「昨天」，而真实系统日期早已走远 —— 用户看到的就是
+ * 「历史预警的日期和实际日期对不上」。
+ * 改为跟随系统当天，让全项目时间基准统一。
  */
 export function protoToday(): Date {
-  return startOfDay(new Date(2026, 9, 8))
+  return startOfDay(new Date())
 }
 
 /** 原 js/app.js:694 */

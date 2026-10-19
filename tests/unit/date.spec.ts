@@ -120,24 +120,29 @@ describe('utils/date', () => {
   })
 
   describe('原型基准日', () => {
-    it('protoToday 固定为 2026-10-08，不随系统时间变化', () => {
+    /*
+     * 锚点跟随系统当天（原版硬编码 2026-10-08，导致巡检历史的日历上界与
+     * 真实日期脱节）。与趋势图 / 监控抓拍 / 航拍共用同一基准，是「日期对
+     * 得上」的前提，这里钉住它。
+     */
+    it('protoToday 是系统当天零点', () => {
       const p = protoToday()
       expect(p.getFullYear()).toBe(2026)
       expect(p.getMonth()).toBe(9)
-      expect(p.getDate()).toBe(8)
+      expect(p.getDate()).toBe(16)
       expect(p.getHours()).toBe(0)
 
-      // 把系统时间推到别的年份，基准日仍应纹丝不动
+      // 注意月份是 0-based：这里是 2027-04-01
       vi.setSystemTime(new Date(2027, 3, 1))
-      expect(protoToday().getFullYear()).toBe(2026)
-      expect(protoToday().getMonth()).toBe(9)
-      expect(protoToday().getDate()).toBe(8)
+      expect(protoToday().getFullYear()).toBe(2027)
+      expect(protoToday().getMonth()).toBe(3)
+      expect(protoToday().getDate()).toBe(1)
     })
 
-    it('inspCalMaxDay 是基准日的前一天', () => {
+    it('inspCalMaxDay 是今天的前一天', () => {
       const d = inspCalMaxDay()
       expect(d.getMonth()).toBe(9)
-      expect(d.getDate()).toBe(7)
+      expect(d.getDate()).toBe(15)
     })
   })
 

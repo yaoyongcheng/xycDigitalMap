@@ -5,6 +5,7 @@ import { useAlarmStore } from '@/stores/alarm'
 import { useHomeStore } from '@/stores/home'
 import { useSubpageStore } from '@/stores/subpage'
 import type { Equip } from '@/types'
+import { addDays, dateKey, formatMD, inspCalMaxDay, monthStart, protoToday } from '@/utils/date'
 
 /** 构造一台仅用于 equipCount 分支覆盖的设备 */
 function equipWith(...onFlags: boolean[]): Equip {
@@ -85,31 +86,48 @@ describe('stores · alarm / home / subpage', () => {
       ])
     })
 
+    /*
+     * 历史记录的日期由「距今天多少天」派生（stores/alarm.ts 的 atOf），
+     * 断言必须跟着锚点走，写死年月日会随运行日失效。
+     */
     describe('alarmsOnDate', () => {
       it('按 at 的日期部分筛选历史记录', () => {
         const alarm = useAlarmStore()
-        expect(alarm.alarmsOnDate(new Date(2026, 9, 7)).map((a) => a.id)).toEqual(['h-trash'])
-        expect(alarm.alarmsOnDate(new Date(2026, 9, 6)).map((a) => a.id)).toEqual(['h-cable'])
-        expect(alarm.alarmsOnDate(new Date(2026, 9, 5)).map((a) => a.id)).toEqual(['h-soil'])
+        expect(alarm.alarmsOnDate(addDays(protoToday(), -1)).map((a) => a.id)).toEqual(['h-net'])
+        expect(alarm.alarmsOnDate(addDays(protoToday(), -2)).map((a) => a.id)).toEqual(['h-trash'])
+        expect(alarm.alarmsOnDate(addDays(protoToday(), -3)).map((a) => a.id)).toEqual(['h-cable'])
+        expect(alarm.alarmsOnDate(addDays(protoToday(), -4)).map((a) => a.id)).toEqual(['h-soil'])
       })
 
       it('没有记录的日子返回空数组', () => {
         const alarm = useAlarmStore()
-        expect(alarm.alarmsOnDate(new Date(2026, 9, 9))).toEqual([])
+        expect(alarm.alarmsOnDate(addDays(protoToday(), -9))).toEqual([])
       })
 
       it('当日记录不会出现在历史筛选里', () => {
         const alarm = useAlarmStore()
-        // today 组的 at 是 2026-10-08，但 day === 'today'
-        expect(alarm.alarmsOnDate(new Date(2026, 9, 8))).toEqual([])
+        // today 组的 at 就是今天，但 day === 'today'
+        expect(alarm.alarmsOnDate(protoToday())).toEqual([])
       })
 
       it('传入日期的时间部分不影响结果', () => {
         const alarm = useAlarmStore()
-        expect(alarm.alarmsOnDate(new Date(2026, 9, 7, 23, 59, 59)).map((a) => a.id)).toEqual([
-          'h-trash',
-        ])
+        const d = addDays(protoToday(), -2)
+        d.setHours(23, 59, 59)
+        expect(alarm.alarmsOnDate(d).map((a) => a.id)).toEqual(['h-trash'])
       })
+    })
+
+    it('历史记录的 rel 与 at 同源，不再各说各话', () => {
+      const alarm = useAlarmStore()
+      const yesterday = alarm.byId('h-net')!
+      // 原版这里 at=2026-09-30 而 rel=「昨天 09:30」，两者相差 8 天
+      expect(yesterday.at.slice(0, 10)).toBe(dateKey(addDays(protoToday(), -1)))
+      expect(yesterday.rel).toBe('昨天 09:30')
+
+      const older = alarm.byId('h-trash')!
+      expect(older.at.slice(0, 10)).toBe(dateKey(addDays(protoToday(), -2)))
+      expect(older.rel.startsWith(formatMD(addDays(protoToday(), -2)))).toBe(true)
     })
 
     it('byId 命中与未命中', () => {
@@ -118,25 +136,28 @@ describe('stores · alarm / home / subpage', () => {
       expect(alarm.byId('nope')).toBeUndefined()
     })
 
-    it('初始页签与日历锚点对齐原型基准日', () => {
+    it('初始页签与日历锚点对齐系统当天', () => {
       const alarm = useAlarmStore()
       expect(alarm.inspTab).toBe('today')
       expect(alarm.inspCalOpen).toBe(false)
-      // protoToday() 固定 2026-10-08 → 历史默认选中前一天
-      expect(alarm.inspHistDate.getFullYear()).toBe(2026)
-      expect(alarm.inspHistDate.getMonth()).toBe(9)
-      expect(alarm.inspHistDate.getDate()).toBe(7)
+      // 历史默认选中「昨天」，且这一天一定有数据（h-net）
+      expect(alarm.inspHistDate.getTime()).toBe(addDays(protoToday(), -1).getTime())
+      expect(alarm.alarmsOnDate(alarm.inspHistDate).map((a) => a.id)).toEqual(['h-net'])
       // 日历显示选中日所在月的首日
-      expect(alarm.inspCalMonth.getDate()).toBe(1)
-      expect(alarm.inspCalMonth.getMonth()).toBe(9)
+      expect(alarm.inspCalMonth.getTime()).toBe(monthStart(alarm.inspHistDate).getTime())
+      // 可选上界 = 昨天，今天（当日数据走「今日预警」页）不可选
+      expect(inspCalMaxDay().getTime()).toBe(addDays(protoToday(), -1).getTime())
     })
 
-    it('历史锚点不随系统时间漂移（原型基准日）', () => {
-      const alarm = useAlarmStore()
+    it('换个系统日期打开，历史锚点跟着走（不再停在 2026-10）', () => {
+      setActivePinia(createPinia())
       vi.setSystemTime(new Date(2027, 3, 1))
-      // 已创建的 store 状态不受影响，重新读取也仍指向 2026-10
-      expect(alarm.inspHistDate.getMonth()).toBe(9)
-      expect(alarm.inspHistDate.getFullYear()).toBe(2026)
+      const alarm = useAlarmStore()
+      // 系统日期 2027-04-01（月份 0-based）→ 昨天是 2027-03-31
+      expect(alarm.inspHistDate.getFullYear()).toBe(2027)
+      expect(alarm.inspHistDate.getMonth()).toBe(2)
+      expect(alarm.inspHistDate.getDate()).toBe(31)
+      expect(alarm.alarmsOnDate(alarm.inspHistDate).map((a) => a.id)).toEqual(['h-net'])
     })
   })
 
