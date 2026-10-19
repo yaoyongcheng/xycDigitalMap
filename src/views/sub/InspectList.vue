@@ -4,9 +4,10 @@ import { computed } from 'vue'
 import InspectItem from '@/components/ui/InspectItem.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
+import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
-import { alarmTrendSvg } from '@/utils/chart'
+import { alarmTrendModel } from '@/utils/chart'
 import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/utils/date'
 
 /**
@@ -32,7 +33,12 @@ const histLab = computed(() => formatCamDate(alarm.inspHistDate))
 const headLabel = computed(() => (isLatestHist.value ? '昨天' : histLab.value))
 const pickLabel = computed(() => (isLatestHist.value ? '昨天' : formatMD(alarm.inspHistDate)))
 
-const trendSvg = computed(() => alarmTrendSvg('inspAlarmFill', alarm.latest.length))
+/**
+ * 近 7 日趋势：与首页安全面板同款触控层（参考线 / 放大点 / 数值气泡）。
+ * fillId 沿用 'inspAlarmFill' —— 子页与首页可能同时在 DOM 里，
+ * 渐变 id 必须错开，否则后挂载的会引用到先挂载的渐变定义。
+ */
+const trendModel = computed(() => alarmTrendModel(alarm.latest.length, 'inspAlarmFill'))
 
 function onTab(tab: 'today' | 'hist'): void {
   alarm.inspCalOpen = false
@@ -87,7 +93,7 @@ function onItemOpen(id: string): void {
         <div class="home-stat alert"><b>{{ todayList.length }}</b><span>今日预警数</span></div>
         <div class="home-chart-card alarm-mini">
           <span class="alarm-mini-lab">近7日预警趋势</span>
-          <span v-html="trendSvg"></span>
+          <TouchChart :model="trendModel" />
         </div>
       </div>
       <div class="insp-list">

@@ -152,19 +152,15 @@ describe('结构性守卫', () => {
       .map((f) => relative(SRC, f).replace(/\\/g, '/'))
       .sort()
 
-    it('只剩两处动态图表在用 v-html', () => {
-      expect(withVhtml).toEqual([
-        'components/ui/TouchChart.vue',
-        'views/sub/InspectList.vue',
-      ])
+    it('动态图表只剩 TouchChart 一处在用 v-html', () => {
+      // InspectList 的趋势图已改走 TouchChart 触控层（2026-10 交互优化），
+      // 退出了 v-html 白名单；唯一剩下的合法消费点就是 TouchChart 底图。
+      expect(withVhtml).toEqual(['components/ui/TouchChart.vue'])
     })
 
-    it('两处绑定的都是 chart.ts 生成的 SVG 字符串', () => {
+    it('绑定的必须是 chart.ts 生成的 SVG 字符串', () => {
       const touchChart = templateBlock(read(join(SRC, 'components/ui/TouchChart.vue')))
       expect(touchChart).toMatch(/v-html="model\.svg"/)
-
-      const inspList = templateBlock(read(join(SRC, 'views/sub/InspectList.vue')))
-      expect(inspList).toMatch(/v-html="trendSvg"/)
     })
 
     it('不再有任何直接赋值 innerHTML', () => {
