@@ -13,6 +13,18 @@ const SHEET_LEVEL_KEY = 'xyc.sheetLevel'
 export type SheetLevel = 0 | 1 | 2
 
 /**
+ * Toast 语义类型。
+ *
+ * 改造前全局只有一种「深底白字」提示，成功、失败、警告长得完全一样 ——
+ * 核心路径（隐患提交、功能待定、退出登录）全靠它，等于所有反馈一个表情。
+ * 这里补上四档语义，视觉差异收在 app.css 的 .toast.is-* 里。
+ */
+export type ToastType = 'info' | 'success' | 'warn' | 'error'
+
+/** Toast 默认停留时长（ms），保持原版 1.6s 不变 */
+const TOAST_MS = 1600
+
+/**
  * 读取上次的抽屉档位。
  * 优先读新的档位键；不存在时迁移旧布尔键（'1'→2 全开，'0'→0 收起）；
  * 都没有则回退全开（原版 app.js:925 的初值 true）。
@@ -48,11 +60,28 @@ export const useShellStore = defineStore('shell', () => {
   /** 导航栏标题，原 navTitle.textContent = titles[tab] */
   const navTitle = computed(() => titles[activeTab.value])
 
+  /**
+   * 页面转场方向：'fwd' 向右推进 / 'back' 向左退回。
+   *
+   * 改造前四个 tab 共用一条「上滑淡入」动画 —— 从「我的」退回「首页」和从
+   * 「首页」进到「工作台」长得一模一样，用户失去了「我是从哪来的」这条信息。
+   * 按标签栏的左右次序给转场加上方向，横向滑入方向与手指的移动一致。
+   */
+  const TAB_ORDER: TabId[] = ['home', 'work', 'msg', 'mine']
+  const navDir = ref<'fwd' | 'back'>('fwd')
+
+  watch(activeTab, (to, from) => {
+    navDir.value = TAB_ORDER.indexOf(to) >= TAB_ORDER.indexOf(from) ? 'fwd' : 'back'
+  })
+
   /** Toast 文案，对应原 showToast() 写入的 el.textContent */
   const toast = ref('')
 
   /** Toast 是否可见，对应原 #toast 的 .show 类 */
   const toastVisible = ref(false)
+
+  /** Toast 语义类型（默认 info，与改造前的唯一外观等价） */
+  const toastType = ref<ToastType>('info')
 
   let toastTimer = 0
 
@@ -61,14 +90,21 @@ export const useShellStore = defineStore('shell', () => {
    * 原版把句柄挂在函数属性 showToast._t 上（非标准做法），这里用闭包变量，
    * 行为一致：连续调用会取消上一个定时器，1.6s 后隐藏。
    * 注意原版只移除 .show，不清空文本，这里保持一致。
+   *
+   * 2026-10 交互优化新增 type 与 duration 两个可选参数：
+   *   - type：让「提交成功 / 校验失败 / 功能待定」在视觉上可区分；
+   *     不传时是 info，现有调用点外观不变。
+   *   - duration：需要用户读完的长提示（如二次确认文案）可延长到 3~4s，
+   *     默认仍是原版的 1600ms。
    */
-  function showToast(text: string): void {
+  function showToast(text: string, type: ToastType = 'info', duration = TOAST_MS): void {
     toast.value = text
+    toastType.value = type
     toastVisible.value = true
     window.clearTimeout(toastTimer)
     toastTimer = window.setTimeout(() => {
       toastVisible.value = false
-    }, 1600)
+    }, duration)
   }
 
   /** .phone.is-landscape —— 真横屏伪适配开关 */
@@ -151,7 +187,9 @@ export const useShellStore = defineStore('shell', () => {
   return {
     activeTab,
     navTitle,
+    navDir,
     toast,
+    toastType,
     toastVisible,
     showToast,
     isLandscape,

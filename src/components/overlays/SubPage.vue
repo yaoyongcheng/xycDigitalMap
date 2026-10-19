@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import { mineNotes } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
 import AlarmDetail from '@/views/sub/AlarmDetail.vue'
@@ -23,6 +24,9 @@ const alarm = useAlarmStore()
 const detail = computed(() => (sub.view.kind === 'alarm-detail' ? alarm.byId(sub.view.id) : undefined))
 
 const placeholderName = computed(() => (sub.view.kind === 'placeholder' ? sub.view.name : ''))
+
+/** 各「我的」入口的范围说明（见 data/config.ts 的 mineNotes 注释） */
+const placeholderNote = computed(() => mineNotes[placeholderName.value] ?? '')
 
 function onBack(): void {
   // 原 js/app.js:875 直接把 closeSub 当回调，事件对象被当作 force 传入，
@@ -47,7 +51,8 @@ function onBack(): void {
       <InspectList v-if="sub.view.kind === 'inspect-list'" />
       <AlarmDetail v-else-if="sub.view.kind === 'alarm-detail' && detail" :alarm="detail" />
       <div v-else-if="sub.view.kind === 'placeholder'" class="card">
-        <p class="empty-note">「{{ placeholderName }}」内页。这里只保留「我的」相关功能入口，后续按账号、工地和设置补齐。</p>
+        <h4 class="sub-ph-title">{{ placeholderName }}</h4>
+        <p class="empty-note">{{ placeholderNote }}</p>
       </div>
     </div>
   </section>

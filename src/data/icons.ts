@@ -55,6 +55,15 @@ const CAL_STROKE = {
   'stroke-linejoin': 'round',
 }
 
+/** Toast 状态图标用的根属性（颜色由 .toast.is-* 的 currentColor 决定） */
+const TOAST_STROKE = {
+  fill: 'none',
+  stroke: 'currentColor',
+  'stroke-width': 1.8,
+  'stroke-linecap': 'round',
+  'stroke-linejoin': 'round',
+}
+
 const ICON_MAP = {
   /* ---------------- 底部标签栏（原 index.html:327-345，配色由 .tab svg 提供） ---------------- */
 
@@ -250,6 +259,50 @@ const ICON_MAP = {
     shapes: [
       { tag: 'rect', x: 4, y: 5, width: 16, height: 15, rx: 2 },
       { tag: 'path', d: 'M4 10h16M8 3v4M16 3v4' },
+    ],
+  },
+
+  /* ---------------- Toast 状态图标（交互优化新增，非原版内容） ---------------- */
+
+  /** 成功：对勾圆环 */
+  't-ok': {
+    viewBox: '0 0 24 24',
+    attrs: TOAST_STROKE,
+    shapes: [
+      { tag: 'circle', cx: 12, cy: 12, r: 9 },
+      { tag: 'path', d: 'M8 12.4l2.6 2.6L16 9.6' },
+    ],
+  },
+
+  /** 警告：三角叹号 */
+  't-warn': {
+    viewBox: '0 0 24 24',
+    attrs: TOAST_STROKE,
+    shapes: [
+      { tag: 'path', d: 'M12 4.6 21 19.4H3z' },
+      { tag: 'path', d: 'M12 10.2v3.4' },
+      { tag: 'path', d: 'M12 16.4v.4' },
+    ],
+  },
+
+  /** 错误：叉号圆环 */
+  't-err': {
+    viewBox: '0 0 24 24',
+    attrs: TOAST_STROKE,
+    shapes: [
+      { tag: 'circle', cx: 12, cy: 12, r: 9 },
+      { tag: 'path', d: 'M9 9l6 6M15 9l-6 6' },
+    ],
+  },
+
+  /** 提示：感叹号圆环 */
+  't-info': {
+    viewBox: '0 0 24 24',
+    attrs: TOAST_STROKE,
+    shapes: [
+      { tag: 'circle', cx: 12, cy: 12, r: 9 },
+      { tag: 'path', d: 'M12 11.2v5' },
+      { tag: 'path', d: 'M12 7.8v.4' },
     ],
   },
 } satisfies Record<string, IconDef>

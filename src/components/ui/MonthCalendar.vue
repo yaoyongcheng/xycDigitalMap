@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import { useShellStore } from '@/stores/shell'
 import { calMinMonth, monthStart, sameDay, startOfDay } from '@/utils/date'
 
 /**
@@ -37,6 +38,8 @@ const emit = defineEmits<{
   'update:month': [d: Date]
   select: [d: Date]
 }>()
+
+const shell = useShellStore()
 
 const y = computed(() => props.month.getFullYear())
 const m = computed(() => props.month.getMonth())
@@ -92,8 +95,20 @@ function calKey(d: Date): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
+/**
+ * 选中某日。
+ *
+ * 2026-10 交互优化：不可选的日期原先是 `:disabled` 的 <button> —— 浏览器
+ * 会连点击事件一起吞掉，用户点了完全没反应，也不知道为什么。改为
+ * aria-disabled + 样式类，让点击仍然可达，并明确说明原因：
+ *   未来日期 / 超出可选范围 → 「该日期暂无数据」
+ */
 function onSelect(c: Cell): void {
-  if (c.disabled || !c.date) return
+  if (!c.date) return
+  if (c.disabled) {
+    shell.showToast('该日期暂无数据，请选更早的日期', 'info')
+    return
+  }
   emit('select', c.date)
 }
 
@@ -126,10 +141,10 @@ function onNext(): void {
         <button
           v-else
           class="cam-cal-day"
-          :class="{ on: c.on, today: c.today }"
+          :class="{ on: c.on, today: c.today, 'is-disabled': c.disabled }"
           type="button"
+          :aria-disabled="c.disabled ? 'true' : undefined"
           :data-cal="c.date ? calKey(c.date) : undefined"
-          :disabled="c.disabled"
           @click="onSelect(c)"
         >
           {{ c.day }}

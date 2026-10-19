@@ -75,6 +75,20 @@ function feedLines(pg: HTMLElement | null): string[] {
   ]
 }
 
+/** 已挂载的诊断浮层的清理函数；未挂载时为 null */
+let dispose: (() => void) | null = null
+
+/**
+ * 卸载诊断浮层（定时器 + 监听 + DOM）。
+ *
+ * SPA 常规路径下不会卸载，但 HMR 会重复执行 mountDiag —— 没有这个出口，
+ * 每次热更新都会再叠一个 600ms 定时器与一个浮层，改动越多越卡，读数还互相打架。
+ */
+export function unmountDiag(): void {
+  dispose?.()
+  dispose = null
+}
+
 export function mountDiag(): void {
   /*
    * 必须精确匹配「存在名为 diag 的查询参数」。
@@ -83,6 +97,8 @@ export function mountDiag(): void {
    * CSS 变量」的常驻浮层开放给所有链接，同时白烧移动端 CPU。
    */
   if (!new URLSearchParams(location.search).has('diag')) return
+  // 重复挂载（HMR）先卸掉上一份，避免浮层与定时器叠加
+  unmountDiag()
 
   const el = document.createElement('div')
   el.style.cssText = [
@@ -95,8 +111,22 @@ export function mountDiag(): void {
   document.body.appendChild(el)
 
   const render = (): void => {
+    // 后台标签页不刷新：那里没人看，而 snapshot() 每次要跑十几处 getBoundingClientRect
+    if (document.visibilityState === 'hidden') return
     el.textContent = snapshot()
   }
   render()
-  window.setInterval(render, 600)
+
+  const timer = window.setInterval(render, 600)
+  // 切回前台时立刻补一帧，否则要等最多 600ms 才更新
+  const onVisible = (): void => {
+    if (document.visibilityState === 'visible') render()
+  }
+  document.addEventListener('visibilitychange', onVisible)
+
+  dispose = () => {
+    window.clearInterval(timer)
+    document.removeEventListener('visibilitychange', onVisible)
+    el.remove()
+  }
 }

@@ -25,6 +25,14 @@ const msgIcon: Record<Message['kind'], IconName> = {
   inspect: 'drone',
 }
 
+/** 键盘等价操作（Enter / Space）：消息条此前是裸 div + click，键盘不可达 */
+function onItemKey(e: KeyboardEvent, kind: string): void {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    onItemClick(kind)
+  }
+}
+
 function onItemClick(kind: string): void {
   // 点击即视为已读：无论是否可进详情，该条未读都清掉，
   // tabbar 角标与列表内角标同步减少
@@ -33,7 +41,7 @@ function onItemClick(kind: string): void {
     subpage.openInspectList('today')
   } else {
     // 其余类型暂无详情页，给出口提示而非静默
-    shell.showToast('该类消息详情接入中，敬请期待')
+    shell.showToast('该类消息详情接入中，敬请期待', 'info')
   }
 }
 </script>
@@ -47,7 +55,10 @@ function onItemClick(kind: string): void {
         class="msg-item"
         :class="{ 'is-link': m.kind === 'inspect' }"
         :data-kind="m.kind"
+        role="button"
+        tabindex="0"
         @click="onItemClick(m.kind)"
+        @keydown="onItemKey($event, m.kind)"
       >
         <div class="msg-ico" :class="m.kind"><SvgIcon :name="msgIcon[m.kind]" /></div>
         <div class="meta">

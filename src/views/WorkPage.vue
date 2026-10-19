@@ -52,7 +52,15 @@ function onShortClick(work: string): void {
   if (work === 'cam') cam.openCam(cam.cameras[0].id)
   else if (work === 'photo') air.openAir()
   else if (work === 'hazard') air.openHazard()
-  else shell.showToast('功能待定')
+  else shell.showToast('功能待定', 'info')
+}
+
+/** 键盘可达（工具卡是 div + role，补 tabindex 与回车/空格触发） */
+function onToolKey(e: KeyboardEvent, title: string): void {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    onToolClick(title)
+  }
 }
 
 /**
@@ -61,7 +69,7 @@ function onShortClick(work: string): void {
  * 现补「接入中」提示作为明确出口；接入后端后替换为真实跳转。
  */
 function onToolClick(title: string): void {
-  shell.showToast(`「${title}」接入中，敬请期待`)
+  shell.showToast(`「${title}」接入中，敬请期待`, 'info')
 }
 </script>
 
@@ -84,7 +92,15 @@ function onToolClick(title: string): void {
     </div>
 
     <div class="tool-list">
-      <div v-for="t in tools" :key="t.title" class="tool-card" role="button" @click="onToolClick(t.title)">
+      <div
+        v-for="t in tools"
+        :key="t.title"
+        class="tool-card"
+        role="button"
+        tabindex="0"
+        @click="onToolClick(t.title)"
+        @keydown="onToolKey($event, t.title)"
+      >
         <div class="tool-ico" :class="t.color">
           <SvgIcon :name="t.icon" />
         </div>

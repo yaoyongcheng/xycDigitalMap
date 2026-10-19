@@ -90,7 +90,17 @@ function onMapPoint(p: MapPoint): void {
         裁掉的边缘在 scale=1 时即可拖拽查看（clampPan 按「画布≥容器」放行平移）。
         allowZoomOut：缩放下限放开到整图完整可见（总览），先看全场再放大看局部。
       -->
-      <MapViewer :points="mapPoints" fit="cover" allow-zoom-out @select="onMapPoint" />
+      <!--
+        未打开时挂起，与首页那份实例互斥（见 MapViewer 的 suspended）。
+        该层是常驻 DOM（靠 .open 显隐），不挂起就等于第二个实例一直在跑。
+      -->
+      <MapViewer
+        :points="mapPoints"
+        fit="cover"
+        allow-zoom-out
+        :suspended="!shell.mapLandOpen"
+        @select="onMapPoint"
+      />
       <MapInfoCard :building="infoBuilding" @close="infoBuilding = null" />
     </div>
     <div class="land-top">

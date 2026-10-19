@@ -45,9 +45,19 @@ const updTime = (() => {
   return `${p(d.getHours())}:${p(d.getMinutes())}`
 })()
 
-/** 原 homePanels 委托的 [data-alarm] 分支：跳到今日巡检列表 */
-function onAlarmOpen(): void {
-  subpage.openInspectList('today')
+/**
+ * 原 homePanels 委托的 [data-alarm] 分支。
+ *
+ * 2026-10 交互优化（修正路径冗余）：
+ *   改造前这里丢弃了 AlarmFeed emit 出来的预警 id，一律跳「今日预警列表」，
+ *   用户在轮播里点中某一条后，还得在列表里再找一遍、再点一次才看得到详情。
+ *   现在直接用 id 打开对应详情，返回键回到列表（openAlarmDetail 的
+ *   fromList=true 已保证这条回路）。
+ *   数据异常（id 已失效）时退回列表，不让用户卡在空详情页。
+ */
+function onAlarmOpen(id: string): void {
+  if (alarm.byId(id)) subpage.openAlarmDetail(id, true)
+  else subpage.openInspectList('today')
 }
 </script>
 
@@ -55,7 +65,7 @@ function onAlarmOpen(): void {
   <div class="safe-block">
     <h4>预警<span class="upd-time">更新于 {{ updTime }}</span></h4>
     <div class="home-stats alarm-row">
-      <div class="home-stat alert"><b><CountUp :value="alarm.latest.length" /></b><span>今日预警数</span></div>
+      <div class="home-stat alert"><b><CountUp :value="alarm.latest.length" sticky /></b><span>今日预警数</span></div>
       <div class="home-chart-card alarm-mini">
         <span class="home-card-lab">近7日预警趋势</span>
         <TouchChart :model="trendModel" />
@@ -71,7 +81,7 @@ function onAlarmOpen(): void {
         <span class="home-card-lab">作业人数</span>
         <div class="crew-overview">
           <div v-for="([, unit, name], i) in crewKpis" :key="i" class="crew-kpi">
-            <b><CountUp :value="crewNums[i].value" :decimals="crewNums[i].decimals" /><em>{{ unit }}</em></b><span>{{ name }}</span>
+            <b><CountUp :value="crewNums[i].value" :decimals="crewNums[i].decimals" sticky /><em>{{ unit }}</em></b><span>{{ name }}</span>
           </div>
         </div>
       </div>

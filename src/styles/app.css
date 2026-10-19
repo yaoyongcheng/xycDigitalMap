@@ -5857,3 +5857,424 @@ button, input, textarea { font-family: inherit; color: inherit; }
     transition: none;
   }
 }
+
+/* ==========================================================================
+   交互优化补丁（2026-10）
+   本段只补「状态可见 / 反馈可达」所需的样式，不改动复刻自原版的既有外观。
+   ========================================================================== */
+
+/* —— Toast 语义化 ——
+   核心路径的成功、校验失败、功能待定原先长得完全一样，用户无法从反馈
+   判断「到底成了没有」。按 type 上色并配图标（图标见 data/icons.ts）。 */
+.toast {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 78%;
+  padding: 9px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: left;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.toast-ico {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.toast.is-info { background: rgba(29, 33, 41, 0.92); color: #E8EEF6; }
+.toast.is-info .toast-ico { color: #7FB2FF; }
+
+.toast.is-success { background: rgba(14, 56, 42, 0.94); color: #D6FFEF; }
+.toast.is-success .toast-ico { color: #2EE6A6; }
+
+.toast.is-warn { background: rgba(76, 52, 12, 0.94); color: #FFE9C2; }
+.toast.is-warn .toast-ico { color: #F5C14A; }
+
+.toast.is-error { background: rgba(80, 24, 28, 0.94); color: #FFDCDC; }
+.toast.is-error .toast-ico { color: #FF7A7A; }
+
+/* —— 图片占位 / 淡入 / 失败兜底（SmartImg） —— */
+.simg {
+  background-color: rgba(126, 158, 200, 0.14);
+  animation: simgPulse 1.15s ease-in-out infinite;
+}
+
+.simg.is-loaded {
+  background-color: transparent;
+  animation: simgIn 0.32s ease;
+}
+
+.simg.is-failed {
+  background-color: rgba(126, 158, 200, 0.08);
+  animation: none;
+  opacity: 0.62;
+}
+
+@keyframes simgPulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.85; }
+}
+@keyframes simgIn {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
+}
+
+/* —— 监控画面上的当前点位标识 ——
+   18 个点位共用同一张画面，切换后视觉无变化，这里给一个显式回执。 */
+.cam-pos-tag {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  z-index: 3;
+  max-width: 64%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(6, 12, 22, 0.66);
+  color: #E8EEF6;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* 抓拍视图的「返回直播」出口（原先只能靠多级返回键，用户常以为卡住） */
+.cam-shots-back {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: #fff;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* —— 地图信息卡的自动关闭倒计时 ——
+   卡片此前会在 6s 后毫无征兆地消失，这条与定时器同长的收缩条给出预期。 */
+.mic-life {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 7px;
+  height: 2px;
+  border-radius: 99px;
+  background: rgba(110, 168, 255, 0.5);
+  transform-origin: left center;
+  animation: micLife 6s linear forwards;
+  pointer-events: none;
+}
+
+@keyframes micLife {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+/* 日历：不可选日仍可点击（点了会说明原因），但样式保持「不可选」观感 */
+.cam-cal-day.is-disabled {
+  color: #C0C4CC;
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* —— 抽屉档位按钮：三档文案（拉起 / 半开 / 收回） —— */
+.home-sheet-toggle .lab-mid { display: none; }
+
+#page-home.is-sheet-up .home-sheet-toggle[data-level="1"] .lab-expand { display: none; }
+#page-home.is-sheet-up .home-sheet-toggle[data-level="1"] .lab-mid { display: inline; }
+
+/* —— 隐患提交按钮的 loading 态 —— */
+.hazard-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  transition: opacity 0.18s ease;
+}
+
+.hazard-submit.is-busy {
+  opacity: 0.72;
+  cursor: progress;
+}
+
+.hazard-spin {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.38);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* —— 退出登录的二次确认态 —— */
+.logout-btn.is-armed {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 650;
+}
+
+/* —— 「我的」占位页 —— */
+.sub-ph-title {
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.mine-out { padding: 14px; }
+
+.profile-banner.is-out {
+  background: linear-gradient(90deg, #8695A8, #6B7A8D);
+}
+
+/* 按压反馈：原先只有少数元素有 :active，可点的卡片类元素补上统一的按下态 */
+.tool-card:active,
+.insp-item:active,
+.alarm-feed-item:active {
+  transform: scale(0.985);
+  opacity: 0.9;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .simg,
+  .simg.is-loaded,
+  .hazard-spin,
+  .mic-life {
+    animation: none;
+  }
+  .tool-card:active,
+  .insp-item:active,
+  .alarm-feed-item:active {
+    transform: none;
+  }
+}
+
+/* =====================================================================
+ * 2026-10 · 第二轮体验优化（P2 流程 / P3 观感）
+ *
+ * 全部追加在文件末尾 —— 本文件是「线性级联 + 覆盖链」结构（暗色层/横屏
+ * 层/两列宫格层均为后写覆盖），新规则只能追加，不能插到中间。
+ *   A. 页面转场方向   B. 卡片错峰入场   C. 日历展开收起
+ *   D. 图片占位扫光   E. 统一按压反馈   F. 浮层质感
+ *   G. 减弱动效降级
+ *
+ * 动效一律包在 prefers-reduced-motion: no-preference 内，与文件内既有
+ * 约定一致（见 C. 数据动效 一节）。
+ * ===================================================================== */
+
+/* ---------- A. 页面转场方向 ----------
+   改造前四个 tab 共用一条上滑淡入，从「我的」退回和「首页」推进长得一样，
+   用户失去了「我是从哪来的」这条信息。方向由 .pages[data-dir] 提供
+   （值来自 shell.navDir，按标签栏左右次序判定）。 */
+
+@keyframes pageInFwd {
+  from { opacity: 0; transform: translate3d(12px, 0, 0); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pageInBack {
+  from { opacity: 0; transform: translate3d(-12px, 0, 0); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translate3d(0, 10px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pages[data-dir="fwd"] .page.active { animation: pageInFwd 0.26s cubic-bezier(0.22, 0.61, 0.36, 1); }
+  .pages[data-dir="back"] .page.active { animation: pageInBack 0.26s cubic-bezier(0.22, 0.61, 0.36, 1); }
+
+  /* ---------- B. 卡片错峰入场 ----------
+     页面内元素同时出现没有层次。按序号递增延迟做错峰，最快的一张先落地。
+     只作用于列表型页面：首页的视觉重心是地图，已有扫描/脉冲动效，再加
+     错峰反而抢戏；且首页顶层含绝对定位的抽屉，逐个位移风险不对等。 */
+  #page-work.active .work-short,
+  #page-work.active .tool-card,
+  #page-msg.active .msg-item,
+  #page-mine.active > * {
+    animation: cardIn 0.38s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+  }
+  #page-work.active .work-short:nth-child(1) { animation-delay: 0.02s; }
+  #page-work.active .work-short:nth-child(2) { animation-delay: 0.06s; }
+  #page-work.active .work-short:nth-child(3) { animation-delay: 0.10s; }
+  #page-work.active .work-short:nth-child(4) { animation-delay: 0.14s; }
+  #page-work.active .tool-card:nth-child(1) { animation-delay: 0.16s; }
+  #page-work.active .tool-card:nth-child(2) { animation-delay: 0.20s; }
+  #page-work.active .tool-card:nth-child(3) { animation-delay: 0.24s; }
+  #page-work.active .tool-card:nth-child(4) { animation-delay: 0.28s; }
+  #page-work.active .tool-card:nth-child(5) { animation-delay: 0.32s; }
+  #page-work.active .tool-card:nth-child(6) { animation-delay: 0.36s; }
+  #page-msg.active .msg-item:nth-child(1) { animation-delay: 0.02s; }
+  #page-msg.active .msg-item:nth-child(2) { animation-delay: 0.08s; }
+  #page-msg.active .msg-item:nth-child(3) { animation-delay: 0.14s; }
+  #page-msg.active .msg-item:nth-child(4) { animation-delay: 0.20s; }
+  #page-msg.active .msg-item:nth-child(5) { animation-delay: 0.26s; }
+  #page-mine.active > *:nth-child(1) { animation-delay: 0.02s; }
+  #page-mine.active > *:nth-child(2) { animation-delay: 0.10s; }
+  #page-mine.active > *:nth-child(3) { animation-delay: 0.18s; }
+  #page-mine.active > *:nth-child(4) { animation-delay: 0.26s; }
+}
+
+/* ---------- C. 日历展开收起 ----------
+   原先 .hide 是瞬时 display:none —— 展开/收起没有任何过渡，浮层像是凭空
+   出现又凭空消失。改为透明度 + 轻微缩放过渡；元素本身是绝对定位的浮层，
+   不参与父级布局，可以安全地把 display 换掉（visibility 保留可过渡性）。 */
+.cam-cal {
+  transition: opacity 0.2s ease, transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1),
+    visibility 0.24s;
+  transform-origin: top right;
+}
+
+.cam-cal.hide {
+  display: block;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px) scale(0.96);
+  pointer-events: none;
+}
+
+/* ---------- D. 图片占位扫光 ----------
+   原先加载中是整块明暗呼吸，观感更像「闪烁故障」而不是「正在加载」。
+   换成一道扫光：骨架方向 = 读取方向，一眼能认出是占位。 */
+.simg {
+  background-image: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 26%,
+    rgba(255, 255, 255, 0.55) 48%,
+    rgba(255, 255, 255, 0) 70%
+  );
+  background-size: 240% 100%;
+  background-repeat: no-repeat;
+  animation: simgShimmer 1.3s linear infinite;
+}
+
+@keyframes simgShimmer {
+  from { background-position: -60% 0; }
+  to { background-position: 160% 0; }
+}
+
+/* 加载完成/失败后要连底纹一起撤掉，否则淡入后还在扫 */
+.simg.is-loaded,
+.simg.is-failed {
+  background-image: none;
+}
+
+/* ---------- E. 统一按压反馈 ----------
+   此前 :active 只覆盖了少数几类元素，同样是「可点」，有的按下有反馈、
+   有的没有。这里给所有原生按钮与 role=button 的元素一套一致的按下态。
+
+   只用透明度，**刻意不动 transform**：一批可点元素是靠
+   `transform: translate(-50%, -50%)` 做居中定位的（抽屉切换按钮、图表气泡
+   等），在 :active 里写 transform 会直接顶掉定位位移 —— 表现为按下瞬间
+   按钮跳走半个身位、指针落空、click 收不到，也就是「点了没反应」。
+   需要缩放反馈的卡片类元素单独在下面指定，且只挑不靠 transform 定位的。 */
+button,
+[role="button"] {
+  transition: opacity 0.14s ease, background-color 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button:active,
+  [role="button"]:active {
+    opacity: 0.82;
+  }
+
+  /* 不依赖 transform 定位的可点块，额外给一点缩放（卡片/列表项） */
+  .tool-card:active,
+  .insp-item:active,
+  .alarm-feed-item:active,
+  .eq-card:active,
+  .msg-item:active,
+  .work-short:active,
+  .menu-item:active {
+    transform: scale(0.985);
+  }
+}
+
+/* 上面这批的缩放需要过渡，否则按下是硬切 */
+.tool-card,
+.insp-item,
+.alarm-feed-item,
+.eq-card,
+.msg-item,
+.work-short,
+.menu-item {
+  transition: opacity 0.14s ease, transform 0.14s ease, background-color 0.18s ease;
+}
+
+/* ---------- F. 浮层质感 ----------
+   首页顶部文字直接压在地图上，地图亮处白字会糊。加一层自上而下的暗角
+   （不是整块底色条）：可读性上去了，地图仍然透出来。 */
+.home-top::before,
+.land-top::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: -16px;
+  right: -16px;
+  top: -56px;
+  bottom: -14px;
+  background: linear-gradient(180deg, rgba(4, 10, 20, 0.62), rgba(4, 10, 20, 0));
+  pointer-events: none;
+}
+
+/* 日历浮层：半透明 + 背景模糊，让它「浮」在抓拍网格之上而不是盖住 */
+.cam-cal {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
+
+/* 标签栏当前项加一条指示条：此前只有颜色变化，扫视时不够明确 */
+.tab.active::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 22px;
+  height: 2px;
+  margin-left: -11px;
+  border-radius: 2px;
+  background: var(--blue);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tab.active::after { animation: tabInd 0.28s cubic-bezier(0.22, 0.61, 0.36, 1); }
+}
+
+@keyframes tabInd {
+  from { transform: scaleX(0.2); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+/* ---------- G. 减弱动效降级 ----------
+   上面新增的动画与过渡在系统开启「减弱动效」时全部退化为瞬时/无位移。 */
+@media (prefers-reduced-motion: reduce) {
+  .cam-cal { transition: none; }
+  .simg { animation: none; }
+  button:active,
+  [role="button"]:active { opacity: 0.82; }
+
+  .pages[data-dir="fwd"] .page.active,
+  .pages[data-dir="back"] .page.active,
+  #page-work.active .work-short,
+  #page-work.active .tool-card,
+  #page-msg.active .msg-item,
+  #page-mine.active > * {
+    animation: none;
+  }
+}

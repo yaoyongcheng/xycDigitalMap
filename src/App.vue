@@ -95,7 +95,11 @@ watchEffect(() => {
           <div class="stack">
             <NavBar />
 
-            <main class="pages">
+            <!--
+              data-dir 驱动页面转场方向：向右推进的 tab 从右侧滑入，退回时
+              从左侧滑入（见 shell.navDir 与 app.css 的 .pages[data-dir]）。
+            -->
+            <main class="pages" :data-dir="shell.navDir">
               <HomePage />
               <WorkPage />
               <MsgPage />

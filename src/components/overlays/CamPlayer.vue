@@ -4,6 +4,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import BackBar from '@/components/ui/BackBar.vue'
 import DayPickChips from '@/components/ui/DayPickChips.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
+import SmartImg from '@/components/ui/SmartImg.vue'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
 import { addDays, camStamp, formatCamDate, startOfDay } from '@/utils/date'
@@ -104,6 +105,13 @@ function onShots(): void {
   cam.showCamMode('shots')
 }
 
+/** 抓拍视图 → 直播视图（详情见模板中「返回直播」按钮的注释） */
+function onBackLive(): void {
+  cam.camCalOpen = false
+  cam.closeShotPop()
+  cam.showCamMode('live')
+}
+
 /** 原 js/app.js:1258-1260 */
 function onLandToggle(): void {
   cam.setCamLand(!shell.isLand)
@@ -160,6 +168,19 @@ const shotMeta = computed(() => {
 const shotLabel = computed(() => formatCamDate(cam.camShotDate))
 
 const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
+
+/**
+ * 画面左上角的当前点位标识（2026-10 交互优化新增）。
+ *
+ * 原版把 18 个点位的 img 统一改成了同一张图（见 cam.ts 的 Object.assign），
+ * 于是「切换点位」在视觉上完全没有变化 —— 用户点完芯片无法确认到底切没
+ * 切成功。这里把点位名与分组直接压在画面上，作为切换结果的显式回执。
+ * 接入真实点位流后画面本身会变，这个标识依然有用（点位名比画面更好认）。
+ */
+const stageTag = computed(() => `${cam.currentCam.group} · ${cam.currentCam.name}`)
+
+/** 顶部标题随视图变化：抓拍视图下不再显示「视频监控」 */
+const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视频监控'))
 </script>
 
 <template>
@@ -170,7 +191,7 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
     :hidden="!cam.isOpen"
     :aria-hidden="!cam.isOpen"
   >
-    <BackBar title="视频监控" back-id="btnCamBack" title-id="camPlayerName" @back="onBack">
+    <BackBar :title="barTitle" back-id="btnCamBack" title-id="camPlayerName" @back="onBack">
       <template #right>
         <span class="cam-live" id="camLive">直播中</span>
       </template>
@@ -179,6 +200,7 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
     <div class="cam-live-view" id="camLiveView" :class="{ hide: cam.camMode !== 'live' }">
       <div class="cam-player-stage" id="camPlayerStage">
         <img id="camPlayerFrame" :src="cam.currentCam.img" :class="cam.currentCam.pos" alt="" loading="lazy" />
+        <span class="cam-pos-tag" id="camPosTag">{{ stageTag }}</span>
         <span class="cam-time" id="camPlayerTime">{{ stamp }}</span>
         <button class="cam-play" id="btnCamPlay" type="button" aria-label="播放" @click="onPlay"></button>
         <div class="cam-stage-acts">
@@ -216,8 +238,15 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
     <div class="cam-shots-view" id="camShotsView" :class="{ hide: cam.camMode !== 'shots' }">
       <div class="cam-shots">
         <div class="cam-shots-hd">
-          <strong>历史抓拍</strong>
+          <strong>历史抓拍 · {{ cam.currentCam.name }}</strong>
           <span>每天 3 张，点开查看照片</span>
+          <!--
+            返回直播的显式出口（2026-10 交互优化新增）。
+            原先从直播进抓拍后，唯一的回去方式是顶部返回键 —— 而返回键
+            在这层还压着「关大图 / 收日历」两级优先，用户常常按了没反应，
+            以为卡住了。这里给一条直达的路。
+          -->
+          <button class="cam-shots-back" id="btnCamBackLive" type="button" @click="onBackLive">返回直播</button>
         </div>
         <div class="cam-shot-days" id="camShotDays">
           <DayPickChips
@@ -236,7 +265,7 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
             :data-shot="i"
             @click="onShotClick(i)"
           >
-            <img :class="s.pos" :src="s.img" :alt="`${s.time} 抓拍`" loading="lazy" />
+            <SmartImg :pos="s.pos" :src="s.img" :alt="`${s.time} 抓拍`" />
             <span>{{ shotLabel }} {{ s.time }}</span>
           </button>
         </div>
@@ -258,7 +287,7 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
       :aria-hidden="!cam.shotPopOpen"
     >
       <button class="cam-shot-close" id="btnShotClose" type="button" @click="onShotClose">关闭</button>
-      <img id="camShotImg" :src="currentShot?.img" :class="currentShot?.pos" alt="" loading="lazy" />
+      <SmartImg id="camShotImg" :pos="currentShot?.pos" :src="currentShot?.img ?? ''" alt="" />
       <p id="camShotMeta">{{ shotMeta }}</p>
     </div>
   </div>

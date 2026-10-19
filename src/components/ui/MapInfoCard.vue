@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { onUnmounted, watch } from 'vue'
 
 import type { Building } from '@/types'
 
@@ -9,9 +9,18 @@ import type { Building } from '@/types'
  * 楼栋撒点的详情展示：此前是一行 Toast，升级为地图内底部信息卡
  * （名称/状态徽标/层数/达标率/迷你进度条）。
  * 自动 6s 消失，也可手动关闭；点击另一楼栋即时换卡（key 重挂载）。
+ *
+ * 2026-10 交互优化：
+ *   ① 补上倒计时条 —— 原先卡片会毫无征兆地在 6s 后消失，用户常常没看完
+ *      就被抽走，也不知道它本来就会自动关。现在底部有一条同步收缩的进度条。
+ *   ② onUnmounted 里清理定时器（此前遗留：组件卸载后定时器仍在跑，
+ *      触发 emit('close') 时父组件已不在，等于白跑一次并留下悬挂句柄）。
  */
 const props = defineProps<{ building: Building | null }>()
 const emit = defineEmits<{ close: [] }>()
+
+/** 自动关闭时长（ms），与 .mic-life 的动画时长同源 */
+const LIFE_MS = 6000
 
 let timer = 0
 
@@ -20,10 +29,12 @@ watch(
   (b) => {
     window.clearTimeout(timer)
     if (b) {
-      timer = window.setTimeout(() => emit('close'), 6000)
+      timer = window.setTimeout(() => emit('close'), LIFE_MS)
     }
   },
 )
+
+onUnmounted(() => window.clearTimeout(timer))
 </script>
 
 <template>
@@ -49,6 +60,8 @@ watch(
           <i :style="{ width: Math.round((building.done / building.total) * 100) + '%' }"></i>
         </div>
       </div>
+      <!-- 自动关闭倒计时：让用户知道这张卡会自己走，也知道还剩多久 -->
+      <span class="mic-life" aria-hidden="true"></span>
     </div>
   </Transition>
 </template>

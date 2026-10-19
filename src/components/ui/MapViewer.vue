@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import type { MapPoint } from '@/types'
 
@@ -41,12 +41,22 @@ const props = withDefaults(
      * 用户可以先总览全场再放大看局部。
      */
     allowZoomOut?: boolean
+    /**
+     * 挂起：不再观测容器尺寸、不再响应手势。
+     *
+     * 全项目存在两个常驻实例（首页小地图 + 横屏全屏地图），原先两者都在跑
+     * ResizeObserver —— 而未打开的那个容器尺寸恒为 0，观测纯属白烧，且其
+     * 回调里的 clampPan 还会参与响应式计算。调用方应让二者互斥挂起，
+     * 保证任一时刻只有一个实例活跃。
+     */
+    suspended?: boolean
   }>(),
   {
     fit: 'cover',
     src: `${import.meta.env.BASE_URL}img/site-map.webp`,
     compact: false,
     allowZoomOut: false,
+    suspended: false,
   },
 )
 
@@ -224,6 +234,7 @@ function cancelMove(): void {
 }
 
 function onPointerDown(e: PointerEvent): void {
+  if (props.suspended) return
   if (e.pointerType === 'mouse' && e.button !== 0) return
   // 手势起点：锁定矩形，后续 move 全部复用它
   gestureRect = boxEl.value?.getBoundingClientRect() ?? null
@@ -311,12 +322,14 @@ function onPointerUp(e: PointerEvent): void {
 }
 
 function onWheel(e: WheelEvent): void {
+  if (props.suspended) return
   e.preventDefault()
   const p = relPos(e.clientX, e.clientY)
   zoomAt(p.x, p.y, scale.value * (e.deltaY < 0 ? 1.16 : 1 / 1.16))
 }
 
 function onDblClick(e: MouseEvent): void {
+  if (props.suspended) return
   const p = relPos(e.clientX, e.clientY)
   if (scale.value > 1.01) reset()
   // 总览态（<1x）下双击先回到 1x 铺满，避免 0.6x → 2.4x 的跳变
@@ -344,6 +357,18 @@ function onImgLoad(e: Event): void {
 
 let ro: ResizeObserver | null = null
 
+/** 挂起期间不再观测容器：尺寸恒为 0 的隐藏实例无需维持布局计算 */
+function stopObserving(): void {
+  ro?.disconnect()
+}
+
+/** 恢复观测。ResizeObserver 在 observe 时会立刻回调一次，尺寸自动校准回来 */
+function startObserving(): void {
+  const el = boxEl.value
+  if (!el || !ro) return
+  ro.observe(el)
+}
+
 onMounted(() => {
   const el = boxEl.value
   if (!el) return
@@ -353,10 +378,15 @@ onMounted(() => {
     boxH.value = r.height
     clampPan()
   })
-  ro.observe(el)
+  if (!props.suspended) startObserving()
   // wheel 需要 preventDefault，显式注册为非 passive
   el.addEventListener('wheel', onWheel, { passive: false })
 })
+
+watch(
+  () => props.suspended,
+  (s) => (s ? stopObserving() : startObserving()),
+)
 
 onUnmounted(() => {
   cancelMove()

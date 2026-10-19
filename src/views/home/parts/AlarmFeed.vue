@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
+import SmartImg from '@/components/ui/SmartImg.vue'
 import { ALARM_FEED_SHOW } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 
@@ -91,9 +92,17 @@ function start(retry = 0): void {
   }, 4000)
 }
 
-/** 原 homePanels 委托的 [data-alarm] 分支（app.js:976-980）跳到巡检列表 */
+/** 原 homePanels 委托的 [data-alarm] 分支（app.js:976-980）—— 现直达详情 */
 function onItemClick(id: string): void {
   emit('open', id)
+}
+
+/** 键盘可达（原先是纯 div + role，键盘用户完全无法操作） */
+function onKey(e: KeyboardEvent, id: string): void {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    onItemClick(id)
+  }
 }
 
 onMounted(() => {
@@ -116,9 +125,11 @@ onUnmounted(() => {
           class="alarm-feed-item"
           :data-alarm="a.id"
           role="button"
+          tabindex="0"
           @click="onItemClick(a.id)"
+          @keydown="onKey($event, a.id)"
         >
-          <img class="alarm-feed-pic" :src="a.img" :alt="a.type" />
+          <SmartImg class="alarm-feed-pic" :src="a.img" :alt="a.type" />
           <div class="alarm-feed-meta">
             <strong>{{ a.title }}<i v-if="i === 0" class="feed-live" aria-hidden="true"></i></strong>
             <p>{{ a.desc }}</p>

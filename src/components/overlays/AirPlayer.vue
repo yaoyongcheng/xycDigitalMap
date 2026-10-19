@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import BackBar from '@/components/ui/BackBar.vue'
 import DayPickChips from '@/components/ui/DayPickChips.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
+import SmartImg from '@/components/ui/SmartImg.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { addDays, formatCamDate, startOfDay } from '@/utils/date'
 
@@ -116,7 +117,7 @@ const popMeta = computed(() => {
         :data-air="i"
         @click="onPhotoClick(i)"
       >
-        <img :class="s.pos" :src="s.img" :alt="`${label} ${s.time} 航拍`" loading="lazy" />
+        <SmartImg :pos="s.pos" :src="s.img" :alt="`${label} ${s.time} 航拍`" />
         <span>{{ label }} {{ s.time }}</span>
       </button>
     </div>
@@ -129,7 +130,7 @@ const popMeta = computed(() => {
       :aria-hidden="!air.airPopOpen"
     >
       <button class="cam-shot-close" id="btnAirClose" type="button" @click="onPopClose">关闭</button>
-      <img id="airPopImg" :src="currentShot?.img" :class="currentShot?.pos" alt="" loading="lazy" />
+      <SmartImg id="airPopImg" :pos="currentShot?.pos" :src="currentShot?.img ?? ''" alt="" />
       <p id="airPopMeta">{{ popMeta }}</p>
     </div>
   </div>

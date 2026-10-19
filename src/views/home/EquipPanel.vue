@@ -31,6 +31,19 @@ const statusSegs = computed(() => [
 /** 选中段（扇区点击与图例点击双向联动；null = 未选中） */
 const eqSel = ref<number | null>(null)
 
+/** 图例点选：同一段再点一次取消选中 */
+function toggleSeg(i: number): void {
+  eqSel.value = eqSel.value === i ? null : i
+}
+
+/** 键盘等价操作（Enter / Space） */
+function onKey(e: KeyboardEvent, i: number): void {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    toggleSeg(i)
+  }
+}
+
 /** 原版仅 units.length > 1 的设备可下钻 */
 function canDrill(d: Equip): boolean {
   return d.units.length > 1
@@ -60,8 +73,9 @@ function canDrill(d: Equip): boolean {
   <template v-else>
     <div class="home-stats alarm-row">
       <div class="home-chart-card eq-count">
-        <div class="eq-count-item"><b><CountUp :value="kinds" /><em>种</em></b><span>设备种类</span></div>
-        <div class="eq-count-item"><b><CountUp :value="qty" /><em>台</em></b><span>设备数量</span></div>
+        <!-- sticky：面板是 v-if 切换的，不加则每次切回都从 0 重滚同样的数字 -->
+        <div class="eq-count-item"><b><CountUp :value="kinds" sticky /><em>种</em></b><span>设备种类</span></div>
+        <div class="eq-count-item"><b><CountUp :value="qty" sticky /><em>台</em></b><span>设备数量</span></div>
       </div>
       <div class="home-chart-card eq-status">
         <span class="alarm-mini-lab">设备状态</span>
@@ -72,12 +86,31 @@ function canDrill(d: Equip): boolean {
             :selected="eqSel"
             @select="eqSel = $event"
           />
+          <!--
+            图例是可点的筛选开关，此前是裸 div + click：键盘完全不可达，
+            也没有任何「已选中」的语义。补 role/tabindex/aria-pressed 后，
+            读屏与键盘用户才能知道它既能操作、又处在开还是关。
+          -->
           <div class="eq-status-leg">
-            <div :class="{ 'leg-on': eqSel === 0 }" @click="eqSel = eqSel === 0 ? null : 0">
-              <i class="on"></i><span>在线</span><b><CountUp :value="onCount" /></b>
+            <div
+              :class="{ 'leg-on': eqSel === 0 }"
+              role="button"
+              tabindex="0"
+              :aria-pressed="eqSel === 0"
+              @click="toggleSeg(0)"
+              @keydown="onKey($event, 0)"
+            >
+              <i class="on"></i><span>在线</span><b><CountUp :value="onCount" sticky /></b>
             </div>
-            <div :class="{ 'leg-on': eqSel === 1 }" @click="eqSel = eqSel === 1 ? null : 1">
-              <i class="off"></i><span>离线</span><b><CountUp :value="offCount" /></b>
+            <div
+              :class="{ 'leg-on': eqSel === 1 }"
+              role="button"
+              tabindex="0"
+              :aria-pressed="eqSel === 1"
+              @click="toggleSeg(1)"
+              @keydown="onKey($event, 1)"
+            >
+              <i class="off"></i><span>离线</span><b><CountUp :value="offCount" sticky /></b>
             </div>
           </div>
         </div>

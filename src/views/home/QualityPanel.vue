@@ -25,6 +25,19 @@ const qaSegs = computed(() => qaSteps.map((d) => ({ label: d.name, value: d.n, c
 /** 验收工序选中段（扇区与图例双向联动） */
 const qaSel = ref<number | null>(null)
 
+/** 图例点选：同一段再点一次取消选中 */
+function toggleStep(i: number): void {
+  qaSel.value = qaSel.value === i ? null : i
+}
+
+/** 键盘等价操作（Enter / Space） */
+function onKey(e: KeyboardEvent, i: number): void {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    toggleStep(i)
+  }
+}
+
 /* —— 合格率柱状图触控 —— */
 
 const colsEl = ref<HTMLElement>()
@@ -135,12 +148,17 @@ const barLeft = computed(() => {
           <div class="donut-label"><b>100</b><span>验收工序</span></div>
         </DonutTouch>
         <div class="qa-legend">
+          <!-- 图例是筛选开关：补 role/tabindex/aria-pressed，键盘与读屏可达 -->
           <div
             v-for="(d, i) in qaSteps"
             :key="d.name"
             class="qa-legend-item"
             :class="{ 'leg-on': qaSel === i }"
-            @click="qaSel = qaSel === i ? null : i"
+            role="button"
+            tabindex="0"
+            :aria-pressed="qaSel === i"
+            @click="toggleStep(i)"
+            @keydown="onKey($event, i)"
           >
             <i :style="{ background: d.color }"></i><span>{{ d.name }}</span><em>{{ d.n }}</em>
           </div>

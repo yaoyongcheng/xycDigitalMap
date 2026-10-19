@@ -14,6 +14,23 @@ export interface AirShot {
   pos: string
 }
 
+/** 隐患上报的提交载荷（接口接入后即为 POST body） */
+export interface HazardPayload {
+  kind: string
+  photos: number
+  desc: string
+  at: string
+}
+
+/** 选图结果：用于把「被拒了、拒了几张、为什么」如实告诉用户 */
+export interface AddFilesResult {
+  added: number
+  /** 因不是图片被拒 */
+  rejectedType: number
+  /** 因超过 6 张上限被拒 */
+  rejectedLimit: number
+}
+
 /**
  * 无人机巡检 + 隐患上报
  *
@@ -46,13 +63,26 @@ export const useAirHazardStore = defineStore('airHazard', () => {
 
   /**
    * 原为 #hazardDesc 的 value。
+   *
    * 原版存在缺陷：resetHazard() 会清空它（app.js:1429），但提交时
-   * 完全不读取，即「描述文本实际不会提交」。1:1 复刻下保留该行为。
+   * 完全不读取，即「描述文本实际不会提交」。
+   * 2026-10 交互优化已修正：描述随 commitHazard() 进入提交载荷
+   * （见 lastSubmit），成功反馈也会回显描述字数 —— 用户填了却毫无
+   * 感知属欺骗性交互，不值得为 1:1 保留。
    */
   const hazardDesc = ref('')
 
   /** 原为 #hazardPage 的 .open / hidden */
   const hazardOpen = ref(false)
+
+  /** 提交中（防连点 + 按钮 loading 文案） */
+  const hazardSubmitting = ref(false)
+
+  /**
+   * 最近一次成功提交的载荷（2026-10 新增，替代「填了不读」的原版行为）。
+   * 目前没有后端，落到这个 ref 上，接入接口后即为 POST 的 body。
+   */
+  const lastSubmit = ref<HazardPayload | null>(null)
 
   /** 原 js/app.js:1338-1345 —— 按日期偏移派生照片数（8~10 张） */
   function airShots(day: number): AirShot[] {
@@ -113,12 +143,28 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     resetHazard()
   }
 
-  /** 原 js/app.js:1469-1477 —— 文件选择，上限 6 张且仅 image/* */
-  function addHazardFiles(files: FileList | File[]): void {
+  /**
+   * 原 js/app.js:1469-1477 —— 文件选择，上限 6 张且仅 image/*
+   *
+   * 2026-10 交互优化：原来被拒的文件是静默丢弃（forEach 里直接 return），
+   * 用户选了 10 张只进来 6 张、或选了个 PDF，界面上完全没有反应。
+   * 现在把拒绝数量回给调用方，由页面明确提示。
+   */
+  function addHazardFiles(files: FileList | File[]): AddFilesResult {
+    const r: AddFilesResult = { added: 0, rejectedType: 0, rejectedLimit: 0 }
     Array.from(files).forEach((file) => {
-      if (hazardImgs.value.length >= 6 || !file.type.startsWith('image/')) return
+      if (!file.type.startsWith('image/')) {
+        r.rejectedType += 1
+        return
+      }
+      if (hazardImgs.value.length >= 6) {
+        r.rejectedLimit += 1
+        return
+      }
       hazardImgs.value.push(URL.createObjectURL(file))
+      r.added += 1
     })
+    return r
   }
 
   /** 原 js/app.js:1460-1466 —— 删除某张已选照片并释放 ObjectURL */
@@ -128,12 +174,57 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     hazardImgs.value.splice(i, 1)
   }
 
-  /** 原 js/app.js:1486-1493 —— 提交。注意原版不读取 hazardDesc */
+  /**
+   * 原 js/app.js:1486-1493 —— 提交校验（纯规则，不含异步）。
+   *
+   * 只做「能不能提交」的判断并返回文案，不产生副作用，便于单测直接断言；
+   * 真正带 loading 的提交走 commitHazard()。
+   */
   function submitHazard(): { ok: boolean; message: string } {
     if (!hazardImgs.value.length) {
       return { ok: false, message: '请先拍摄或选择现场照片' }
     }
     return { ok: true, message: '隐患已上报，待整改' }
+  }
+
+  /**
+   * 带 loading 的提交（2026-10 新增，非原版内容）。
+   *
+   * 改造前的 onSubmit 是同步的：点一下立即 Toast + 关闭页面，连点会重复触发，
+   * 且没有任何「正在提交」的过程反馈。这里：
+   *   - 用 hazardSubmitting 挡住重复提交（按钮同时 disabled，双保险）
+   *   - 模拟一次网络往返，让按钮真的走完 loading → 成功 的状态机
+   *   - 描述文本进入载荷（原版缺陷：填了不读），成功文案回显描述字数
+   *
+   * 接入真实接口后，把 sleep 换成请求即可，其余状态机不用动。
+   */
+  async function commitHazard(): Promise<{ ok: boolean; message: string }> {
+    if (hazardSubmitting.value) {
+      return { ok: false, message: '正在提交，请勿重复点击' }
+    }
+    const guard = submitHazard()
+    if (!guard.ok) return guard
+
+    hazardSubmitting.value = true
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 600))
+
+      const desc = hazardDesc.value.trim()
+      lastSubmit.value = {
+        kind: hazardKind.value,
+        photos: hazardImgs.value.length,
+        desc,
+        at: new Date().toISOString(),
+      }
+      return {
+        ok: true,
+        message: desc
+          ? `隐患已上报，待整改（${hazardKind.value} · ${lastSubmit.value.photos}张 · 描述${desc.length}字）`
+          : `隐患已上报，待整改（${hazardKind.value} · ${lastSubmit.value.photos}张）`,
+      }
+    } finally {
+      hazardSubmitting.value = false
+    }
   }
 
   return {
@@ -147,6 +238,8 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     hazardImgs,
     hazardDesc,
     hazardOpen,
+    hazardSubmitting,
+    lastSubmit,
     airList,
     airShots,
     resetHazard,
@@ -157,5 +250,6 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     addHazardFiles,
     removeHazardImg,
     submitHazard,
+    commitHazard,
   }
 })
