@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { watch } from 'vue'
+
 import type { Alarm } from '@/types'
+import { useImageZoom } from '@/utils/zoom'
 
 /**
  * 预警详情（子页内容）
@@ -7,13 +10,29 @@ import type { Alarm } from '@/types'
  * 对应原 js/app.js:780-799 renderAlarmDetail(a)。
  * 注意「项目名称 / 任务名称 / 地址」三项在原版是硬编码常量，
  * 不来自预警数据 —— 1:1 复刻下如实保留。
+ *
+ * 2026-10 新增：现场大图支持双指捏合 / 双击 / 滚轮缩放与拖动平移。
+ * 隐患照片的判读点往往在很小的区域，不能放大等于看不了。
  */
-defineProps<{ alarm: Alarm }>()
+const props = defineProps<{ alarm: Alarm }>()
+
+const { zoomed, label, imgStyle, animating, handlers, reset } = useImageZoom()
+
+// 从上一条预警切到下一条时，沿用上一张的缩放会让用户莫名其妙
+watch(() => props.alarm.img, reset)
 </script>
 
 <template>
   <div class="alarm-hero">
-    <img :src="alarm.img" :alt="alarm.type" />
+    <img
+      :src="alarm.img"
+      :alt="alarm.type"
+      class="zoomable"
+      :class="{ 'is-zoomed': zoomed, 'is-anim': animating }"
+      :style="imgStyle"
+      v-on="handlers"
+    />
+    <span v-if="zoomed" class="zoom-badge">{{ label }}</span>
     <div class="alarm-hero-tag">
       <strong>自动巡航无人机</strong>
       <span>UAV-25638583</span>

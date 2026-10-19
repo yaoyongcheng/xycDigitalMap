@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 
 import BackBar from '@/components/ui/BackBar.vue'
 import DayPickChips from '@/components/ui/DayPickChips.vue'
@@ -7,6 +7,7 @@ import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { addDays, formatCamDate, startOfDay } from '@/utils/date'
+import { useImageZoom } from '@/utils/zoom'
 
 /**
  * 无人机巡检全屏层
@@ -72,6 +73,26 @@ function onPopClose(): void {
 
 const currentShot = computed(() => air.airList[air.airPopIdx])
 
+/**
+ * 大图缩放（2026-10 新增，非原版内容）
+ * 航拍照片的判读点常在小范围，不能放大等于看不了。
+ * SmartImg 的根元素就是 <img>，这些监听与 style 会经 attribute 继承落上去。
+ */
+const {
+  zoomed: imgZoomed,
+  label: zoomLabel,
+  imgStyle,
+  animating: zoomAnim,
+  handlers: zoomHandlers,
+  reset: resetZoom,
+} = useImageZoom()
+
+// 换照片或关闭弹层时复原，否则下次打开还停在上一张的缩放位置
+watch([() => air.airPopOpen, () => air.airPopIdx], () => {
+  if (!air.airPopOpen) resetZoom()
+})
+watch(() => currentShot.value?.img, resetZoom)
+
 /** 原 app.js:1552 airPopMeta.textContent */
 const popMeta = computed(() => {
   const s = currentShot.value
@@ -130,7 +151,17 @@ const popMeta = computed(() => {
       :aria-hidden="!air.airPopOpen"
     >
       <button class="cam-shot-close" id="btnAirClose" type="button" @click="onPopClose">关闭</button>
-      <SmartImg id="airPopImg" :pos="currentShot?.pos" :src="currentShot?.img ?? ''" alt="" />
+      <SmartImg
+        id="airPopImg"
+        :pos="currentShot?.pos"
+        :src="currentShot?.img ?? ''"
+        alt=""
+        class="zoomable"
+        :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
+        :style="imgStyle"
+        v-on="zoomHandlers"
+      />
+      <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
       <p id="airPopMeta">{{ popMeta }}</p>
     </div>
   </div>

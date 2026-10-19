@@ -2432,6 +2432,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .alarm-hero {
   position: relative;
   background: #050a14;
+  /* 缩放后的图像要在这里被裁掉，不能溢到信息区上 */
+  overflow: hidden;
 }
 
 .alarm-hero img {
@@ -3565,6 +3567,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
   align-items: center;
   justify-content: center;
   padding: 56px 12px 24px;
+  /* 同上：放大后的图像不得溢出弹层 */
+  overflow: hidden;
 }
 
 .cam-shot-pop.open { display: flex; }
@@ -6261,11 +6265,58 @@ button,
   to { transform: none; opacity: 1; }
 }
 
-/* ---------- G. 减弱动效降级 ----------
+/* ---------- G. 图片缩放（预警详情 / 航拍大图） ----------
+   手势逻辑见 utils/zoom.ts：
+     · 未放大时 touch-action: pan-y —— 单指仍能滚页面，不劫持正常浏览
+     · 已放大时切 none —— 单指改为拖动图片，页面不再跟着滚
+   缩放围绕元素中心，translate 由 JS 算好写进内联 transform。 */
+img.zoomable {
+  transform-origin: center center;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 只在放大后接管单指拖动并提升为合成层，静止态不占 GPU 内存 */
+img.zoomable.is-zoomed {
+  touch-action: none;
+  will-change: transform;
+}
+
+img.zoomable.is-anim { transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1); }
+
+/* 倍率角标：放大后明确告知「现在几倍」，否则容易误以为没点中 */
+.zoom-badge {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  animation: zoomBadgeIn 0.18s ease both;
+}
+
+/* 航拍弹层底部有一行说明文字，角标上移避开 */
+.cam-shot-pop .zoom-badge { bottom: 52px; }
+
+@keyframes zoomBadgeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- H. 减弱动效降级 ----------
    上面新增的动画与过渡在系统开启「减弱动效」时全部退化为瞬时/无位移。 */
 @media (prefers-reduced-motion: reduce) {
   .cam-cal { transition: none; }
   .simg { animation: none; }
+  img.zoomable.is-anim { transition: none; }
+  .zoom-badge { animation: none; }
   button:active,
   [role="button"]:active { opacity: 0.82; }
 
