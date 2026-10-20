@@ -332,11 +332,13 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-top: 1px solid var(--line);
   display: flex;
   flex-shrink: 0;
-  /* 子页打开时底栏只是「不可见」而不是「不占位」（见下方 :has 规则），
-     因此层级要高于 .subpage(40)：右滑跟手时底栏整条从子页下面露出来；
-     正常状态下它盖在页面内容之上。 */
   position: relative;
-  z-index: 45;
+  /*
+   * 刻意不设 z-index：底栏要待在 .subpage(40) **下面**。
+   * 子页右滑时是「被揭开」——底栏随着页面滑动逐渐露出来（微信式），
+   * 而不是盖在子页上面整条突然出现。子页打开时它只是 visibility:hidden，
+   * 位置一直留着，所以揭开时不会引起任何布局变化。
+   */
 }
 
 .tab {
@@ -4551,9 +4553,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 /* 右滑跟手中：底栏整条露出来（它一直占着位置，只是此前不可见）。
    这里必须带上 :has(.subpage.open) —— 该选择器的特异性取括号内的最大值，
-   单写 .app.is-swipe-back 会输给它。 */
+   单写 .app.is-swipe-back 会输给它。底栏位于 .subpage 之下，所以是随着
+   页面滑动被逐渐揭开，而不是盖在页面上面。 */
 .app:has(.subpage.open).is-swipe-back .tabbar {
   visibility: visible;
+  pointer-events: auto;
 }
 
 /* 底栏不在时，更新提示条不该再按 tabbar 高度避让 */

@@ -132,11 +132,13 @@ function onBack(): void {
   // 先滑出再改状态：滑出过程中露出的是真实上一页（垫底层 / .pages），
   // 落点与右滑手势完全一致
   leaving = true
+  sub.leaving = true
   markSwipeBack(true)
   el.classList.remove('is-entering')
   el.classList.add('is-leaving')
   leaveTimer = window.setTimeout(() => {
     leaving = false
+    sub.leaving = false
     el.classList.remove('is-leaving')
     closeNow()
     // 等 Vue 把新视图 patch 完再撤类，否则底栏会先缩回去一帧
@@ -151,6 +153,7 @@ watch(
     if (open) return
     window.clearTimeout(leaveTimer)
     leaving = false
+    sub.leaving = false
     markSwipeBack(false)
     pageNode()?.classList.remove('is-leaving', 'is-entering')
   },

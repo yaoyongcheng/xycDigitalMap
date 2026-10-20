@@ -73,10 +73,15 @@ watchEffect(() => {
     color = THEME_COLORS.light
   }
 
-  // ⑤ 监控横屏（后于 ④，故横屏时取黑）
+  // ⑤ 子页正在退出：提前按“目标页面”取色。
+  //    iPhone 的系统状态栏区域不属于网页内容，只认 theme-color ——
+  //    等动画结束再切，顶上就会白一条。
+  if (sub.leaving && shell.activeTab === 'home') color = THEME_COLORS.home
+
+  // ⑥ 监控横屏（后于 ⑤，故横屏时取黑）
   if (cam.isOpen && shell.isLand) color = THEME_COLORS.camLandscape
 
-  // ⑥ 横屏地图（最后，优先级最高）
+  // ⑦ 横屏地图（最后，优先级最高）
   if (shell.mapLandOpen) color = THEME_COLORS.mapLand
 
   setThemeColor(color)

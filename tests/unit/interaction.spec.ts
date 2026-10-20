@@ -183,11 +183,14 @@ describe('交互优化回归', () => {
       expect(w.find('#subpage').classes()).toContain('is-leaving')
       // 滑出过程中仍是详情页（露出垫底的列表）
       expect(sub.view.kind).toBe('alarm-detail')
+      // App 的 theme-color 靠它提前切到目标页面（iPhone 系统状态栏只认 theme-color）
+      expect(sub.leaving).toBe(true)
 
       vi.advanceTimersByTime(220)
       await nextTick()
       expect(sub.view.kind).toBe('inspect-list')
       expect(w.find('#subpage').classes()).not.toContain('is-leaving')
+      expect(sub.leaving).toBe(false)
     })
 
     it('巡检日历展开时，返回只收日历、页面不滑出', async () => {

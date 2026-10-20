@@ -33,6 +33,14 @@ export const useSubpageStore = defineStore('subpage', () => {
   const back = ref<SubView | null>(null)
 
   /**
+   * 是否正在播放「退出」过渡（点返回 / 右滑返回）。
+   *
+   * App.vue 的 theme-color 用它提前切到目标页面的底色：iPhone 的系统状态栏
+   * 区域不属于网页内容，只认 theme-color，等动画结束再切就会让顶部白一条。
+   */
+  const leaving = ref(false)
+
+  /**
    * .subpage.is-alarm —— 控制深色导航栏与通栏 hero（CSS app.css:2357-2369）。
    *
    * 原版把 is-alarm 当作独立状态在 openAlarmDetail 加、在 openInspectList/
@@ -126,6 +134,7 @@ export const useSubpageStore = defineStore('subpage', () => {
   return {
     view,
     back,
+    leaving,
     isAlarm,
     isOpen,
     title,
