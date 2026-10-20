@@ -203,6 +203,33 @@ describe('交互优化回归', () => {
       expect(w.find('#subpage').classes()).not.toContain('is-leaving')
       expect(sub.isOpen).toBe(true)
     })
+
+    /*
+     * 滑出期间必须提前把底栏与状态栏切到「目标页面」形态，
+     * 否则首页会看到上下白条闪一下（底部是 tabbar 隐藏后露出的浅色底、
+     * 顶部是子页白色状态栏）。
+     */
+    it('返回过渡期间给 .app 加 is-swipe-back，结束后撤掉', async () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openInspectList('today')
+      sub.openAlarmDetail(alarm.latest[0].id, true)
+
+      const app = document.createElement('div')
+      app.className = 'app home-mode'
+      document.body.appendChild(app)
+
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      await w.find('#btnBack').trigger('click')
+      expect(app.classList.contains('is-swipe-back')).toBe(true)
+
+      vi.advanceTimersByTime(220)
+      await nextTick()
+      await nextTick()
+      expect(app.classList.contains('is-swipe-back')).toBe(false)
+    })
   })
 
   /*

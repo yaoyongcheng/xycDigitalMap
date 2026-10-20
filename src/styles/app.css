@@ -162,6 +162,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .app.home-mode .subpage .navbar { display: grid; }
 
 /*
+ * 首页深色底兜底：子页滑出时底部那一块（底栏隐藏但占位）会露出 .app 的背景，
+ * 不设的话透出 .phone 的浅色底 —— 就是「底部白条」。
+ */
+.app.home-mode {
+  background: rgb(5, 10, 21);
+}
+
+/*
  * 顶部状态栏区域
  *
  * 原设计稿在这里画了一条模拟系统状态栏（中国电信 / 4G / 86%），
@@ -208,6 +216,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .phone-screen:has(.hazard-page.open) .status-bar,
 .phone-screen:has(.subpage.is-alarm.open) .status-bar {
   background: #fff;
+}
+
+/*
+ * 子页右滑返回首页时，状态栏立刻让出透明（露出首页深色地图）。
+ * 否则子页滑出的 220ms 里标题栏仍是白底 —— 就是用户看到的「顶部白条」。
+ */
+.phone-screen:has(.app.home-mode.is-swipe-back) .status-bar {
+  background: transparent;
 }
 
 /* 监控横屏：黑底 */

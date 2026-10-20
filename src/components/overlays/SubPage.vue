@@ -91,6 +91,11 @@ function playEnter(): void {
   el.classList.add('is-entering')
 }
 
+/** 退出过渡期间让底栏与状态栏提前切到「目标页面」的形态，避免上下白条 */
+function markSwipeBack(on: boolean): void {
+  document.querySelector<HTMLElement>('.app')?.classList.toggle('is-swipe-back', on)
+}
+
 function prefersReduced(): boolean {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 }
@@ -127,12 +132,15 @@ function onBack(): void {
   // 先滑出再改状态：滑出过程中露出的是真实上一页（垫底层 / .pages），
   // 落点与右滑手势完全一致
   leaving = true
+  markSwipeBack(true)
   el.classList.remove('is-entering')
   el.classList.add('is-leaving')
   leaveTimer = window.setTimeout(() => {
     leaving = false
     el.classList.remove('is-leaving')
     closeNow()
+    // 等 Vue 把新视图 patch 完再撤类，否则底栏会先缩回去一帧
+    nextTick(() => markSwipeBack(false))
   }, LEAVE_MS)
 }
 
@@ -143,11 +151,15 @@ watch(
     if (open) return
     window.clearTimeout(leaveTimer)
     leaving = false
+    markSwipeBack(false)
     pageNode()?.classList.remove('is-leaving', 'is-entering')
   },
 )
 
-onUnmounted(() => window.clearTimeout(leaveTimer))
+onUnmounted(() => {
+  window.clearTimeout(leaveTimer)
+  markSwipeBack(false)
+})
 </script>
 
 <template>
