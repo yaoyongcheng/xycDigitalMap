@@ -123,6 +123,9 @@ export function useSwipeBack() {
       if (dx < SLOP) return
       active = true
       document.body.style.userSelect = 'none'
+      // 入场动画进行中就被右滑：动画（animation 优先级高于内联 style）会吃掉
+      // 跟手位移，必须先摘掉它
+      layer?.classList.remove('is-entering', 'is-leaving')
       // 子页打开时底栏是「不可见但仍占位」（见 app.css 的 :has 规则）。
       // 跟手一开始就把它显出来：右滑揭示的是一级页面 + 底栏的完整形态，
       // 与松手后落点的布局完全一致，不会出现「页面往上跳一下」。

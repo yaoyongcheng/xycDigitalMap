@@ -42,6 +42,9 @@ describe('交互优化回归', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    // 转场用例用 attachTo 挂到 body 上（SubPage 靠 #subpage 定位当前层）。
+    // 不清会残留多个 #subpage，getElementById 取到上一个用例的旧节点。
+    document.body.innerHTML = ''
   })
 
   describe('Toast 语义类型', () => {
@@ -151,6 +154,54 @@ describe('交互优化回归', () => {
 
       const w = mount(SubPage)
       expect(w.find('.subpage-under').exists()).toBe(false)
+    })
+  })
+
+  /*
+   * 子页转场（微信式）：进入从右侧滑入，返回先滑出再切状态。
+   * 「先动画后改状态」很容易被后续改动破坏成瞬切，必须钉住时序。
+   * 注意 SubPage 用 #subpage 定位当前层，mount 需要 attachTo 才能命中。
+   */
+  describe('子页转场', () => {
+    it('进入子页时播放从右滑入', async () => {
+      const w = mount(SubPage, { attachTo: document.body })
+      useSubpageStore().openInspectList('today')
+      await nextTick()
+      await nextTick()
+      expect(w.find('#subpage').classes()).toContain('is-entering')
+    })
+
+    it('点返回先播滑出动画，动画结束才切回上一级', async () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openInspectList('today')
+      sub.openAlarmDetail(alarm.latest[0].id, true)
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      await w.find('#btnBack').trigger('click')
+      expect(w.find('#subpage').classes()).toContain('is-leaving')
+      // 滑出过程中仍是详情页（露出垫底的列表）
+      expect(sub.view.kind).toBe('alarm-detail')
+
+      vi.advanceTimersByTime(220)
+      await nextTick()
+      expect(sub.view.kind).toBe('inspect-list')
+      expect(w.find('#subpage').classes()).not.toContain('is-leaving')
+    })
+
+    it('巡检日历展开时，返回只收日历、页面不滑出', async () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openInspectList('hist')
+      alarm.inspCalOpen = true
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      await w.find('#btnBack').trigger('click')
+      expect(alarm.inspCalOpen).toBe(false)
+      expect(w.find('#subpage').classes()).not.toContain('is-leaving')
+      expect(sub.isOpen).toBe(true)
     })
   })
 

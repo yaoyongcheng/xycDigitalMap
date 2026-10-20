@@ -4435,6 +4435,26 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .subpage.open { display: flex; }
 
 /*
+ * 二级页面转场（2026-10，微信式）：进入从右侧滑入（页面向左推进），
+ * 返回向右滑出（页面向右退出）。时长与 SubPage.vue 的 LEAVE_MS 对应。
+ * 用 animation 而不是 transition：容器是 display:none ↔ flex 切换，
+ * 没有稳定的初始状态可以做 transition 起点。
+ */
+@keyframes subEnter {
+  from { transform: translateX(100%); }
+  to { transform: none; }
+}
+
+@keyframes subLeave {
+  from { transform: none; }
+  to { transform: translateX(100%); }
+}
+
+.subpage.is-entering { animation: subEnter 0.26s cubic-bezier(0.22, 0.61, 0.36, 1); }
+
+.subpage.is-leaving { animation: subLeave 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) forwards; }
+
+/*
  * 右滑返回时垫在下面的「上一层」（2026-10）。
  *
  * 子页栈是同一个 .subpage 换内容，不是真正叠加，所以详情页跟手右移时
@@ -6362,6 +6382,8 @@ img.zoomable.is-anim { transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36
 @media (prefers-reduced-motion: reduce) {
   .cam-cal { transition: none; }
   .simg { animation: none; }
+  .subpage.is-entering,
+  .subpage.is-leaving { animation: none; }
   img.zoomable.is-anim { transition: none; }
   .zoom-badge { animation: none; }
   button:active,

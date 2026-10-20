@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onUnmounted, watch } from 'vue'
 
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { mineNotes } from '@/data/config'
@@ -18,9 +18,28 @@ import InspectList from '@/views/sub/InspectList.vue'
  *   inspect-list  巡检列表
  *   alarm-detail  预警详情
  *   placeholder   「我的」菜单项的占位文案（原 pageHtml）
+ *
+ * 2026-10 转场（微信式）：
+ *   · 进入子页 / 子页之间的下钻 → 整层从右侧滑入（页面向左推进）
+ *   · 点返回 / 右滑返回 → 整层向右滑出，露出真实上一页（页面向右退出）
+ *   JS 里的 LEAVE_MS 必须与 app.css 的 subLeave 时长一致。
  */
 const sub = useSubpageStore()
 const alarm = useAlarmStore()
+
+/** 当前层元素。刻意用 id 取而不是模板 ref：本组件是多根（垫底层 + 当前层），
+ *  模板 ref 在这种结构下没绑定上（实测 pageEl 恒为 null，导致转场全部走兜底） */
+function pageNode(): HTMLElement | null {
+  return document.getElementById('subpage')
+}
+
+/** 与 app.css 的 subLeave 动画时长保持一致 */
+const LEAVE_MS = 220
+
+let leaveTimer = 0
+/** 返回造成的视图变化不该再播「进入」动画，否则列表会从右侧重新滑进来 */
+let suppressEnter = false
+let leaving = false
 
 const detail = computed(() => (sub.view.kind === 'alarm-detail' ? alarm.byId(sub.view.id) : undefined))
 
@@ -47,11 +66,88 @@ const underKind = computed(() =>
 
 const underTitle = computed(() => (underKind.value === 'inspect-list' ? '巡检预警' : ''))
 
-function onBack(): void {
-  // 原 js/app.js:875 直接把 closeSub 当回调，事件对象被当作 force 传入，
-  // 结果恒不等于 true —— 这里显式传 false，行为一致。
-  sub.close()
+/** 视图标识：kind 或具体预警 id 变化都算「换页」，要播进入动画 */
+const viewKey = computed(() => {
+  if (!sub.isOpen) return ''
+  return sub.view.kind === 'alarm-detail' ? `detail:${sub.view.id}` : sub.view.kind
+})
+
+watch(
+  viewKey,
+  (next, prev) => {
+    if (!next || next === prev || suppressEnter) return
+    playEnter()
+  },
+  // DOM 更新后再播：否则元素还是 display:none，动画不启动
+  { flush: 'post' },
+)
+
+function playEnter(): void {
+  const el = pageNode()
+  if (!el) return
+  el.classList.remove('is-entering', 'is-leaving')
+  // 强制重排：连续两次下钻（列表 → 详情 A → 详情 B）也能重新播放
+  void el.offsetWidth
+  el.classList.add('is-entering')
 }
+
+function prefersReduced(): boolean {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
+
+/** 改状态前压掉「进入」动画：这是一次返回，不是一次进入 */
+function closeNow(): void {
+  suppressEnter = true
+  sub.close()
+  nextTick(() => {
+    suppressEnter = false
+  })
+}
+
+function onBack(): void {
+  const el = pageNode()
+
+  // 右滑手势已经把该层移到屏幕外：这里只落状态，动画由手势层负责
+  if (el?.style.transform) {
+    closeNow()
+    return
+  }
+  // 巡检日历展开时，返回只是「收起日历」，页面不该滑出
+  if (alarm.inspCalOpen) {
+    sub.close()
+    return
+  }
+  if (leaving) return
+
+  if (!el || prefersReduced()) {
+    closeNow()
+    return
+  }
+
+  // 先滑出再改状态：滑出过程中露出的是真实上一页（垫底层 / .pages），
+  // 落点与右滑手势完全一致
+  leaving = true
+  el.classList.remove('is-entering')
+  el.classList.add('is-leaving')
+  leaveTimer = window.setTimeout(() => {
+    leaving = false
+    el.classList.remove('is-leaving')
+    closeNow()
+  }, LEAVE_MS)
+}
+
+// 转场途中被切 tab 打断（dismiss）时，清掉残留的动画类与定时器
+watch(
+  () => sub.isOpen,
+  (open) => {
+    if (open) return
+    window.clearTimeout(leaveTimer)
+    leaving = false
+    pageNode()?.classList.remove('is-leaving', 'is-entering')
+  },
+)
+
+onUnmounted(() => window.clearTimeout(leaveTimer))
 </script>
 
 <template>
@@ -73,7 +169,11 @@ function onBack(): void {
     </div>
   </section>
 
-  <section class="subpage" id="subpage" :class="{ open: sub.isOpen, 'is-alarm': sub.isAlarm }">
+  <section
+    class="subpage"
+    id="subpage"
+    :class="{ open: sub.isOpen, 'is-alarm': sub.isAlarm }"
+  >
     <nav class="navbar">
       <div class="nav-side">
         <button
