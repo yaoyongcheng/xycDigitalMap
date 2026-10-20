@@ -124,17 +124,30 @@ export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): Line
     )
     .join('')
   const gid = fillId || 'alarmFill'
+  /*
+   * 末点「在线」光晕：一圈不缩放、只呼吸透明度的圆。
+   *
+   * 刻意不用 transform: scale() 做雷达扩散 —— SVG 的 scale 基准是 viewBox
+   * 原点，必须配 transform-box: fill-box 才会绕自身中心，而 iOS 14/15 对此
+   * 支持不齐，一旦不生效圆点会飞出图表。只动 opacity 全平台一致。
+   */
+  const lastPt = pts[pts.length - 1]
+  const live = `<circle class="alarm-live-halo" cx="${lastPt[0].toFixed(1)}" cy="${lastPt[1].toFixed(1)}" r="6"/><circle class="alarm-live" cx="${lastPt[0].toFixed(1)}" cy="${lastPt[1].toFixed(1)}" r="2.6"/>`
+  /* 同一条路径、更宽更低透明度的一层，做出「线在发光」的观感（比 SVG filter 便宜得多） */
+  const glow = `<path class="dl-glow" d="${line}" fill="none" stroke="#4C9FFF" stroke-width="5" stroke-opacity="0.16" stroke-linejoin="round"/>`
   const svg = `<svg class="alarm-svg" viewBox="0 0 ${w} ${h}">
       <defs>
         <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#4C9FFF" stop-opacity="0.32"/>
-          <stop offset="100%" stop-color="#4C9FFF" stop-opacity="0.03"/>
+          <stop offset="0%" stop-color="#4C9FFF" stop-opacity="0.38"/>
+          <stop offset="100%" stop-color="#4C9FFF" stop-opacity="0.02"/>
         </linearGradient>
       </defs>
       <g class="alarm-grid">${grids}</g>
       <path class="fa" d="${area}" fill="url(#${gid})"/>
+      ${glow}
       <path class="dl" pathLength="1" d="${line}" fill="none" stroke="#4C9FFF" stroke-width="1.6" stroke-linejoin="round"/>
       ${dots}
+      ${live}
       <g class="alarm-x">${labels}</g>
     </svg>`
   return {
@@ -200,6 +213,31 @@ export function peopleHourModel(nowHour: number): LineModel {
       return `<text x="${xAt(i).toFixed(1)}" y="${h - 4}" text-anchor="${anchor}"${dim}>${hourNums[i]}:00</text>`
     })
     .join('')
+  /*
+   * 峰值标注 + 末点光晕。
+   *
+   * 这张卡是全宽的大图，字号 9px 下 6 个汉字放得下，标出峰值比让用户自己
+   * 找最高点有用；而首页那张 170px 宽的迷你图就不标 —— 7 个日期标签已经
+   * 挤到约 7px 渲染宽度，再加文字只会糊成一团。
+   * wPts 为空（凌晨未到第一个时段）时整段跳过。
+   */
+  const peak = ((): string => {
+    if (!wPts.length) return ''
+    let mi = 0
+    workers.forEach((v, i) => {
+      if (v > workers[mi]) mi = i
+    })
+    const [px, py] = wPts[mi]
+    return `<text class="peak-lab" x="${px.toFixed(1)}" y="${(py - 7).toFixed(1)}" text-anchor="middle">峰值 ${workers[mi]}人</text>`
+  })()
+  const live = ((): string => {
+    if (!wPts.length) return ''
+    const [lx, ly] = wPts[wPts.length - 1]
+    return `<circle class="alarm-live-halo live-worker" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="7"/><circle class="alarm-live live-worker" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.8"/>`
+  })()
+  const glow = wPts.length
+    ? `<path class="dl-glow" d="${wLine}" fill="none" stroke="#3DDC97" stroke-width="6" stroke-opacity="0.14" stroke-linejoin="round"/>`
+    : ''
   const svg = `<svg class="people-hour-svg" viewBox="0 0 ${w} ${h}">
       <defs>
         <linearGradient id="peopleFill" x1="0" y1="0" x2="0" y2="1">
@@ -209,8 +247,11 @@ export function peopleHourModel(nowHour: number): LineModel {
       </defs>
       <g class="alarm-grid">${grids}</g>
       <path class="fa" d="${area}" fill="url(#peopleFill)"/>
+      ${glow}
       <path class="dl" pathLength="1" d="${wLine}" fill="none" stroke="#3DDC97" stroke-width="2"/>
       <path class="dl" pathLength="1" style="animation-delay:.25s" d="${mLine}" fill="none" stroke="#4C9FFF" stroke-width="2"/>
+      ${live}
+      ${peak}
       <g class="alarm-x">${labels}</g>
     </svg>`
   /** 未到时段填 null（交互层显示 —，线本身照旧只画到当前小时） */

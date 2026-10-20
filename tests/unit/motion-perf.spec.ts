@@ -12,6 +12,9 @@ import { useShellStore } from '@/stores/shell'
 import EquipPanel from '@/views/home/EquipPanel.vue'
 import HomeSheet from '@/views/home/HomeSheet.vue'
 import QualityPanel from '@/views/home/QualityPanel.vue'
+import AlarmFeed from '@/views/home/parts/AlarmFeed.vue'
+import InspectItem from '@/components/ui/InspectItem.vue'
+import { alarmTone } from '@/utils/alarmTone'
 import { mountDiag, unmountDiag } from '@/utils/diag'
 
 import { ResizeObserverMock } from '../helpers/browser'
@@ -398,6 +401,62 @@ describe('第二轮体验优化回归', () => {
       expect(css).toContain('width: calc(25% - 3px)')
       // translateX 的百分比基准是元素自身宽度（列宽），步长要再加 gap
       expect(css).toContain('translateX(calc(var(--i, 0) * (100% + 4px)))')
+    })
+  })
+
+  describe('视觉改造第二批：风险编码 / 区块标题 / 趋势图', () => {
+    const alarm = {
+      id: 'cable',
+      day: 'today' as const,
+      type: '电缆拖地',
+      title: '用电报警',
+      desc: '作业面电缆拖地未架空',
+      img: 'img/alarm-cable.webp',
+      rel: '3分钟前',
+      at: '2026-10-20 15:19:00',
+      geo: '114.24738810244102,30.53290155210933',
+    }
+
+    /*
+     * 4 类预警原先长得一模一样，只有文案不同：一条「电缆拖地」和一条
+     * 「道路垃圾」视觉重量相等，扫一眼分不出哪条该先处理。
+     * 分档依据是现场后果，不是类型名称的字面分类。
+     */
+    it('按后果分档：防护最重、扬尘中等、环境最低', () => {
+      expect(alarmTone('安全网缺失')).toBe('guard')
+      expect(alarmTone('电缆拖地')).toBe('power')
+      expect(alarmTone('裸土未覆盖')).toBe('dust')
+      expect(alarmTone('道路垃圾')).toBe('env')
+      // 未知类型按最低档：宁可弱化，也不给不认识的预警染上最高警报色
+      expect(alarmTone('未知类型')).toBe('env')
+    })
+
+    it('首页预警流与子页列表都带上了 data-tone', () => {
+      const feed = mount(AlarmFeed)
+      const feedItem = feed.find('.alarm-feed-item')
+      expect(feedItem.exists()).toBe(true)
+      expect(feedItem.attributes('data-tone')).toBeTruthy()
+      feed.unmount()
+
+      const item = mount(InspectItem, { props: { alarm } })
+      expect(item.find('.insp-item').attributes('data-tone')).toBe('power')
+      item.unmount()
+    })
+
+    it('色标与编号的样式契约', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      // 深色与浅色两套语义各自成组
+      for (const tone of ['guard', 'power', 'dust', 'env']) {
+        expect(css).toContain(`.alarm-feed-item[data-tone="${tone}"]`)
+        expect(css).toContain(`.insp-item[data-tone="${tone}"]`)
+      }
+      // 色标是 2px 短条而不是整行染色：整行染色会让密集列表变成色块阵列
+      expect(css).toContain('background: var(--tone, transparent)')
+
+      // 区块标题：编号 + 延伸细线
+      expect(css).toContain('#homePanels { counter-reset: block; }')
+      expect(css).toContain('counter-increment: block;')
+      expect(css).toContain('content: "0" counter(block);')
     })
   })
 })

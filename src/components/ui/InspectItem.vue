@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import SmartImg from '@/components/ui/SmartImg.vue'
 import type { Alarm } from '@/types'
+import { alarmTone } from '@/utils/alarmTone'
 
 /**
  * 巡检预警列表项
@@ -27,6 +28,7 @@ function onKey(e: KeyboardEvent): void {
   <div
     class="insp-item"
     :data-alarm="alarm.id"
+    :data-tone="alarmTone(alarm.type)"
     role="button"
     tabindex="0"
     @click="emit('open')"

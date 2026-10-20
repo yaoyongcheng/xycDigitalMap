@@ -4,6 +4,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import { ALARM_FEED_SHOW } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
+import { alarmTone } from '@/utils/alarmTone'
 
 /**
  * 预警竖向轮播
@@ -124,6 +125,7 @@ onUnmounted(() => {
           :key="`${a.id}-${i}`"
           class="alarm-feed-item"
           :data-alarm="a.id"
+          :data-tone="alarmTone(a.type)"
           role="button"
           tabindex="0"
           @click="onItemClick(a.id)"

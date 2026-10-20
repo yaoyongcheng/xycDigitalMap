@@ -146,6 +146,24 @@ describe('utils/chart', () => {
       expect(alarmTrendSvg('alarmFill', 4)).toBe(alarmTrendModel(4, 'alarmFill').svg)
       expect(alarmTrendSvg('', 7)).toBe(alarmTrendModel(7, '').svg)
     })
+
+    /*
+     * 2026-10 视觉改造第二批：线是平的、没有重点，7 天走势看不出信息。
+     * 加了三样：贴合同一路径的发光层、末点呼吸光晕、峰值只给点不给字
+     * （170px 宽的迷你图里 7 个日期标签已经挤到约 7px，再加文字必糊）。
+     */
+    it('发光层与末点光晕都在，且几何没有被改动', () => {
+      const m = alarmTrendModel(4)
+      expect(m.svg).toContain('class="dl-glow"')
+      expect(m.svg).toContain('class="alarm-live-halo"')
+      expect(m.svg).toContain('class="alarm-live"')
+      // 光晕落在最后一个点上
+      const lastX = m.xs[m.xs.length - 1].toFixed(1)
+      expect(m.svg).toContain(`class="alarm-live" cx="${lastX}"`)
+      // 新增元素不改变坐标系
+      expect(m.w).toBe(260)
+      expect(m.h).toBe(78)
+    })
   })
 
   describe('peopleHourModel', () => {
@@ -206,6 +224,19 @@ describe('utils/chart', () => {
 
     it('peopleHourSvg 与模型版一致', () => {
       expect(peopleHourSvg(9)).toBe(peopleHourModel(9).svg)
+    })
+
+    /* 大图放得下文字，峰值标出来比让用户自己找最高点有用 */
+    it('大图标出峰值，凌晨无数据时不产生空标注', () => {
+      const svg = peopleHourModel(11).svg
+      expect(svg).toContain('class="peak-lab"')
+      // 工人峰值 36 出现在 9:00
+      expect(svg).toContain('峰值 36人')
+
+      // 0 点：一个时段都还没到，不应留下一个没有坐标的标注
+      const empty = peopleHourModel(0).svg
+      expect(empty).not.toContain('class="peak-lab"')
+      expect(empty).not.toContain('class="dl-glow"')
     })
   })
 })

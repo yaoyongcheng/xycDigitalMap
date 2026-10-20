@@ -6605,3 +6605,155 @@ img.zoomable.is-anim { transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36
   .home-mod-ind i { transition: none; }
   .home-mod-ind i::after { box-shadow: none; }
 }
+
+/* =====================================================================
+ * 2026-10 视觉改造 · 第二批（数据可视化 / 风险编码 / 标题 / 氛围）
+ *
+ *   K-1 趋势图       线是平的、没有重点，7 天走势看不出信息
+ *   K-2 风险编码     4 类预警长得一样，扫一眼分不出哪条该先处理
+ *   K-3 区块标题     只有字号差，没有仪表盘的分节感
+ *   K-4 氛围质感     深色卡片是纯色块，缺「被光照到」的层次
+ * ===================================================================== */
+
+/* ---------- K-1. 趋势图 ---------- */
+
+/* 同一条路径叠一层更宽更淡的描边 —— 比 SVG filter 便宜一个数量级 */
+.dl-glow { pointer-events: none; }
+
+/* 末点：一个只呼吸透明度、不缩放的光晕（理由见 chart.ts 的注释） */
+.alarm-live-halo { fill: #4C9FFF; opacity: 0.16; }
+.alarm-live { fill: #9CCBFF; }
+.alarm-live.live-worker { fill: #6FE7B4; }
+.alarm-live-halo.live-worker { fill: #3DDC97; }
+
+@keyframes liveBreath {
+  0%, 100% { opacity: 0.08; }
+  50% { opacity: 0.34; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .alarm-live-halo { animation: liveBreath 2.6s ease-in-out infinite; }
+}
+
+/* 峰值标注：只在大图上出现（见 chart.ts 的说明） */
+.peak-lab {
+  fill: #6FE7B4;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+/* 子页是浅色底：同一个蓝色要压深一档才够对比 */
+.insp-page .alarm-live { fill: #2F7CFF; }
+.insp-page .alarm-live-halo { fill: #2F7CFF; }
+.insp-page .dl-glow { opacity: 0.5; }
+
+/* ---------- K-2. 风险编码 ---------- */
+
+/*
+ * 用户面对 4 类预警时，真正想知道的是「哪条最要紧」。
+ * 一条 2px 的短色标贴在行首，比给整行染底色克制得多 —— 整行染色会让
+ * 本来就密的列表变成色块阵列，反而更难扫读。
+ *
+ * 分档依据是现场后果（见 utils/alarmTone.ts），不是类型名称分类。
+ */
+.alarm-feed-item,
+.insp-item { position: relative; }
+
+.alarm-feed-item::before,
+.insp-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 2px;
+  height: 26px;
+  margin-top: -13px;
+  border-radius: 2px;
+  background: var(--tone, transparent);
+}
+
+/* 首页深色：沿用既有深色调色板，不开新色系 */
+.alarm-feed-item[data-tone="guard"] { --tone: #FF6B6B; }
+.alarm-feed-item[data-tone="power"] { --tone: #FF9A4D; }
+.alarm-feed-item[data-tone="dust"] { --tone: #F5C14A; }
+.alarm-feed-item[data-tone="env"] { --tone: #4C9FFF; }
+
+/* 子页浅色：同一套语义，换成浅底上够对比的那组 */
+.insp-item[data-tone="guard"] { --tone: #F53F3F; }
+.insp-item[data-tone="power"] { --tone: #F77234; }
+.insp-item[data-tone="dust"] { --tone: #E6A817; }
+.insp-item[data-tone="env"] { --tone: #2F7CFF; }
+
+/* ---------- K-3. 区块标题 ---------- */
+
+/*
+ * 仪表盘的分节感来自「编号 + 标题 + 一条把它们和右侧分开的细线」。
+ * 之前只有字号差，四个区块读起来是四段没有编号的散文。
+ *
+ * 计数加在 #homePanels 上：它是 flex 容器，四个 .safe-block 是直接子元素；
+ * 上一批给它加了 :key，切面板时容器重挂载，编号自然从 01 重新开始。
+ */
+#homePanels { counter-reset: block; }
+
+#homePanels > .safe-block > h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  counter-increment: block;
+}
+
+#homePanels > .safe-block > h4::before {
+  content: "0" counter(block);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgba(110, 168, 255, 0.6);
+}
+
+#homePanels > .safe-block > h4::after {
+  content: "";
+  flex: 1 1 auto;
+  min-width: 10px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(110, 168, 255, 0.22), rgba(110, 168, 255, 0));
+}
+
+/* 标题里已经有「更新于 …」时，gap 已经拉开，去掉多余的左外边距 */
+#homePanels > .safe-block > h4 .upd-time { margin-left: 0; }
+
+/* ---------- K-4. 氛围质感 ---------- */
+
+/* 地图四周压暗，视线收拢到中间的点位；比整块蒙层更不伤图面 */
+.home-map { box-shadow: inset 0 0 110px 34px rgba(2, 7, 16, 0.55); }
+
+/* 面板 tab 背后一层自上而下的蓝色微光，让「控制区」从底色里浮出来 */
+.home-mods::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  right: -8px;
+  top: -12px;
+  bottom: -6px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 14px;
+  background: radial-gradient(60% 130% at 50% 0%, rgba(76, 159, 255, 0.11), transparent 72%);
+}
+
+/* 深色卡片加一层左上方向的极淡径向光，破掉「纯色块」的平 */
+#page-home .home-chart-card {
+  background-image: radial-gradient(130% 90% at 0% 0%, rgba(76, 159, 255, 0.07), transparent 62%);
+}
+
+/*
+ * 合格率双柱：数值标签挤成一串
+ *
+ * 柱宽 8px + 间距 3px 时，两支的 9px 数值标签中心只隔 11px、各宽约 10px，
+ * 于是「93」「93」正好贴在一起，读起来是「9393」——像坏掉的图表。
+ * 上一批的全站等宽数字让两位数字宽度一致，这个问题变得完全稳定复现。
+ *
+ * 解法是把柱加宽而不是缩字：10px + 5px 后中心间距 15px，两个标签之间
+ * 留出约 5px 空气；五列的总宽只多 30px，仍在列宽之内。
+ */
+.qa-pass-pair { gap: 5px; }
+.qa-pass-pair b { width: 10px; }
