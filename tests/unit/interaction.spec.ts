@@ -6,6 +6,8 @@ import { nextTick } from 'vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import TabBar from '@/components/shell/TabBar.vue'
 import Toast from '@/components/shell/Toast.vue'
+import BackBar from '@/components/ui/BackBar.vue'
+import SubPage from '@/components/overlays/SubPage.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAlarmStore } from '@/stores/alarm'
 import { useShellStore } from '@/stores/shell'
@@ -94,6 +96,31 @@ describe('交互优化回归', () => {
       sub.openAlarmDetail('no-such-id')
       expect(sub.view).toEqual({ kind: 'none' })
       expect(w.exists()).toBe(true)
+    })
+  })
+
+  /*
+   * 返回按钮 2026-10 统一：改造前子页是纯箭头、播放器与全屏地图是
+   * 「箭头 + 返回」二字，同一动作三种长相。现在几何全部来自
+   * data/icons.ts 的 back（同一份 IconDef），这里钉住渲染结果。
+   */
+  describe('返回按钮统一为纯左箭头', () => {
+    it('播放器返回栏：只有箭头，没有「返回」文字', () => {
+      const w = mount(BackBar, { props: { title: '视频监控', backId: 'btnCamBack' } })
+      const btn = w.find('#btnCamBack')
+      expect(btn.text()).toBe('')
+      expect(btn.find('svg path').attributes('d')).toBe('M15 5 8 12l7 7')
+      expect(btn.attributes('aria-label')).toBe('返回')
+      // 右滑手势靠 data-back 定位该层的返回按钮
+      expect(btn.attributes('data-back')).toBeDefined()
+    })
+
+    it('子页导航栏：同一套箭头几何，且带 data-back', () => {
+      const w = mount(SubPage)
+      const btn = w.find('#btnBack')
+      expect(btn.text()).toBe('')
+      expect(btn.find('svg path').attributes('d')).toBe('M15 5 8 12l7 7')
+      expect(btn.attributes('data-back')).toBeDefined()
     })
   })
 

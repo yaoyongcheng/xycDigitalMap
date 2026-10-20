@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { mineNotes } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
@@ -39,8 +40,15 @@ function onBack(): void {
   <section class="subpage" id="subpage" :class="{ open: sub.isOpen, 'is-alarm': sub.isAlarm }">
     <nav class="navbar">
       <div class="nav-side">
-        <button class="nav-btn" id="btnBack" type="button" @click="onBack">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+        <button
+          class="nav-btn"
+          id="btnBack"
+          type="button"
+          aria-label="返回"
+          data-back
+          @click="onBack"
+        >
+          <SvgIcon name="back" />
         </button>
       </div>
       <h1 class="nav-title" id="subTitle">{{ sub.title }}</h1>

@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import HomeProgress from '@/components/ui/HomeProgress.vue'
 import MapInfoCard from '@/components/ui/MapInfoCard.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
+import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { crewKpis, mapPoints } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useCamStore } from '@/stores/cam'
@@ -109,9 +110,14 @@ function onMapPoint(p: MapPoint): void {
         <HomeProgress />
       </div>
       <div class="land-actions">
-        <button class="map-land-back" id="btnMapBack" type="button" @click="shell.closeMapLand()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 8 12l7 7"/></svg>
-          返回
+        <button
+          class="map-land-back"
+          id="btnMapBack"
+          type="button"
+          aria-label="返回"
+          @click="shell.closeMapLand()"
+        >
+          <SvgIcon name="back" />
         </button>
       </div>
     </div>

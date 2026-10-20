@@ -55,6 +55,21 @@ const CAL_STROKE = {
   'stroke-linejoin': 'round',
 }
 
+/**
+ * 返回箭头用的根属性。
+ *
+ * 2026-10 统一：改造前返回按钮有三种写法 —— 子页是手写 SVG（1.6 粗、无文字），
+ * 播放器与全屏地图是另一份手写 SVG（2.2 粗）配「返回」二字。同一动作三种长相。
+ * 现在统一为纯左箭头（微信式），几何与粗细都从这一处来。
+ */
+const BACK_STROKE = {
+  fill: 'none',
+  stroke: 'currentColor',
+  'stroke-width': 2,
+  'stroke-linecap': 'round',
+  'stroke-linejoin': 'round',
+}
+
 /** Toast 状态图标用的根属性（颜色由 .toast.is-* 的 currentColor 决定） */
 const TOAST_STROKE = {
   fill: 'none',
@@ -304,6 +319,13 @@ const ICON_MAP = {
       { tag: 'path', d: 'M12 11.2v5' },
       { tag: 'path', d: 'M12 7.8v.4' },
     ],
+  },
+  /* ---------------- 通用：返回箭头（子页 / 播放器 / 全屏地图共用一套几何） ---------------- */
+
+  back: {
+    viewBox: '0 0 24 24',
+    attrs: BACK_STROKE,
+    shapes: [{ tag: 'path', d: 'M15 5 8 12l7 7' }],
   },
 } satisfies Record<string, IconDef>
 

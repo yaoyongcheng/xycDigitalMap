@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import SvgIcon from '@/components/ui/SvgIcon.vue'
+
 /**
  * 全屏覆盖层顶部返回栏
  *
@@ -8,8 +10,8 @@
  *   - 152-158 隐患上报
  * 三者结构同构，仅标题文本、按钮 id、以及是否带右侧状态位不同。
  *
- * 原版共 4~5 处重复的「返回按钮」（含 .map-land-back 与 .subpage 的 .nav-btn），
- * 其中 .cam-player-back 的这一种由本组件承担；另外两种 class 不同，各自保留。
+ * 返回键 2026-10 统一为纯左箭头（微信式），几何取自 data/icons.ts 的 back；
+ * data-back 供右滑返回手势定位（手势只做「点这个按钮」）。
  */
 defineProps<{
   title: string
@@ -24,9 +26,15 @@ const emit = defineEmits<{ back: [] }>()
 
 <template>
   <div class="cam-player-bar">
-    <button class="cam-player-back" :id="backId" type="button" @click="emit('back')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5 8 12l7 7"/></svg>
-      返回
+    <button
+      class="cam-player-back"
+      :id="backId"
+      type="button"
+      aria-label="返回"
+      data-back
+      @click="emit('back')"
+    >
+      <SvgIcon name="back" />
     </button>
     <strong :id="titleId">{{ title }}</strong>
     <slot name="right" />

@@ -281,6 +281,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
   position: relative;
   display: flex;
   flex-direction: column;
+  /* 子页右滑返回时会整体移到屏幕外，裁掉——否则会溢出到 .stage 上 */
+  overflow: hidden;
 }
 
 .pages {
@@ -764,8 +766,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .map-land-back {
   flex-shrink: 0;
+  width: 32px;
   height: 32px;
-  padding: 0 12px 0 8px;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   background: rgba(8, 18, 32, 0.55);
@@ -773,11 +776,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-size: 13px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
   cursor: pointer;
 }
 
-.map-land-back svg { width: 18px; height: 18px; }
+.map-land-back svg { width: 20px; height: 20px; }
 
 .land-dock {
   position: absolute;
@@ -3006,9 +3009,13 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-bottom: 1px solid var(--line);
 }
 
+/* 返回按钮统一为纯左箭头（2026-10，微信式）：方形可点区 + 图标居中，
+   不再带「返回」二字。三处（播放器 / 全屏地图 / 子页 nav）几何同源，
+   见 data/icons.ts 的 back。 */
 .cam-player-back {
+  width: 32px;
   height: 32px;
-  padding: 0 10px 0 6px;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   background: #F2F3F5;
@@ -3016,11 +3023,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-size: 13px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
   cursor: pointer;
 }
 
-.cam-player-back svg { width: 16px; height: 16px; }
+.cam-player-back svg { width: 18px; height: 18px; }
 
 .cam-player-bar strong {
   flex: 1;

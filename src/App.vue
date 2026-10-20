@@ -6,6 +6,7 @@ import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { setThemeColor, THEME_COLORS } from '@/utils/themeColor'
+import { useSwipeBack } from '@/utils/swipeBack'
 import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
 import TabBar from '@/components/shell/TabBar.vue'
@@ -44,6 +45,9 @@ const shell = useShellStore()
 const cam = useCamStore()
 const air = useAirHazardStore()
 const sub = useSubpageStore()
+
+/** 全局右滑返回手势（微信式）：见 utils/swipeBack.ts 的约束说明 */
+useSwipeBack()
 
 /**
  * 系统状态栏区域的底色
