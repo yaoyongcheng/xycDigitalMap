@@ -76,6 +76,15 @@ export function useSwipeBack() {
     el.style.transform = ''
   }
 
+  function appEl(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('.app')
+  }
+
+  /** 收起跟手期间揭示的底栏（子页归位或被关闭后调用） */
+  function releaseSwipeState(): void {
+    appEl()?.classList.remove('is-swipe-back')
+  }
+
   function onDown(e: PointerEvent): void {
     if (busy || shell.isLand) return
     if (e.pointerType === 'mouse' && e.button !== 0) return
@@ -114,6 +123,10 @@ export function useSwipeBack() {
       if (dx < SLOP) return
       active = true
       document.body.style.userSelect = 'none'
+      // 子页打开时底栏是「不可见但仍占位」（见 app.css 的 :has 规则）。
+      // 跟手一开始就把它显出来：右滑揭示的是一级页面 + 底栏的完整形态，
+      // 与松手后落点的布局完全一致，不会出现「页面往上跳一下」。
+      if (sub.isOpen) appEl()?.classList.add('is-swipe-back')
       // 刻意不重置 lastX/lastT：一次「快速轻扫」往往只产生一两个 move 事件，
       // 若在这里把基准挪到当前点，这一帧永远算不出速度，轻扫就会失灵。
       // 基准保持 pointerdown 时的位置与时刻（见 onDown）。
@@ -139,6 +152,7 @@ export function useSwipeBack() {
     active = false
     if (!node) {
       if (commit) fireBack()
+      releaseSwipeState()
       return
     }
 
@@ -146,6 +160,7 @@ export function useSwipeBack() {
     busy = true
     const done = (): void => {
       clearInline(node)
+      releaseSwipeState()
       busy = false
     }
 
@@ -196,6 +211,7 @@ export function useSwipeBack() {
     timers.forEach((t) => window.clearTimeout(t))
     timers = []
     document.body.style.userSelect = ''
+    releaseSwipeState()
     if (layer) clearInline(layer)
   })
 }

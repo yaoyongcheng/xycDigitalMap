@@ -153,6 +153,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
   flex-direction: column;
   /* 顶部留白（--status-h）不在这里撑，改由 .navbar 自己用 padding-top 承担，
      理由见下方 .navbar 注释。 */
+  /* 子页右滑返回时会整体移到屏幕外，由这里裁掉（.stack 需要放行子页
+     向下延伸到底栏区域，故裁剪职责上移到 .app） */
+  overflow: hidden;
 }
 
 .app.home-mode .navbar { display: none; }
@@ -281,8 +284,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
   position: relative;
   display: flex;
   flex-direction: column;
-  /* 子页右滑返回时会整体移到屏幕外，裁掉——否则会溢出到 .stage 上 */
-  overflow: hidden;
+  /* 刻意不裁：子页要向下延伸到底栏区域（见 .subpage 的 inset），
+     裁剪统一交给 .app —— 它正好等于子页延伸后的高度 */
+  overflow: visible;
 }
 
 .pages {
@@ -312,6 +316,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-top: 1px solid var(--line);
   display: flex;
   flex-shrink: 0;
+  /* 子页打开时底栏只是「不可见」而不是「不占位」（见下方 :has 规则），
+     因此层级要高于 .subpage(40)：右滑跟手时底栏整条从子页下面露出来；
+     正常状态下它盖在页面内容之上。 */
+  position: relative;
+  z-index: 45;
 }
 
 .tab {
@@ -4414,7 +4423,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .subpage {
   position: absolute;
-  inset: 0;
+  /* 底栏只是不可见、仍占位（见 .app:has(.subpage.open) .tabbar），
+     所以子页要向下延伸一个底栏的高度，才能盖到屏幕最底部 */
+  inset: 0 0 calc(-1 * (var(--tabbar-h) + var(--safe-bot))) 0;
   z-index: 40;
   background: var(--page);
   display: none;
@@ -4477,13 +4488,27 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .app.home-mode .tab.active { color: #4C9FFF; }
 
 /*
- * 二级页面（子页）打开时底栏让位 —— 微信式交互：只有一级页面才有 tab。
+ * 二级页面（子页）打开时底栏不可见 —— 微信式交互：只有一级页面才有 tab。
  *
- * tabbar 一隐藏，.stack（flex:1）自动撑满 .app，子页的 inset:0 就覆盖到
- * 屏幕底部。改造前子页只盖住 .stack，详情页底下始终压着一条 tab，
- * 既割裂又让人误以为「点了 tab 没反应」（实际是子页把 .pages 盖住了）。
+ * 关键：这里用 visibility 而不是 display:none。
+ * display:none 会让 .stack 从 786 撑到 844，一级页面整体变高 58px
+ * （首页抽屉从 674 变 732）。右滑跟手时露出的正是这个「加高版」页面，
+ * 松手后瞬间缩回 —— 表现就是「返回时页面向上移了一下」。
+ * 保留占位后，一级页面在任何状态下布局完全一致，右滑与点返回键的落点一致。
+ *
+ * 子页自身向下延伸同样的高度把这块区域盖住，见 .subpage 的 inset。
  */
-.app:has(.subpage.open) .tabbar { display: none; }
+.app:has(.subpage.open) .tabbar {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* 右滑跟手中：底栏整条露出来（它一直占着位置，只是此前不可见）。
+   这里必须带上 :has(.subpage.open) —— 该选择器的特异性取括号内的最大值，
+   单写 .app.is-swipe-back 会输给它。 */
+.app:has(.subpage.open).is-swipe-back .tabbar {
+  visibility: visible;
+}
 
 /* 底栏不在时，更新提示条不该再按 tabbar 高度避让 */
 .app:has(.subpage.open) .upd-banner {

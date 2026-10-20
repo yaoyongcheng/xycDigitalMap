@@ -264,20 +264,40 @@ describe('第二轮体验优化回归', () => {
 
   describe('二级页面（子页）的底栏契约', () => {
     /*
-     * 微信式交互：只有一级页面才有底栏。子页打开时底栏必须让位 ——
-     * 否则子页只盖住 .pages，底栏仍然压在下面，既割裂，也会让用户
-     * 误以为「点 tab 没反应」（实际是子页挡住了页面）。
-     * 底栏隐藏后 .stack 自动撑满，子页的 inset:0 才能覆盖到屏幕底部。
+     * 微信式交互：只有一级页面才有底栏。子页打开时底栏让位。
+     *
+     * 这里有一条真实事故改出来的反向断言：起初用 display:none 隐藏底栏，
+     * .stack 会从 786 撑到 844，一级页面整体变高 58px（首页抽屉 674→732）。
+     * 点返回键时子页瞬间消失、看不出问题；但右滑跟手会先露出「加高版」
+     * 页面，松手后才缩回 —— 用户看到的就是「返回时页面往上跳一下」。
+     * 所以底栏必须「不可见但仍占位」。
      */
-    it('子页打开时隐藏 tabbar，且更新提示条不再按 tabbar 高度避让', () => {
+    it('子页打开时底栏不可见但仍占位（不能是 display:none）', () => {
       const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
       const tabbar = css.match(/\.app:has\(\.subpage\.open\)\s+\.tabbar\s*\{([^}]*)\}/)
       expect(tabbar).not.toBeNull()
-      expect(tabbar![1]).toMatch(/display:\s*none/)
+      expect(tabbar![1]).toMatch(/visibility:\s*hidden/)
+      expect(tabbar![1]).not.toMatch(/display:\s*none/)
 
       const banner = css.match(/\.app:has\(\.subpage\.open\)\s+\.upd-banner\s*\{([^}]*)\}/)
       expect(banner).not.toBeNull()
       expect(banner![1]).toMatch(/var\(--safe-bot\)/)
+    })
+
+    it('右滑跟手时底栏整条露出来（特异性要压过隐藏规则）', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      const swipe = css.match(
+        /\.app:has\(\.subpage\.open\)\.is-swipe-back\s+\.tabbar\s*\{([^}]*)\}/,
+      )
+      expect(swipe).not.toBeNull()
+      expect(swipe![1]).toMatch(/visibility:\s*visible/)
+    })
+
+    it('子页向下延伸一个底栏高度，盖到屏幕最底部', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      const sub = css.match(/\.subpage\s*\{([^}]*)\}/)
+      expect(sub).not.toBeNull()
+      expect(sub![1]).toMatch(/inset:[^;]*var\(--tabbar-h\)/)
     })
 
     it('子页内容底部留出安全区（底栏不在，不能被 Home Indicator 咬住）', () => {
