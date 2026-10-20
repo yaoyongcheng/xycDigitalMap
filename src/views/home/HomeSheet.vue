@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useHomeStore } from '@/stores/home'
 import EquipPanel from './EquipPanel.vue'
@@ -42,6 +44,15 @@ const mods: { id: HomeMod; label: string; icon: IconName }[] = [
   { id: 'progress', label: '进度管理', icon: 'mod-progress' },
   { id: 'equip', label: '装备管控', icon: 'mod-equip' },
 ]
+
+/**
+ * 共用指示条的下标。
+ *
+ * 改造前 4 个按钮各画一条自己的 ::after 下划线，切换时是「这条灭、那条亮」
+ * 的瞬移；改成一条绝对定位的滑块后，切换有了方向感 —— 从旧位置滑过去。
+ * 位移量由 CSS 用 --i 算（列宽 = 25% - 3px，gap 4px，见 app.css 的 .home-mod-ind）。
+ */
+const modIndex = computed(() => Math.max(0, mods.findIndex((m) => m.id === home.homeMod)))
 </script>
 
 <template>
@@ -60,9 +71,19 @@ const mods: { id: HomeMod; label: string; icon: IconName }[] = [
         <SvgIcon :name="m.icon" />
         <span>{{ m.label }}</span>
       </button>
+      <!-- 共用滑块：绝对定位不参与 grid 排版，靠 --i 决定滑到第几列 -->
+      <span class="home-mod-ind" :style="{ '--i': modIndex }" aria-hidden="true"><i></i></span>
     </div>
 
-    <div class="home-panels" id="homePanels">
+    <!--
+      key 换掉整个面板容器，让面板下方的入场动画（app.css 的 homePanelIn）
+      每次切换都重播一遍。
+      为什么不做 <Transition>：四个面板组件都是多根节点（SafetyPanel 两个
+      .safe-block、EquipPanel 是 v-if + v-else 两个 template），
+      <Transition> 要求单一根元素，硬套会直接报错；包一层 div 又会破坏
+      #homePanels 的 flex gap 节奏。
+    -->
+    <div class="home-panels" id="homePanels" :key="home.homeMod">
       <SafetyPanel v-if="home.homeMod === 'safety'" />
       <QualityPanel v-else-if="home.homeMod === 'quality'" />
       <ProgressPanel v-else-if="home.homeMod === 'progress'" />

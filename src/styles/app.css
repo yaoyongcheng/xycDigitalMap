@@ -40,6 +40,27 @@
   --status-h: max(32px, env(safe-area-inset-top, 0px));
   --navbar-h: 44px;
   --tabbar-h: 50px;
+
+  /*
+   * 数字排印阶梯（2026-10 视觉改造第一批）
+   *
+   * 这个产品的信息主体是数字（人数、台数、预警数、合格率），此前所有
+   * 数字都是「随手写的字号」：16/18/20/22/28 各自出现，同一屏里四个
+   * 同级指标和主指标一样大，等于没有主次。
+   *
+   * 统一成三级后，视线能先落在 hero 上，再读辅助值：
+   *   hero  主指标（今日预警数、项目人数、合格率）
+   *   lg    卡片内的核心值（设备台数、质量 KPI）
+   *   md    行内数值、图例计数
+   *   unit  单位，永远比同行的数字小两档并压成 muted
+   *
+   * 配合 body 上的 tabular-nums：CountUp 从 0 滚到 160 时数字宽度不变，
+   * 整排 KPI 不会左右微抖 —— 「不精致」最常被感知到的就是这个。
+   */
+  --num-hero: 30px;
+  --num-lg: 24px;
+  --num-md: 18px;
+  --num-unit: 11px;
 }
 
 * {
@@ -92,6 +113,18 @@ body {
   background: #d7e2ee;
   color: var(--text);
   user-select: none;
+  /*
+   * 等宽数字：整站数字都取同一字宽。
+   *
+   * 之前只有 2 处写了 tabular-nums（进度条的 52px 定宽列、缩放角标），
+   * 而数字展示位有 27 处。比例数字下「111」比「888」窄一半，导致
+   *   · CountUp 滚动过程中数字宽度持续变化 → 整排 KPI 左右抖动
+   *   · 列表里时间、条数右对齐后仍参差不齐
+   * 这个产品的气质是仪表盘，全局等宽是对的默认值；中文不受影响。
+   */
+  font-variant-numeric: tabular-nums;
+  /* iOS / macOS 深色底上的细字会更干净，Windows 下该属性无效、无副作用 */
+  -webkit-font-smoothing: antialiased;
 }
 
 button, input, textarea { font-family: inherit; color: inherit; }
@@ -1228,6 +1261,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
   grid-template-columns: repeat(4, 1fr);
   gap: 4px;
   margin-bottom: 16px;
+  /* 选中指示条是绝对定位的子元素，需要这里作定位参照 */
+  position: relative;
 }
 
 #homePanels {
@@ -1269,17 +1304,12 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .home-mod.on { color: var(--blue); font-weight: 650; }
 .home-mod.on span { font-weight: 650; }
 
-.home-mod.on::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: 0;
-  width: 22px;
-  height: 4px;
-  margin-left: -11px;
-  background: var(--blue);
-  border-radius: 2px;
-}
+/*
+ * 选中指示条已从「每个按钮各自的 ::after」改为一条共用的滑动条，
+ * 见文末「I. 数字排印 · 焦点 · 面板转场」的 .home-mod-ind。
+ * 原来四个按钮各自画一条下划线，切换时是「这条灭、那条亮」的瞬移，
+ * 看不出方向；共用一条之后是从旧位置滑到新位置。
+ */
 
 .home-stats {
   display: grid;
@@ -4603,7 +4633,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 #page-home .home-mod { color: #6B7E96; }
 #page-home .home-mod.on { color: #4C9FFF; font-weight: 600; }
 #page-home .home-mod.on span { font-weight: 600; }
-#page-home .home-mod.on::after { background: #4C9FFF; }
+/* 选中指示条改成共用滑块后，深色主题下只需改内层细条的颜色 */
+#page-home .home-mod-ind i::after { background: #4C9FFF; }
 
 #page-home .safe-block > h4,
 #page-home .safe-hd h4 { color: #E8EEF6; }
@@ -5452,9 +5483,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 /* ---------- N. 全局微动效 ---------- */
 
 @media (prefers-reduced-motion: no-preference) {
-  /* 面板 tab：选中时图标弹跳 + 下划线自中心生长 */
+  /* 面板 tab：选中时图标弹跳（下划线的生长动画已由共用滑块的位移取代） */
   .home-mod.on svg { animation: iconPop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1); }
-  .home-mod.on::after { animation: barIn 0.28s ease; }
 
   /* tabbar：切换 tab 时图标弹跳 */
   .tab.active svg { animation: iconPop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1); }
@@ -5483,7 +5513,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
   from { transform: scale(0.72); }
   to { transform: scale(1); }
 }
-@keyframes barIn { from { transform: scaleX(0); } }
 
 /* KPI 坞补充：land-pair 内的单位符号（与 land-crew b em 同规格） */
 .land-pair b em {
@@ -6433,4 +6462,146 @@ img.zoomable.is-anim { transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36
   #page-mine.active > * {
     animation: none;
   }
+}
+
+/* =====================================================================
+ * 2026-10 视觉改造 · 第一批
+ *
+ *   这一批不动布局结构，只处理三件「看一眼就觉得不够专业」的事：
+ *     J-1 数字没有主次    所有指标同一字号 → hero / lg / md 三级
+ *     J-2 焦点完全不可见  :focus-visible 此前 0 处
+ *     J-3 面板切换生硬    4 个管理面板是 v-if 直切，没有任何过程
+ *
+ *   完整设计令牌（字阶 / 圆角 / 色板）留到第三批，这轮只引入数字阶梯，
+ *   避免一次改 6000 行样式带来的回归面。
+ * ===================================================================== */
+
+/* ---------- J-1. 数字排印 ---------- */
+
+/* hero：一屏里最该被先读到的那个数（今日预警数、合格率主值） */
+.home-stat b {
+  font-size: var(--num-hero);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+/* lg：卡片内的核心值 */
+.qa-kpi b,
+.eq-card b {
+  font-size: var(--num-lg);
+  letter-spacing: -0.015em;
+}
+
+.eq-count-item b,
+.people-zone b {
+  font-size: 22px;
+  letter-spacing: -0.015em;
+}
+
+.donut-label b { font-size: 17px; }
+
+/*
+ * 人员条：四个数字此前全是 18px 等权，读者不知道哪个是总量。
+ * 首个（项目人数）升到 lg，其余降到 md。
+ * 容器改 align-items:end —— 四列标签仍然齐底，变高的数字向上长，
+ * 不会把「项目人数」那格整块顶起来，看起来像排版事故。
+ */
+.crew-overview { align-items: end; }
+.crew-kpi b { font-size: var(--num-md); letter-spacing: -0.01em; }
+.crew-overview > .crew-kpi:first-child b { font-size: var(--num-lg); }
+
+/* 单位：统一小两档 + muted + 与数字留 2px，避免「160人」粘成一团 */
+.crew-kpi b em,
+.eq-count-item b em,
+.people-zone b em {
+  margin-left: 2px;
+  font-size: var(--num-unit);
+  font-weight: 600;
+  font-style: normal;
+  color: #8A9BB0;
+}
+
+/* ---------- J-2. 键盘焦点 ---------- */
+
+/*
+ * 此前全站 0 处 :focus-visible。前几轮已经给工具卡、巡检条目、装备与
+ * 验收图例补了 tabindex + Enter 触发，键盘用户「能操作」，但按 Tab 时
+ * 屏幕上没有任何变化 —— 焦点在哪全靠猜，等于只做了半个无障碍。
+ *
+ * :focus 先清掉 UA 默认圈（触屏点击不该出现），:focus-visible 再按
+ * 键盘场景画回来。2px + 2px 偏移是可见性与不糊住文字之间的常用平衡。
+ */
+:focus { outline: none; }
+
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* 深色底上 #2F7CFF 只有约 3:1，提亮一档 */
+#page-home :focus-visible,
+.map-land :focus-visible,
+.cam-player :focus-visible,
+.air-player :focus-visible,
+.hazard-page :focus-visible {
+  outline-color: var(--blue-2);
+}
+
+/* ---------- J-3. 面板切换与滑块 ---------- */
+
+/*
+ * 4 个管理面板此前是纯 v-if 直切：点「质量管理」内容瞬间换掉，没有
+ * 任何「这是一次切换」的过程。组件侧给 #homePanels 加了 :key，每次
+ * 切换重挂载，这条入场动画就重播一遍。
+ *
+ * 只做入场、旧内容立即消失 —— 用 <Transition mode="out-in"> 会有
+ * 90ms 空白，反而更顿；四个面板又都是多根节点，<Transition> 根本套不上。
+ */
+@keyframes homePanelIn {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: none; }
+}
+
+#homePanels { animation: homePanelIn 0.2s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+
+/*
+ * 选中指示条：从「四个按钮各自画一条下划线」改成「一条共用滑块」。
+ *
+ * 之前切换是这条灭、那条亮的瞬移，读不出方向；现在从旧位置滑过去。
+ * 几何：外层轨道宽 = 列宽 = 25% - 3px（4 列 + 3 个 4px gap），
+ * 步进 = 列宽 + gap；translateX 的百分比基准是元素自身宽度（即列宽），
+ * 所以步长写成 (100% + 4px)。内层 22px 细条保持改动前的视觉重量不变。
+ */
+.home-mod-ind {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  pointer-events: none;
+}
+
+.home-mod-ind i {
+  display: block;
+  width: calc(25% - 3px);
+  height: 4px;
+  transform: translateX(calc(var(--i, 0) * (100% + 4px)));
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.home-mod-ind i::after {
+  content: "";
+  display: block;
+  width: 22px;
+  height: 4px;
+  margin: 0 auto;
+  border-radius: 2px;
+  background: var(--blue);
+  box-shadow: 0 0 8px rgba(47, 124, 255, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #homePanels { animation: none; }
+  .home-mod-ind i { transition: none; }
+  .home-mod-ind i::after { box-shadow: none; }
 }

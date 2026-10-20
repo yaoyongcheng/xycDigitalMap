@@ -10,6 +10,7 @@ import CountUp from '@/components/ui/CountUp.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { useShellStore } from '@/stores/shell'
 import EquipPanel from '@/views/home/EquipPanel.vue'
+import HomeSheet from '@/views/home/HomeSheet.vue'
 import QualityPanel from '@/views/home/QualityPanel.vue'
 import { mountDiag, unmountDiag } from '@/utils/diag'
 
@@ -331,6 +332,72 @@ describe('第二轮体验优化回归', () => {
       await items[0].trigger('keydown', { key: ' ' })
       expect(items[0].classes()).toContain('leg-on')
       wrapper.unmount()
+    })
+  })
+  describe('视觉改造第一批：数字排印 / 焦点 / 面板转场', () => {
+    /*
+     * 这三条钉的是「看一眼就知道不够专业」的三处：
+     *   · 数字没有等级：四个同级指标和主指标一样大，读的人不知道先看哪个
+     *   · 焦点不可见：有 tabindex 却没有 :focus-visible，键盘用起来像盲操作
+     *   · 面板直切：v-if 换内容没有任何过程，切换像卡了一下
+     */
+
+    it('数字阶梯令牌存在，且 body 开启等宽数字', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      for (const token of ['--num-hero', '--num-lg', '--num-md', '--num-unit']) {
+        expect(css).toContain(token)
+      }
+      /*
+       * 等宽数字必须落在 body 上：此前只有 2 处写了 tabular-nums，而数字
+       * 展示位有 27 处。比例数字下 CountUp 从 0 滚到 160 时宽度一直在变，
+       * 整排 KPI 会左右微抖 —— 这是最常被感知为「不精致」的细节。
+       */
+      const body = css.match(/\nbody \{([^}]*)\}/)
+      expect(body).not.toBeNull()
+      expect(body![1]).toContain('font-variant-numeric: tabular-nums')
+    })
+
+    it('hero 数字比辅助数字大，且不再靠手写字号', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      expect(css).toContain('font-size: var(--num-hero)')
+      expect(css).toContain('font-size: var(--num-md)')
+      // 人员条首个是总量，单独升到 lg
+      expect(css).toContain('.crew-overview > .crew-kpi:first-child b { font-size: var(--num-lg); }')
+    })
+
+    it(':focus-visible 存在，且深色底用更亮的蓝', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      expect(css).toContain(':focus-visible {')
+      expect(css).toContain('outline: 2px solid var(--blue)')
+      // 触屏点击不该出圈
+      expect(css).toContain(':focus { outline: none; }')
+      // #2F7CFF 在 #0B1626 上只有约 3:1，深色容器提亮一档
+      expect(css).toContain('#page-home :focus-visible')
+      expect(css).toContain('outline-color: var(--blue-2)')
+    })
+
+    it('面板切换会重挂载容器，入场动画才重播', async () => {
+      const wrapper = mount(HomeSheet, { props: { dragTop: null } })
+      const before = wrapper.find('#homePanels').element
+
+      const quality = wrapper.findAll('.home-mod').find((b) => b.attributes('data-mod') === 'quality')
+      await quality!.trigger('click')
+      await nextTick()
+
+      // 换 key 后是新节点 —— 不是同一个元素换了内容
+      expect(wrapper.find('#homePanels').element).not.toBe(before)
+      expect(wrapper.find('.qa-pass').exists()).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('指示条是一条共用滑块，位移用列宽推导', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      // 旧实现：每个按钮各自的 ::after，切换是这条灭那条亮
+      expect(css).not.toContain('.home-mod.on::after')
+      // 新实现：一条绝对定位轨道，4 列 + 3 个 4px gap
+      expect(css).toContain('width: calc(25% - 3px)')
+      // translateX 的百分比基准是元素自身宽度（列宽），步长要再加 gap
+      expect(css).toContain('translateX(calc(var(--i, 0) * (100% + 4px)))')
     })
   })
 })
