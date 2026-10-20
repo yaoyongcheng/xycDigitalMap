@@ -57,7 +57,8 @@ export function useSwipeBack() {
     if (cam.isOpen) return document.querySelector<HTMLElement>('.cam-player.open')
     if (air.isOpen) return document.querySelector<HTMLElement>('.air-player.open')
     if (air.hazardOpen) return document.querySelector<HTMLElement>('.hazard-page.open')
-    if (sub.isOpen) return document.querySelector<HTMLElement>('.subpage.open')
+    // 排除 subpage-under：那一层是垫在下面供右滑露出的只读上一页，不该被位移
+    if (sub.isOpen) return document.querySelector<HTMLElement>('.subpage.open:not(.subpage-under)')
     return null
   }
 
@@ -65,7 +66,7 @@ export function useSwipeBack() {
   function fireBack(): void {
     document
       .querySelector<HTMLElement>(
-        '.cam-player.open [data-back], .air-player.open [data-back], .hazard-page.open [data-back], .subpage.open [data-back]',
+        '.cam-player.open [data-back], .air-player.open [data-back], .hazard-page.open [data-back], .subpage.open:not(.subpage-under) [data-back]',
       )
       ?.click()
   }

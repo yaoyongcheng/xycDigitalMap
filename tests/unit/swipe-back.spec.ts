@@ -147,4 +147,33 @@ describe('右滑返回手势', () => {
     vi.advanceTimersByTime(400)
     expect(backSpy).toHaveBeenCalledTimes(1)
   })
+
+  /*
+   * 子页栈不是真叠加，详情页右滑时下面是 .pages（消息页）。SubPage 会垫一层
+   * 只读的 .subpage-under 作为真实上一页 —— 手势必须只位移/只点当前层，
+   * 否则要么露出错页面，要么点错按钮。
+   */
+  it('存在垫底上一层时，只位移当前层、只点当前层的返回键', () => {
+    openSubpage()
+
+    const underSpy = vi.fn()
+    const under = document.createElement('div')
+    under.className = 'subpage subpage-under open'
+    const underBtn = document.createElement('button')
+    underBtn.setAttribute('data-back', '')
+    underBtn.addEventListener('click', underSpy)
+    under.appendChild(underBtn)
+    // 插到最前面：under 会成为 querySelector 的第一个匹配，专挑「没排除干净」的实现
+    document.body.insertBefore(under, layer)
+
+    down(10)
+    move(110)
+    expect(layer.style.transform).not.toBe('')
+    expect(under.style.transform).toBe('')
+
+    up(200)
+    vi.advanceTimersByTime(400)
+    expect(backSpy).toHaveBeenCalledTimes(1)
+    expect(underSpy).not.toHaveBeenCalled()
+  })
 })

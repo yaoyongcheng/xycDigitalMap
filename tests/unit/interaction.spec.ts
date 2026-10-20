@@ -125,6 +125,36 @@ describe('交互优化回归', () => {
   })
 
   /*
+   * 子页栈是同一个容器换内容，详情页右滑时露出的是 .pages（消息页）。
+   * 「详情且上一层是列表」时 SubPage 会垫一层只读列表，保证右滑露出的
+   * 页面与点返回键一致；其它情况（上一层是首页 / 列表页本身）不垫。
+   */
+  describe('右滑露出的上一层', () => {
+    it('详情页 + 上一层是巡检列表 → 垫一层只读列表', () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openInspectList('today')
+      sub.openAlarmDetail(alarm.latest[0].id, true)
+
+      const w = mount(SubPage)
+      const under = w.find('.subpage-under')
+      expect(under.exists()).toBe(true)
+      expect(under.find('.nav-title').text()).toBe('巡检预警')
+      // 垫底层不可交互，也不能被手势当成当前层
+      expect(under.find('[data-back]').exists()).toBe(false)
+    })
+
+    it('从首页直进详情（上一层是首页）→ 不垫列表', () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openAlarmDetail(alarm.latest[0].id, false)
+
+      const w = mount(SubPage)
+      expect(w.find('.subpage-under').exists()).toBe(false)
+    })
+  })
+
+  /*
    * 子页是盖在 .pages 上的绝对定位层。改造前切 tab 只改 activeTab，
    * 子页不关 —— 底栏高亮变了、画面还停在详情页，用户看到的就是
    * 「点底栏没反应」。

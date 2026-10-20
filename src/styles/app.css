@@ -4423,6 +4423,19 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .subpage.open { display: flex; }
 
+/*
+ * 右滑返回时垫在下面的「上一层」（2026-10）。
+ *
+ * 子页栈是同一个 .subpage 换内容，不是真正叠加，所以详情页跟手右移时
+ * 露出的是 .pages（消息页）。这一层把真实的返回目标（巡检列表）只读地
+ * 垫在下面，位移当前层就能露出正确页面。z-index 必须低于 .subpage 的 40。
+ */
+.subpage.subpage-under {
+  z-index: 35;
+  pointer-events: none;
+  user-select: none;
+}
+
 .subpage-body {
   flex: 1;
   overflow: auto;
