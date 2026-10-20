@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import BackBar from '@/components/ui/BackBar.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import { hazardKindList } from '@/data/config'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useShellStore } from '@/stores/shell'
+import { useSlideOverlay } from '@/utils/slideOverlay'
 
 /**
  * 隐患上报全屏层
@@ -23,6 +24,11 @@ import { useShellStore } from '@/stores/shell'
  *   ④ 返回键二次确认：填了内容时首点只提示，2.5s 内再点才真的丢弃
  */
 const air = useAirHazardStore()
+
+/** 全屏层转场（进入左滑入 / 返回右滑出），见 utils/slideOverlay.ts */
+const pageEl = ref<HTMLElement | null>(null)
+const overlay = useSlideOverlay(() => pageEl.value)
+watch(() => air.hazardOpen, (open) => overlay.syncOpen(open), { flush: 'post' })
 const shell = useShellStore()
 
 const fileEl = ref<HTMLInputElement | null>(null)
@@ -46,7 +52,7 @@ function onBack(): void {
   // 空表单直接走，不打扰
   if (!hasDraft.value) {
     disarmBack()
-    air.closeHazard()
+    overlay.leave(() => air.closeHazard())
     return
   }
   if (!backArmed.value) {
@@ -57,7 +63,7 @@ function onBack(): void {
     return
   }
   disarmBack()
-  air.closeHazard()
+  overlay.leave(() => air.closeHazard())
 }
 
 function onAdd(): void {
@@ -107,6 +113,7 @@ async function onSubmit(): Promise<void> {
 
 <template>
   <div
+    ref="pageEl"
     class="hazard-page"
     id="hazardPage"
     :class="{ open: air.hazardOpen }"

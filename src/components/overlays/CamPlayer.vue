@@ -8,6 +8,7 @@ import SmartImg from '@/components/ui/SmartImg.vue'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
 import { addDays, camStamp, formatCamDate, startOfDay } from '@/utils/date'
+import { useSlideOverlay } from '@/utils/slideOverlay'
 
 /**
  * 监控播放器全屏层
@@ -24,6 +25,11 @@ import { addDays, camStamp, formatCamDate, startOfDay } from '@/utils/date'
  */
 const cam = useCamStore()
 const shell = useShellStore()
+
+/** 全屏层转场（进入左滑入 / 返回右滑出），见 utils/slideOverlay.ts */
+const playerEl = ref<HTMLElement | null>(null)
+const overlay = useSlideOverlay(() => playerEl.value)
+watch(() => cam.isOpen, (open) => overlay.syncOpen(open), { flush: 'post' })
 
 const stamp = ref(camStamp())
 let timer = 0
@@ -93,9 +99,12 @@ function onBack(): void {
     cam.setCamLand(false)
     return
   }
-  cam.closeCam()
-  // 若本次监控是从全屏地图的撒点进来的，回到全屏地图而非首页
-  shell.backToMapLand()
+  // ⑤ 真正关闭播放器：先向右滑出，动画结束再落状态
+  overlay.leave(() => {
+    cam.closeCam()
+    // 若本次监控是从全屏地图的撒点进来的，回到全屏地图而非首页
+    shell.backToMapLand()
+  })
 }
 
 /** 原 js/app.js:1251-1256 */
@@ -185,6 +194,7 @@ const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视
 
 <template>
   <div
+    ref="playerEl"
     class="cam-player"
     id="camPlayer"
     :class="{ open: cam.isOpen, live: cam.isLive, 'is-land': shell.isLand }"

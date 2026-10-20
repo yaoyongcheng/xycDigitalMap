@@ -4454,6 +4454,16 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .subpage.is-leaving { animation: subLeave 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) forwards; }
 
+/* 全屏覆盖层（监控 / 航拍 / 隐患）复用同一组关键帧：进入左滑入、返回右滑出。
+   它们的关闭由 utils/slideOverlay.ts 延时到动画结束，否则 :hidden 会把动画吞掉。 */
+.cam-player.is-entering,
+.air-player.is-entering,
+.hazard-page.is-entering { animation: subEnter 0.26s cubic-bezier(0.22, 0.61, 0.36, 1); }
+
+.cam-player.is-leaving,
+.air-player.is-leaving,
+.hazard-page.is-leaving { animation: subLeave 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) forwards; }
+
 /*
  * 右滑返回时垫在下面的「上一层」（2026-10）。
  *
@@ -6383,7 +6393,13 @@ img.zoomable.is-anim { transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36
   .cam-cal { transition: none; }
   .simg { animation: none; }
   .subpage.is-entering,
-  .subpage.is-leaving { animation: none; }
+  .subpage.is-leaving,
+  .cam-player.is-entering,
+  .cam-player.is-leaving,
+  .air-player.is-entering,
+  .air-player.is-leaving,
+  .hazard-page.is-entering,
+  .hazard-page.is-leaving { animation: none; }
   img.zoomable.is-anim { transition: none; }
   .zoom-badge { animation: none; }
   button:active,

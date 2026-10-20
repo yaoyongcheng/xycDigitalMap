@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import BackBar from '@/components/ui/BackBar.vue'
 import DayPickChips from '@/components/ui/DayPickChips.vue'
@@ -7,6 +7,7 @@ import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { addDays, formatCamDate, startOfDay } from '@/utils/date'
+import { useSlideOverlay } from '@/utils/slideOverlay'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -16,6 +17,11 @@ import { useImageZoom } from '@/utils/zoom'
  * + renderAir()（app.js:1361-1372）。
  */
 const air = useAirHazardStore()
+
+/** 全屏层转场（进入左滑入 / 返回右滑出），见 utils/slideOverlay.ts */
+const playerEl = ref<HTMLElement | null>(null)
+const overlay = useSlideOverlay(() => playerEl.value)
+watch(() => air.isOpen, (open) => overlay.syncOpen(open), { flush: 'post' })
 
 const label = computed(() => formatCamDate(air.airDate))
 
@@ -32,7 +38,7 @@ function onBack(): void {
     air.airCalOpen = false
     return
   }
-  air.closeAir()
+  overlay.leave(() => air.closeAir())
 }
 
 /** 原 js/app.js:1508-1521 */
@@ -103,6 +109,7 @@ const popMeta = computed(() => {
 
 <template>
   <div
+    ref="playerEl"
     class="air-player"
     id="airPlayer"
     :class="{ open: air.isOpen }"
