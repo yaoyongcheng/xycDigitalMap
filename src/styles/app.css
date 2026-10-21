@@ -2,9 +2,34 @@
   --blue: #2F7CFF;
   --blue-2: #5AA2FF;
   --page: #F4F7F9;
+  /*
+   * 浅色页的底色（2026-10 视觉改造·第四批）
+   *
+   * 平铺一层 #F4F7F9 时，白卡片和底只差 6% 亮度 —— 整页读起来像线框图，
+   * 卡片没有「浮在页面上」的层级。换成同一色系、上浅下深的一点点梯度：
+   * 顶部更亮（内容从这里开始）、底部略沉（收住滚动区），差异控制在 4% 内，
+   * 不抢内容，但卡片立刻有了前后面。
+   */
+  --page-grad: linear-gradient(180deg, #F8FBFF 0%, #EFF4FA 100%);
   --text: #1D2129;
-  --muted: #86909C;
+  /*
+   * 次要文字：原 #86909C 在白底仅 3.24:1，12~13px 的说明文字全部不达 AA。
+   * 压深到 #6B7480（4.6:1）—— 仍然比正文弱两级，但读得清。
+   */
+  --muted: #6B7480;
   --line: #E8ECF0;
+  /* 卡片描边：比 --line 更淡，只用来收住白卡的边缘，主要层次交给 --sh-1 */
+  --line-soft: rgba(16, 24, 40, 0.05);
+  /*
+   * 高程（2026-10 视觉改造·第四批）
+   *
+   * 改造前全站 13 种阴影写法，卡片靠 1px 边框而非阴影分层，结果是「有线框图
+   * 的感觉」。这里收成三级：卡片 / 浮层 / 深色遮罩。深色层的阴影要更黑更实，
+   * 浅色层用带蓝味的冷灰，避免在白底上泛脏。
+   */
+  --sh-1: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px -4px rgba(16, 24, 40, 0.1);
+  --sh-2: 0 2px 6px rgba(16, 24, 40, 0.06), 0 14px 30px -12px rgba(16, 24, 40, 0.16);
+  --sh-3: 0 8px 24px rgba(4, 10, 20, 0.35);
   --ok: #00B386;
   --warn: #F77234;
   --danger: #F53F3F;
@@ -76,7 +101,8 @@
   /* 文字 · 浅色底（从上到下依次减弱） */
   --ink-1: #1D2129;
   --ink-2: #4E5969;
-  --ink-3: #86909C;
+  /* 与 --muted 同值同义：一个给正文式说明文字，一个给局部弱化，保持同步 */
+  --ink-3: #6B7480;
   --ink-4: #C0C4CC;
 
   /* 文字 · 深色底 */
@@ -496,7 +522,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-radius: var(--r-12);
   padding: 14px;
   margin-bottom: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--sh-1);
 }
 
 .section-title {
@@ -646,6 +673,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .home-full {
+  position: relative;
   flex-shrink: 0;
   margin-left: auto;
   height: 22px;
@@ -659,6 +687,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
   align-items: center;
   gap: 4px;
   cursor: pointer;
+}
+
+/* 视觉只有 22px 高（再高就把标题行撑变形），但命中区补到 42px。
+   用伪元素扩边而不是加 padding：不影响这一行的高度与对齐。 */
+.home-full::after {
+  content: "";
+  position: absolute;
+  inset: -10px -8px;
 }
 
 .home-full svg { width: 12px; height: 12px; }
@@ -1302,6 +1338,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .home-sheet-toggle svg {
   width: 14px;
   height: 14px;
+}
+
+/* 24px 的药丸在拇指下太窄，命中区往下多给 10px、左右各 14px。
+   药丸自己用 translate(-50%,-50%) 居中，扩边只动伪元素，不碰定位。 */
+.home-sheet-toggle::after {
+  content: "";
+  position: absolute;
+  inset: -10px -14px;
 }
 
 .home-sheet-toggle .ico-expand,
@@ -2301,7 +2345,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .alarm-grid text {
   fill: var(--ink-3-dark);
-  font-size: 9px;
+  font-size: var(--fs-10);
 }
 
 .alarm-x text {
@@ -2404,6 +2448,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-radius: var(--r-12);
   overflow: hidden;
   margin-bottom: 14px;
+  box-shadow: var(--sh-1);
 }
 
 .insp-item {
@@ -2447,7 +2492,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .insp-time {
   flex-shrink: 0;
   font-size: var(--fs-11);
-  color: var(--ink-4);
+  color: var(--ink-3);
   align-self: flex-start;
   padding-top: 2px;
 }
@@ -2575,6 +2620,21 @@ button, input, textarea { font-family: inherit; color: inherit; }
   overflow: hidden;
 }
 
+/*
+ * 左上角叠着「自动巡航无人机 / UAV-25638583」。原版只给了 text-shadow，
+ * 碰上浅色楼体（航拍图里很常见）白字直接糊掉。补一层自上而下的暗角：
+ * 只压到 128px 高，不整块蒙住照片。
+ */
+.alarm-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 1;
+  height: 128px;
+  background: linear-gradient(180deg, rgba(4, 10, 20, 0.72), rgba(4, 10, 20, 0));
+  pointer-events: none;
+}
+
 .alarm-hero img {
   display: block;
   width: 100%;
@@ -2586,6 +2646,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   position: absolute;
   left: 12px;
   top: 12px;
+  z-index: 2;
   color: #fff;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
 }
@@ -3863,7 +3924,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   position: absolute;
   inset: var(--status-h) 0 0;
   z-index: 90;
-  background: var(--page);
+  background: var(--page-grad);
   flex-direction: column;
 }
 
@@ -3873,7 +3934,17 @@ button, input, textarea { font-family: inherit; color: inherit; }
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 12px 16px 20px;
+  padding: 12px 16px 8px;
+}
+
+/* 固定底栏：提交按钮不再跟着表单内容流走，永远在拇指够得到的位置 */
+.hazard-foot {
+  flex-shrink: 0;
+  padding: 10px 16px calc(10px + var(--safe-bot));
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(12px) saturate(1.1);
+  -webkit-backdrop-filter: blur(12px) saturate(1.1);
+  border-top: 1px solid var(--line-soft);
 }
 
 .hazard-sec { margin-bottom: 16px; }
@@ -4073,7 +4144,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 #page-work,
 #page-msg,
 #page-mine {
-  background: #F3F7FB;
+  background: var(--page-grad);
 }
 
 .work-shorts {
@@ -4083,7 +4154,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-radius: var(--r-16);
   padding: 14px 8px 12px;
   margin-bottom: 12px;
-  box-shadow: 0 1px 2px rgba(22, 58, 120, 0.04);
+  box-shadow: var(--sh-1);
 }
 
 .work-short {
@@ -4133,7 +4204,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   background: #fff;
   border-radius: var(--r-16);
   padding: 16px 14px;
-  box-shadow: 0 1px 2px rgba(22, 58, 120, 0.04);
+  box-shadow: var(--sh-1);
 }
 
 .tool-ico {
@@ -4181,9 +4252,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
   margin-bottom: 14px;
   border-radius: 20px;
   background: #fff;
-  color: var(--ink-4);
+  color: var(--ink-3);
   font-size: var(--fs-13);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  box-shadow: var(--sh-1);
 }
 
 .group-label {
@@ -4317,7 +4388,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   flex-shrink: 0;
 }
 
-.msg-time { font-size: var(--fs-12); color: var(--ink-4); }
+.msg-time { font-size: var(--fs-12); color: var(--ink-3); }
 
 .msg-badge {
   min-width: 18px;
@@ -4538,13 +4609,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
   width: 100%;
   height: 48px;
   margin-top: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
   border-radius: var(--r-12);
   background: #fff;
   color: var(--danger);
   font-size: 15px;
   font-weight: 500;
   cursor: pointer;
+  box-shadow: var(--sh-1);
 }
 
 .subpage {
@@ -4553,7 +4625,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
      所以子页要向下延伸一个底栏的高度，才能盖到屏幕最底部 */
   inset: 0 0 calc(-1 * (var(--tabbar-h) + var(--safe-bot))) 0;
   z-index: 40;
-  background: var(--page);
+  background: var(--page-grad);
   display: none;
   flex-direction: column;
 }
@@ -6716,7 +6788,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 /* 峰值标注：只在大图上出现（见 chart.ts 的说明） */
 .peak-lab {
   fill: #6FE7B4;
-  font-size: 9px;
+  font-size: var(--fs-10);
   font-weight: 600;
 }
 

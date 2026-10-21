@@ -112,7 +112,9 @@ describe('设计令牌', () => {
 
   it('替换是等值的：令牌值与原字面量逐字一致', () => {
     // 这批改动声称"渲染不变"，靠的是这条：令牌只是给原值起了名字
-    expect(CSS).toContain('--ink-3: #86909C;')
+    // 例外：2026-10 视觉改造·第四批刻意把 --ink-3 从 #86909C（白底 3.24:1）
+    // 压深到 #6B7480（4.6:1），这是"真正想改观感时改令牌"的那条路。
+    expect(CSS).toContain('--ink-3: #6B7480;')
     expect(CSS).toContain('--ink-3-dark: #8A9BB0;')
     expect(CSS).toContain('--ink-4-dark: #6B7E96;')
     expect(CSS).toContain('--bg-2: #0B1626;')

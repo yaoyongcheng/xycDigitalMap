@@ -165,7 +165,13 @@ async function onSubmit(): Promise<void> {
           placeholder="补充隐患说明，便于整改跟进"
         ></textarea>
       </section>
+    </div>
 
+    <!--
+      提交按钮原先跟在表单流末尾，内容不满一屏时它停在半空、下面留 300px 空白，
+      手指还得先找一次。现在固定在底部（含安全区），与填报类小程序的习惯一致。
+    -->
+    <div class="hazard-foot">
       <button
         class="hazard-submit"
         id="btnHazardSubmit"

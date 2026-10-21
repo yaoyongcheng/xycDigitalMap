@@ -113,8 +113,19 @@ export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): Line
       return `<line x1="${pl}" x2="${w - pr}" y1="${y}" y2="${y}"/><text x="${pl - 4}" y="${(+y + 3).toFixed(1)}" text-anchor="end">${t}</text>`
     })
     .join('')
+  /*
+   * 日期标签隔一个取一个（7 天 → 4 个）。
+   *
+   * 这张图会被缩进 170~230px 宽的卡片里，7 个「10/15」并排后每两个之间只剩
+   * 约 4px；字号从 9px 提到 10px 后更是贴在一起。4 个标签间距约 60px，
+   * 既看得出时间跨度，又不至于糊成一条。首尾必须保留（起点与「今天」）。
+   */
   const labels = days
-    .map((d, i) => `<text x="${xAt(i).toFixed(1)}" y="${h - 1}" text-anchor="middle">${d}</text>`)
+    .map((d, i) =>
+      i % 2 === 0 || i === n - 1
+        ? `<text x="${xAt(i).toFixed(1)}" y="${h - 1}" text-anchor="middle">${d}</text>`
+        : '',
+    )
     .join('')
   const dots = pts
     .map(
@@ -204,9 +215,20 @@ export function peopleHourModel(nowHour: number): LineModel {
       return `<line x1="${pl}" x2="${w - pr}" y1="${y}" y2="${y}"/><text x="${pl - 4}" y="${(+y + 3).toFixed(1)}" text-anchor="end">${t}</text>`
     })
     .join('')
+  /*
+   * 刻度标签：每 3 个取一个 + 末点。
+   *
+   * 原先是 i%2（隔一个取一个），在 320 宽的图上步长只有 25px，
+   * 而「21:00」这种标签本身约 30px 宽 —— 最后三个标签（17:00 / 21:00 / 23:00）
+   * 里 21:00 是中点锚、23:00 是终点锚，实测横向压在一起，渲染成
+   * 「173:00 213:00 2300」，像坏掉的坐标轴。
+   *
+   * 改成 i%3：1:00 / 7:00 / 13:00 / 19:00 / 23:00，步长 69px（末段 50px），
+   * 任何两个标签之间都留得下空气。末点必须保留 —— 它是「现在」的锚。
+   */
   const labels = hours
     .map((_d, i) => {
-      const show = i === 0 || i === ticksN - 1 || i % 2 === 0
+      const show = i === 0 || i === ticksN - 1 || i % 3 === 0
       if (!show) return ''
       const anchor = i === 0 ? 'start' : i === ticksN - 1 ? 'end' : 'middle'
       const dim = i >= liveN ? ` opacity="0.35"` : ''
