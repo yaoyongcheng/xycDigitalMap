@@ -92,10 +92,26 @@ export function monthStart(d: Date | number): Date {
  * 原 js/app.js:74-79 camStamp()
  * 监控画面时间戳，输出形如「2026-10-12 星期日 15:30:05 4G」。
  * 被三处消费：首页监控卡片、监控播放器、tick() 定时器。
+ *
+ * 2026-10 视觉改造·第五批：播放器已改用下面的 camStampBrief()，这里保留
+ * 原格式是为了 1:1 对得上原版（同时也是 date.spec 的对照基准）。
  */
 export function camStamp(): string {
   const d = new Date()
   const days = '日一二三四五六'
   const pad = (n: number): string => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} 星期${days[d.getDay()]} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} 4G`
+}
+
+/**
+ * 监控画面时间戳 · 精简版（2026-10 视觉改造·第五批）
+ *
+ * 播放器上只留「日期 + 时钟」。原格式里的「星期X」与「4G」是早期假设备外壳
+ * 的残留（内置假状态栏早已移除），压在监控画面上像十年前的硬盘录像机 OSD，
+ * 而且星期对盯画面的人没有信息量。格式化函数与 camStamp 同源，只是去掉噪音。
+ */
+export function camStampBrief(): string {
+  const d = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }

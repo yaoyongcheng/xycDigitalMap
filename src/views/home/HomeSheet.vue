@@ -30,13 +30,24 @@ const home = useHomeStore()
  * 抽屉跟手拖拽（2026-10 改造新增）
  * dragTop 非空时以 inline top 覆盖 CSS 档位定位（拖拽中/半开档）；
  * grab 事件由顶部抓手条上抛，拖拽逻辑在 HomePage 统一处理。
+ *
+ * 2026-10 视觉改造·第五批：抓手条从「一根装饰条」升级成唯一的手柄 ——
+ * 原先它被浮在抽屉边缘的「半开」药丸整个盖住，等于不存在；而那颗药丸
+ * 又骑在抽屉上沿，滚动内容会从它下面穿过去（实测「01 预警」标题被压掉
+ * 半行）。现在药丸撤掉，抓手条常驻吸顶，既是拖拽入口也是点击入口。
  */
-defineProps<{ dragTop: number | null }>()
-const emit = defineEmits<{ grab: [e: PointerEvent] }>()
+/** level 有默认值：抽屉默认全开（与 store 初值一致），单测里可以只传 dragTop */
+const props = withDefaults(defineProps<{ dragTop: number | null; level?: 0 | 1 | 2 }>(), {
+  level: 2,
+})
+const emit = defineEmits<{ grab: [e: PointerEvent]; toggle: [] }>()
 
 function onGrab(e: PointerEvent): void {
   emit('grab', e)
 }
+
+/** 点击抓手条要去的档位（与 HomePage 的循环一致：收起 → 全开 → 半开 → 收起） */
+const grabLabel = computed(() => ['展开面板', '收起面板', '半开面板'][props.level])
 
 const mods: { id: HomeMod; label: string; icon: IconName }[] = [
   { id: 'safety', label: '安全管理', icon: 'mod-safety' },
@@ -57,7 +68,33 @@ const modIndex = computed(() => Math.max(0, mods.findIndex((m) => m.id === home.
 
 <template>
   <div class="home-sheet" :style="dragTop !== null ? { top: dragTop + 'px' } : undefined">
-    <div class="sheet-grab" aria-hidden="true" @pointerdown="onGrab"><i></i></div>
+    <!--
+      抓手条：拖拽 + 点击同一个人体工学入口。
+      吸顶（position: sticky）是为了滚动时它不被内容顶走 —— 抽屉里内容很长，
+      滑到一半想收回面板时，手柄必须还在原地。
+    -->
+    <button
+      class="sheet-grab"
+      type="button"
+      :aria-label="grabLabel"
+      @pointerdown="onGrab"
+      @click="emit('toggle')"
+    >
+      <i aria-hidden="true"></i>
+      <svg
+        class="grab-chev"
+        :class="{ up: props.level === 0 }"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M6 9l6 6 6-6" />
+      </svg>
+    </button>
     <div class="home-mods" id="homeMods">
       <button
         v-for="m in mods"

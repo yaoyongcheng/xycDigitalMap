@@ -4,6 +4,7 @@ import {
   addDays,
   calMinMonth,
   camStamp,
+  camStampBrief,
   dateKey,
   dayOffsetOf,
   formatCamDate,
@@ -187,6 +188,21 @@ describe('utils/date', () => {
         vi.setSystemTime(new Date(2026, 9, 4 + i, 12, 0, 0))
         expect(camStamp()).toContain(`星期${week[i]}`)
       }
+    })
+  })
+
+  describe('camStampBrief（播放器角标）', () => {
+    it('只留日期 + 时钟，不带星期与 4G', () => {
+      expect(camStampBrief()).toBe('2026-10-16 15:30:45')
+      expect(camStampBrief()).not.toContain('星期')
+      expect(camStampBrief()).not.toContain('4G')
+    })
+
+    it('分秒补零到两位，且能被空格一分为二（模板按日期/时钟两段渲染）', () => {
+      vi.setSystemTime(new Date(2026, 9, 4, 9, 5, 7))
+      const [date, clock] = camStampBrief().split(' ')
+      expect(date).toBe('2026-10-04')
+      expect(clock).toBe('09:05:07')
     })
   })
 })

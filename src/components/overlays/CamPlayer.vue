@@ -7,7 +7,7 @@ import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
-import { addDays, camStamp, formatCamDate, startOfDay } from '@/utils/date'
+import { addDays, camStampBrief, formatCamDate, startOfDay } from '@/utils/date'
 import { useSlideOverlay } from '@/utils/slideOverlay'
 
 /**
@@ -31,11 +31,24 @@ const playerEl = ref<HTMLElement | null>(null)
 const overlay = useSlideOverlay(() => playerEl.value)
 watch(() => cam.isOpen, (open) => overlay.syncOpen(open), { flush: 'post' })
 
-const stamp = ref(camStamp())
+/**
+ * 画面时间戳（2026-10 视觉改造·第五批）
+ *
+ * 原先直接用 camStamp() 的「2026-10-21 星期二 08:39:05 4G」：星期与 4G 是
+ * 早期假设备外壳的残留（内置假状态栏早已移除），11px 挤在左上角还压着
+ * 顶栏底边。现在只留日期 + 时钟，并拆成两段：日期压暗一档、时钟等宽，
+ * 当成一枚画面角标而不是一行 OSD 文本。
+ */
+const stamp = ref(camStampBrief())
 let timer = 0
 
+const stampParts = computed(() => {
+  const [date, clock] = stamp.value.split(' ')
+  return { date, clock }
+})
+
 function refreshStamp(): void {
-  stamp.value = camStamp()
+  stamp.value = camStampBrief()
 }
 
 /*
@@ -211,7 +224,7 @@ const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视
       <div class="cam-player-stage" id="camPlayerStage">
         <img id="camPlayerFrame" :src="cam.currentCam.img" :class="cam.currentCam.pos" alt="" loading="lazy" />
         <span class="cam-pos-tag" id="camPosTag">{{ stageTag }}</span>
-        <span class="cam-time" id="camPlayerTime">{{ stamp }}</span>
+        <span class="cam-time" id="camPlayerTime"><em>{{ stampParts.date }}</em> {{ stampParts.clock }}</span>
         <button class="cam-play" id="btnCamPlay" type="button" aria-label="播放" @click="onPlay"></button>
         <div class="cam-stage-acts">
           <button class="cam-stage-btn" id="btnCamShots" type="button" @click="onShots">历史抓拍</button>

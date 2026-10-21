@@ -24,7 +24,7 @@ describe('components/overlays/CamPlayer', () => {
   let clearSpy: MockInstance
 
   const T0 = new Date(2026, 9, 16, 15, 30, 5)
-  const STAMP0 = '2026-10-16 星期五 15:30:05 4G'
+  const STAMP0 = '2026-10-16 15:30:05'
 
   async function setOpen(open: boolean): Promise<void> {
     cam.isOpen = open
@@ -74,17 +74,17 @@ describe('components/overlays/CamPlayer', () => {
       await setOpen(true)
 
       // 关键：不能沿用挂载时那一刻的旧值
-      expect(stampText()).toBe('2026-10-16 星期五 15:30:15 4G')
+      expect(stampText()).toBe('2026-10-16 15:30:15')
       expect(intervalSpy).toHaveBeenCalledTimes(1)
       expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 1000)
 
       vi.advanceTimersByTime(1000)
       await nextTick()
-      expect(stampText()).toBe('2026-10-16 星期五 15:30:16 4G')
+      expect(stampText()).toBe('2026-10-16 15:30:16')
 
       vi.advanceTimersByTime(3000)
       await nextTick()
-      expect(stampText()).toBe('2026-10-16 星期五 15:30:19 4G')
+      expect(stampText()).toBe('2026-10-16 15:30:19')
     })
 
     it('关闭时清掉定时器，时间戳随之冻结', async () => {
@@ -231,7 +231,7 @@ describe('components/overlays/CamPlayer', () => {
 
       await wrapper.find('#btnCamPlay').trigger('click')
       expect(cam.isLive).toBe(true)
-      expect(stampText()).toBe('2026-10-16 星期五 15:31:00 4G')
+      expect(stampText()).toBe('2026-10-16 15:31:00')
     })
 
     it('切换点位芯片时 keepLive 取决于当前直播态', async () => {

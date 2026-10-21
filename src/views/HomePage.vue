@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import HomeProgress from '@/components/ui/HomeProgress.vue'
 import MapInfoCard from '@/components/ui/MapInfoCard.vue'
@@ -174,6 +174,13 @@ function onResize(): void {
 }
 
 onMounted(() => {
+  /*
+   * 半开档只在「拖/点到达」时写过内联 top，刷新后这个内联值不存在，
+   * 只剩 is-sheet-up —— CSS 会按全开位渲染，用户看到的和记住的档位对不上。
+   * 这里在首次布局完成后立刻按档位补一次，且同步执行（不等 nextTick），
+   * 让它在首帧之前生效，避免刷新后先闪一下全开再跳到中间。
+   */
+  if (shell.sheetLevel === 1) dragTop.value = sheetAnchors().mid
   nextTick(applySheetTop)
   /*
    * 首次测量可能早于布局稳定 —— Safari 恢复标签页时，地址栏的收放会改变
@@ -200,17 +207,7 @@ watch(
   () => nextTick(applySheetTop),
 )
 
-/** 按钮文案（无障碍标签用，与模板里三个 span 的显隐规则同源） */
-const sheetActionLabel = computed(() => ['拉起面板', '半开面板', '收起面板'][shell.sheetLevel])
-
-/**
- * 点按切换抽屉档位。
- *
- * 2026-10 交互优化：原先点按只在「收起 ↔ 全开」间二选一，中间档只能靠
- * 拖拽到达 —— 而界面上没有任何地方告诉用户存在这一档，等于一个隐藏功能。
- * 现在点按按 收起 → 全开 → 半开 → 收起 循环，三档都能点出来，按钮文案
- * 始终是「下一步会发生什么」（拉起 / 半开 / 收回），档位不再靠猜。
- */
+/** 点按抓手条切换抽屉档位。 */
 function onSheetToggle(): void {
   if (suppressToggleClick) return
   const next: 0 | 1 | 2 = shell.sheetLevel === 0 ? 2 : shell.sheetLevel === 2 ? 1 : 0
@@ -248,7 +245,12 @@ function onMapPoint(p: MapPoint): void {
     class="page home-page"
     id="page-home"
     ref="pageEl"
-    :class="{ active: shell.activeTab === 'home', 'is-sheet-up': shell.sheetUp, 'is-dragging': dragging }"
+    :class="{
+      active: shell.activeTab === 'home',
+      'is-sheet-up': shell.sheetUp,
+      'is-sheet-full': shell.sheetLevel === 2,
+      'is-dragging': dragging,
+    }"
   >
     <div class="home-scene">
       <div class="home-map">
@@ -279,28 +281,11 @@ function onMapPoint(p: MapPoint): void {
 
     <div class="home-gutter-mask" aria-hidden="true"></div>
 
-    <button
-      class="home-sheet-toggle"
-      id="btnSheetToggle"
-      type="button"
-    :style="dragTop !== null ? { top: dragTop + 'px' } : undefined"
-    :data-level="shell.sheetLevel"
-    :aria-label="sheetActionLabel"
-    @pointerdown="onDragStart"
-    @click="onSheetToggle"
-  >
-      <svg class="ico-pull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14l6-6 6 6"/></svg>
-      <svg class="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10l6 6 6-6"/></svg>
-      <!--
-        文案随状态切换（显隐规则见 app.css 的 #page-home.is-sheet-up 那组）：
-          收起(0) -> 上箭头 +「拉起」；全开(2) -> 下箭头 +「半开」；
-          半开(1) -> 下箭头 +「收回」。文案始终描述「下一步会发生什么」。
-      -->
-      <span class="lab-pull">拉起</span>
-      <span class="lab-expand">半开</span>
-      <span class="lab-mid">收回</span>
-    </button>
-
-    <HomeSheet :drag-top="dragTop" @grab="onDragStart" />
+    <HomeSheet
+      :drag-top="dragTop"
+      :level="shell.sheetLevel"
+      @grab="onDragStart"
+      @toggle="onSheetToggle"
+    />
   </section>
 </template>

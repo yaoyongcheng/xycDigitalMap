@@ -1308,54 +1308,69 @@ button, input, textarea { font-family: inherit; color: inherit; }
   z-index: 3;
   background: #F3F7FB;
   border-radius: 24px 24px 0 0;
-  padding: 18px 16px 10px;
+  /* 顶部内边距交给 .sheet-grab 自己撑（它要吸顶，不能靠父级的 padding） */
+  padding: 0 16px 10px;
   overflow: auto;
-  transition: top 0.32s ease;
+  transition: top 0.32s var(--ease-out);
 }
 
-.home-sheet-toggle {
-  position: absolute;
-  left: 50%;
-  top: 42%;
-  z-index: 4;
+/*
+ * 抽屉抓手条（2026-10 视觉改造·第五批）
+ *
+ * 改造前它是抽屉里一根 40×4 的装饰条，正上方还浮着一颗「半开 / 收回」的药丸，
+ * 两颗同心控件叠在同一位置 —— 抓手条整根被药丸压住，等于不存在。而药丸又骑在
+ * 抽屉上沿，抽屜一滚动，内容就从它下面穿过去（实测「01 预警」被压掉半行）。
+ *
+ * 现在只留一个手柄：
+ *   · 44px 高整条可点可拖，视觉只有中间 36×4 那道杠
+ *   · position: sticky + 与抽屉同色 —— 滚多远手柄都在顶上，且挡住下面的内容
+ *   · 右侧一枚 16px 小箭头指示「下一步是展开还是收起」，替掉原来的文字
+ */
+.sheet-grab {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  height: 24px;
-  padding: 0 12px;
-  border: 1px solid rgba(110, 168, 255, 0.28);
+  gap: 6px;
+  width: calc(100% + 32px);
+  /* 整条 44px 都是命中区，视觉元素靠 padding 压到上方 ~16px 处 */
+  height: 44px;
+  margin: 0 -16px 4px;
+  padding: 4px 0 16px;
+  border: 0;
+  border-radius: 24px 24px 0 0;
+  /* 抽屉在首页是深色（#page-home .home-sheet 改成 --bg-2），这里必须跟着走：
+     写死浅色会在深色抽屉顶上留一条白边。inherit 取父级算完的颜色，两边都自适应。 */
+  background-color: inherit;
+  color: var(--ink-3);
+  cursor: grab;
+  touch-action: none;
+}
+
+.sheet-grab:active { cursor: grabbing; }
+
+.sheet-grab i {
+  width: 36px;
+  height: 4px;
   border-radius: var(--r-pill);
-  background: rgba(11, 22, 38, 0.9);
-  color: var(--ink-2-dark);
-  font-size: var(--fs-11);
-  font-weight: 600;
-  transform: translate(-50%, -50%);
-  transition: top 0.32s ease;
-  cursor: pointer;
+  background: rgba(110, 168, 255, 0.4);
 }
 
-.home-sheet-toggle svg {
-  width: 14px;
-  height: 14px;
+.grab-chev {
+  width: 16px;
+  height: 16px;
+  opacity: 0.6;
+  transition: transform 0.24s var(--ease-out);
 }
 
-/* 24px 的药丸在拇指下太窄，命中区往下多给 10px、左右各 14px。
-   药丸自己用 translate(-50%,-50%) 居中，扩边只动伪元素，不碰定位。 */
-.home-sheet-toggle::after {
-  content: "";
-  position: absolute;
-  inset: -10px -14px;
+/* 收起态箭头朝上（提示上拉），其余朝下 */
+.grab-chev.up { transform: rotate(180deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .grab-chev { transition: none; }
 }
-
-.home-sheet-toggle .ico-expand,
-.home-sheet-toggle .lab-expand { display: none; }
-
-#page-home.is-sheet-up .home-sheet-toggle .ico-pull,
-#page-home.is-sheet-up .home-sheet-toggle .lab-pull { display: none; }
-
-#page-home.is-sheet-up .home-sheet-toggle .ico-expand { display: block; }
-#page-home.is-sheet-up .home-sheet-toggle .lab-expand { display: inline; }
 
 #page-home.is-sheet-up {
   --sheet-up-top: 118px;
@@ -1369,8 +1384,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 的防线是 HomePage.vue 的 applySheetTop 里那道范围校验 —— 不合理的测量结果
  * 一律不写入，让下面这条 CSS 默认值（118px）继续生效。
  */
-#page-home.is-sheet-up .home-sheet,
-#page-home.is-sheet-up .home-sheet-toggle {
+#page-home.is-sheet-up .home-sheet {
   top: var(--sheet-up-top, 118px);
 }
 
@@ -3143,16 +3157,37 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .cam-card-pic.pos-right img { object-position: 82% 40%; }
 .cam-card-pic.pos-bottom img { object-position: 50% 80%; }
 
+/*
+ * 画面角标（2026-10 视觉改造·第五批）
+ *
+ * 原先是一行 11px 的白字 + text-shadow，内容还带着「星期X / 4G」——
+ * 压在画面左上角像录像机 OSD，字又细，浅色画面上基本读不出来。
+ * 改成半透明胶囊：日期压暗一档、时钟等宽加粗，读的时候先看时间。
+ */
 .cam-time {
   position: absolute;
   left: 10px;
-  top: 8px;
+  top: 10px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: var(--r-6);
+  background: rgba(5, 12, 24, 0.46);
+  backdrop-filter: blur(6px) saturate(1.1);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
   color: #fff;
-  font-size: var(--fs-11);
-  font-weight: 500;
-  letter-spacing: 0.2px;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: 0.02em;
   pointer-events: none;
+}
+
+.cam-time em {
+  font-style: normal;
+  font-weight: 500;
+  font-size: var(--fs-10);
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .cam-play {
@@ -5087,31 +5122,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 /* ---------- B. 抽屉跟手拖拽 ---------- */
 
-/* 抓手条：抽屉顶部的拖拽热区（视觉是居中胶囊） */
-.sheet-grab {
-  margin: -14px -16px 6px;
-  height: 22px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  cursor: grab;
-  touch-action: none;
-}
-
-.sheet-grab i {
-  margin-top: 8px;
-  width: 40px;
-  height: 4px;
-  border-radius: var(--r-pill);
-  background: rgba(110, 168, 255, 0.35);
-}
-
-/* 切换按钮同样可拖拽，关掉滚动手势冲突 */
-#page-home .home-sheet-toggle { touch-action: none; }
+/* 抓手条本身已升级成吸顶手柄（见文件前部 .sheet-grab），
+   这里只需保证拖拽期间关掉定位过渡，松手后才吸附。 */
 
 /* 拖拽中关掉位置过渡，保证跟手 */
-#page-home.is-dragging .home-sheet,
-#page-home.is-dragging .home-sheet-toggle {
+#page-home.is-dragging .home-sheet {
   transition: none !important;
 }
 
@@ -6265,11 +6280,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   cursor: default;
 }
 
-/* —— 抽屉档位按钮：三档文案（拉起 / 半开 / 收回） —— */
-.home-sheet-toggle .lab-mid { display: none; }
-
-#page-home.is-sheet-up .home-sheet-toggle[data-level="1"] .lab-expand { display: none; }
-#page-home.is-sheet-up .home-sheet-toggle[data-level="1"] .lab-mid { display: inline; }
+/* —— 抽屉三档文案已撤（第五批改成抓手条 + 箭头），箭头方向见 .grab-chev —— */
 
 /* —— 隐患提交按钮的 loading 态 —— */
 .hazard-submit {
@@ -6907,3 +6918,54 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
  */
 .qa-pass-pair { gap: 5px; }
 .qa-pass-pair b { width: 10px; }
+
+/* =====================================================================
+ * 2026-10 视觉改造 · 第五批（抽屉手柄 / 地图退让）
+ *
+ *   这批只解决「层级打架」的三处：
+ *     M-1 抽屉手柄    药丸与抓手条叠在同一位置，内容从缝里穿过去
+ *     M-2 全开态撒点  抽屉边正好切过点位锚点，图标被切成半个
+ *     M-3 地图控件    缩放按钮中心锚定在 50%，抽屉一抬就被压掉一半
+ * ===================================================================== */
+
+/* ---------- M-2. 全开态让点位退场 ---------- */
+
+/*
+ * 撒点的锚点（.pin-body 的 bottom）落在屏幕约 42% 那条线上，全开档抽屉顶
+ * 到 118px 后，锚点以下的图标全被抽屉盖住，跨线的那一两个正好被切一半 ——
+ * 看起来像渲染错位，而不是被遮住。
+ *
+ * 数据态下地图本来就只是背景（标题 + 进度 + 全屏入口），让点位整体淡出，
+ * 这条窄带就退化成干净的「上下文头」，不再有半截图标。
+ */
+.home-map .pin-body {
+  transition: opacity 0.22s var(--ease-out);
+}
+
+#page-home.is-sheet-full .home-map .pin-body {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- M-3. 抽屉抬起时收起地图控件 ---------- */
+
+/*
+ * .map-ctrls 是 top:50% 居中定位（相对 42%+20px 的地图盒），抽屉升到
+ * 42% 以上时正好压在它身上：上半截可见、下半截被抽屉裁掉，既难看也点不准。
+ * 地图退成背景时这些控件本来也用不上 —— 抬起即淡出，想缩放先回到地图态
+ * 或点「全屏」。
+ */
+.home-map .map-ctrls {
+  transition: opacity 0.2s var(--ease-out), visibility 0.2s;
+}
+
+#page-home.is-sheet-up .home-map .map-ctrls {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-map .pin-body,
+  .home-map .map-ctrls { transition: none; }
+}
