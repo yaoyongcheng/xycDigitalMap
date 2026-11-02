@@ -4,8 +4,7 @@ import { computed } from 'vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useHomeStore } from '@/stores/home'
 import EquipPanel from './EquipPanel.vue'
-import ProgressPanel from './ProgressPanel.vue'
-import QualityPanel from './QualityPanel.vue'
+import PatrolPanel from './PatrolPanel.vue'
 import SafetyPanel from './SafetyPanel.vue'
 import type { IconName } from '@/data/icons'
 import type { HomeMod } from '@/types'
@@ -16,9 +15,10 @@ import type { HomeMod } from '@/types'
  * 对应原 index.html:212-232 + renderHomePanel()（app.js:627-639）
  * + homeMods 切换委托（app.js:941-947）。
  *
- * 面板分发替代原版的 if/else 链：
- *   safety -> SafetyPanel / quality -> QualityPanel
- *   progress -> ProgressPanel / equip -> EquipPanel
+ * 面板分发替代原版的 if/else 链（2026-10 版本同步 · 第三批：4 → 3）：
+ *   safety -> SafetyPanel（智眸） / patrol -> PatrolPanel（智巡）
+ *   equip  -> EquipPanel（智控）
+ * 质量管理与进度管理两个面板已按设计稿删除。
  *
  * 原版 renderHomePanel 在切到 safety 时还会 requestAnimationFrame
  * 启动预警轮播、切走时停止 —— 该职责已下沉到 SafetyPanel 自身
@@ -49,19 +49,25 @@ function onGrab(e: PointerEvent): void {
 /** 点击抓手条要去的档位（与 HomePage 的循环一致：收起 → 全开 → 半开 → 收起） */
 const grabLabel = computed(() => ['展开面板', '收起面板', '半开面板'][props.level])
 
+/**
+ * 三模块（2026-10 版本同步 · 第三批）
+ *
+ * 名称从「安全管理 / 质量管理 / 进度管理 / 装备管控」换成
+ * 「智眸 / 智巡 / 智控」：四个入口收成三个，剩下的三个各自对应
+ * 「看得见（AI 识别报警）／巡得勤（巡检照片）／控得住（设备）」。
+ */
 const mods: { id: HomeMod; label: string; icon: IconName }[] = [
-  { id: 'safety', label: '安全管理', icon: 'mod-safety' },
-  { id: 'quality', label: '质量管理', icon: 'mod-quality' },
-  { id: 'progress', label: '进度管理', icon: 'mod-progress' },
-  { id: 'equip', label: '装备管控', icon: 'mod-equip' },
+  { id: 'safety', label: '智眸', icon: 'mod-eye' },
+  { id: 'patrol', label: '智巡', icon: 'mod-patrol' },
+  { id: 'equip', label: '智控', icon: 'mod-control' },
 ]
 
 /**
  * 共用指示条的下标。
  *
- * 改造前 4 个按钮各画一条自己的 ::after 下划线，切换时是「这条灭、那条亮」
+ * 改造前每个按钮各画一条自己的 ::after 下划线，切换时是「这条灭、那条亮」
  * 的瞬移；改成一条绝对定位的滑块后，切换有了方向感 —— 从旧位置滑过去。
- * 位移量由 CSS 用 --i 算（列宽 = 25% - 3px，gap 4px，见 app.css 的 .home-mod-ind）。
+ * 位移量由 CSS 用 --i 算（列宽 = (100% - 8px) / 3，gap 4px，见 .home-mod-ind）。
  */
 const modIndex = computed(() => Math.max(0, mods.findIndex((m) => m.id === home.homeMod)))
 </script>
@@ -122,8 +128,7 @@ const modIndex = computed(() => Math.max(0, mods.findIndex((m) => m.id === home.
     -->
     <div class="home-panels" id="homePanels" :key="home.homeMod">
       <SafetyPanel v-if="home.homeMod === 'safety'" />
-      <QualityPanel v-else-if="home.homeMod === 'quality'" />
-      <ProgressPanel v-else-if="home.homeMod === 'progress'" />
+      <PatrolPanel v-else-if="home.homeMod === 'patrol'" />
       <EquipPanel v-else />
     </div>
   </div>

@@ -1,4 +1,4 @@
-import type { MapPoint, MineMenu, Milestone, QaStep, TabId } from '@/types'
+import type { MapPoint, MineMenu, PatrolCat, PatrolPhoto, TabId } from '@/types'
 
 /**
  * 纯静态配置常量
@@ -52,27 +52,67 @@ export const ALARM_FEED_SHOW = 3
 export const b2Occupied: Record<number, number> = { 1: 5, 4: 1 }
 export const b2FloorCount = 5
 
-/** 原 js/app.js:429 */
-export const qaSteps: QaStep[] = [
-  { name: '验收工序1', n: 1, color: '#4C9FFF' },
-  { name: '验收工序2', n: 1, color: '#22C55E' },
-  { name: '验收工序3', n: 3, color: '#F5C14A' },
-  { name: '验收工序4', n: 1, color: '#FF6B6B' },
-]
+/*
+ * 原 qaSteps（验收工序环形图）与 milestones（里程碑时间轴）随 2026-10 版本
+ * 同步删除：设计稿把「质量管理」与「进度管理」两个首页模块整块拿掉，
+ * 这两个数组再没有消费方。
+ */
 
 /**
- * 原 js/app.js:492-500
- * 注意：原版该数组写在 renderProgress() 函数体内（每次渲染重建），
- * 这里提到模块作用域。数据内容逐字不变，且为常量，行为等同。
+ * 巡检照片分类（2026-10 版本同步 · 第三批，原 js/app.js:547-554）
+ *
+ * 顺序即界面上的排列顺序（三列网格，两行）：项目全景 / 基坑区域 / 作业面
+ * 是第一行，施工装备 / 材料堆场 / 现场场布 是第二行。
  */
-export const milestones: Milestone[] = [
-  { name: '项目开始', plan: '2025-08-15', actual: '2026-07-15', delta: -31, state: 'done' },
-  { name: '施工图审查完成', plan: '2025-10-15', actual: '2025-09-30', delta: -15, state: 'done' },
-  { name: '新建地下室出正负零', plan: '2026-11-01', actual: '--', state: 'now' },
-  { name: '既有结构加固改造完成', plan: '2026-12-30', actual: '--', state: 'todo' },
-  { name: '主体结构封顶', plan: '2027-03-16', actual: '--', state: 'todo' },
-  { name: '外立面、机电安装完成', plan: '2027-09-30', actual: '--', state: 'todo' },
-  { name: '项目竣工', plan: '2027-10-23', actual: '--', state: 'todo' },
+export const patrolCats: PatrolCat[] = [
+  { id: 'pano', name: '项目全景' },
+  { id: 'pit', name: '基坑区域' },
+  { id: 'face', name: '作业面' },
+  { id: 'equip', name: '施工装备' },
+  { id: 'yard', name: '材料堆场' },
+  { id: 'layout', name: '现场场布' },
+]
+
+const PATROL_SRC = {
+  pano: 'img/patrol-pano.webp',
+  face: 'img/patrol-face.webp',
+  crane: 'img/patrol-crane.webp',
+  crane2: 'img/patrol-crane-2.webp',
+  yard: 'img/patrol-yard.webp',
+  layout: 'img/patrol-layout.webp',
+  layout2: 'img/patrol-layout-2.webp',
+  road: 'img/patrol-road.webp',
+  power: 'img/patrol-power.webp',
+  aerialA: 'img/aerial-a.webp',
+  aerialB: 'img/aerial-b.webp',
+  cam: 'img/cam-crane2.webp',
+} as const
+
+/**
+ * 巡检照片（原 js/app.js:555-573，17 张）
+ *
+ * 图片一律 WebP（2026-10 版本同步时从设计稿取原图，按 720px 宽转码压缩）：
+ * 这些照片同时用于 96px 缩略图与 210px 大图，720px 在 2x 屏下仍有余量，
+ * 单张 48~87KB，九张合计 664KB。
+ */
+export const patrolPhotos: PatrolPhoto[] = [
+  { id: 'pano', cat: 'pano', name: '项目全景', src: 'drone', img: PATROL_SRC.pano, pos: 'fit', time: '16:12' },
+  { id: 'pano-2', cat: 'pano', name: '项目鸟瞰', src: 'drone', img: PATROL_SRC.aerialA, pos: 'fit', time: '15:48' },
+  { id: 'pit-slope', cat: 'pit', name: '基坑边坡', src: 'drone', img: PATROL_SRC.aerialB, pos: 'p-l', time: '15:28' },
+  { id: 'pit-edge', cat: 'pit', name: '坑边', src: 'drone', img: PATROL_SRC.aerialB, pos: 'p-r', time: '15:22' },
+  { id: 'pit-drain', cat: 'pit', name: '排水沟', src: 'drone', img: PATROL_SRC.aerialA, pos: 'p-b', time: '15:16' },
+  { id: 'face-work', cat: 'face', name: '作业面', src: 'drone', img: PATROL_SRC.face, pos: 'fit', time: '14:55' },
+  { id: 'face-scaffold', cat: 'face', name: '外架/悬挑架', src: 'drone', img: PATROL_SRC.aerialB, pos: 'p-tl', time: '14:48' },
+  { id: 'equip-crane', cat: 'equip', name: '塔机', src: 'drone', img: PATROL_SRC.crane, pos: 'fit', time: '16:50' },
+  { id: 'equip-crane-2', cat: 'equip', name: '塔吊', src: 'drone', img: PATROL_SRC.crane2, pos: 'fit', time: '16:55' },
+  { id: 'equip-lift', cat: 'equip', name: '施工电梯', src: 'cam', img: PATROL_SRC.cam, pos: 'p-r', time: '16:42' },
+  { id: 'yard-rebar', cat: 'yard', name: '钢筋加工棚', src: 'cam', img: PATROL_SRC.cam, pos: 'p-b', time: '16:36' },
+  { id: 'yard-form', cat: 'yard', name: '模板加工区', src: 'cam', img: PATROL_SRC.cam, pos: 'p-t', time: '16:28' },
+  { id: 'yard-stock', cat: 'yard', name: '堆场', src: 'drone', img: PATROL_SRC.yard, pos: 'fit', time: '16:48' },
+  { id: 'layout', cat: 'layout', name: '现场场布', src: 'drone', img: PATROL_SRC.layout, pos: 'fit', time: '16:18' },
+  { id: 'layout-2', cat: 'layout', name: '场区鸟瞰', src: 'drone', img: PATROL_SRC.layout2, pos: 'fit', time: '16:26' },
+  { id: 'layout-road', cat: 'layout', name: '道路', src: 'drone', img: PATROL_SRC.road, pos: 'fit', time: '16:34' },
+  { id: 'layout-power', cat: 'layout', name: '配电箱', src: 'drone', img: PATROL_SRC.power, pos: 'fit', time: '16:40' },
 ]
 
 /** 原 js/app.js:1331-1333 —— 无人机巡检素材 */

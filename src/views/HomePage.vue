@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import HomeProgress from '@/components/ui/HomeProgress.vue'
 import MapInfoCard from '@/components/ui/MapInfoCard.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { mapPoints } from '@/data/config'
+import { useAlarmStore } from '@/stores/alarm'
 import { useCamStore } from '@/stores/cam'
 import { useHomeStore } from '@/stores/home'
 import { useShellStore } from '@/stores/shell'
+import { useSubpageStore } from '@/stores/subpage'
 import type { Building, MapPoint } from '@/types'
 import HomeSheet from './home/HomeSheet.vue'
 
@@ -28,6 +30,8 @@ import HomeSheet from './home/HomeSheet.vue'
 const shell = useShellStore()
 const cam = useCamStore()
 const home = useHomeStore()
+const alarm = useAlarmStore()
+const subpage = useSubpageStore()
 
 const pageEl = ref<HTMLElement | null>(null)
 
@@ -227,6 +231,9 @@ function onMapFull(): void {
 /** 楼栋撒点的信息卡（2026-10 第二轮改造：Toast 升级为地图内底部信息卡） */
 const infoBuilding = ref<Building | null>(null)
 
+/** 当日预警撒点（三维图坐标） */
+const mapAlarmPins = computed(() => alarm.mapAlarms('pin'))
+
 /** 地图点位点击：监控/塔吊直接打开对应点位画面，楼栋弹信息卡 */
 function onMapPoint(p: MapPoint): void {
   if ((p.kind === 'cam' || p.kind === 'crane') && p.camId) {
@@ -237,6 +244,17 @@ function onMapPoint(p: MapPoint): void {
   if (p.kind === 'building') {
     infoBuilding.value = home.siteBuildings.find((x) => x.name === p.name) ?? null
   }
+}
+
+/**
+ * 报警撒点点击 → 预警详情。
+ *
+ * fromList=false：返回键直接回首页 —— 撒点不是从巡检列表进来的，
+ * 没有「上一层列表」可回（与原版轮播、onAlarmPin 的口径一致）。
+ */
+function onMapAlarm(id: string): void {
+  infoBuilding.value = null
+  subpage.openAlarmDetail(id, false)
 }
 </script>
 
@@ -260,10 +278,12 @@ function onMapPoint(p: MapPoint): void {
         -->
         <MapViewer
           :points="mapPoints"
+          :alarms="mapAlarmPins"
           fit="cover"
           compact
           :suspended="shell.mapLandOpen"
           @select="onMapPoint"
+          @alarm="onMapAlarm"
         />
         <MapInfoCard :building="infoBuilding" @close="infoBuilding = null" />
       </div>

@@ -13,7 +13,6 @@ import { useMsgStore } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
 import MsgPage from '@/views/MsgPage.vue'
 import MinePage from '@/views/MinePage.vue'
-import ProgressPanel from '@/views/home/ProgressPanel.vue'
 import WorkPage from '@/views/WorkPage.vue'
 
 import { expectSvgNamespace } from '../helpers/dom'
@@ -79,7 +78,7 @@ describe('结构性守卫', () => {
 
     const referenced = [...refs.keys()].sort()
 
-    it('至少引用了全部 8 张业务图', () => {
+    it('至少引用了全部业务图（第三批补入 9 张巡检照片）', () => {
       expect(referenced).toEqual([
         'img/aerial-a.webp',
         'img/aerial-b.webp',
@@ -88,6 +87,16 @@ describe('结构性守卫', () => {
         'img/alarm-soil.webp',
         'img/alarm-trash.webp',
         'img/cam-crane2.webp',
+        'img/patrol-crane-2.webp',
+        'img/patrol-crane.webp',
+        'img/patrol-face.webp',
+        'img/patrol-layout-2.webp',
+        'img/patrol-layout.webp',
+        'img/patrol-pano.webp',
+        'img/patrol-power.webp',
+        'img/patrol-road.webp',
+        'img/patrol-yard.webp',
+        'img/site-flat.webp',
         'img/site-map.webp',
       ])
     })
@@ -135,12 +144,14 @@ describe('结构性守卫', () => {
       }
       // 引用点应在这些文件里：配置、两个 store、地图视图、样式、类型注释
       expect([...owners].sort()).toEqual([
+        'src/components/overlays/MapLand.vue',
         'src/components/ui/MapViewer.vue',
         'src/data/config.ts',
         'src/stores/alarm.ts',
         'src/stores/cam.ts',
         'src/styles/app.css',
         'src/types.ts',
+        'src/views/sub/UavPage.vue',
       ])
     })
   })
@@ -183,7 +194,7 @@ describe('结构性守卫', () => {
           'views/MsgPage.vue',
           'views/WorkPage.vue',
           'views/home/HomeSheet.vue',
-          'views/home/ProgressPanel.vue',
+          'components/ui/BottomSheet.vue',
           'views/sub/InspectList.vue',
         ]),
       )
@@ -308,17 +319,6 @@ describe('结构性守卫', () => {
       expect(w.findAll('.menu-item')).toHaveLength(3)
       expect(w.findAll('.menu-ico svg path')).toHaveLength(3)
       expect(shapes(w)).toBe(3)
-      assertAllSvgReal(w)
-    })
-
-    it('进度面板：7 个里程碑各一枚旗帜图标', () => {
-      const w = mount(ProgressPanel)
-      const items = w.findAll('.ms-item')
-      expect(items.length).toBeGreaterThanOrEqual(7)
-      expect(w.findAll('.ms-ico svg')).toHaveLength(items.length)
-      // 旗杆描边 + 旗面填充
-      expect(w.findAll('.ms-ico svg path')).toHaveLength(items.length * 2)
-      expect(w.find('.ms-ico svg path').attributes('stroke')).toBe('currentColor')
       assertAllSvgReal(w)
     })
   })

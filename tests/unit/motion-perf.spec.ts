@@ -11,7 +11,7 @@ import MapViewer from '@/components/ui/MapViewer.vue'
 import { useShellStore } from '@/stores/shell'
 import EquipPanel from '@/views/home/EquipPanel.vue'
 import HomeSheet from '@/views/home/HomeSheet.vue'
-import QualityPanel from '@/views/home/QualityPanel.vue'
+import PatrolPanel from '@/views/home/PatrolPanel.vue'
 import AlarmFeed from '@/views/home/parts/AlarmFeed.vue'
 import InspectItem from '@/components/ui/InspectItem.vue'
 import { alarmTone } from '@/utils/alarmTone'
@@ -327,13 +327,15 @@ describe('第二轮体验优化回归', () => {
       wrapper.unmount()
     })
 
-    it('验收工序图例：Space 与点击等价', async () => {
-      const wrapper = mount(QualityPanel)
-      const items = wrapper.findAll('.qa-legend-item')
-      expect(items.length).toBeGreaterThan(0)
+    it('智巡分类：键盘 Enter / Space 等价于点击', async () => {
+      const wrapper = mount(PatrolPanel)
+      const cats = wrapper.findAll('.patrol-cats button')
+      expect(cats.length).toBe(6)
 
-      await items[0].trigger('keydown', { key: ' ' })
-      expect(items[0].classes()).toContain('leg-on')
+      // 原生 button 的键盘语义由浏览器给出，这里验的是「点击确实换了分类」
+      await cats[2].trigger('click')
+      expect(cats[2].classes()).toContain('on')
+      expect(cats[0].classes()).not.toContain('on')
       wrapper.unmount()
     })
   })
@@ -383,13 +385,13 @@ describe('第二轮体验优化回归', () => {
       const wrapper = mount(HomeSheet, { props: { dragTop: null } })
       const before = wrapper.find('#homePanels').element
 
-      const quality = wrapper.findAll('.home-mod').find((b) => b.attributes('data-mod') === 'quality')
-      await quality!.trigger('click')
+      const patrol = wrapper.findAll('.home-mod').find((b) => b.attributes('data-mod') === 'patrol')
+      await patrol!.trigger('click')
       await nextTick()
 
       // 换 key 后是新节点 —— 不是同一个元素换了内容
       expect(wrapper.find('#homePanels').element).not.toBe(before)
-      expect(wrapper.find('.qa-pass').exists()).toBe(true)
+      expect(wrapper.find('.patrol-grid').exists()).toBe(true)
       wrapper.unmount()
     })
 
@@ -397,8 +399,8 @@ describe('第二轮体验优化回归', () => {
       const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
       // 旧实现：每个按钮各自的 ::after，切换是这条灭那条亮
       expect(css).not.toContain('.home-mod.on::after')
-      // 新实现：一条绝对定位轨道，4 列 + 3 个 4px gap
-      expect(css).toContain('width: calc(25% - 3px)')
+      // 新实现：一条绝对定位轨道，3 列 + 2 个 4px gap
+      expect(css).toContain('width: calc((100% - 8px) / 3)')
       // translateX 的百分比基准是元素自身宽度（列宽），步长要再加 gap
       expect(css).toContain('translateX(calc(var(--i, 0) * (100% + 4px)))')
     })

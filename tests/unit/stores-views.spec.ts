@@ -243,8 +243,9 @@ describe('stores · alarm / home / subpage', () => {
         const lift = home.siteEquip.find((d) => d.id === 'lift')!
         expect(home.equipCount(lift)).toEqual({ on: 2, total: 4, st: 'warn' })
 
+        // 2026-10 版本同步 · 第四批：塔机拆成 1#/2#/3# 三台，与详情页机组一一对应
         const crane = home.siteEquip.find((d) => d.id === 'crane')!
-        expect(home.equipCount(crane)).toEqual({ on: 1, total: 1, st: 'on' })
+        expect(home.equipCount(crane)).toEqual({ on: 3, total: 3, st: 'on' })
       })
     })
 
@@ -258,15 +259,6 @@ describe('stores · alarm / home / subpage', () => {
         expect(b.done).toBeLessThanOrEqual(b.total)
         expect(b.rate).toBeGreaterThanOrEqual(0)
         expect(b.rate).toBeLessThanOrEqual(100)
-      }
-    })
-
-    it('质量类目 5 项，当前值与上次值同源', () => {
-      const home = useHomeStore()
-      expect(home.qaCats).toHaveLength(5)
-      for (const c of home.qaCats) {
-        expect(c.now).toBe(c.last)
-        expect(c.name).toBeTruthy()
       }
     })
   })

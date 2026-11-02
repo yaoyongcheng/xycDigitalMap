@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { useAlarmStore } from './alarm'
+import type { DeviceKind } from '@/types'
 
 /**
  * 子页栈
@@ -23,6 +24,12 @@ export type SubView =
   | { kind: 'inspect-list' }
   | { kind: 'alarm-detail'; id: string }
   | { kind: 'placeholder'; name: string }
+  /** 设备详情（智控里点塔机 / 电梯 / 无人机进入） */
+  | { kind: 'device'; device: DeviceKind }
+  /** 设备日报（设备详情页右上角「日报」） */
+  | { kind: 'device-report'; device: DeviceKind }
+  /** 无人机（智控里点无人机进入） */
+  | { kind: 'uav' }
 
 export const useSubpageStore = defineStore('subpage', () => {
   const alarm = useAlarmStore()
@@ -62,10 +69,34 @@ export const useSubpageStore = defineStore('subpage', () => {
         return '预警详情'
       case 'placeholder':
         return view.value.name
+      case 'device':
+        return view.value.device === 'crane' ? '智能塔机' : '智能电梯'
+      case 'device-report':
+        return view.value.device === 'crane' ? '塔机日报' : '电梯日报'
+      case 'uav':
+        return '无人机'
       default:
         return ''
     }
   })
+
+  /**
+   * 深色子页（.subpage.is-dark）。
+   *
+   * 三个设备页与日报整页深色（设计稿的意图：设备数据是「监控台」，
+   * 浅色底会让满屏指标反光）。与 isAlarm 一样做成派生而不是独立状态 ——
+   * 原版在 openXxx 里加类、在 closeSub 里忘删过，回退时就会剩下一个
+   * 深底浅字的列表页。
+   */
+  const isDark = computed(
+    () =>
+      view.value.kind === 'device' ||
+      view.value.kind === 'device-report' ||
+      view.value.kind === 'uav',
+  )
+
+  /** 导航栏右上角「日报」按钮：只在设备详情页出现（原 showDeviceReport） */
+  const showReport = computed(() => view.value.kind === 'device')
 
   /**
    * 原 openInspectList(tab)
@@ -86,6 +117,24 @@ export const useSubpageStore = defineStore('subpage', () => {
     if (!alarm.byId(id)) return
     back.value = fromList ? { kind: 'inspect-list' } : null
     view.value = { kind: 'alarm-detail', id }
+  }
+
+  /** 打开设备详情（原 openCranePage / openLiftPage / openUavPage） */
+  function openDevice(device: DeviceKind): void {
+    back.value = null
+    view.value = { kind: 'device', device }
+  }
+
+  /** 打开无人机页 */
+  function openUav(): void {
+    back.value = null
+    view.value = { kind: 'uav' }
+  }
+
+  /** 打开设备日报（原 openCraneReport / openLiftReport）：返回回到设备详情 */
+  function openReport(device: DeviceKind): void {
+    back.value = { kind: 'device', device }
+    view.value = { kind: 'device-report', device }
   }
 
   /** 原 openSub(title, html) —— 「我的」菜单入口，内容为占位文案 */
@@ -136,10 +185,15 @@ export const useSubpageStore = defineStore('subpage', () => {
     back,
     leaving,
     isAlarm,
+    isDark,
     isOpen,
+    showReport,
     title,
     openInspectList,
     openAlarmDetail,
+    openDevice,
+    openUav,
+    openReport,
     openSub,
     close,
     dismiss,

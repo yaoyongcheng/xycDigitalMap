@@ -32,9 +32,9 @@ describe('data/icons + SvgIcon', () => {
       expect(ALL_NAMES).toEqual(
         expect.arrayContaining([
           'tab-home', 'tab-work', 'tab-msg', 'tab-mine',
-          'mod-safety', 'mod-quality', 'mod-progress', 'mod-equip',
+          'mod-eye', 'mod-patrol', 'mod-control',
           'menu-sites', 'menu-setting', 'menu-about',
-          'msg-people', 'drone', 'ms-flag', 'cal',
+          'msg-people', 'drone', 'cal',
           'work-cam', 'work-hazard', 'work-todo',
           'tool-vertical', 'tool-horizontal', 'tool-nav',
         ]),
@@ -173,17 +173,11 @@ describe('data/icons + SvgIcon', () => {
       expect([...rects].map((r) => [r.getAttribute('x'), r.getAttribute('y')])).toEqual([
         ['4', '4'], ['13', '4'], ['4', '13'], ['13', '13'],
       ])
-
-      const flag = mount(SvgIcon, { props: { name: 'ms-flag' } })
-      const paths = flag.element.querySelectorAll('path')
-      expect(paths).toHaveLength(2)
-      expect(paths[0].getAttribute('stroke')).toBe('currentColor')
-      expect(paths[1].getAttribute('fill')).toBe('currentColor')
     })
 
     it('同名图标重复渲染结果一致', () => {
-      const a = mount(SvgIcon, { props: { name: 'mod-equip' } })
-      const b = mount(SvgIcon, { props: { name: 'mod-equip' } })
+      const a = mount(SvgIcon, { props: { name: 'mod-control' } })
+      const b = mount(SvgIcon, { props: { name: 'mod-control' } })
       expect(a.html()).toBe(b.html())
     })
   })

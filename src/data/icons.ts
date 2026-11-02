@@ -39,11 +39,18 @@ const WHITE_STROKE = {
   'stroke-linejoin': 'round',
 }
 
-/** 首页模块图标用的根属性 */
+/**
+ * 首页模块图标用的根属性（2026-10 版本同步 · 第三批：1.7 → 1.8 + 圆头）
+ *
+ * 新几何（取景框 + 眼睛、待办清单、设备）线条更细，1.7 在 26px 下发虚；
+ * 圆头接上后「框」的四个断口才收得干净。
+ */
 const MOD_STROKE = {
   fill: 'none',
   stroke: 'currentColor',
-  'stroke-width': 1.7,
+  'stroke-width': 1.8,
+  'stroke-linecap': 'round',
+  'stroke-linejoin': 'round',
 }
 
 /** 日历图标用的根属性 */
@@ -109,40 +116,68 @@ const ICON_MAP = {
 
   /* ---------------- 首页四大模块（HomeSheet） ---------------- */
 
-  'mod-safety': {
+  /*
+   * 首页三模块（2026-10 版本同步 · 第三批，几何取自设计稿）
+   *
+   * 原来的 mod-safety / mod-quality / mod-progress / mod-equip 四枚随模块
+   * 4 → 3 一并替换：盾牌与时钟代表的「护栏 / 进度」不再是入口的语义，
+   * 现在是「看得见（智眸）／巡得勤（智巡）／控得住（智控）」。
+   * 描边统一 1.8（原 1.7）—— 新几何用了更细的取景框，1.7 在小尺寸下发虚。
+   */
+  'mod-eye': {
     viewBox: '0 0 24 24',
     attrs: MOD_STROKE,
     shapes: [
-      { tag: 'path', d: 'M12 3.5 19 6.2v5.4c0 4.4-3 7.4-7 8.9-4-1.5-7-4.5-7-8.9V6.2z' },
-      { tag: 'path', d: 'M8.8 12.2 11 14.4l4.4-4.6' },
+      { tag: 'path', d: 'M8.2 4.6H4.8v3.4M15.8 4.6h3.4v3.4M8.2 19.4H4.8v-3.4M15.8 19.4h3.4v-3.4' },
+      { tag: 'path', d: 'M7.2 12s2.2-3.4 4.8-3.4 4.8 3.4 4.8 3.4-2.2 3.4-4.8 3.4S7.2 12 7.2 12z' },
+      { tag: 'circle', cx: 12, cy: 12, r: 1.5 },
     ],
   },
-  'mod-quality': {
+  'mod-patrol': {
     viewBox: '0 0 24 24',
     attrs: MOD_STROKE,
     shapes: [
-      { tag: 'rect', x: 6.2, y: 3.8, width: 11.6, height: 16.4, rx: 2 },
-      { tag: 'path', d: 'M9 3.8h6v2.6H9z' },
-      { tag: 'path', d: 'M8.7 12.4 10.8 14.5l4.6-4.8' },
+      { tag: 'rect', x: 6.4, y: 5.2, width: 11.2, height: 14.4, rx: 2 },
+      { tag: 'path', d: 'M9.2 5.2V4.2h5.6v1' },
+      { tag: 'path', d: 'M8.9 12.6 10.8 14.5l4.2-4.5' },
     ],
   },
-  'mod-progress': {
+  'mod-control': {
     viewBox: '0 0 24 24',
     attrs: MOD_STROKE,
     shapes: [
-      { tag: 'circle', cx: 12, cy: 12, r: 8 },
-      { tag: 'path', d: 'M12 8v4.2l3 1.6' },
+      { tag: 'rect', x: 6.4, y: 7.6, width: 11.2, height: 9.4, rx: 2.2 },
+      { tag: 'circle', cx: 10, cy: 12.2, r: 1.15 },
+      { tag: 'circle', cx: 14, cy: 12.2, r: 1.15 },
+      { tag: 'path', d: 'M12 7.6V4.8M12 4.8h2.4M8.4 17v2.4M15.6 17v2.4' },
     ],
   },
-  'mod-equip': {
+
+  /*
+   * 设备详情页的机组标识（2026-10 版本同步 · 第四批，几何取自设计稿）
+   * 塔机是「塔身 + 起重臂 + 吊钩」的剖面剪影，电梯是「轿厢 + 上下箭头」。
+   */
+  'dev-crane': {
     viewBox: '0 0 24 24',
     attrs: MOD_STROKE,
     shapes: [
-      { tag: 'path', d: 'M4.5 20h15' },
-      { tag: 'path', d: 'M7 20V7.5h3.2V20' },
-      { tag: 'path', d: 'M8.6 7.5H20l-3.2 6.2' },
-      { tag: 'path', d: 'M16.8 13.7V20' },
-      { tag: 'circle', cx: 16.8, cy: 11.2, r: 1.1 },
+      { tag: 'path', d: 'M2.2 4.6h19.6' },
+      { tag: 'path', d: 'M2.2 4.6v3h3.4' },
+      { tag: 'path', d: 'M7.2 4.6V20.2' },
+      { tag: 'path', d: 'M11 4.6V20.2' },
+      { tag: 'path', d: 'M7.2 9.2 11 12.6M11 9.2 7.2 12.6' },
+      { tag: 'path', d: 'M5.4 20.2h7.4' },
+      { tag: 'path', d: 'M17.2 4.6v7.2' },
+      { tag: 'path', d: 'M15.6 11.8h3.2' },
+    ],
+  },
+  'dev-lift': {
+    viewBox: '0 0 24 24',
+    attrs: MOD_STROKE,
+    shapes: [
+      { tag: 'rect', x: 7, y: 3.5, width: 10, height: 17, rx: 1.4 },
+      { tag: 'path', d: 'M12 8.2v2.4M12 8.2l-1.2-1.2M12 8.2l1.2-1.2' },
+      { tag: 'path', d: 'M12 15.6v-2.4M12 15.6l-1.2 1.2M12 15.6l1.2 1.2' },
     ],
   },
 
@@ -252,20 +287,7 @@ const ICON_MAP = {
   },
 
   /** 里程碑旗帜（原 app.js:489，两条 path 自带表现属性） */
-  'ms-flag': {
-    viewBox: '0 0 24 24',
-    shapes: [
-      {
-        tag: 'path',
-        d: 'M7 21V4',
-        fill: 'none',
-        stroke: 'currentColor',
-        'stroke-width': 1.8,
-        'stroke-linecap': 'round',
-      },
-      { tag: 'path', d: 'M8 4.4h10.2l-2.6 3.6 2.6 3.6H8z', fill: 'currentColor' },
-    ],
-  },
+  /* 里程碑旗帜 ms-flag 随「进度管理」面板一起删除（2026-10 版本同步 · 第三批） */
 
   /** 日历（原 app.js:1077） */
   cal: {
@@ -326,6 +348,35 @@ const ICON_MAP = {
     viewBox: '0 0 24 24',
     attrs: BACK_STROKE,
     shapes: [{ tag: 'path', d: 'M15 5 8 12l7 7' }],
+  },
+
+  /**
+   * 弹层关闭（2026-10 版本同步·第一批）
+   *
+   * 原版弹层用字体「×」当关闭键 —— 不同系统字体下笔画粗细与落位都不一样，
+   * 在深色面板上尤其明显（iOS 偏细、Android 偏粗且偏上）。改成一枚 2px
+   * 描边的两笔画叉号，几何与视觉重量都可控。
+   */
+  close: {
+    viewBox: '0 0 24 24',
+    attrs: BACK_STROKE,
+    shapes: [
+      { tag: 'path', d: 'M6.8 6.8 17.2 17.2' },
+      { tag: 'path', d: 'M17.2 6.8 6.8 17.2' },
+    ],
+  },
+
+  /**
+   * 二维 / 三维地图切换（2026-10 版本同步·第二批）
+   * 一枚「相框里一座山」的照片图标：几何直接取自设计稿的按钮内联 SVG。
+   */
+  'map-flat': {
+    viewBox: '0 0 24 24',
+    attrs: CAL_STROKE,
+    shapes: [
+      { tag: 'rect', x: 4, y: 5, width: 16, height: 14, rx: 1.5 },
+      { tag: 'path', d: 'M4 14.5 8.2 11l3 2.4L15 9.5 20 14' },
+    ],
   },
 } satisfies Record<string, IconDef>
 

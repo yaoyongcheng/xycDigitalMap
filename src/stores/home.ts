@@ -2,15 +2,18 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { b2FloorCount, b2Occupied } from '@/data/config'
-import type { Building, Equip, HomeMod, PeopleNode, QaCat } from '@/types'
+import type { Building, Equip, HomeMod, PeopleNode } from '@/types'
 
 /**
  * 首页
  *
- * 承载四大面板（安全 / 质量 / 进度 / 设备）的数据与下钻状态。
- * 其中 siteEquip / siteBuildings / qaCats 在原版有第二消费点，但均位于
- * 横屏地图的死代码链上（landDevices / landBuildings / renderLandQa），
- * 跳过死代码后它们实际是单域数据，归到此处。
+ * 承载首页模块的数据与下钻状态。
+ *
+ * 2026-10 版本同步 · 第三批：模块从「安全 / 质量 / 进度 / 设备」收成
+ * 「智眸 / 智巡 / 智控」——质量管理与进度管理整块删除，qaCats 随之移除；
+ * 智巡的照片数据是常量，放在 data/config.ts 而不进 store。
+ * siteEquip / siteBuildings 在原版有第二消费点，但均位于横屏地图的死代码链上
+ * （landDevices / landBuildings），跳过死代码后它们实际是单域数据，归到此处。
  */
 export const useHomeStore = defineStore('home', () => {
   /** 原 js/app.js:60 —— 当前面板。被 switchTab(L70) 读取以决定是否启预警轮播 */
@@ -18,9 +21,6 @@ export const useHomeStore = defineStore('home', () => {
 
   /** 原 js/app.js:334 —— 人员分布下钻到的节点，null 表示区域列表 */
   const peopleNode = ref<PeopleNode | null>(null)
-
-  /** 原 js/app.js:560 —— 设备面板下钻到的设备，null 表示列表 */
-  const eqNode = ref<Equip | null>(null)
 
   /** 原 js/app.js:320-332 */
   const peopleTree = ref<PeopleNode[]>([
@@ -39,14 +39,24 @@ export const useHomeStore = defineStore('home', () => {
 
   /** 原 js/app.js:534-558 —— 9 台设备 */
   const siteEquip = ref<Equip[]>([
-    { id: 'crane', name: '5G塔机', value: '15.69t', metric: '今日吊重', ico: 'crane',
-      units: [{ name: '5G塔机', on: true, rows: [['今日吊重', '15.69t']] }] },
-    { id: 'lift', name: '智能电梯', value: '122次', metric: '今日升降次数', ico: 'lift',
+    /*
+     * 塔机与电梯的数值随 2026-10 版本同步更新（第四批）：原来塔机只有一台
+     * 「5G塔机」，现在拆成 1#/2#/3# 三台与设备详情页的机组一一对应；
+     * 电梯的循环次数也从 122/0/0/0 换成真实分布 86/18/9/24。
+     * 首页卡片与详情页必须同源，否则点进去数字对不上。
+     */
+    { id: 'crane', name: '智能塔机', value: '18.58t', metric: '今日吊重', ico: 'crane',
       units: [
-        { name: '智能电梯1-1', on: true, rows: [['今日循环次数', '122次'], ['今日运行时长', '10.2h']] },
-        { name: '智能电梯1-2', on: false, rows: [['今日循环次数', '0次'], ['今日运行时长', '0.0h']] },
-        { name: '智能电梯2-1', on: false, rows: [['今日循环次数', '0次'], ['今日运行时长', '0.0h']] },
-        { name: '智能电梯2-2', on: true, rows: [['今日循环次数', '0次'], ['今日运行时长', '0.0h']] },
+        { name: '1#塔机', on: true, rows: [['今日吊次', '10次'], ['今日吊重', '10.00t']] },
+        { name: '2#塔机', on: true, rows: [['今日吊次', '9次'], ['今日吊重', '5.05t']] },
+        { name: '3#塔机', on: true, rows: [['今日吊次', '7次'], ['今日吊重', '3.53t']] },
+      ] },
+    { id: 'lift', name: '智能电梯', value: '137次', metric: '今日循环次数', ico: 'lift',
+      units: [
+        { name: '智能电梯1-1', on: true, rows: [['今日循环次数', '86次'], ['今日运行时长', '6.4h']] },
+        { name: '智能电梯1-2', on: false, rows: [['今日循环次数', '18次'], ['今日运行时长', '1.6h']] },
+        { name: '智能电梯2-1', on: false, rows: [['今日循环次数', '9次'], ['今日运行时长', '0.8h']] },
+        { name: '智能电梯2-2', on: true, rows: [['今日循环次数', '24次'], ['今日运行时长', '2.1h']] },
       ] },
     { id: 'drone', name: '无人机', value: '12次', metric: '今日作业次数', ico: 'drone',
       units: [{ name: '无人机', on: true, rows: [['今日作业次数', '12次']] }] },
@@ -74,15 +84,6 @@ export const useHomeStore = defineStore('home', () => {
     { name: '幼儿园', done: 3, total: 3, plan: '正常', rate: 94 },
   ])
 
-  /** 原 js/app.js:422-428 */
-  const qaCats = ref<QaCat[]>([
-    { name: '土建主体', last: 93, now: 93 },
-    { name: '二次结构', last: 89, now: 89 },
-    { name: '门窗栏杆', last: 91, now: 91 },
-    { name: '机电', last: 89, now: 89 },
-    { name: '外立面', last: 89, now: 89 },
-  ])
-
   /** 原 js/app.js:336-338 peopleChildren() */
   function peopleChildren(): PeopleNode[] {
     return peopleNode.value ? peopleNode.value.children || [] : peopleTree.value
@@ -101,11 +102,9 @@ export const useHomeStore = defineStore('home', () => {
   return {
     homeMod,
     peopleNode,
-    eqNode,
     peopleTree,
     siteEquip,
     siteBuildings,
-    qaCats,
     peopleChildren,
     equipCount,
   }

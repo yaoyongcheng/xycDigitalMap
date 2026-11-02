@@ -115,11 +115,22 @@
   --bg-1: #050A15;
   --bg-2: #0B1626;
   --bg-3: #132033;
+  /*
+   * 第四级（2026-10 版本同步·第一批）：深色弹层里再嵌一层的卡片。
+   * 深色底原先最浅只到 --bg-3，弹层面板与面板内的设备卡会同色，
+   * 卡片边界整个消失 —— 只能靠描边硬撑，看起来像一块没有分层的板。
+   */
+  --bg-4: #1B2C44;
 
   /* 表面 · 浅色 */
   --surface: #FFFFFF;
   --surface-2: #F2F3F5;
   --line-2: #F2F3F5;
+
+  /* 深色底分隔线：--line 是浅灰，落在深色面上几乎不可见 */
+  --line-dark: rgba(255, 255, 255, 0.06);
+  /* 深色浮层的强调描边（弹层上沿、输入框聚焦）：带蓝味，只用于「浮起来」的那一层 */
+  --line-dark-2: rgba(110, 168, 255, 0.22);
 
   /* 强调色 · 深色底提亮版（浅色底用上面的 --blue / --ok / --warn / --danger） */
   --blue-dark: #4C9FFF;
@@ -345,6 +356,16 @@ button, input, textarea { font-family: inherit; color: inherit; }
 /* 子页（非预警详情）：白底 */
 .phone-screen:has(.subpage.open):not(:has(.subpage.is-alarm.open)) .status-bar {
   background: #fff;
+}
+
+/*
+ * 深色子页：状态栏跟着变深（与 themeColor 的 dark 分支同源）。
+ *
+ * 选择器必须带上 :not(:has(.subpage.is-alarm.open)) 才够权重 —— 上面那条
+ * 白底规则用的就是这套结构（0,7,0），少一个 :not 就会被它压回白色。
+ */
+.phone-screen:has(.subpage.is-dark.open):not(:has(.subpage.is-alarm.open)) .status-bar {
+  background: var(--bg-2);
 }
 
 /* 各全屏覆盖层打开时：白底 */
@@ -1394,7 +1415,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .home-mods {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 2026-10 版本同步 · 第三批：4 个模块收成 3 个（智眸 / 智巡 / 智控） */
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
   margin-bottom: 16px;
   /* 选中指示条是绝对定位的子元素，需要这里作定位参照 */
@@ -1759,69 +1781,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .eq-card.drill .eq-hd em { color: var(--warn-dark); }
 
-.eq-back {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  height: 32px;
-  margin-bottom: 10px;
-  padding: 0 2px;
-  border: 0;
-  background: none;
-  color: var(--ink-2-dark);
-  cursor: pointer;
-}
-
-.eq-back em {
-  width: 18px;
-  font-style: normal;
-  font-size: var(--fs-22);
-  line-height: 1;
-  color: var(--blue-dark);
-}
-
-.eq-back strong {
-  flex: 1;
-  text-align: left;
-  font-size: var(--fs-14);
-  font-weight: 700;
-}
-
-.eq-back b {
-  font-size: var(--fs-14);
-  font-weight: 700;
-  color: var(--warn-dark);
-}
-
-.eq-units {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.eq-unit {
-  background: var(--bg-3);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: var(--r-12);
-  padding: 12px 12px 10px;
-}
-
-.eq-kv {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 8px;
-  font-size: var(--fs-12);
-  color: var(--ink-3-dark);
-}
-
-.eq-kv b {
-  font-size: var(--fs-14);
-  font-weight: 700;
-  color: var(--ink-1-dark);
-}
+/*
+ * 设备明细的「面板内二级视图」与它的弹层版本都随 2026-10 版本同步删除：
+ * 塔机 / 电梯 / 无人机各有整页详情后，多机组设备不再需要弹层里的一串明细。
+ * 原来的 .eq-back / .eq-units / .eq-unit / .eq-kv 四组规则一并移除。
+ */
 
 .eq-card b {
   display: block;
@@ -4822,6 +4786,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 #page-home .home-mod-ind i::after { background: var(--blue-dark); }
 
 #page-home .safe-block > h4,
+#page-home .patrol-hd h4,
 #page-home .safe-hd h4 { color: var(--ink-2-dark); }
 #page-home .cam-cfg { color: var(--ink-4-dark); }
 
@@ -6729,7 +6694,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
  * 选中指示条：从「四个按钮各自画一条下划线」改成「一条共用滑块」。
  *
  * 之前切换是这条灭、那条亮的瞬移，读不出方向；现在从旧位置滑过去。
- * 几何：外层轨道宽 = 列宽 = 25% - 3px（4 列 + 3 个 4px gap），
+ * 几何：外层轨道宽 = 列宽 = (100% - 8px) / 3（3 列 + 2 个 4px gap），
  * 步进 = 列宽 + gap；translateX 的百分比基准是元素自身宽度（即列宽），
  * 所以步长写成 (100% + 4px)。内层 22px 细条保持改动前的视觉重量不变。
  */
@@ -6744,7 +6709,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .home-mod-ind i {
   display: block;
-  width: calc(25% - 3px);
+  width: calc((100% - 8px) / 3);
   height: 4px;
   transform: translateX(calc(var(--i, 0) * (100% + 4px)));
   transition: transform 0.3s var(--ease-out);
@@ -6942,7 +6907,8 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   transition: opacity 0.22s var(--ease-out);
 }
 
-#page-home.is-sheet-full .home-map .pin-body {
+#page-home.is-sheet-full .home-map .pin-body,
+#page-home.is-sheet-full .home-map .alarm-pin {
   opacity: 0;
   pointer-events: none;
 }
@@ -6968,4 +6934,1355 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 @media (prefers-reduced-motion: reduce) {
   .home-map .pin-body,
   .home-map .map-ctrls { transition: none; }
+}
+
+/* =====================================================================
+ * 2026-10 版本同步 · 第一批（深色表面 / 底部弹层）
+ *
+ *   设计稿 20261023 起新增了一个通用底部弹层，承载人员分布下钻、设备明细、
+ *   巡检大图、无人机航线、塔机/电梯历史五种内容；同时首页之外开始出现
+ *   整页深色的「设备详情」。这一批先把两样地基落下，页面内容留给后续批次：
+ *     S-1 深色表面令牌   —— 深色页与深色弹层共用一套色，不各写一份
+ *     S-2 底部弹层外壳   —— 一个 .pop-* 骨架，内容按 kind 分发
+ *     S-3 深色子页骨架   —— 只定底色与导航，第四批接第一个深色页
+ * ===================================================================== */
+
+/* ---------- S-2. 底部弹层外壳 ---------- */
+
+/*
+ * 层级 45：夹在子页（40）与 Toast（50）之间。
+ * 原版给的是 80 —— 它没有「弹层里还会弹提示」的场景。本项目的
+ * 「下发航线」「已抓拍」都要在弹层之上看得见，所以必须低于 Toast。
+ *
+ * 铺满全屏（inset:0）而不是从 --status-h 起：状态栏那一条在本项目里
+ * 是透明的（首页透出地图），留出来的话顶部会剩一条没被压暗的地图，
+ * 看起来像遮罩没铺满。浅色页上状态栏自带白底、压在遮罩之上，观感不变。
+ */
+.pop-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: flex-end;
+}
+
+.pop-mask {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: rgba(4, 10, 20, 0.62);
+  cursor: pointer;
+  animation: popFade 0.18s var(--ease-out);
+}
+
+/*
+ * 面板：贴合内容高度、最多占 72%，超出部分在面板内滚动。
+ * overscroll-behavior: contain 是为了「滚到底不要带着底下的抽屉一起滚」——
+ * 弹层背后往往是首页抽屉，穿透滚动会让人以为弹层自己弹了一下。
+ */
+.pop-panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-height: 72%;
+  padding: 8px 16px calc(16px + var(--safe-bot));
+  border-radius: var(--r-16) var(--r-16) 0 0;
+  background: var(--bg-3);
+  border: 1px solid var(--line-dark-2);
+  border-bottom: 0;
+  box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.45);
+  overflow: auto;
+  overscroll-behavior: contain;
+  animation: popRise 0.24s var(--ease-out);
+}
+
+/* 抓手条：纯视觉。弹层不支持下拽关闭（内容本身可滚，两套手势会抢） */
+.pop-grip {
+  width: 36px;
+  height: 4px;
+  margin: 2px auto 10px;
+  border-radius: var(--r-pill);
+  background: rgba(110, 168, 255, 0.4);
+}
+
+.pop-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.pop-title {
+  margin: 0;
+  font-size: var(--fs-16);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+/* 右侧计数（如「2/4 台」）：计数自己吃掉空白，关闭键紧跟其后 */
+.pop-count {
+  margin-left: auto;
+  font-size: var(--fs-18);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.pop-count i {
+  margin-left: 1px;
+  font-size: var(--fs-12);
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ink-3-dark);
+}
+
+.pop-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--ink-3-dark);
+  cursor: pointer;
+}
+
+/* 有计数时计数已经是那个 auto 边距，关闭键跟它贴住即可 */
+.pop-count + .pop-close { margin-left: 2px; }
+
+.pop-close svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.pop-sub {
+  margin: 4px 0 12px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+@keyframes popFade {
+  from { opacity: 0; }
+}
+
+@keyframes popRise {
+  from { transform: translateY(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pop-mask,
+  .pop-panel { animation: none; }
+}
+
+/* ---------- S-3. 深色子页骨架 ---------- */
+
+/*
+ * 第四批的三个设备页（无人机 / 智能塔机 / 智能电梯）与日报页整页深色。
+ * 这里只定「壳」：底色、导航、内容区留白；各页自己的区块样式随内容一起加，
+ * 避免现在先写一批没人用的组件样式。
+ *
+ * 底色取 --bg-2 而不是原版的 #07111e：本项目已有一套深色层级
+ * （--bg-1 首页底 / --bg-2 抽屉与底栏 / --bg-3 卡片），#07111e 正好落在
+ * --bg-1 与 --bg-2 之间，再引入第四个近似值只会让「深色到底用哪个」失守。
+ */
+.subpage.is-dark {
+  background: var(--bg-2);
+  color: var(--ink-2-dark);
+}
+
+.subpage.is-dark .navbar {
+  background: var(--bg-2);
+  border-bottom-color: var(--line-dark);
+}
+
+.subpage.is-dark .nav-title { color: var(--ink-2-dark); }
+.subpage.is-dark .nav-btn { color: var(--ink-3-dark); }
+
+/* 深色页的每个区块自带左右内边距，容器不再重复留白，只补底部安全区 */
+.subpage.is-dark .subpage-body { padding: 0 0 var(--safe-bot); }
+
+/* =====================================================================
+ * 2026-10 版本同步 · 第二批（报警撒点 / 二维地图）
+ *
+ *   设计稿这一版把今日 4 条预警标到了地图上，并给全屏地图加了二维/三维
+ *   切换。两件事共用一套坐标口径，所以放同一批：
+ *     P-1 报警撒点   —— 红点 + 标题药丸，锚在底图坐标上
+ *     P-2 二维切换   —— 正射影像底图 + 只保留有二维坐标的撒点
+ * ===================================================================== */
+
+/* ---------- P-1. 报警撒点 ---------- */
+
+/*
+ * 红点直径 8px、光环 3px，药丸高 20px —— 三者叠加后整体仍小于设施点位
+ * （26px 圆形图标），因为在同一张图上「设施在哪」是背景信息，
+ * 「哪里有报警」才是要一眼抓住的东西。
+ *
+ * 锚点用 translate(-4px,-4px) 把红点圆心对到坐标上（半径 4px）；
+ * 靠近右边界时加 .is-left 整体翻到左侧，否则药丸会顶出画面。
+ */
+.alarm-pin {
+  position: absolute;
+  /* 高于 .map-pin 的 2：预警标签不该被设施图标压住 */
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fff;
+  transform: translate(-4px, -4px);
+  cursor: pointer;
+}
+
+.alarm-pin.is-left {
+  flex-direction: row-reverse;
+  transform: translate(calc(-100% + 4px), -4px);
+}
+
+.alarm-pin i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger-dark);
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.32);
+}
+
+.alarm-pin b {
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-10);
+  background: rgba(12, 18, 28, 0.82);
+  font-size: var(--fs-11);
+  font-weight: 650;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+/*
+ * 首页小地图（compact）：整体再收一档 —— 首页那张图只有约 150px 高，
+ * 20px 的药丸会盖掉半个图幅，而且四个标签会互相打架。
+ */
+.map-viewer.is-compact .alarm-pin { gap: 2px; }
+
+.map-viewer.is-compact .alarm-pin i {
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.32);
+}
+
+.map-viewer.is-compact .alarm-pin b {
+  height: 18px;
+  padding: 0 4px;
+  font-size: var(--fs-10);
+  line-height: 18px;
+}
+
+/* ---------- P-2. 二维地图 ---------- */
+
+/* 顶栏右侧的切换键：与返回键同高同圆角，宽度随文案 */
+.map-land-flat {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgba(110, 168, 255, 0.35);
+  border-radius: var(--r-8);
+  background: rgba(8, 18, 32, 0.55);
+  color: #fff;
+  font-size: var(--fs-13);
+  cursor: pointer;
+}
+
+.map-land-flat svg {
+  width: 16px;
+  height: 16px;
+}
+
+.map-land-flat.on {
+  border-color: rgba(76, 159, 255, 0.8);
+  background: rgba(47, 124, 255, 0.85);
+}
+
+/*
+ * 二维态去掉左右两侧的压暗渐变。
+ * 那两道渐变是为了让左上的项目名与右上的按钮在透视渲染图上读得清；
+ * 但正射影像本身就是「看图找位置」的场景，压暗 22% 的边宽等于把
+ * 场区边缘的楼栋与堆场遮掉。标题的自带 text-shadow 足以撑住可读性。
+ */
+.map-land.is-flat::before,
+.map-land.is-flat::after {
+  display: none;
+}
+
+/* =====================================================================
+ * 2026-10 版本同步 · 第三批（智眸 / 智巡 / 智控）
+ *
+ *   首页四个模块收成三个，原「质量管理」的位置换成智巡的巡检照片墙：
+ *   六个分类 + 照片卡 + 点开看大图（大图走第一批的底部弹层）。
+ *   质量 / 进度两个面板连同 qaSteps / milestones 一并删除。
+ *
+ * 遗留：.qa-* / .ms-* / .pg-* 三组样式已无消费方（面板组件已删），
+ * 但它们散落在十余处、且有若干混在 #page-home 的深色覆盖与媒体查询里，
+ * 与无关规则共用选择器列表。整组摘除需要逐处拆列表，风险高于收益，
+ * 留待一次专门的死样式清理；运行时零成本（未被匹配的规则不参与计算）。
+ * ===================================================================== */
+
+/* ---------- 区块头：标题 + 张数 ---------- */
+
+.patrol-hd {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.patrol-hd h4 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.patrol-hd em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+/* ---------- 分类：三列网格，两行 ---------- */
+
+/*
+ * 用网格而不是横向滚动：六个分类正好排成 3×2，一眼全见，不需要滑。
+ * 药丸形状（--r-pill）+ 30px 高：与抽屉里其它小控件的点击热区一致。
+ */
+.patrol-cats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.patrol-cats button {
+  height: 30px;
+  padding: 0 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-3-dark);
+  font-size: var(--fs-12);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.patrol-cats button.on {
+  border-color: rgba(76, 159, 255, 0.55);
+  background: rgba(47, 124, 255, 0.18);
+  color: var(--blue-2);
+}
+
+/* ---------- 照片卡：两列，单张时占满 ---------- */
+
+.patrol-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+/* 只有一个分类下只有一张照片时不要留半张空位 */
+.patrol-grid:has(.patrol-card:only-child) {
+  grid-template-columns: 1fr;
+}
+
+.patrol-card {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--line-dark);
+  border-radius: var(--r-12);
+  overflow: hidden;
+  background: var(--bg-3);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.patrol-card img {
+  display: block;
+  width: 100%;
+  height: 96px;
+  object-fit: cover;
+}
+
+/*
+ * 取景变体：同一张底图取不同局部当缩略图。
+ * 数值直接来自设计稿 —— 这些位置是按现场照片内容挑的（例如基坑照要
+ * 取左上角的坡面而不是中间的土堆），换成公式反而挑不准。
+ */
+.patrol-card img.p-l { object-position: 16% 50%; }
+.patrol-card img.p-r { object-position: 84% 46%; }
+.patrol-card img.p-t { object-position: 50% 18%; }
+.patrol-card img.p-b { object-position: 50% 82%; }
+.patrol-card img.p-tl { object-position: 22% 20%; }
+.patrol-card img.p-tr { object-position: 78% 20%; }
+.patrol-card img.p-bl { object-position: 22% 80%; }
+.patrol-card img.p-br { object-position: 78% 80%; }
+.patrol-card img.p-c { object-position: 50% 50%; }
+
+/* fit：整图完整显示（全景类照片不能裁，裁掉就不知道拍的是哪一片） */
+.patrol-card img.fit {
+  height: auto;
+  object-fit: contain;
+  object-position: center;
+}
+
+.patrol-card-ft {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 8px 10px;
+}
+
+.patrol-card-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.patrol-card-name strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink-2-dark);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.patrol-card-name em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+  white-space: nowrap;
+}
+
+.patrol-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ---------- 分类标签 / 来源标签 ---------- */
+
+.patrol-tag,
+.alarm-src {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: max-content;
+  height: 16px;
+  padding: 0 5px;
+  white-space: nowrap;
+  border-radius: var(--r-4);
+  font-size: var(--fs-10);
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.patrol-tag { background: rgba(255, 255, 255, 0.1); color: var(--ink-2-dark); }
+
+/*
+ * 来源标签：无人机 / 视频监控 / 随手拍三色。
+ * 颜色按「采集方式」区分而不是按严重程度 —— 来源是中性的元信息，
+ * 用报警红去标它会让「视频监控拍到的一条」看起来比无人机那条更严重。
+ */
+.alarm-src-drone { background: rgba(76, 159, 255, 0.22); color: #8EC4FF; }
+.alarm-src-cam { background: rgba(61, 220, 151, 0.16); color: #6EE4B0; }
+.alarm-src-snap { background: rgba(255, 176, 80, 0.2); color: #FFC56B; }
+
+/* ---------- 空态 ---------- */
+
+.patrol-empty {
+  padding: 28px 12px;
+  border-radius: var(--r-12);
+  background: var(--bg-3);
+  text-align: center;
+  font-size: var(--fs-13);
+  line-height: 1.7;
+  color: var(--ink-3-dark);
+}
+
+/* ---------- 大图（弹层内） ---------- */
+
+.patrol-view { margin: 8px 0 14px; }
+
+.patrol-view img {
+  display: block;
+  width: 100%;
+  height: 210px;
+  border-radius: var(--r-12);
+  object-fit: cover;
+}
+
+.patrol-view img.fit {
+  height: auto;
+  max-height: 46vh;
+  object-fit: contain;
+  object-position: center;
+}
+
+.patrol-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.patrol-meta > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 16px;
+}
+
+.patrol-meta > div > span:first-child {
+  width: 32px;
+  flex-shrink: 0;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+.patrol-meta b {
+  font-size: var(--fs-14);
+  font-weight: 650;
+  color: var(--ink-2-dark);
+}
+
+.patrol-meta .patrol-tag.is-lg {
+  height: 20px;
+  padding: 0 7px;
+  font-size: var(--fs-12);
+  line-height: 20px;
+}
+
+/* =====================================================================
+ * 2026-10 版本同步 · 第四批（智控设备页 / 无人机 / 日报）
+ *
+ *   三个整页深色的子页：智能塔机、智能电梯（同一个组件，指标不同）、
+ *   无人机，外加设备日报。深色底与导航由第三批的 .subpage.is-dark 提供，
+ *   这里只写页内区块。
+ *
+ *   密度上刻意比浅色页紧一档：这些页面是「监控台」，一屏要塞下
+ *   设备卡 + 仪表 + 五张趋势图，按浅色页的留白会翻出三屏。
+ * ===================================================================== */
+
+/* ---------- 区块骨架 ---------- */
+
+.dev-page { padding-bottom: calc(12px + var(--safe-bot)); }
+
+.dev-block { padding: 16px 16px 0; }
+
+.dev-block + .dev-block {
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-dark);
+}
+
+.dev-block h4 {
+  margin: 0 0 10px;
+  font-size: var(--fs-16);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+/* 区块头：标题在左，操作/页签贴右（最后一个子元素自动吃掉空白） */
+.dev-hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.dev-hd h4 { margin: 0; }
+.dev-hd > :last-child:not(h4) { margin-left: auto; }
+
+.dev-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--blue-2);
+  font-size: var(--fs-12);
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ---------- 页签 ---------- */
+
+.dev-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.dev-tabs button {
+  flex: 1;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line-dark);
+  border-radius: var(--r-8);
+  background: var(--bg-3);
+  color: var(--ink-3-dark);
+  font-size: var(--fs-12);
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dev-tabs button.on {
+  border-color: rgba(76, 159, 255, 0.55);
+  background: rgba(47, 124, 255, 0.22);
+  color: #fff;
+}
+
+/* 顶栏里的「近7日 / 近30日」不需要等分，贴右即可 */
+.dev-tabs.is-compact { flex: 0 0 auto; margin-bottom: 0; }
+.dev-tabs.is-compact button { flex: 0 0 auto; }
+
+/* ---------- 设备卡 ---------- */
+
+.dev-board {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dev-card {
+  padding: 10px 12px 12px;
+  border-radius: var(--r-12);
+  background: var(--bg-3);
+}
+
+.dev-card-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.dev-card-hd strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 吃掉整行剩余宽度，「设备信息」才会被推到最右 */
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-14);
+  font-weight: 700;
+  color: var(--ink-2-dark);
+}
+
+.dev-mark {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--blue-2);
+}
+
+.dev-status { font-size: var(--fs-11); font-weight: 650; }
+.dev-status.is-ok { color: var(--ok-dark); }
+.dev-status.is-wait { color: var(--warn-dark); }
+.dev-status.is-off { color: var(--ink-4-dark); }
+
+.dev-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.dev-card-grid > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dev-card-grid span {
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+}
+
+.dev-card-grid b {
+  font-size: var(--fs-13);
+  font-weight: 650;
+  color: var(--ink-1-dark);
+}
+
+.dev-card-grid b.is-alarm { color: var(--danger-dark); }
+
+.dev-load { margin-top: 10px; }
+
+.dev-load-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+}
+
+.dev-load-hd b { font-size: var(--fs-14); color: var(--ink-1-dark); }
+.dev-load-rate { margin-left: auto; }
+
+.dev-load-hd em {
+  font-style: normal;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--warn-dark);
+}
+
+/* 进度条：塔机负荷、无人机任务、仪表组共用 */
+.dev-bar {
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.dev-bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: linear-gradient(90deg, var(--blue), var(--blue-dark));
+  transition: width 0.3s var(--ease-out);
+}
+
+/* ---------- 仪表（今日 vs 近 7 日均） ---------- */
+
+.dev-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dev-meter {
+  padding: 10px 12px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+}
+
+.dev-meter-hd {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dev-meter-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dev-meter-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+}
+
+.dev-meter-line b {
+  font-size: var(--fs-14);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.dev-meter-line em {
+  font-style: normal;
+  font-size: var(--fs-14);
+  font-weight: 700;
+  color: var(--warn-dark);
+}
+
+.dev-meter-hd > em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: var(--fs-11);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* 涨＝工作量超出均值（橙，要留意），跌＝低于均值（绿，正常波动） */
+.dev-meter-hd > em.is-over { color: var(--warn-dark); }
+.dev-meter-hd > em.is-under { color: var(--ok-dark); }
+
+/* ---------- 趋势图 ---------- */
+
+.dev-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dev-chart {
+  position: relative;
+  padding: 10px 12px 4px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+}
+
+.dev-chart-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  color: var(--ink-2-dark);
+}
+
+.dev-chart-leg {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  font-size: var(--fs-10);
+  color: var(--ink-3-dark);
+}
+
+.dev-chart-leg i {
+  display: inline-block;
+  width: 8px;
+  height: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.dev-chart-leg i.g { background: #3DDC97; }
+.dev-chart-leg i.avg { background: var(--ink-3-dark); }
+
+/*
+ * 单位跟着标题走。
+ * 原版把它绝对定位在左上角（左上角压着纵轴刻度，7 点图的第一个数值标签
+ * 一放上去就和它叠字），改成标题后的小字，位置稳定也不挡数据。
+ */
+.dev-chart-unit {
+  font-style: normal;
+  font-size: var(--fs-10);
+  font-weight: 600;
+  color: var(--ink-4-dark);
+}
+
+.dev-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 6px;
+}
+
+/* 复用图表的 .alarm-grid / .alarm-x 分组名，但深色底要换成低亮描边 */
+.dev-chart .alarm-grid line { stroke: rgba(255, 255, 255, 0.05); }
+.dev-chart .alarm-grid text,
+.dev-chart .alarm-x text { fill: var(--ink-4-dark); font-size: 9px; }
+.dev-chart-val { font-size: 9px; font-weight: 650; }
+
+/* ---------- 无人机 ---------- */
+
+.uav-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--r-12);
+  overflow: hidden;
+  background: #050a15;
+}
+
+.uav-stage img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.uav-stage.is-wait {
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+.uav-stage.is-wait p { margin: 0; }
+
+/* 机库还没接流时的等待指示 */
+.uav-spin {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--blue-2);
+  animation: spin 0.9s linear infinite;
+}
+
+.uav-live {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-4);
+  background: rgba(4, 10, 20, 0.6);
+  color: #fff;
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.uav-live i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #FF5B5B;
+  animation: feedPing 1.6s ease-out infinite;
+}
+
+.uav-tools {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.uav-tools button {
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  background: rgba(4, 10, 20, 0.55);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  cursor: pointer;
+}
+
+.uav-tools button svg { width: 16px; height: 16px; }
+.uav-tools button span { font-size: 9px; line-height: 1; }
+.uav-tools button.is-on { border-color: rgba(255, 91, 91, 0.8); color: #FF7B7B; }
+
+.uav-fly {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.uav-fly > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.uav-fly span { font-size: var(--fs-10); color: var(--ink-3-dark); }
+
+.uav-fly b {
+  font-size: var(--fs-13);
+  font-weight: 650;
+  color: var(--ink-1-dark);
+}
+
+.uav-fly b.is-ok { color: var(--ok-dark); }
+
+/* 任务管理 / 设备参数共用的数值格 */
+.uav-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.uav-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+}
+
+.uav-stats b {
+  font-size: var(--fs-16);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.uav-stats b.is-ok { color: var(--ok-dark); }
+.uav-stats b.is-low { color: var(--danger-dark); }
+.uav-stats b.is-long { font-size: var(--fs-12); }
+
+.uav-stats span {
+  font-size: var(--fs-10);
+  color: var(--ink-3-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 网络质量画成四格信号，比写「良好」两个字更快读 */
+.uav-sig {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+
+.uav-sig i {
+  width: 3px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--ok-dark);
+}
+
+.uav-sig i:nth-child(1) { height: 4px; }
+.uav-sig i:nth-child(2) { height: 7px; }
+.uav-sig i:nth-child(3) { height: 10px; }
+.uav-sig i:nth-child(4) { height: 12px; }
+
+.uav-mission {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+}
+
+.uav-mission-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.uav-mission-hd strong { font-size: var(--fs-13); color: var(--ink-1-dark); }
+
+.uav-mission-hd em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  color: var(--blue-2);
+}
+
+.uav-mission p {
+  margin: 8px 0 0;
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+}
+
+.uav-gate {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: rgba(46, 230, 166, 0.14);
+  color: var(--ok-dark);
+  font-style: normal;
+  font-size: var(--fs-11);
+  font-weight: 650;
+}
+
+.uav-gate.is-bad {
+  background: rgba(255, 107, 107, 0.14);
+  color: var(--danger-dark);
+}
+
+.uav-allow {
+  margin: 0 0 10px;
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--ink-3-dark);
+}
+
+.uav-risks {
+  margin: 0 0 10px;
+  padding-left: 16px;
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--danger-dark);
+}
+
+.uav-send {
+  width: 100%;
+  height: 42px;
+  border: 0;
+  border-radius: var(--r-10);
+  background: var(--blue);
+  color: #fff;
+  font-size: var(--fs-14);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.uav-send:disabled {
+  background: var(--bg-3);
+  color: var(--ink-4-dark);
+  cursor: default;
+}
+
+/* 弹层内的说明行 / 航线列表 / 任务清单 */
+.uav-lab {
+  margin: 0 0 10px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+.uav-routes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.uav-routes button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-dark);
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.uav-routes button.on {
+  border-color: rgba(76, 159, 255, 0.6);
+  background: rgba(47, 124, 255, 0.16);
+}
+
+.uav-routes strong { font-size: var(--fs-13); color: var(--ink-1-dark); }
+.uav-routes span { font-size: var(--fs-11); color: var(--ink-3-dark); }
+
+.uav-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.uav-log > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+  font-size: var(--fs-12);
+}
+
+.uav-log b { color: var(--ink-1-dark); }
+.uav-log span { color: var(--ink-2-dark); }
+
+.uav-log em {
+  margin-left: auto;
+  font-style: normal;
+  color: var(--ink-3-dark);
+}
+
+.uav-log em.is-ok { color: var(--ok-dark); }
+
+/* ---------- 设备信息 / 历史数据（弹层内） ---------- */
+
+.dev-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dev-info-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+.dev-info-row b {
+  margin-left: auto;
+  font-size: var(--fs-13);
+  font-weight: 650;
+  color: var(--ink-2-dark);
+  text-align: right;
+}
+
+.dev-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.dev-dates button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line-dark);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-3-dark);
+  font-size: var(--fs-12);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.dev-dates button.on {
+  border-color: rgba(76, 159, 255, 0.55);
+  background: rgba(47, 124, 255, 0.18);
+  color: var(--blue-2);
+}
+
+/* ---------- 日报 ---------- */
+
+.report-date {
+  margin: 0 0 10px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+.report-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.report-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+}
+
+.report-kpi span { font-size: var(--fs-10); color: var(--ink-3-dark); }
+
+.report-kpi b {
+  font-size: var(--fs-18);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.report-kpi b em {
+  margin-left: 2px;
+  font-style: normal;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--ink-3-dark);
+}
+
+.report-note {
+  margin: 0 0 8px;
+  font-size: var(--fs-12);
+  line-height: 1.75;
+  color: var(--ink-2-dark);
+}
+
+.report-card {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+}
+
+.report-card-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.report-card-hd strong { font-size: var(--fs-13); color: var(--ink-1-dark); }
+
+.report-card-hd em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: var(--fs-10);
+  color: var(--ink-3-dark);
+}
+
+.report-card-hd em.is-alarm { color: var(--danger-dark); }
+
+.report-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.report-rows > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+.report-rows b { font-size: var(--fs-13); color: var(--ink-1-dark); }
+
+.report-rows i {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: var(--fs-10);
+}
+
+.report-rows i.is-over { color: var(--warn-dark); }
+.report-rows i.is-under { color: var(--ok-dark); }
+.report-rows i.is-flat { color: var(--ink-4-dark); }
+
+.report-actions { padding-bottom: calc(12px + var(--safe-bot)); }
+
+.report-share {
+  width: 100%;
+  height: 44px;
+  border: 0;
+  border-radius: var(--r-12);
+  background: var(--blue);
+  color: #fff;
+  font-size: var(--fs-14);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/*
+ * 导航栏右侧的「日报」文字键（2026-10 版本同步 · 第四批）
+ * .nav-btn 是 32×44 的图标键位，文字按钮要放开宽度 —— 但高度与居中沿用，
+ * 免得标题行的基线被它带偏。
+ */
+.nav-report {
+  width: auto;
+  padding: 0 8px;
+  font-size: var(--fs-13);
+  font-weight: 650;
+  color: var(--blue-dark);
 }

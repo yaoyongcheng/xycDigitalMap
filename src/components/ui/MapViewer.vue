@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import type { MapPoint } from '@/types'
+import type { MapAlarm, MapPoint } from '@/types'
 
 /**
  * 交互地图层（新增组件，非原版内容）
@@ -50,6 +50,16 @@ const props = withDefaults(
      * 保证任一时刻只有一个实例活跃。
      */
     suspended?: boolean
+    /**
+     * 报警撒点（2026-10 版本同步 · 第二批）。
+     *
+     * 与 points 分开传：报警点是「内容」而不是「设施」，视觉、点击去向
+     * 都不同（见 types.ts 的 MapAlarm 说明）。坐标同样是底图百分比，
+     * 因此跟着画布一起缩放平移，不需要调用方再做 cover 换算 ——
+     * 原版把撒点放在容器尺寸的绝对层里，才不得不写 homeSpot() 去补
+     * cover 裁切的偏移。
+     */
+    alarms?: MapAlarm[]
   }>(),
   {
     fit: 'cover',
@@ -57,10 +67,11 @@ const props = withDefaults(
     compact: false,
     allowZoomOut: false,
     suspended: false,
+    alarms: () => [],
   },
 )
 
-const emit = defineEmits<{ select: [p: MapPoint] }>()
+const emit = defineEmits<{ select: [p: MapPoint]; alarm: [id: string] }>()
 
 const boxEl = ref<HTMLElement | null>(null)
 
@@ -345,6 +356,36 @@ function onPinClick(p: MapPoint): void {
   emit('select', p)
 }
 
+/** 报警点与设施点的「拖拽后不触发点击」共用同一个抑制标记 */
+function onAlarmClick(id: string): void {
+  if (suppressClick) {
+    suppressClick = false
+    return
+  }
+  emit('alarm', id)
+}
+
+/**
+ * 报警标签是否翻到点的左侧。
+ *
+ * 数据里的 left 只是设计稿在**横屏取景**下的意图：同一组百分比坐标，
+ * 在手机上全屏竖屏（cover 裁掉两侧）会落到完全不同的屏幕位置 ——
+ * 照搬数据会出现「左边那条标签顶出屏幕只剩半个字，右边那条被裁掉一截」。
+ *
+ * 所以按当前实际位置判断：右边放不下、左边放得下就翻；左边也放不下
+ * （点在屏幕左缘）就保持向右，宁可右边溢出一点也不要整条看不见。
+ * 药丸宽度按字号与字数估算 —— 实测 4 字 × 11px + 24 = 68px，与 DOM 量到的一致。
+ */
+function flipLeft(a: MapAlarm): boolean {
+  if (!boxW.value) return Boolean(a.left)
+  const fs = props.compact ? 10 : 11
+  const w = a.title.length * fs + (props.compact ? 20 : 24)
+  const cx = (a.x / 100) * canvasW.value + (boxW.value - canvasW.value) / 2 + tx.value
+  if (cx + w > boxW.value && cx - w >= 0) return true
+  if (cx - w < 0) return false
+  return Boolean(a.left)
+}
+
 function onImgLoad(e: Event): void {
   const img = e.target as HTMLImageElement
   if (img.naturalWidth > 0) {
@@ -386,6 +427,20 @@ onMounted(() => {
 watch(
   () => props.suspended,
   (s) => (s ? stopObserving() : startObserving()),
+)
+
+/**
+ * 换底图（二维 / 三维切换）后重新钳制平移。
+ *
+ * 两张底图比例不同（1024×735 / 1024×861），画布尺寸一变，原先合法的
+ * tx/ty 就可能把画布拖出容器外 —— 表现是切换后地图偏到一边、留一条空白。
+ * 缩放倍率保留：用户切图后仍处在相同的相对缩放级别，不会「突然回到 1x」。
+ */
+watch(
+  () => props.src,
+  () => {
+    clampPan()
+  },
 )
 
 onUnmounted(() => {
@@ -447,6 +502,23 @@ const PIN_PATHS: Record<MapPoint['kind'], string[]> = {
           </i>
           <span class="pin-name">{{ p.name }}</span>
         </span>
+      </button>
+
+      <!--
+        报警撒点：锚在坐标上，标签向右展开（靠近右边界时翻到左侧）。
+        层级比设施点高一级：预警是当下要处理的事，不该被设施图标压住。
+      -->
+      <button
+        v-for="a in props.alarms"
+        :key="a.id"
+        class="alarm-pin"
+        :class="{ 'is-left': flipLeft(a) }"
+        type="button"
+        :style="{ left: a.x + '%', top: a.y + '%' }"
+        :aria-label="a.title"
+        @click="onAlarmClick(a.id)"
+      >
+        <i aria-hidden="true"></i><b>{{ a.title }}</b>
       </button>
     </div>
 

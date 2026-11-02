@@ -25,6 +25,8 @@ export const THEME_COLORS = {
   mapLand: '#0b0f14',
   /** 监控横屏播放 */
   camLandscape: '#000000',
+  /** 深色子页（设备详情 / 日报 / 无人机）：与 --bg-2 同值，顶部不能白一条 */
+  dark: '#0B1626',
 } as const
 
 const META_ID = 'app-theme-color'

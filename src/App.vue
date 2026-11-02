@@ -17,6 +17,7 @@ import CamPlayer from '@/components/overlays/CamPlayer.vue'
 import AirPlayer from '@/components/overlays/AirPlayer.vue'
 import HazardPage from '@/components/overlays/HazardPage.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
+import SheetHost from '@/components/overlays/SheetHost.vue'
 import HomePage from '@/views/HomePage.vue'
 import WorkPage from '@/views/WorkPage.vue'
 import MsgPage from '@/views/MsgPage.vue'
@@ -73,6 +74,9 @@ watchEffect(() => {
     color = THEME_COLORS.light
   }
 
+  // ④' 深色子页（设备详情 / 日报 / 无人机）
+  if (sub.isOpen && sub.isDark) color = THEME_COLORS.dark
+
   // ⑤ 子页正在退出：提前按“目标页面”取色。
   //    iPhone 的系统状态栏区域不属于网页内容，只认 theme-color ——
   //    等动画结束再切，顶上就会白一条。
@@ -122,6 +126,12 @@ watchEffect(() => {
         </div>
 
         <Toast />
+        <!--
+          底部弹层（2026-10 版本同步·第一批）：挂在 .app 之外、Toast 之前。
+          层级 app(无) < 子页(40) < 弹层(45) < Toast(50)：弹层要盖住子页与底栏，
+          但不能盖住提示 —— 弹层里点「下发航线」后那条 toast 必须看得见。
+        -->
+        <SheetHost />
         <UpdateBanner />
       </div>
     </div>

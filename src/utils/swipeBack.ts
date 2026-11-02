@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted } from 'vue'
 
 import { useAirHazardStore } from '@/stores/airHazard'
+import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
@@ -18,6 +19,7 @@ import { useSubpageStore } from '@/stores/subpage'
  *     触控、卡片滑动都不受影响。
  *   · 进入手势前先判方向：纵向为主就立刻撒手，不干扰列表滚动。
  *   · 全屏地图不接管 —— 它的拖拽本身就是平移地图，边缘手势会跟它抢。
+ *   · 底部弹层开着时不接管 —— 模态层在上，右滑只能是针对弹层的操作。
  *   · 横屏（监控）不接管 —— 坐标系变了，手势方向与视觉不符。
  *   · 图片已放大时不接管 —— 那会儿单指拖动是平移图片。
  */
@@ -40,6 +42,7 @@ export function useSwipeBack() {
   const cam = useCamStore()
   const air = useAirHazardStore()
   const shell = useShellStore()
+  const sheet = useBottomSheetStore()
 
   let tracking = false
   let active = false
@@ -88,6 +91,12 @@ export function useSwipeBack() {
 
   function onDown(e: PointerEvent): void {
     if (busy || shell.isLand) return
+    /*
+     * 弹层是模态：它开着时，底下的子页不该被推走。
+     * 弹层自身的左边缘也落在起手区里（遮罩从 x=0 起铺），不挡住的话
+     * 用户想在弹层上右滑关闭，页面反而先滑出去了。
+     */
+    if (sheet.isOpen) return
     if (e.pointerType === 'mouse' && e.button !== 0) return
     if (e.clientX > EDGE) return
     // 图片放大态下，单指拖动是在平移图片，别抢

@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { addDays, dateKey, formatMD, monthStart, protoToday } from '@/utils/date'
-import type { Alarm } from '@/types'
+import type { Alarm, MapAlarm } from '@/types'
 
 /**
  * 相对锚点生成绝对时间 'YYYY-MM-DD HH:mm:ss'。
@@ -42,10 +42,10 @@ export const useAlarmStore = defineStore('alarm', () => {
    * 真接入接口后数据由服务端下发，无需此处处理。
    */
   const alarms = ref<Alarm[]>([
-    { id: 'trash', day: 'today', type: '道路垃圾', title: '环境报警', desc: '场区道路发现垃圾堆放未清理！', img: 'img/alarm-trash.webp', rel: '1分钟前', at: atOf(0, '15:21'), geo: '114.24751233100210,30.53310211883421' },
-    { id: 'cable', day: 'today', type: '电缆拖地', title: '用电报警', desc: '作业面电缆拖地未架空，存在触电隐患！', img: 'img/alarm-cable.webp', rel: '3分钟前', at: atOf(0, '15:19'), geo: '114.24738810244102,30.53290155210933' },
-    { id: 'net', day: 'today', type: '安全网缺失', title: '防护报警', desc: '楼层临边安全网缺失，请立即整改！', img: 'img/alarm-net.webp', rel: '12分钟前', at: atOf(0, '15:10'), geo: '114.24742027911455,30.53296304904549' },
-    { id: 'soil', day: 'today', type: '裸土未覆盖', title: '扬尘报警', desc: '场区裸土未覆盖，扬尘风险较高！', img: 'img/alarm-soil.webp', rel: '1小时前', at: atOf(0, '14:22'), geo: '114.24760188412003,30.53322190771208' },
+    { id: 'trash', day: 'today', type: '道路垃圾', title: '环境报警', desc: '场区道路发现垃圾堆放未清理！', img: 'img/alarm-trash.webp', rel: '1分钟前', at: atOf(0, '15:21'), geo: '114.24751233100210,30.53310211883421', pin: [32, 78], flat: [34, 86] },
+    { id: 'cable', day: 'today', type: '电缆拖地', title: '用电报警', desc: '作业面电缆拖地未架空，存在触电隐患！', img: 'img/alarm-cable.webp', rel: '3分钟前', at: atOf(0, '15:19'), geo: '114.24738810244102,30.53290155210933', pin: [48, 56], flat: [46, 40] },
+    { id: 'net', day: 'today', type: '安全网缺失', title: '防护报警', desc: '楼层临边安全网缺失，请立即整改！', img: 'img/alarm-net.webp', rel: '12分钟前', at: atOf(0, '15:10'), geo: '114.24742027911455,30.53296304904549', pin: [22, 48, 'left'], flat: [20, 34, 'left'] },
+    { id: 'soil', day: 'today', type: '裸土未覆盖', title: '扬尘报警', desc: '场区裸土未覆盖，扬尘风险较高！', img: 'img/alarm-soil.webp', rel: '1小时前', at: atOf(0, '14:22'), geo: '114.24760188412003,30.53322190771208', pin: [66, 62], flat: [60, 26] },
     { id: 'h-net', day: 'hist', type: '安全网缺失', title: '防护报警', desc: '3#楼作业面临边安全网破损缺失。', img: 'img/alarm-net.webp', rel: relOf(-1, '09:30'), at: atOf(-1, '09:30'), geo: '114.24742027911455,30.53296304904549' },
     { id: 'h-trash', day: 'hist', type: '道路垃圾', title: '环境报警', desc: '场区北侧道路垃圾堆放未及时清运。', img: 'img/alarm-trash.webp', rel: relOf(-2, '16:20'), at: atOf(-2, '16:20'), geo: '114.24749822001145,30.53308044122890' },
     { id: 'h-cable', day: 'hist', type: '电缆拖地', title: '用电报警', desc: '钢筋加工区电缆拖地，存在漏电风险。', img: 'img/alarm-cable.webp', rel: relOf(-3, '11:08'), at: atOf(-3, '11:08'), geo: '114.24735501988210,30.53284411902341' },
@@ -78,6 +78,22 @@ export const useAlarmStore = defineStore('alarm', () => {
     return alarms.value.find((a) => a.id === id)
   }
 
+  /**
+   * 当日预警 → 地图撒点（2026-10 版本同步 · 第二批）
+   *
+   * 三维图与二维图各有一套坐标（AlarmSpot），由调用方声明要哪一套。
+   * 只撒当日预警 —— 历史记录已经整改关闭，标在地图上会误导现场。
+   */
+  function mapAlarms(space: 'pin' | 'flat' = 'pin'): MapAlarm[] {
+    const out: MapAlarm[] = []
+    for (const a of latest.value) {
+      const spot = a[space]
+      if (!spot) continue
+      out.push({ id: a.id, title: a.title, x: spot[0], y: spot[1], left: spot[2] === 'left' })
+    }
+    return out
+  }
+
   return {
     alarms,
     latest,
@@ -87,5 +103,6 @@ export const useAlarmStore = defineStore('alarm', () => {
     inspCalOpen,
     alarmsOnDate,
     byId,
+    mapAlarms,
   }
 })
