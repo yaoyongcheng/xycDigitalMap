@@ -4,9 +4,7 @@ import { computed, ref, watch } from 'vue'
 import HomeProgress from '@/components/ui/HomeProgress.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
-import { crewKpis } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
-import { useHomeStore } from '@/stores/home'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 
@@ -15,17 +13,13 @@ import { useSubpageStore } from '@/stores/subpage'
  *
  * 对应原 index.html:43-67 + openMapLand/closeMapLand（app.js:1701-1713）。
  *
- * 2026-10 改造：
- *   - 静态 <img> 换成 MapViewer（cover 铺满 + 缩放/拖拽/撒点 + 总览缩放）。
- *   - 落地原版规划但从未实现的底部 KPI 数据坞：
- *     DOM 结构按原版预留的 .land-dock/.land-kpis/.land-crew/.land-pair
- *     样式搭建（app.css:802-870），数据全部来自现有 store ——
- *     人员概况与安全面板同源（config.crewKpis）。
+ * 2026-10 改造：静态 <img> 换成 MapViewer（cover 铺满 + 缩放/拖拽/
+ *   撒点 + 总览缩放）。
  * 2026-11 设计稿（gx2 换底图）：底图上只保留报警撒点，设施/楼栋撒点、
- *   楼栋信息卡与右侧「数据」收起开关整体下线（首页同步）。
+ *   楼栋信息卡、右侧「数据」收起开关与底部 KPI 数据坞整体下线，
+ *   全屏层回归「纯地图 + 二维/三维切换」。
  */
 const shell = useShellStore()
-const home = useHomeStore()
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
 
@@ -60,25 +54,6 @@ function onAlarmPin(id: string): void {
   shell.closeMapLand()
   subpage.openAlarmDetail(id, false)
 }
-
-/** 设备在线统计：siteEquip 全部机组 的 on 汇总 */
-const equipStat = computed(() => {
-  let on = 0
-  let total = 0
-  for (const d of home.siteEquip) {
-    total += d.units.length
-    on += d.units.filter((u) => u.on).length
-  }
-  return { on, off: total - on, total }
-})
-
-/** 楼栋平均达标率（siteBuildings.rate 的均值） */
-const avgRate = computed(() =>
-  Math.round(home.siteBuildings.reduce((s, b) => s + b.rate, 0) / home.siteBuildings.length),
-)
-
-/** 无人机今日已完成作业数（2026-11 设计稿：卡片指标改成「作业任务 x/y」） */
-const droneRuns = computed(() => home.siteEquip.find((d) => d.id === 'drone')?.jobs?.done ?? 0)
 </script>
 
 <template>
@@ -140,60 +115,6 @@ const droneRuns = computed(() => home.siteEquip.find((d) => d.id === 'drone')?.j
         >
           <SvgIcon name="back" />
         </button>
-      </div>
-    </div>
-
-    <!-- 底部 KPI 数据坞（原版规划的 landKpis，样式 app.css:802-870 已预留）；
-         数据坞常显 —— 2026-11 设计稿起移除右侧「数据」收起开关 -->
-    <div class="land-dock">
-      <!-- 横屏：4 张分组卡片 -->
-      <div class="land-kpis">
-        <div class="land-kpi">
-          <h5>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3"/><path d="M5.5 19.5c1.2-3.2 3.6-4.7 6.5-4.7s5.3 1.5 6.5 4.7"/></svg>
-            人员概况
-          </h5>
-          <div class="land-crew">
-            <div v-for="[v, unit, name] in crewKpis" :key="name">
-              <b>{{ v }}<em>{{ unit }}</em></b>
-              <span>{{ name }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="land-kpi">
-          <h5>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 21 19H3z"/><path d="M12 10v4M12 16.6v.4"/></svg>
-            预警监控
-          </h5>
-          <div class="land-pair">
-            <div><b class="danger">{{ alarm.latest.length }}</b><span>今日预警</span></div>
-            <div><b class="ok">{{ droneRuns }}次</b><span>无人机巡检</span></div>
-          </div>
-        </div>
-
-        <div class="land-kpi">
-          <h5>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.4"/><rect x="13" y="4" width="7" height="7" rx="1.4"/><path d="M7 13v7M17 13v7M4 16.5h7M13 16.5h7"/></svg>
-            设备管控
-          </h5>
-          <div class="land-pair three">
-            <div><b class="ok">{{ equipStat.on }}</b><span>在线</span></div>
-            <div><b class="off">{{ equipStat.off }}</b><span>离线</span></div>
-            <div><b>{{ equipStat.total }}</b><span>机组</span></div>
-          </div>
-        </div>
-
-        <div class="land-kpi">
-          <h5>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4.2l3 1.6"/></svg>
-            楼栋进度
-          </h5>
-          <div class="land-pair">
-            <div><b>{{ home.siteBuildings.length }}<em>栋</em></b><span>在建楼栋</span></div>
-            <div><b class="warn">{{ avgRate }}<em>%</em></b><span>平均达标</span></div>
-          </div>
-        </div>
       </div>
     </div>
   </div>
