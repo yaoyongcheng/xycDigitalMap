@@ -77,7 +77,7 @@ const boxEl = ref<HTMLElement | null>(null)
 
 /** 底图自然尺寸，onload 后校准（默认值与 site-map.webp 一致） */
 const natW = ref(1024)
-const natH = ref(735)
+const natH = ref(709)
 
 /** 容器尺寸（ResizeObserver 维护） */
 const boxW = ref(0)
@@ -432,7 +432,7 @@ watch(
 /**
  * 换底图（二维 / 三维切换）后重新钳制平移。
  *
- * 两张底图比例不同（1024×735 / 1024×861），画布尺寸一变，原先合法的
+ * 两张底图比例不同（1024×709 / 1024×747），画布尺寸一变，原先合法的
  * tx/ty 就可能把画布拖出容器外 —— 表现是切换后地图偏到一边、留一条空白。
  * 缩放倍率保留：用户切图后仍处在相同的相对缩放级别，不会「突然回到 1x」。
  */

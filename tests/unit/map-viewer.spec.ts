@@ -16,14 +16,14 @@ const POINTS: MapPoint[] = [
 ]
 
 /**
- * 容器 800×600、底图 1024×735、fit=cover 下的几何常量：
- *   fitScale = max(800/1024, 600/735) = 0.81632653…
- *   canvas   = 835.918…×600    → 画布高度恰好等于容器高度
- *   mx(可平移量) = (835.918…-800)/2 = 17.959…
+ * 容器 800×600、底图 1024×709、fit=cover 下的几何常量：
+ *   fitScale = max(800/1024, 600/709) = 600/709 = 0.84654443…
+ *   canvas   = 866.573…×600    → 画布高度恰好等于容器高度
+ *   mx(可平移量) = (866.573…-800)/2 = 33.286…
  *   my = 0                      → 垂直方向完全不可平移
  */
 const BOX = { left: 0, top: 0, width: 800, height: 600 }
-const CANVAS_W_AT_1X = 835.9183673469388
+const CANVAS_W_AT_1X = 614400 / 709
 const PAN_LIMIT_X = (CANVAS_W_AT_1X - BOX.width) / 2
 /** tx = 0 时的 left */
 const BASE_LEFT = (BOX.width - CANVAS_W_AT_1X) / 2
