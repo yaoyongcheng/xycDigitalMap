@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { addDays, dateKey, formatMD, monthStart, protoToday } from '@/utils/date'
+import { addDays, dateKey, formatMD, monthStart, protoToday, sameDay, startOfDay } from '@/utils/date'
 import type { Alarm, MapAlarm } from '@/types'
 
 /**
@@ -42,18 +42,82 @@ export const useAlarmStore = defineStore('alarm', () => {
    * 真接入接口后数据由服务端下发，无需此处处理。
    */
   const alarms = ref<Alarm[]>([
-    { id: 'trash', day: 'today', type: '道路垃圾', title: '环境报警', desc: '场区道路发现垃圾堆放未清理！', img: 'img/alarm-trash.webp', rel: '1分钟前', at: atOf(0, '15:21'), geo: '114.24751233100210,30.53310211883421', pin: [32, 78], flat: [34, 86] },
-    { id: 'cable', day: 'today', type: '电缆拖地', title: '用电报警', desc: '作业面电缆拖地未架空，存在触电隐患！', img: 'img/alarm-cable.webp', rel: '3分钟前', at: atOf(0, '15:19'), geo: '114.24738810244102,30.53290155210933', pin: [48, 56], flat: [46, 40] },
-    { id: 'net', day: 'today', type: '安全网缺失', title: '防护报警', desc: '楼层临边安全网缺失，请立即整改！', img: 'img/alarm-net.webp', rel: '12分钟前', at: atOf(0, '15:10'), geo: '114.24742027911455,30.53296304904549', pin: [22, 48, 'left'], flat: [20, 34, 'left'] },
-    { id: 'soil', day: 'today', type: '裸土未覆盖', title: '扬尘报警', desc: '场区裸土未覆盖，扬尘风险较高！', img: 'img/alarm-soil.webp', rel: '1小时前', at: atOf(0, '14:22'), geo: '114.24760188412003,30.53322190771208', pin: [66, 62], flat: [60, 26] },
-    { id: 'h-net', day: 'hist', type: '安全网缺失', title: '防护报警', desc: '3#楼作业面临边安全网破损缺失。', img: 'img/alarm-net.webp', rel: relOf(-1, '09:30'), at: atOf(-1, '09:30'), geo: '114.24742027911455,30.53296304904549' },
-    { id: 'h-trash', day: 'hist', type: '道路垃圾', title: '环境报警', desc: '场区北侧道路垃圾堆放未及时清运。', img: 'img/alarm-trash.webp', rel: relOf(-2, '16:20'), at: atOf(-2, '16:20'), geo: '114.24749822001145,30.53308044122890' },
-    { id: 'h-cable', day: 'hist', type: '电缆拖地', title: '用电报警', desc: '钢筋加工区电缆拖地，存在漏电风险。', img: 'img/alarm-cable.webp', rel: relOf(-3, '11:08'), at: atOf(-3, '11:08'), geo: '114.24735501988210,30.53284411902341' },
-    { id: 'h-soil', day: 'hist', type: '裸土未覆盖', title: '扬尘报警', desc: '基坑周边裸土未覆盖，扬尘超标。', img: 'img/alarm-soil.webp', rel: relOf(-4, '08:46'), at: atOf(-4, '08:46'), geo: '114.24757700124480,30.53319822009112' },
+    { id: 'trash', day: 'today', src: 'drone', type: '道路垃圾', title: '环境报警', desc: '场区道路发现垃圾堆放未清理！', img: 'img/alarm-trash.webp', rel: '1分钟前', at: atOf(0, '15:21'), geo: '114.24751233100210,30.53310211883421', pin: [32, 78], flat: [34, 86] },
+    { id: 'cable', day: 'today', src: 'cam', type: '电缆拖地', title: '用电报警', desc: '作业面电缆拖地未架空，存在触电隐患！', img: 'img/alarm-cable.webp', rel: '3分钟前', at: atOf(0, '15:19'), geo: '114.24738810244102,30.53290155210933', pin: [48, 56], flat: [46, 40] },
+    { id: 'net', day: 'today', src: 'snap', type: '安全网缺失', title: '防护报警', desc: '楼层临边安全网缺失，请立即整改！', img: 'img/alarm-net.webp', rel: '12分钟前', at: atOf(0, '15:10'), geo: '114.24742027911455,30.53296304904549', pin: [22, 48, 'left'], flat: [20, 34, 'left'] },
+    { id: 'soil', day: 'today', src: 'drone', type: '裸土未覆盖', title: '扬尘报警', desc: '场区裸土未覆盖，扬尘风险较高！', img: 'img/alarm-soil.webp', rel: '1小时前', at: atOf(0, '14:22'), geo: '114.24760188412003,30.53322190771208', pin: [66, 62], flat: [60, 26] },
+    { id: 'h-net', day: 'hist', src: 'snap', type: '安全网缺失', title: '防护报警', desc: '3#楼作业面临边安全网破损缺失。', img: 'img/alarm-net.webp', rel: relOf(-1, '09:30'), at: atOf(-1, '09:30'), geo: '114.24742027911455,30.53296304904549' },
+    { id: 'h-trash', day: 'hist', src: 'drone', type: '道路垃圾', title: '环境报警', desc: '场区北侧道路垃圾堆放未及时清运。', img: 'img/alarm-trash.webp', rel: relOf(-2, '16:20'), at: atOf(-2, '16:20'), geo: '114.24749822001145,30.53308044122890' },
+    { id: 'h-cable', day: 'hist', src: 'cam', type: '电缆拖地', title: '用电报警', desc: '钢筋加工区电缆拖地，存在漏电风险。', img: 'img/alarm-cable.webp', rel: relOf(-3, '11:08'), at: atOf(-3, '11:08'), geo: '114.24735501988210,30.53284411902341' },
+    { id: 'h-soil', day: 'hist', src: 'drone', type: '裸土未覆盖', title: '扬尘报警', desc: '基坑周边裸土未覆盖，扬尘超标。', img: 'img/alarm-soil.webp', rel: relOf(-4, '08:46'), at: atOf(-4, '08:46'), geo: '114.24757700124480,30.53319822009112' },
   ])
 
   /** 原 js/app.js:257 —— 首页安全面板与轮播只看当日 */
   const latest = computed(() => alarms.value.filter((a) => a.day === 'today'))
+
+  /**
+   * 历史记录模板池（原 app.js:2778-2787 ALARM_POOL）。
+   *
+   * 8 条模板与 alarms 的 8 条种子记录内容完全一致（同 src/type/title/desc/
+   * img/geo），直接从种子派生而不是再抄一份 —— 单一数据源，改文案只改一处。
+   */
+  const pool = alarms.value.map((a) => ({
+    src: a.src,
+    type: a.type,
+    title: a.title,
+    desc: a.desc,
+    img: a.img,
+    geo: a.geo,
+  }))
+
+  /** 按日生成的补充记录缓存（原 app.js:2789 alarmExtra），保证同一天两次取相同 */
+  const extraCache = new Map<string, Alarm>()
+
+  /**
+   * 某日预警条数（原 app.js:133-145 alarmDayCount）。
+   * 已知分布 [8,13,16,6,3,2] 覆盖近 6 天，更早进入 24 元循环表；
+   * 未来日期返回 null（日历上不可选）。
+   */
+  function dayCount(d: Date): number | null {
+    const off = Math.round((startOfDay(protoToday()).getTime() - startOfDay(d).getTime()) / 86400000)
+    if (off < 0) return null
+    if (off === 0) return latest.value.length
+    const known = [8, 13, 16, 6, 3, 2]
+    if (off <= known.length) return known[off - 1]
+    const older = [5, 1, 4, 7, 2, 9, 3, 6, 0, 4, 8, 2, 5, 1, 3, 6, 2, 0, 4, 7, 3, 1, 5, 2]
+    return older[(off - known.length - 1) % older.length]
+  }
+
+  /**
+   * 某日预警记录（原 app.js:2796-2822 alarmDayRecords）。
+   *
+   * 当日直接返回 latest；其余日期先取种子记录，不足 dayCount 的部分从
+   * 模板池按 (offset+i) 轮转补齐、时刻从 16:40 起每条提前 22 分钟，
+   * 结果按时间倒序。补齐的记录进 extraCache，同一天反复进出页面数据不漂移。
+   */
+  function dayRecords(d: Date): Alarm[] {
+    if (sameDay(d, protoToday())) return latest.value.slice()
+    const key = dateKey(d)
+    const n = dayCount(d) ?? 0
+    const out = alarms.value
+      .filter((a) => a.day === 'hist' && a.at.slice(0, 10) === key)
+      .slice(0, n)
+    const off = Math.round((startOfDay(protoToday()).getTime() - startOfDay(d).getTime()) / 86400000)
+    for (let i = out.length; i < n; i++) {
+      const id = `day-${key}-${i}`
+      let rec = extraCache.get(id)
+      if (!rec) {
+        const tpl = pool[(off + i) % pool.length]
+        const mins = 16 * 60 + 40 - i * 22
+        const hh = String(Math.floor(mins / 60)).padStart(2, '0')
+        const mm = String(mins % 60).padStart(2, '0')
+        rec = { id, day: 'hist', src: tpl.src, type: tpl.type, title: tpl.title, desc: tpl.desc, img: tpl.img, geo: tpl.geo, at: `${key} ${hh}:${mm}:00`, rel: `${hh}:${mm}` }
+        extraCache.set(id, rec)
+      }
+      out.push(rec)
+    }
+    return out.sort((a, b) => (a.at < b.at ? 1 : -1))
+  }
 
   /** 原 js/app.js:677 —— 巡检列表当前页签 */
   const inspTab = ref<'today' | 'hist'>('today')
@@ -66,6 +130,20 @@ export const useAlarmStore = defineStore('alarm', () => {
 
   /** 巡检日历是否展开（原为 #inspCal 的 .hide 类，closeSub 需读取，故提到 store） */
   const inspCalOpen = ref(false)
+
+  /* ---------- 报警预警历史页（2026-11 设计稿 gx2 版，原 app.js:2634-2636） ---------- */
+
+  /** 历史页当前页签 —— 设计稿默认落在「历史预警」 */
+  const histTab = ref<'today' | 'hist'>('hist')
+
+  /** 历史页当前选中日（原 alarmHistDate），锚点为 protoToday() */
+  const histDate = ref<Date>(addDays(protoToday(), -1))
+
+  /** 历史页日历当前显示月份（原 alarmHistCalMonth） */
+  const histCalMonth = ref<Date>(monthStart(histDate.value))
+
+  /** 历史页日历是否展开 */
+  const histCalOpen = ref(false)
 
   /** 原 js/app.js:684-696 的 alarmsOnDate(d) —— 历史页按日筛选 */
   function alarmsOnDate(d: Date): Alarm[] {
@@ -101,7 +179,13 @@ export const useAlarmStore = defineStore('alarm', () => {
     inspHistDate,
     inspCalMonth,
     inspCalOpen,
+    histTab,
+    histDate,
+    histCalMonth,
+    histCalOpen,
     alarmsOnDate,
+    dayCount,
+    dayRecords,
     byId,
     mapAlarms,
   }

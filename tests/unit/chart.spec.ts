@@ -74,16 +74,16 @@ describe('utils/chart', () => {
       expect(m.ticks).toEqual(['10/2', '10/3', '10/4', '10/5', '10/6', '10/7', '10/8'])
     })
 
-    it('历史值命中 hist 字典，最后一天用传入的当日条数', () => {
+    it('历史值按距今天数查已知分布，最后一天用传入的当日条数', () => {
       expect(alarmTrendModel(4).series[0].values).toEqual([2, 3, 6, 16, 13, 8, 4])
       expect(alarmTrendModel(9).series[0].values).toEqual([2, 3, 6, 16, 13, 8, 9])
     })
 
-    it('hist 未命中时回退为 3', () => {
+    it('2026-11 设计稿：历史值改按偏移查表，日期漂移不再回退为 3', () => {
       vi.setSystemTime(new Date(2026, 10, 20, 10, 0, 0))
       const vals = alarmTrendModel(10).series[0].values
-      // 前 6 天都落在 hist 之外 → 全部回退 3，最后一天仍取入参
-      expect(vals.slice(0, 6)).toEqual([3, 3, 3, 3, 3, 3])
+      // 已知分布 [8,13,16,6,3,2] 与日期解耦（原 app.js:133-145 alarmDayCount）
+      expect(vals.slice(0, 6)).toEqual([2, 3, 6, 16, 13, 8])
       expect(vals[6]).toBe(10)
     })
 

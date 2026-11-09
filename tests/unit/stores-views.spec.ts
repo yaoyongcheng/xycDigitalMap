@@ -207,11 +207,11 @@ describe('stores · alarm / home / subpage', () => {
       })
     })
 
-    it('9 台设备，id 唯一且都有单元明细', () => {
+    it('4 台设备（2026-11 设计稿收编），id 唯一且都有单元明细', () => {
       const home = useHomeStore()
-      expect(home.siteEquip).toHaveLength(9)
+      expect(home.siteEquip).toHaveLength(4)
       const ids = home.siteEquip.map((d) => d.id)
-      expect(new Set(ids).size).toBe(9)
+      expect(ids).toEqual(['crane', 'lift', 'drone', 'climb'])
       for (const d of home.siteEquip) {
         expect(d.units.length).toBeGreaterThan(0)
         expect(d.name).toBeTruthy()
@@ -240,10 +240,12 @@ describe('stores · alarm / home / subpage', () => {
 
       it('真实数据的在线状态与手写明细一致', () => {
         const home = useHomeStore()
+        // 台数与详情页（data/device.ts）同源：设计稿首页的 7 台与其详情页
+        // 自相矛盾，按「卡片即入口」约定取详情页口径
         const lift = home.siteEquip.find((d) => d.id === 'lift')!
         expect(home.equipCount(lift)).toEqual({ on: 2, total: 4, st: 'warn' })
 
-        // 2026-10 版本同步 · 第四批：塔机拆成 1#/2#/3# 三台，与详情页机组一一对应
+        // 塔机 1#/2#/3# 三台全部在线，与详情页机组一一对应
         const crane = home.siteEquip.find((d) => d.id === 'crane')!
         expect(home.equipCount(crane)).toEqual({ on: 3, total: 3, st: 'on' })
       })

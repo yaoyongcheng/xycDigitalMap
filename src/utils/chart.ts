@@ -81,17 +81,19 @@ export function smoothPath(pts: Pt[]): string {
  * 最后一天（i === 0）用当日预警条数，即原版的 latestAlarms.length。
  */
 export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): LineModel {
-  const hist: Record<string, number> = {
-    '10/2': 2, '10/3': 3, '10/4': 6, '10/5': 16, '10/6': 13, '10/7': 8, '10/8': 4,
-  }
+  /**
+   * 近 6 日条数按「距今天数」索引（原 app.js:133-145 alarmDayCount 的 known 表，
+   * 与 store 的 dayCount 同源口径）：日期整体漂移时曲线不再跟着失效 ——
+   * 旧版按 '10/2' 这类日期标签查表，真实日期一走远就全部落进兜底值 3。
+   */
+  const histByOffset = [8, 13, 16, 6, 3, 2] // 按偏移 1..6 索引
   const end = startOfDay(new Date())
   const days: string[] = []
   const vals: number[] = []
   for (let i = 6; i >= 0; i--) {
     const d = addDays(end, -i)
-    const lab = d.getMonth() + 1 + '/' + d.getDate()
-    days.push(lab)
-    vals.push(i === 0 ? latestCount : hist[lab] != null ? hist[lab] : 3)
+    days.push(d.getMonth() + 1 + '/' + d.getDate())
+    vals.push(i === 0 ? latestCount : histByOffset[i - 1])
   }
   const w = 260
   const h = 78

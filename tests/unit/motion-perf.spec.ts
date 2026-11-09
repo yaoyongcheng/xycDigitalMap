@@ -410,6 +410,7 @@ describe('第二轮体验优化回归', () => {
     const alarm = {
       id: 'cable',
       day: 'today' as const,
+      src: 'cam' as const,
       type: '电缆拖地',
       title: '用电报警',
       desc: '作业面电缆拖地未架空',

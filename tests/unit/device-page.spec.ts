@@ -9,6 +9,7 @@ import { craneUnits, liftUnits, uavChecks } from '@/data/device'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useSubpageStore } from '@/stores/subpage'
 import EquipPanel from '@/views/home/EquipPanel.vue'
+import ClimbPage from '@/views/sub/ClimbPage.vue'
 
 /**
  * 设备详情 / 无人机 / 日报（2026-10 版本同步 · 第四批）
@@ -31,15 +32,35 @@ describe('智控入口', () => {
     setActivePinia(createPinia())
   })
 
-  it('塔机 / 电梯 / 无人机有详情页，其余设备不可点', () => {
+  it('塔机 / 电梯 / 无人机 / 爬架均有详情页（2026-11 设计稿：四类全部可下钻）', () => {
     const w = mount(EquipPanel)
     const pages = w.findAll('[data-page]').map((b) => b.attributes('data-page'))
-    expect(pages).toEqual(['crane', 'lift', 'uav'])
+    expect(pages).toEqual(['crane', 'lift', 'uav', 'climb'])
 
-    // 只有可点的卡片才画箭头
-    expect(w.findAll('.eq-card.drill')).toHaveLength(3)
-    // 机器人那批保持不可点：没有详情页，也没有可展开的机组
-    expect(w.findAll('.eq-card:not(.drill)').length).toBeGreaterThan(0)
+    // 2026-11 设计稿删掉机器人后，全部卡片都可点，没有纯展示卡
+    expect(w.findAll('.eq-card.drill')).toHaveLength(4)
+    expect(w.findAll('.eq-card:not(.drill)')).toHaveLength(0)
+    w.unmount()
+  })
+
+  it('爬架卡是专属结构：三格正常数 + 异常行', () => {
+    const w = mount(EquipPanel)
+    const climb = w.find('[data-page="climb"]')
+    expect(climb.classes()).toContain('is-climb')
+    // 左右倾斜 35/36（30# 机位超限），前后倾斜与载荷 36/36
+    const vals = climb.findAll('.eq-val')
+    expect(vals.map((v) => v.classes())).toEqual([['eq-val', 'is-bad'], ['eq-val', 'is-ok'], ['eq-val', 'is-ok']])
+    expect(climb.find('.eq-alert').text()).toContain('30#机位 左右倾斜 179.70mm')
+    w.unmount()
+  })
+
+  it('点爬架卡进入爬架详情', async () => {
+    const sub = useSubpageStore()
+    const w = mount(EquipPanel)
+    await w.find('[data-page="climb"]').trigger('click')
+    expect(sub.view).toEqual({ kind: 'climb' })
+    expect(sub.title).toBe('智能爬架')
+    expect(sub.isDark).toBe(true)
     w.unmount()
   })
 
@@ -50,6 +71,32 @@ describe('智控入口', () => {
     expect(sub.view).toEqual({ kind: 'device', device: 'crane' })
     expect(sub.title).toBe('智能塔机')
     expect(sub.isDark).toBe(true)
+    w.unmount()
+  })
+})
+
+describe('智能爬架详情页（2026-11 设计稿）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('36 个机位逐行展示，默认左右倾斜页签，30# 机位标红', () => {
+    const w = mount(ClimbPage)
+    expect(w.findAll('.climb-line')).toHaveLength(36)
+    expect(w.findAll('.climb-line.is-bad')).toHaveLength(1)
+    expect(w.find('.climb-line.is-bad').text()).toContain('30#')
+    expect(w.find('.climb-issue').text()).toContain('179.70mm')
+    expect(w.find('.climb-sum').text()).toContain('38')
+    w.unmount()
+  })
+
+  it('切到前后倾斜 / 载荷页签后无异常行', async () => {
+    const w = mount(ClimbPage)
+    await w.findAll('.dev-tabs button')[1].trigger('click')
+    expect(w.findAll('.climb-line.is-bad')).toHaveLength(0)
+    expect(w.find('.climb-lines').text()).toContain('3.11mm')
+    await w.findAll('.dev-tabs button')[2].trigger('click')
+    expect(w.find('.climb-lines').text()).toContain('1.03吨')
     w.unmount()
   })
 })
@@ -67,64 +114,81 @@ describe('设备详情页', () => {
     return w
   }
 
-  it('深色子页 + 三张设备卡 + 五张趋势图', async () => {
+  it('深色子页 + 实时卡 + live/report 双页签（2026-11 设计稿改版）', async () => {
     const w = await openCrane()
 
     expect(w.find('.subpage').classes()).toContain('is-dark')
     expect(w.find('#subTitle').text()).toBe('智能塔机')
     expect(w.findAll('.dev-card')).toHaveLength(craneUnits.length)
-    expect(w.findAll('.dev-chart')).toHaveLength(5)
-    // 塔机的指标名不能串到电梯的「循环次数」
-    expect(w.find('.dev-chart h4, .dev-chart .dev-chart-hd span').text()).toBe('累计吊次')
+    // 旧版的五张趋势图随设计稿改版移除，页签只剩实时 / 报表两个
+    expect(w.find('.dev-view-tabs')).toBeTruthy()
+    expect(w.find('.dev-view-tabs').text()).toContain('设备实时状态')
+    expect(w.find('.dev-view-tabs').text()).toContain('作业报表')
+    expect(w.find('.dev-chart').exists()).toBe(false)
+    // 塔机实时卡是「今日吊次 / 今日吊重」两格
+    expect(w.find('.dev-card').text()).toContain('今日吊次')
+    expect(w.find('.dev-card').text()).toContain('今日吊重')
     w.unmount()
   })
 
-  it('日报入口只在设备页出现', async () => {
-    const sub = useSubpageStore()
+  it('作业报表：日报合计与结论来自昨日数据（2026-11 设计稿）', async () => {
     const w = await openCrane()
-    expect(w.find('#btnDeviceReport').exists()).toBe(true)
-
-    sub.openReport('crane')
-    await nextTick()
-    expect(w.find('#btnDeviceReport').exists()).toBe(false)
-    expect(w.find('#subTitle').text()).toBe('塔机日报')
-    w.unmount()
-  })
-
-  it('日报的合计与结论来自昨日数据', async () => {
-    const sub = useSubpageStore()
-    sub.openReport('crane')
-    const w = mount(Host)
+    await w.findAll('.dev-view-tabs button')[1].trigger('click')
     await nextTick()
 
     // 昨日（history[0]）三台的合计：吊次 9+12+8、吊重 8.60+7.10+4.20
     const kpis = w.findAll('.report-kpi b').map((b) => b.text())
     expect(kpis[0]).toBe('29次')
     expect(kpis[1]).toBe('19.9t')
-
-    const notes = w.findAll('.report-note').map((p) => p.text())
-    expect(notes).toHaveLength(3)
-    expect(notes[0]).toContain('合计吊次 29 次')
-    // 吊次最高的是 2#（12 次），吊重最高的是 1#（8.60t）—— 两台不是同一台
-    expect(notes[1]).toContain('2#塔机累计吊次最高')
-    expect(notes[1]).toContain('1#塔机吊重最高')
-    expect(w.findAll('.report-card')).toHaveLength(3)
+    // 结论按数据挑重点：利用率最低 + 报警台
+    const points = w.findAll('.report-points li').map((li) => li.text())
+    expect(points.length).toBeGreaterThanOrEqual(3)
+    expect(points[0]).toContain('关注')
+    expect(w.text()).toContain('3#塔机报警')
+    // 机队表：表头 + 三台
+    const lines = w.findAll('.report-line')
+    expect(lines).toHaveLength(4)
+    expect(lines[0].text()).toContain('吊次')
+    expect(lines[1].text()).toContain('1#塔机')
     w.unmount()
   })
 
-  it('返回日报回到设备页，再返回才退出子页', async () => {
-    const sub = useSubpageStore()
-    sub.openDevice('crane')
-    sub.openReport('crane')
-    expect(sub.back).toEqual({ kind: 'device', device: 'crane' })
+  it('作业报表：周报按 history 7 天汇总、月报用 21 天派生序列', async () => {
+    const w = await openCrane()
+    await w.findAll('.dev-view-tabs button')[1].trigger('click')
+    const pills = w.findAll('.report-span button')
+    expect(pills.map((p) => p.text())).toEqual(['日报', '周报', '月报'])
 
-    sub.close()
-    expect(sub.view.kind).toBe('device')
-    sub.close()
-    expect(sub.view.kind).toBe('none')
+    await pills[1].trigger('click')
+    await nextTick()
+    // 周报 = 7 天合计：1# 59 + 2# 75 + 3# 63 = 197
+    expect(w.findAll('.report-kpi b')[0].text()).toBe('197次')
+    const weekRange = w.find('.report-date').text()
+    expect(weekRange).toContain(' 至 ')
+
+    await pills[2].trigger('click')
+    await nextTick()
+    // 月报区间是「2026-MM-DD 至 2026-MM-DD」，共 21 天（不含今日），可跨月
+    expect(w.find('.report-date').text()).toMatch(/\d{4}-\d{2}-\d{2} 至 \d{4}-\d{2}-\d{2}/)
+    const monthTrips = Number.parseInt(w.findAll('.report-kpi b')[0].text(), 10)
+    expect(monthTrips).toBeGreaterThan(197)
+    w.unmount()
   })
 
-  it('电梯用同一份页面，指标换成循环次数 / 运送人数', async () => {
+  it('报表内嵌在详情页里，实时/报表互切不换子页', async () => {
+    const w = await openCrane()
+    await w.findAll('.dev-view-tabs button')[1].trigger('click')
+    await nextTick()
+    expect(w.find('.report-share').exists()).toBe(true)
+
+    await w.findAll('.dev-view-tabs button')[0].trigger('click')
+    await nextTick()
+    expect(w.find('.report-share').exists()).toBe(false)
+    expect(w.findAll('.dev-card')).toHaveLength(3)
+    w.unmount()
+  })
+
+  it('电梯用同一份页面，报表换成循环 / 载重 / 运送口径', async () => {
     const sub = useSubpageStore()
     sub.openDevice('lift')
     const w = mount(Host)
@@ -132,8 +196,13 @@ describe('设备详情页', () => {
 
     expect(w.find('#subTitle').text()).toBe('智能电梯')
     expect(w.findAll('.dev-card')).toHaveLength(liftUnits.length)
-    expect(w.text()).toContain('循环次数')
-    expect(w.text()).not.toContain('累计吊次')
+    // 实时卡是当前状态四格
+    expect(w.find('.dev-card').text()).toContain('当前楼层')
+    await w.findAll('.dev-view-tabs button')[1].trigger('click')
+    await nextTick()
+    expect(w.find('.report-kpis').text()).toContain('合计循环')
+    expect(w.find('.report-fleet').text()).toContain('运送')
+    expect(w.find('.report-fleet').text()).not.toContain('吊重')
     w.unmount()
   })
 })

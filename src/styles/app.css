@@ -1695,54 +1695,90 @@ button, input, textarea { font-family: inherit; color: inherit; }
   gap: 18px;
 }
 
+/*
+ * 设备卡（2026-11 设计稿 gx2 版同步，原 app.css:1440-1766）
+ *
+ * 卡片从「上下两行」改横向：左 64px 设备照片（eq-ico）+ 中 eq-main
+ * （eq-hd 名称行 + eq-vals 数值行）+ 右圆形箭头；eq-grid 单列。
+ * 塔机双指标（is-crane）、爬架三格 + 异常行（is-climb）见下方专属段。
+ */
 .eq-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 10px;
 }
 
 .eq-card {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   width: 100%;
   text-align: left;
   background: #fff;
   border: 0;
   border-radius: var(--r-12);
-  padding: 12px 12px 10px;
+  padding: 12px;
   color: inherit;
   font: inherit;
   cursor: default;
 }
 
-.eq-card.drill {
-  cursor: pointer;
-  display: grid;
-  grid-template-columns: 1fr 14px;
-  column-gap: 2px;
+.eq-card.drill { cursor: pointer; }
+
+.eq-card.is-crane .eq-vals { gap: var(--fs-16); }
+
+.eq-ico {
+  display: flex;
   align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 14px;
+  background: #16324C;
+  box-shadow: inset 0 0 0 1px rgba(90, 130, 170, 0.28);
+  overflow: hidden;
+  flex-shrink: 0;
 }
 
-.eq-card.drill .eq-hd { grid-column: 1 / -1; }
+.eq-ico img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.eq-ico svg {
+  width: 28px;
+  height: 28px;
+}
+
+.eq-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 
 .eq-more {
-  grid-column: 2;
-  grid-row: 2;
-  align-self: start;
-  width: 14px;
-  height: 14px;
-  margin: 6px 0 0;
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
   padding: 0;
-  background: none;
-  color: var(--ink-3-dark);
+  border-radius: 50%;
+  background: rgba(76, 159, 255, 0.18);
+  color: var(--blue-dark);
   display: flex;
   align-items: center;
   justify-content: center;
   line-height: 0;
+  flex-shrink: 0;
 }
 
 .eq-more svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   display: block;
 }
 
@@ -1750,7 +1786,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 10px;
 }
 
 .eq-hd strong {
@@ -1779,17 +1814,23 @@ button, input, textarea { font-family: inherit; color: inherit; }
   color: var(--muted);
 }
 
-.eq-card.drill .eq-hd em { color: var(--warn-dark); }
-
 /*
  * 设备明细的「面板内二级视图」与它的弹层版本都随 2026-10 版本同步删除：
  * 塔机 / 电梯 / 无人机各有整页详情后，多机组设备不再需要弹层里的一串明细。
  * 原来的 .eq-back / .eq-units / .eq-unit / .eq-kv 四组规则一并移除。
  */
 
+.eq-vals {
+  display: flex;
+  align-items: flex-end;
+  gap: 22px;
+}
+
+.eq-val { min-width: 0; }
+
 .eq-card b {
   display: block;
-  font-size: var(--fs-22);
+  font-size: var(--fs-18);
   font-weight: 700;
   line-height: 1.15;
   color: var(--text);
@@ -1800,6 +1841,78 @@ button, input, textarea { font-family: inherit; color: inherit; }
   margin-top: 4px;
   font-size: var(--fs-12);
   color: var(--muted);
+}
+
+/* 「在线 x/y」格：总数小字随数值，离线整组变灰 */
+.eq-card .eq-online em {
+  font-style: normal;
+  font-weight: 700;
+  font-size: var(--fs-18);
+  color: var(--online);
+}
+
+.eq-card .eq-online em i {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.eq-card .eq-online.is-off em { color: var(--ink-3-dark); }
+
+/* 数值里的单位小字（1.87t 的 t、179.70mm 的 mm） */
+.eq-card .eq-stat-unit {
+  font-style: normal;
+  font-weight: 650;
+  font-size: var(--fs-14);
+}
+
+.eq-card.is-climb .eq-stat-unit,
+.climb-page .eq-stat-unit {
+  font-style: normal;
+  font-weight: 650;
+  font-size: 0.85em;
+}
+
+/* 爬架专属卡：纵向两段（照片行 + 异常行），三格正常数带红绿态 */
+.eq-card.is-climb {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.eq-climb-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.eq-card.is-climb .eq-vals {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.eq-card.is-climb .eq-hd strong { flex: none; }
+
+.eq-card.is-climb .is-bad b { color: var(--danger-dark); }
+
+.eq-card.is-climb .is-ok b { color: var(--ok-dark); }
+
+.eq-card.is-climb .eq-val b em,
+.eq-card.is-climb .eq-val b i {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.eq-card.is-climb .eq-alert {
+  display: block;
+  padding: 6px 10px;
+  border-radius: var(--r-8);
+  background: rgba(255, 92, 108, 0.12);
+  font-size: var(--fs-12);
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--danger-dark);
 }
 
 .pg-list {
@@ -2339,26 +2452,61 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .alarm-feed {
   /*
-   * 轮播单条高度 —— 唯一来源：.alarm-feed-item 的高度、.alarm-feed-win 的
-   * 窗口高度，以及 JS 计算滚动步长都读它。
+   * 轮播单条高度 —— 唯一来源：.alarm-feed-item 的高度与 .alarm-feed-win
+   * 的窗口高度都读它（2026-11 横滑分页版不再有 JS 步长，但高度同源约束
+   * 保持不变）。
    *
-   * 不要再让 JS 用 item.offsetHeight 实测后写 win.style.height：组件挂载时
-   * 样式表可能尚未应用，量到的是内容撑开的高度，写进内联样式后会被固化，
+   * 不要让 JS 用 item.offsetHeight 实测后写内联样式：组件挂载时样式表
+   * 可能尚未应用，量到的是内容撑开的高度，写进内联样式后会被固化，
    * 窗口随即变高、露出列表末尾的回卷副本（表现为"预警重复"）。
    */
   --feed-item-h: 54px;
   margin-top: 8px;
-  padding: 2px 8px;
+  padding: 2px 8px 8px;
 }
 
 .alarm-feed-win {
   overflow: hidden;
   /* 倍数 = ALARM_FEED_SHOW（src/data/config.ts），改一处要同步另一处 */
-  height: calc(var(--feed-item-h) * 3);
+  min-height: calc(var(--feed-item-h) * 3);
+  touch-action: pan-y;
 }
 
+/* 2026-11 设计稿 gx2 版：轨道横向排页，位移由 JS 写 translateX（原 app.css:2589-2599） */
 .alarm-feed-track {
+  display: flex;
   will-change: transform;
+}
+
+.alarm-feed-page {
+  box-sizing: border-box;
+  flex: 0 0 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* 页圆点（原 app.css:2602-2623）：常态 5px 灰点，激活页拉长为 12px 蓝条 */
+.alarm-feed-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.alarm-feed-dot {
+  width: 5px;
+  height: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--line-dark);
+  cursor: pointer;
+}
+
+.alarm-feed-dot.on {
+  width: 12px;
+  background: var(--blue);
 }
 
 .alarm-feed-item {
@@ -2385,6 +2533,15 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .alarm-feed-meta {
   flex: 1;
+  min-width: 0;
+}
+
+/* 2026-11 设计稿 gx2 版：标题 + 来源徽标的横排行（原 app.css:2653-2662） */
+.alarm-feed-hd,
+.insp-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -4790,6 +4947,13 @@ button, input, textarea { font-family: inherit; color: inherit; }
 #page-home .safe-hd h4 { color: var(--ink-2-dark); }
 #page-home .cam-cfg { color: var(--ink-4-dark); }
 
+/* 「历史」入口在深色浮层上的提亮描边版（原 app.css:6208-6212） */
+#page-home .alarm-hist-btn {
+  background: rgba(76, 159, 255, 0.1);
+  color: var(--ink-3-dark);
+  box-shadow: inset 0 0 0 1px rgba(76, 159, 255, 0.18);
+}
+
 #page-home .home-stat,
 #page-home .crew-item,
 #page-home .cam-card,
@@ -4829,9 +4993,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   color: var(--ink-3-dark);
 }
 
-#page-home .eq-card.drill .eq-hd em { color: var(--warn-dark); }
+/* eq-more 的圆形底与蓝箭头由基础段提供，深浅色同款，无需覆盖 */
 
-#page-home .eq-more { color: var(--ink-3-dark); }
+/* eq-more 的圆形底与蓝箭头由基础段提供，深浅色同款，无需覆盖 */
+
+/* 爬架异常卡在深色浮层上的红绿态与浅色同值（--danger-dark / --ok-dark） */
 
 #page-home .home-stat.alert b { color: var(--danger-dark); }
 #page-home .home-stat.fix b { color: var(--orange-dark); }
@@ -5144,18 +5310,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
   /* tab 页面切换入场 */
   .page.active { animation: pageIn 0.26s ease; }
-
-  /* 最新预警呼吸红点 */
-  .feed-live {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    margin-left: 5px;
-    border-radius: 50%;
-    background: #ff5b5b;
-    vertical-align: middle;
-    animation: feedPing 1.6s ease-out infinite;
-  }
 
   /* 地图点位光环脉冲（摄像头/塔吊） */
   .map-pin.cam .pin-dot::after,
@@ -8285,4 +8439,377 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   font-size: var(--fs-13);
   font-weight: 650;
   color: var(--blue-dark);
+}
+
+/*
+ * 智能爬架详情页（2026-11 设计稿 gx2 版同步，原 app.css:6277-6470）
+ *
+ * 深色子页：climb-sum 两格 → dev-tabs 三页签（左右倾斜/前后倾斜/载荷）
+ * → climb-board 机位列表。列表行的分隔线、时间右对齐与异常整行标红
+ * 都按设计稿逐条搬；颜色走令牌（#132033→--bg-3、#FF5C6C→--danger-dark、
+ * #3DDC97→--ok-dark、#F2F6FB→--ink-1-dark、#8A9BB0→--ink-3-dark）。
+ */
+.climb-page { padding-bottom: calc(12px + var(--safe-bot)); }
+
+.climb-sum {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.climb-sum span {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+.climb-sum b {
+  font-size: var(--fs-22);
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--blue-dark);
+}
+
+.climb-sum b.is-time {
+  font-size: var(--fs-13);
+  font-weight: 650;
+}
+
+/* 页签与无人机页共用 .dev-tabs，这里只放宽间距 */
+.dev-tabs.climb-view { gap: 18px; }
+
+.climb-board {
+  margin-top: 14px;
+  padding: 12px 12px 4px;
+  border-radius: var(--r-12);
+  background: var(--bg-3);
+}
+
+.climb-board header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.climb-board header b {
+  font-size: var(--fs-16);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ok-dark);
+}
+
+.climb-board header b em,
+.climb-board header b i {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.climb-board header b i { color: var(--ink-1-dark); }
+.climb-board header b.is-bad { color: var(--danger-dark); }
+
+.climb-issue {
+  margin: 8px 0 0;
+  font-size: var(--fs-12);
+  line-height: 1.4;
+  color: var(--danger-dark);
+}
+
+.climb-lines { margin-top: 4px; }
+
+.climb-line {
+  display: grid;
+  grid-template-columns: 42px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line-dark);
+}
+
+.climb-line b {
+  font-size: var(--fs-13);
+  font-weight: 650;
+  color: var(--ink-2-dark);
+}
+
+.climb-line span {
+  font-size: var(--fs-13);
+  color: var(--ink-1-dark);
+}
+
+.climb-line time {
+  font-size: var(--fs-11);
+  color: var(--ink-4-dark);
+}
+
+.climb-line.is-bad b,
+.climb-line.is-bad span { color: var(--danger-dark); }
+
+/*
+ * 报警预警历史页（2026-11 设计稿 gx2 版同步，原 app.css:2360-2496）。
+ * 浅色子页：汇总头 + 按日行（可 drill-in）+ insp-item 列表。
+ * 设计稿把 .alarm-hist-row 渲染函数漏在了 renderAlarmHist 外面（死代码），
+ * 但 data-hist-day 委托与 openAlarmHistDay 都是活的 —— 这里按 CSS 意图
+ * 把行渲染出来，让 drill-in 可达。
+ */
+.alarm-hist-page { padding-bottom: 12px; }
+
+.alarm-hist-sum {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border-radius: var(--r-12);
+  background: var(--surface);
+}
+
+.alarm-hist-sum span {
+  font-size: var(--fs-13);
+  color: var(--muted);
+}
+
+.alarm-hist-sum b {
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+.alarm-hist-sum b i,
+.alarm-hist-row b i {
+  margin-left: 2px;
+  font-style: normal;
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.alarm-hist-sum em {
+  margin-left: 8px;
+  font-style: normal;
+  font-size: var(--fs-12);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.alarm-hist-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--r-12);
+  background: var(--surface);
+}
+
+.alarm-hist-row span {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.alarm-hist-row em {
+  margin-left: 8px;
+  font-style: normal;
+  font-size: var(--fs-12);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.alarm-hist-row b {
+  font-size: var(--fs-18);
+  font-weight: 700;
+  color: var(--danger);
+}
+
+.alarm-hist-row b.is-zero { color: var(--ink-4); }
+
+button.alarm-hist-row {
+  width: 100%;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.alarm-hist-go {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--ink-4);
+}
+
+/* 历史页里的来源徽标换浅底深字（深色版徽标在浅底上看不清） */
+.alarm-hist-page .alarm-src-drone { background: #E8F3FF; color: #2B6CB0; }
+.alarm-hist-page .alarm-src-cam { background: #E6F8EF; color: #1B8A5A; }
+.alarm-hist-page .alarm-src-snap { background: #FFF4E5; color: #C47A12; }
+
+.alarm-hist-page .insp-meta p {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* 安全面板头部的「历史」入口（原 app.css:2337-2358） */
+.alarm-hist-btn {
+  margin-left: auto;
+  height: 26px;
+  padding: 0 6px 0 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: rgba(47, 124, 255, 0.1);
+  color: var(--blue);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.alarm-hist-btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+/*
+ * 作业报表页签（2026-11 设计稿 gx2 版同步，原 app.css:6839-6925）。
+ * 深色子页：结论条目 + 机队分台五行表。
+ * 颜色映射：#122033→--bg-3、#8A9BB0→--ink-3-dark、#F2F6FB→--ink-1-dark、
+ * #E8EEF6→--ink-2-dark、#8EC4FF→--blue-dark、#FF8A7A/#FF6B6B→--danger-dark。
+ */
+.report-judge { margin-top: 12px; }
+
+.report-judge > p {
+  margin: 0 0 6px;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  color: var(--ink-3-dark);
+}
+
+.report-points {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.report-points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-8);
+  background: var(--bg-3);
+  font-size: var(--fs-13);
+  line-height: 1.45;
+  color: var(--ink-2-dark);
+}
+
+.report-points b {
+  flex: none;
+  width: 28px;
+  font-size: var(--fs-12);
+  font-weight: 700;
+  line-height: 1.45;
+  color: var(--blue-dark);
+}
+
+.report-points li.is-warn b { color: var(--danger-dark); }
+
+.report-points span { min-width: 0; }
+
+/* 日报/周报/月报三粒度页签撑满整行 */
+.uav-tabs.report-span {
+  display: flex;
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.uav-tabs.report-span button { flex: 1; }
+
+.report-fleet { margin-top: 8px; }
+
+.report-line {
+  display: grid;
+  grid-template-columns: 0.95fr 0.62fr 0.78fr 0.7fr 0.58fr;
+  gap: 4px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-dark);
+  font-size: var(--fs-13);
+}
+
+.report-line.is-hd {
+  border-top: 0;
+  padding-bottom: 4px;
+  color: var(--ink-3-dark);
+  font-size: var(--fs-12);
+}
+
+.report-line b {
+  font-weight: 650;
+  color: var(--ink-1-dark);
+}
+
+.report-line.is-hd b,
+.report-line.is-hd span { color: var(--ink-3-dark); font-weight: 500; }
+
+.report-line span { color: var(--ink-2-dark); }
+
+.report-line b em {
+  display: block;
+  margin-top: 2px;
+  font-style: normal;
+  font-size: var(--fs-11);
+  font-weight: 650;
+  color: var(--danger-dark);
+}
+
+/* 设备详情页顶部的 live/report 双页签与实时卡的两格布局 */
+.dev-view-tabs { margin-bottom: 12px; }
+
+/* 电梯卡四格走设计稿的三列（6576-6583），塔机卡两格收成两列（crane-card-pair） */
+.dev-card-grid { grid-template-columns: 1.15fr 0.8fr 1fr; }
+
+.dev-card-grid.is-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/*
+ * 大图弹层的「原图 / 下载」操作区（2026-11 设计稿 gx2 版，原 photo-stage
+ * 顶栏 app.css:3557-3630 收敛为行内两钮）。巡检弹层与航拍大图 pop 都是
+ * 深色底，按钮走描边胶囊；禁用态（已是原图）弱化。
+ */
+.photo-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.photo-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: rgba(76, 159, 255, 0.14);
+  box-shadow: inset 0 0 0 1px var(--line-dark-2);
+  color: var(--blue-dark);
+  font-size: var(--fs-12);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.photo-btn:disabled {
+  color: var(--ink-4-dark);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+  cursor: default;
 }

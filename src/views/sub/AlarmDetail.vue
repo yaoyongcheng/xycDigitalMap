@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 
 import type { Alarm } from '@/types'
+import { alarmSrcOf } from '@/data/config'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -13,8 +14,14 @@ import { useImageZoom } from '@/utils/zoom'
  *
  * 2026-10 新增：现场大图支持双指捏合 / 双击 / 滚轮缩放与拖动平移。
  * 隐患照片的判读点往往在很小的区域，不能放大等于看不了。
+ *
+ * 2026-11 设计稿 gx2 版同步：大图角标与「预警来源」行按 alarm.src
+ * 取值（原 app.js:2735-2756）—— 此前硬编码成无人机，视频监控 /
+ * 随手拍进来的预警也显示无人机设备号，属于信息错误。
  */
 const props = defineProps<{ alarm: Alarm }>()
+
+const src = computed(() => alarmSrcOf(props.alarm.src))
 
 const { zoomed, label, imgStyle, animating, handlers, reset } = useImageZoom()
 
@@ -34,8 +41,8 @@ watch(() => props.alarm.img, reset)
     />
     <span v-if="zoomed" class="zoom-badge">{{ label }}</span>
     <div class="alarm-hero-tag">
-      <strong>自动巡航无人机</strong>
-      <span>UAV-25638583</span>
+      <strong>{{ src.name }}</strong>
+      <span>{{ src.sub }}</span>
     </div>
   </div>
   <div class="alarm-info">
@@ -43,6 +50,7 @@ watch(() => props.alarm.img, reset)
     <div class="alarm-kv"><span>项目名称</span><em>中建三局-向阳村项目</em></div>
     <div class="alarm-kv"><span>任务名称</span><em>向阳村-三维(加密)</em></div>
     <div class="alarm-kv"><span>检测时间</span><em>{{ alarm.at }}</em></div>
+    <div class="alarm-kv"><span>预警来源</span><em>{{ src.tag }}</em></div>
     <h4>识别结果</h4>
     <div class="alarm-kv"><span>识别类型</span><em>{{ alarm.type }}</em><b>自动</b><i>0级</i></div>
     <div class="alarm-kv"><span>地址</span><em>湖北省武汉市汉阳区江堤街道江永堤路铉龙城</em></div>

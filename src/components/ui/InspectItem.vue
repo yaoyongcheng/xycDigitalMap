@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import SmartImg from '@/components/ui/SmartImg.vue'
 import type { Alarm } from '@/types'
+import { alarmSrcOf } from '@/data/config'
 import { alarmTone } from '@/utils/alarmTone'
 
 /**
@@ -12,8 +13,12 @@ import { alarmTone } from '@/utils/alarmTone'
  * 2026-10 交互优化：图片换成 SmartImg（占位 + 失败兜底，见该组件注释）；
  * 同时补 tabindex / 键盘可达 / 按压态所需的语义 —— 原先是纯 div + role，
  * 键盘用户完全无法操作。
+ *
+ * 2026-11 设计稿 gx2 版：①标题行加采集来源徽标；②报警历史页的列表
+ * 标题显示报警名（histAlarmItem 用 a.title）而不是类型名（inspectListItem
+ * 用 a.type），useTitle 切换。
  */
-defineProps<{ alarm: Alarm }>()
+defineProps<{ alarm: Alarm; useTitle?: boolean }>()
 const emit = defineEmits<{ open: [] }>()
 
 function onKey(e: KeyboardEvent): void {
@@ -36,7 +41,10 @@ function onKey(e: KeyboardEvent): void {
   >
     <SmartImg class="insp-pic" :src="alarm.img" :alt="alarm.type" />
     <div class="insp-meta">
-      <strong>{{ alarm.type }}</strong>
+      <div class="insp-hd">
+        <strong>{{ useTitle ? alarm.title : alarm.type }}</strong>
+        <span class="alarm-src" :class="`alarm-src-${alarm.src}`">{{ alarmSrcOf(alarm.src).tag }}</span>
+      </div>
       <p>{{ alarm.desc }}</p>
     </div>
     <span class="insp-time">{{ alarm.rel }}</span>

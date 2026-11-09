@@ -1,4 +1,4 @@
-import type { MapPoint, MineMenu, PatrolCat, PatrolPhoto, TabId } from '@/types'
+import type { Alarm, MapPoint, MineMenu, PatrolCat, PatrolPhoto, TabId } from '@/types'
 
 /**
  * 纯静态配置常量
@@ -47,6 +47,24 @@ export const camShotTimes = ['08:12', '12:36', '16:50']
 
 /** 原 js/app.js:259 —— 预警轮播可视条数 */
 export const ALARM_FEED_SHOW = 3
+
+/**
+ * 预警采集来源（2026-11 设计稿 gx2 版，原 app.js:255-259）。
+ *
+ * tag：列表徽标上的短文案；name / sub：详情页大图角标的主副标题。
+ * 同一来源的徽标与角标必须同源取值，否则列表说「随手拍」、
+ * 详情页却写「自动巡航无人机」就穿帮了。
+ */
+export const ALARM_SRC = {
+  drone: { tag: '无人机', name: '自动巡航无人机', sub: 'UAV-25638583' },
+  cam: { tag: '视频监控', name: '视频监控抓拍', sub: 'CAM-2#塔吊' },
+  snap: { tag: '随手拍', name: '管理人员随手拍', sub: '张工 安全员' },
+} as const
+
+/** 原 alarmSrc(a)（app.js:261-263）—— 未知来源回退到无人机 */
+export function alarmSrcOf(src: Alarm['src']): (typeof ALARM_SRC)[Alarm['src']] {
+  return ALARM_SRC[src] ?? ALARM_SRC.drone
+}
 
 /** 原 js/app.js:318-319 —— 2#楼各层占用人数的稀疏表 + 总层数 */
 export const b2Occupied: Record<number, number> = { 1: 5, 4: 1 }

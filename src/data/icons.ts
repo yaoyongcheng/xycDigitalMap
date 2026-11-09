@@ -177,7 +177,17 @@ const ICON_MAP = {
     shapes: [
       { tag: 'rect', x: 7, y: 3.5, width: 10, height: 17, rx: 1.4 },
       { tag: 'path', d: 'M12 8.2v2.4M12 8.2l-1.2-1.2M12 8.2l1.2-1.2' },
-      { tag: 'path', d: 'M12 15.6v-2.4M12 15.6l-1.2 1.2M12 15.6l1.2 1.2' },
+      { tag: 'path', d: 'M12 15.6v-2.4M12 15.6l-1.2 1.2M12 15.6l-1.2 1.2' },
+    ],
+  },
+
+  /** 智能爬架（2026-11 设计稿 gx2 版，原 equipIco.climb，作设备卡图片的兜底） */
+  'eq-climb': {
+    viewBox: '0 0 24 24',
+    attrs: MOD_STROKE,
+    shapes: [
+      { tag: 'path', d: 'M7 20V5h10v15' },
+      { tag: 'path', d: 'M7 9h10M7 13h10M7 17h10' },
     ],
   },
 

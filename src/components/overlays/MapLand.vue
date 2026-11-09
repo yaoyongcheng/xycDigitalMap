@@ -94,8 +94,8 @@ const avgRate = computed(() =>
   Math.round(home.siteBuildings.reduce((s, b) => s + b.rate, 0) / home.siteBuildings.length),
 )
 
-/** 无人机今日作业次数（siteEquip 中 drone 机组的演示值） */
-const droneRuns = computed(() => Number.parseInt(home.siteEquip.find((d) => d.id === 'drone')?.value ?? '0', 10))
+/** 无人机今日已完成作业数（2026-11 设计稿：卡片指标改成「作业任务 x/y」） */
+const droneRuns = computed(() => home.siteEquip.find((d) => d.id === 'drone')?.jobs?.done ?? 0)
 
 function onMapPoint(p: MapPoint): void {
   if ((p.kind === 'cam' || p.kind === 'crane') && p.camId) {

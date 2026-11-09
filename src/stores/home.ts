@@ -37,41 +37,41 @@ export const useHomeStore = defineStore('home', () => {
     { id: 'base', name: '地下室', count: 2 },
   ])
 
-  /** 原 js/app.js:534-558 —— 9 台设备 */
+  /**
+   * 原 js/app.js:851-878（2026-11 设计稿 gx2 版）
+   *
+   * 设备从 9 条收成 4 条：六台机器人整组删除；塔机加「今日吊重 + 今日吊次」
+   * 双指标；电梯的卡片指标换成「累计运行时间」；无人机改成「作业任务 1/3」
+   * 且整机离线；爬架改成异常态（卡片数据取自 data/climb.ts）。
+   *
+   * 机组数量刻意与详情页（data/device.ts）同源而不是照抄设计稿首页：
+   * 设计稿自己就对不上（首页 4 台塔机 / 7 台电梯，详情页却是 3 台 / 4 台），
+   * 点进卡片数字对不上会被当成 bug —— 按「卡片即入口」的项目约定，
+   * 台数以详情页为准。
+   */
   const siteEquip = ref<Equip[]>([
-    /*
-     * 塔机与电梯的数值随 2026-10 版本同步更新（第四批）：原来塔机只有一台
-     * 「5G塔机」，现在拆成 1#/2#/3# 三台与设备详情页的机组一一对应；
-     * 电梯的循环次数也从 122/0/0/0 换成真实分布 86/18/9/24。
-     * 首页卡片与详情页必须同源，否则点进去数字对不上。
-     */
-    { id: 'crane', name: '智能塔机', value: '18.58t', metric: '今日吊重', ico: 'crane',
+    { id: 'crane', name: '智能塔机', value: '1.87t', metric: '今日吊重', ico: 'crane', page: 'crane',
+      stats: [
+        { value: '1.87t', metric: '今日吊重' },
+        { value: '26次', metric: '今日吊次' },
+      ],
       units: [
-        { name: '1#塔机', on: true, rows: [['今日吊次', '10次'], ['今日吊重', '10.00t']] },
-        { name: '2#塔机', on: true, rows: [['今日吊次', '9次'], ['今日吊重', '5.05t']] },
-        { name: '3#塔机', on: true, rows: [['今日吊次', '7次'], ['今日吊重', '3.53t']] },
+        { name: '1#塔机', on: true, rows: [] },
+        { name: '2#塔机', on: true, rows: [] },
+        { name: '3#塔机', on: true, rows: [] },
       ] },
-    { id: 'lift', name: '智能电梯', value: '137次', metric: '今日循环次数', ico: 'lift',
+    { id: 'lift', name: '智能电梯', value: '2min', metric: '累计运行时间', ico: 'lift', page: 'lift',
       units: [
-        { name: '智能电梯1-1', on: true, rows: [['今日循环次数', '86次'], ['今日运行时长', '6.4h']] },
-        { name: '智能电梯1-2', on: false, rows: [['今日循环次数', '18次'], ['今日运行时长', '1.6h']] },
-        { name: '智能电梯2-1', on: false, rows: [['今日循环次数', '9次'], ['今日运行时长', '0.8h']] },
-        { name: '智能电梯2-2', on: true, rows: [['今日循环次数', '24次'], ['今日运行时长', '2.1h']] },
+        { name: '智能电梯1-1', on: true, rows: [] },
+        { name: '智能电梯1-2', on: false, rows: [] },
+        { name: '智能电梯2-1', on: false, rows: [] },
+        { name: '智能电梯2-2', on: true, rows: [] },
       ] },
-    { id: 'drone', name: '无人机', value: '12次', metric: '今日作业次数', ico: 'drone',
-      units: [{ name: '无人机', on: true, rows: [['今日作业次数', '12次']] }] },
-    { id: 'climb', name: '智能爬架', value: '21m', metric: '爬升高度', ico: 'climb',
-      units: [{ name: '智能爬架', on: true, rows: [['爬升高度', '21m']] }] },
-    { id: 'grind', name: '地砖研磨机器人', value: '5次', metric: '今日作业次数', ico: 'robot',
-      units: [{ name: '地砖研磨机器人', on: true, rows: [['今日作业次数', '5次']] }] },
-    { id: 'plaster', name: '抹灰机器人', value: '4次', metric: '今日作业次数', ico: 'robot',
-      units: [{ name: '抹灰机器人', on: true, rows: [['今日作业次数', '4次']] }] },
-    { id: 'measure', name: '测量机器人', value: '7次', metric: '今日作业次数', ico: 'robot',
-      units: [{ name: '测量机器人', on: true, rows: [['今日作业次数', '7次']] }] },
-    { id: 'spray', name: '喷涂机器人', value: '9次', metric: '今日作业次数', ico: 'robot',
-      units: [{ name: '喷涂机器人', on: true, rows: [['今日作业次数', '9次']] }] },
-    { id: 'level', name: '混凝土整平机器人', value: '3次', metric: '今日作业次数', ico: 'robot',
-      units: [{ name: '混凝土整平机器人', on: true, rows: [['今日作业次数', '3次']] }] },
+    { id: 'drone', name: '无人机', value: '1/3', metric: '作业任务', ico: 'drone', page: 'uav',
+      jobs: { done: 1, total: 3 },
+      units: [{ name: '无人机', on: false, rows: [] }] },
+    { id: 'climb', name: '智能爬架', value: '异常', metric: '左右倾斜', ico: 'climb', page: 'climb',
+      units: [{ name: '智能爬架', on: true, rows: [] }] },
   ])
 
   /** 原 js/app.js:414-421 */

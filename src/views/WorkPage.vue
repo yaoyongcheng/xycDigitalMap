@@ -29,7 +29,7 @@ const shorts: { work: string; color: string; label: string; icon: IconName }[] =
 const tools: { color: string; title: string; desc: string; icon: IconName }[] = [
   {
     color: 'blue',
-    title: '垂直调度系统',
+    title: '垂直运输调度系统',
     desc: '施工电梯/塔机垂直运输调度',
     icon: 'tool-vertical',
   },

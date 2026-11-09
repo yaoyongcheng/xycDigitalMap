@@ -49,9 +49,17 @@ export type AlarmDay = 'today' | 'hist'
 export type AlarmSpot = [number, number] | [number, number, 'left']
 
 /** 巡检预警（对应原 inspectAlarms 数组，8 条） */
+/**
+ * 预警采集来源（2026-11 设计稿 gx2 版，原 app.js:255-259）。
+ * 来源是中性的元信息，用三色徽标区分采集方式而不是严重程度。
+ */
+export type AlarmSrc = 'drone' | 'cam' | 'snap'
+
 export interface Alarm {
   id: string
   day: AlarmDay
+  /** 采集来源，决定徽标配色与详情页的来源信息 */
+  src: AlarmSrc
   type: string
   title: string
   desc: string
@@ -138,13 +146,19 @@ export interface EquipUnit {
   rows: [string, string][]
 }
 
-/** 设备（对应原 siteEquip 数组，9 条） */
+/** 设备（对应原 siteEquip 数组。2026-11 设计稿收成 4 条：塔机/电梯/无人机/爬架） */
 export interface Equip {
   id: string
   name: string
   value: string
   metric: string
   ico: string
+  /** 有独立详情页的设备（2026-11 设计稿：四类全部可下钻） */
+  page?: 'crane' | 'lift' | 'uav' | 'climb'
+  /** 塔机专属：卡片上的双指标（今日吊重 + 今日吊次） */
+  stats?: { value: string; metric: string }[]
+  /** 无人机专属：作业任务 x/y */
+  jobs?: { done: number; total: number }
   units: EquipUnit[]
 }
 

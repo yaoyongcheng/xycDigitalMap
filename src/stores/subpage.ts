@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { useAlarmStore } from './alarm'
+import { dateKey } from '@/utils/date'
 import type { DeviceKind } from '@/types'
 
 /**
@@ -26,10 +27,14 @@ export type SubView =
   | { kind: 'placeholder'; name: string }
   /** 设备详情（智控里点塔机 / 电梯 / 无人机进入） */
   | { kind: 'device'; device: DeviceKind }
-  /** 设备日报（设备详情页右上角「日报」） */
-  | { kind: 'device-report'; device: DeviceKind }
   /** 无人机（智控里点无人机进入） */
   | { kind: 'uav' }
+  /** 智能爬架（2026-11 设计稿 gx2 版新增，机位读数列表） */
+  | { kind: 'climb' }
+  /** 报警预警历史（2026-11 设计稿 gx2 版新增，今日/历史两页签） */
+  | { kind: 'alarm-hist' }
+  /** 报警历史按日 drill-in（X月X日预警） */
+  | { kind: 'alarm-hist-day'; date: string }
 
 export const useSubpageStore = defineStore('subpage', () => {
   const alarm = useAlarmStore()
@@ -71,10 +76,16 @@ export const useSubpageStore = defineStore('subpage', () => {
         return view.value.name
       case 'device':
         return view.value.device === 'crane' ? '智能塔机' : '智能电梯'
-      case 'device-report':
-        return view.value.device === 'crane' ? '塔机日报' : '电梯日报'
       case 'uav':
         return '无人机'
+      case 'climb':
+        return '智能爬架'
+      case 'alarm-hist':
+        return '报警预警'
+      case 'alarm-hist-day': {
+        const [, m, d] = view.value.date.split('-').map(Number)
+        return `${m}月${d}日预警`
+      }
       default:
         return ''
     }
@@ -91,12 +102,9 @@ export const useSubpageStore = defineStore('subpage', () => {
   const isDark = computed(
     () =>
       view.value.kind === 'device' ||
-      view.value.kind === 'device-report' ||
-      view.value.kind === 'uav',
+      view.value.kind === 'uav' ||
+      view.value.kind === 'climb',
   )
-
-  /** 导航栏右上角「日报」按钮：只在设备详情页出现（原 showDeviceReport） */
-  const showReport = computed(() => view.value.kind === 'device')
 
   /**
    * 原 openInspectList(tab)
@@ -111,12 +119,28 @@ export const useSubpageStore = defineStore('subpage', () => {
 
   /**
    * 原 openAlarmDetail(id, fromList)
-   * fromList=true 时返回键回到列表；原版该分支为唯一实际调用路径
+   * fromList=true 时返回键回到巡检列表；也可显式指定返回目标
+   * （报警历史页 / 按日 drill-in 页，原版收的是回跳函数）
    */
-  function openAlarmDetail(id: string, fromList = true): void {
+  function openAlarmDetail(id: string, from: boolean | SubView = true): void {
     if (!alarm.byId(id)) return
-    back.value = fromList ? { kind: 'inspect-list' } : null
+    back.value = from === false ? null : from === true ? { kind: 'inspect-list' } : from
     view.value = { kind: 'alarm-detail', id }
+  }
+
+  /** 打开报警预警历史（原 openAlarmHist，2026-11 设计稿 gx2 版） */
+  function openAlarmHist(tab?: 'today' | 'hist'): void {
+    if (tab === 'today' || tab === 'hist') alarm.histTab = tab
+    alarm.histCalOpen = false
+    back.value = null
+    view.value = { kind: 'alarm-hist' }
+  }
+
+  /** 打开某日预警（原 openAlarmHistDay）：返回回到历史页 */
+  function openAlarmHistDay(d: Date): void {
+    alarm.histCalOpen = false
+    back.value = { kind: 'alarm-hist' }
+    view.value = { kind: 'alarm-hist-day', date: dateKey(d) }
   }
 
   /** 打开设备详情（原 openCranePage / openLiftPage / openUavPage） */
@@ -131,10 +155,10 @@ export const useSubpageStore = defineStore('subpage', () => {
     view.value = { kind: 'uav' }
   }
 
-  /** 打开设备日报（原 openCraneReport / openLiftReport）：返回回到设备详情 */
-  function openReport(device: DeviceKind): void {
-    back.value = { kind: 'device', device }
-    view.value = { kind: 'device-report', device }
+  /** 打开智能爬架页（原 openClimbPage，2026-11 设计稿 gx2 版） */
+  function openClimb(): void {
+    back.value = null
+    view.value = { kind: 'climb' }
   }
 
   /** 原 openSub(title, html) —— 「我的」菜单入口，内容为占位文案 */
@@ -152,6 +176,10 @@ export const useSubpageStore = defineStore('subpage', () => {
   function close(force = false): void {
     if (!force && alarm.inspCalOpen) {
       alarm.inspCalOpen = false
+      return
+    }
+    if (!force && alarm.histCalOpen) {
+      alarm.histCalOpen = false
       return
     }
     if (!force && back.value) {
@@ -174,8 +202,9 @@ export const useSubpageStore = defineStore('subpage', () => {
    */
   function dismiss(): void {
     // 本来就在根上就别再写一遍，免得每次点 tab 都触发一次无意义更新
-    if (view.value.kind === 'none' && !back.value && !alarm.inspCalOpen) return
+    if (view.value.kind === 'none' && !back.value && !alarm.inspCalOpen && !alarm.histCalOpen) return
     alarm.inspCalOpen = false
+    alarm.histCalOpen = false
     back.value = null
     view.value = { kind: 'none' }
   }
@@ -187,13 +216,14 @@ export const useSubpageStore = defineStore('subpage', () => {
     isAlarm,
     isDark,
     isOpen,
-    showReport,
     title,
     openInspectList,
     openAlarmDetail,
+    openAlarmHist,
+    openAlarmHistDay,
     openDevice,
     openUav,
-    openReport,
+    openClimb,
     openSub,
     close,
     dismiss,

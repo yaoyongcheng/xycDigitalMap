@@ -66,7 +66,14 @@ function onAlarmOpen(id: string): void {
 
 <template>
   <div class="safe-block">
-    <h4>预警<span class="upd-time">更新于 {{ updTime }}</span></h4>
+    <!-- 2026-11 设计稿 gx2 版：标题改「报警预警」+ 历史入口（原 app.js:552-557 safe-hd） -->
+    <div class="safe-hd">
+      <h4>报警预警<span class="upd-time">更新于 {{ updTime }}</span></h4>
+      <button class="alarm-hist-btn" type="button" data-alarm-hist @click="subpage.openAlarmHist()">
+        历史
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+      </button>
+    </div>
     <div class="home-stats alarm-row">
       <div class="home-stat alert"><b><CountUp :value="alarm.latest.length" sticky /></b><span>今日预警数</span></div>
       <div class="home-chart-card alarm-mini">

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
 import { mount, type VueWrapper } from '@vue/test-utils'
@@ -69,7 +69,7 @@ describe('结构性守卫', () => {
 
     for (const file of allScanned) {
       const text = read(file)
-      for (const m of text.matchAll(/img\/[A-Za-z0-9._-]+\.(?:webp|jpg|jpeg|png|avif|svg)/g)) {
+      for (const m of text.matchAll(/img\/[A-Za-z0-9._/-]+\.(?:webp|jpg|jpeg|png|avif|svg)/g)) {
         const list = refs.get(m[0]) ?? []
         list.push(relative(ROOT, file).replace(/\\/g, '/'))
         refs.set(m[0], list)
@@ -78,7 +78,7 @@ describe('结构性守卫', () => {
 
     const referenced = [...refs.keys()].sort()
 
-    it('至少引用了全部业务图（第三批补入 9 张巡检照片）', () => {
+    it('至少引用了全部业务图（2026-11 设计稿补入 4 张设备立绘 + 12 张 hd 原图）', () => {
       expect(referenced).toEqual([
         'img/aerial-a.webp',
         'img/aerial-b.webp',
@@ -87,6 +87,22 @@ describe('结构性守卫', () => {
         'img/alarm-soil.webp',
         'img/alarm-trash.webp',
         'img/cam-crane2.webp',
+        'img/eq-climb.webp',
+        'img/eq-crane.webp',
+        'img/eq-drone.webp',
+        'img/eq-lift.webp',
+        'img/hd/aerial-a.webp',
+        'img/hd/aerial-b.webp',
+        'img/hd/cam-crane2.webp',
+        'img/hd/patrol-crane-2.webp',
+        'img/hd/patrol-crane.webp',
+        'img/hd/patrol-face.webp',
+        'img/hd/patrol-layout-2.webp',
+        'img/hd/patrol-layout.webp',
+        'img/hd/patrol-pano.webp',
+        'img/hd/patrol-power.webp',
+        'img/hd/patrol-road.webp',
+        'img/hd/patrol-yard.webp',
         'img/patrol-crane-2.webp',
         'img/patrol-crane.webp',
         'img/patrol-face.webp',
@@ -113,14 +129,25 @@ describe('结构性守卫', () => {
       expect(raster).toEqual([])
     })
 
+    /** img/hd/ 子目录也要进清单，递归列出所有文件（相对 public 的路径） */
+    function walkImg(dir: string, prefix = ''): string[] {
+      const out: string[] = []
+      for (const name of readdirSync(dir).sort()) {
+        const full = join(dir, name)
+        if (statSync(full).isDirectory()) out.push(...walkImg(full, `${prefix}${name}/`))
+        else out.push(`${prefix}${name}`)
+      }
+      return out
+    }
+
     it('public/img 下没有未被引用的孤儿资源', () => {
-      const onDisk = readdirSync(PUBLIC_IMG).sort()
+      const onDisk = walkImg(PUBLIC_IMG)
       const referencedNames = referenced.map((r) => r.replace('img/', '')).sort()
       expect(onDisk).toEqual(referencedNames)
     })
 
     it('public/img 下只剩 WebP', () => {
-      for (const name of readdirSync(PUBLIC_IMG)) {
+      for (const name of walkImg(PUBLIC_IMG)) {
         expect(name).toMatch(/\.webp$/)
       }
     })
@@ -142,7 +169,8 @@ describe('结构性守卫', () => {
       for (const f of owners) {
         expect(existsSync(join(ROOT, f))).toBe(true)
       }
-      // 引用点应在这些文件里：配置、两个 store、地图视图、样式、类型注释
+      // 引用点应在这些文件里：配置、两个 store、地图视图、样式、类型注释、
+      // 智控面板（2026-11 设计稿：设备立绘搬进 eq-ico）、hd 原图映射表
       expect([...owners].sort()).toEqual([
         'src/components/overlays/MapLand.vue',
         'src/components/ui/MapViewer.vue',
@@ -151,6 +179,8 @@ describe('结构性守卫', () => {
         'src/stores/cam.ts',
         'src/styles/app.css',
         'src/types.ts',
+        'src/utils/photoHd.ts',
+        'src/views/home/EquipPanel.vue',
         'src/views/sub/UavPage.vue',
       ])
     })

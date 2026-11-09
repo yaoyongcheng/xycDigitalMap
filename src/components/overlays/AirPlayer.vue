@@ -6,7 +6,9 @@ import DayPickChips from '@/components/ui/DayPickChips.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
+import { useShellStore } from '@/stores/shell'
 import { addDays, formatCamDate, startOfDay } from '@/utils/date'
+import { downloadPhoto, photoHd } from '@/utils/photoHd'
 import { useSlideOverlay } from '@/utils/slideOverlay'
 import { useImageZoom } from '@/utils/zoom'
 
@@ -105,6 +107,27 @@ const popMeta = computed(() => {
   if (!s) return ''
   return `定点航拍  ${label.value}  ${s.time}`
 })
+
+/* ---------- 原图 / 下载（2026-11 设计稿 gx2 版，原 photo-stage 顶栏 app.js:764-785） ---------- */
+
+const shell = useShellStore()
+const hd = ref(false)
+
+// 换照片或关弹层时，原图态跟着复位
+watch([() => air.airPopOpen, () => air.airPopIdx], () => {
+  hd.value = false
+})
+
+async function onDownload(): Promise<void> {
+  const s = currentShot.value
+  if (!s) return
+  try {
+    await downloadPhoto(s.img, `${label.value} ${s.time} 航拍`)
+    shell.showToast('已开始下载', 'success')
+  } catch {
+    shell.showToast('下载失败', 'warn')
+  }
+}
 </script>
 
 <template>
@@ -161,7 +184,7 @@ const popMeta = computed(() => {
       <SmartImg
         id="airPopImg"
         :pos="currentShot?.pos"
-        :src="currentShot?.img ?? ''"
+        :src="currentShot ? (hd ? photoHd(currentShot.img) : currentShot.img) : ''"
         alt=""
         class="zoomable"
         :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
@@ -170,6 +193,12 @@ const popMeta = computed(() => {
       />
       <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
       <p id="airPopMeta">{{ popMeta }}</p>
+      <div class="photo-actions">
+        <button class="photo-btn" type="button" :disabled="hd" @click="hd = true">
+          {{ hd ? '已是原图' : '原图' }}
+        </button>
+        <button class="photo-btn" type="button" @click="onDownload">下载</button>
+      </div>
     </div>
   </div>
 </template>

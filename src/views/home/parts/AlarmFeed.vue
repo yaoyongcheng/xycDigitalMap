@@ -2,42 +2,44 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import SmartImg from '@/components/ui/SmartImg.vue'
-import { ALARM_FEED_SHOW } from '@/data/config'
+import { ALARM_FEED_SHOW, alarmSrcOf } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { alarmTone } from '@/utils/alarmTone'
 
 /**
- * 预警竖向轮播
+ * 预警横滑分页轮播（2026-11 设计稿 gx2 版同步）
  *
- * 对应原 js/app.js:275-286 renderAlarmFeed() + 288-292 stopAlarmFeed()
- * + 294-316 startAlarmFeed()。
+ * 对应原 js/app.js:322-437 —— 与旧版（竖向单条步进）的差别：
+ *   - 3 条/页横向分页，轨道 translateX，末页后补首页实现无缝循环；
+ *   - 页圆点（可点击跳页）+ 左右滑动切换（阈值 36px）；
+ *   - 手动操作后重置 4s 自动轮播计时。
  *
- * 原版的启动时机由外部控制（switchTab 与 renderHomePanel 里的
- * requestAnimationFrame(startAlarmFeed)）。组件化后改为面板挂载即启动、
- * 卸载即停止 —— 因为该轮播只存在于安全管理面板中，两者等价。
+ * 组件化后改为面板挂载即启动、卸载即停止（原版由 switchTab 手动启停，
+ * 该轮播只存在于安全管理面板中，两者等价）。
  *
  * 滚动靠逐帧写 track.style.transform 驱动，故保留直接 DOM 操作（这是动画，
- * 不是状态）。但**尺寸一律不靠实测**：窗口高度交给 CSS，滚动步长读 CSS
- * 变量 —— 原因见 feedItemHeight() 的注释。
- *
- * 原版缺陷（已修）：回卷用的 setTimeout 句柄未保存，stopAlarmFeed 清不掉
- * （app.js:309）。迁移版在 onUnmounted 里补了 clearTimeout(wrapTimer)。
+ * 不是状态）。轨道位移用百分比（idx * 100/total%），不依赖条目实测尺寸 ——
+ * 竖版当年踩过的「实测与 CSS 基准差之毫厘」的坑在横版天然不存在。
  */
 const alarm = useAlarmStore()
 
 const emit = defineEmits<{ open: [id: string] }>()
 
-/** 原 list.concat(extra)：多余条数时把前 N 条再追加一遍，用于无缝回卷 */
-const list = computed(() => alarm.latest)
-const extra = computed(() => (list.value.length > ALARM_FEED_SHOW ? list.value.slice(0, ALARM_FEED_SHOW) : []))
-const items = computed(() => list.value.concat(extra.value))
+/** 原 alarmFeedPages()（app.js:342-347）：latest 按 ALARM_FEED_SHOW 切页 */
+const pages = computed(() => {
+  const list = alarm.latest
+  const n = Math.max(1, Math.ceil(list.length / ALARM_FEED_SHOW))
+  return Array.from({ length: n }, (_, p) => list.slice(p * ALARM_FEED_SHOW, (p + 1) * ALARM_FEED_SHOW))
+})
+
+/** 原 loop = pages.concat([pages[0]])：多页时补首页，翻到末页再平移一页后无感回卷 */
+const loop = computed(() => (pages.value.length > 1 ? pages.value.concat([pages.value[0]]) : pages.value))
+
+const pageN = computed(() => pages.value.length)
 
 const trackEl = ref<HTMLElement | null>(null)
 
-/**
- * 轮播位置（原 js/app.js:261 的顶层 let alarmFeedIdx）。
- * 它只被本组件的动画读写，不跨组件共享，故收为组件本地状态。
- */
+/** 原 js/app.js:321 的顶层 let alarmFeedIdx —— 只被本组件读写，收为本地状态 */
 const idx = ref(0)
 
 let timer = 0
@@ -45,60 +47,82 @@ let wrapTimer = 0
 
 function stop(): void {
   window.clearInterval(timer)
+  window.clearTimeout(wrapTimer)
   timer = 0
+  wrapTimer = 0
   idx.value = 0
 }
 
-/**
- * 滚动步长 = 单条高度，取自 CSS 变量 --feed-item-h（app.css 的 .alarm-feed 下）。
- *
- * 必须与窗口高度同源：窗口是 calc(var(--feed-item-h) * 3)，步长也必须取同一个
- * 变量。若改成实测 item.offsetHeight，两者基准可能差之毫厘（亚像素、边框、
- * 字体回退），轨道与窗口就会错位 —— 表现为窗口里露出半截条目和底部空行。
- * 所以这里只认变量，读不到就交给调用方重试，不做实测兜底。
- */
-function feedItemHeight(): number {
-  const track = trackEl.value
-  if (!track) return 0
-  const n = Number.parseFloat(getComputedStyle(track).getPropertyValue('--feed-item-h'))
-  return Number.isFinite(n) && n > 0 ? n : 0
+/** 轨道宽 = 页数 × 100%，每页占 100/页数 %（原 startAlarmFeed 的宽度铺排） */
+function layout(track: HTMLElement, total: number): number {
+  const unit = 100 / total
+  track.style.width = `${total * 100}%`
+  for (const p of Array.from(track.children) as HTMLElement[]) {
+    p.style.flex = `0 0 ${unit}%`
+    p.style.width = `${unit}%`
+  }
+  return unit
 }
 
-/**
- * @param retry 已重试次数。样式表尚未就绪时变量读不到，此时重试而不是放弃
- *              （放弃会让轮播彻底不动），也不是退回实测（会让轨道错位）。
- */
-function start(retry = 0): void {
+/** 原 paintDots + go 的合并（app.js:377-387） */
+function go(unit: number, target: number, animate = true): void {
+  window.clearTimeout(wrapTimer)
+  idx.value = target
+  const track = trackEl.value
+  if (!track) return
+  track.style.transition = animate ? 'transform 0.45s ease' : 'none'
+  track.style.transform = `translateX(-${target * unit}%)`
+}
+
+/** 原 next 的回卷分支：翻过末页后瞬间归零（app.js:391-396） */
+function goNext(unit: number): void {
+  go(unit, idx.value + 1)
+  if (idx.value >= pageN.value) {
+    wrapTimer = window.setTimeout(() => go(unit, 0, false), 460)
+  }
+}
+
+/** 原 startAlarmFeed（app.js:362-418）：铺排轨道 + 启动 4s 自动轮播 */
+function start(): void {
   stop()
   const track = trackEl.value
-  if (!track || list.value.length <= ALARM_FEED_SHOW) return
-  const h = feedItemHeight()
-  if (!h) {
-    if (retry < 20) window.setTimeout(() => start(retry + 1), 100)
-    return
-  }
-  // 窗口高度由 CSS 负责（.alarm-feed-win 的 height），此处不再写内联值
-  track.style.transform = 'translateY(0)'
-  timer = window.setInterval(() => {
-    idx.value += 1
-    track.style.transition = 'transform 0.45s ease'
-    track.style.transform = `translateY(${-idx.value * h}px)`
-    if (idx.value >= list.value.length) {
-      wrapTimer = window.setTimeout(() => {
-        track.style.transition = 'none'
-        track.style.transform = 'translateY(0)'
-        idx.value = 0
-      }, 460)
-    }
-  }, 4000)
+  if (!track || pageN.value <= 1) return
+  const unit = layout(track, loop.value.length)
+  go(unit, 0, false)
+  timer = window.setInterval(() => goNext(unit), 4000)
 }
 
-/** 原 homePanels 委托的 [data-alarm] 分支（app.js:976-980）—— 现直达详情 */
+/** 圆点跳页（app.js:402-407） */
+function onDot(page: number): void {
+  const track = trackEl.value
+  if (!track) return
+  go(100 / loop.value.length, page)
+  start()
+}
+
+/** 左右滑动切换，阈值 36px（app.js:409-418） */
+let sx = 0
+function onDown(e: PointerEvent): void {
+  sx = e.clientX
+}
+function onUp(e: PointerEvent): void {
+  const dx = e.clientX - sx
+  if (Math.abs(dx) < 36) return
+  const unit = 100 / loop.value.length
+  if (dx < 0) {
+    goNext(unit)
+  } else {
+    go(unit, (idx.value - 1 + pageN.value) % pageN.value)
+  }
+  start()
+}
+
+/** 原 homePanels 委托的 [data-alarm] 分支 —— 现直达详情 */
 function onItemClick(id: string): void {
   emit('open', id)
 }
 
-/** 键盘可达（原先是纯 div + role，键盘用户完全无法操作） */
+/** 键盘可达 */
 function onKey(e: KeyboardEvent, id: string): void {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
@@ -112,33 +136,53 @@ onMounted(() => {
 
 onUnmounted(() => {
   stop()
-  window.clearTimeout(wrapTimer)
 })
 </script>
 
 <template>
   <div class="home-chart-card alarm-feed">
-    <div class="alarm-feed-win">
-      <div class="alarm-feed-track" id="alarmFeedTrack" ref="trackEl">
-        <div
-          v-for="(a, i) in items"
-          :key="`${a.id}-${i}`"
-          class="alarm-feed-item"
-          :data-alarm="a.id"
-          :data-tone="alarmTone(a.type)"
-          role="button"
-          tabindex="0"
-          @click="onItemClick(a.id)"
-          @keydown="onKey($event, a.id)"
-        >
-          <SmartImg class="alarm-feed-pic" :src="a.img" :alt="a.type" />
-          <div class="alarm-feed-meta">
-            <strong>{{ a.title }}<i v-if="i === 0" class="feed-live" aria-hidden="true"></i></strong>
-            <p>{{ a.desc }}</p>
+    <div
+      class="alarm-feed-win"
+      @pointerdown="onDown"
+      @pointerup="onUp"
+    >
+      <div class="alarm-feed-track" ref="trackEl">
+        <div v-for="(pg, p) in loop" :key="p" class="alarm-feed-page">
+          <div
+            v-for="a in pg"
+            :key="a.id"
+            class="alarm-feed-item"
+            :data-alarm="a.id"
+            :data-tone="alarmTone(a.type)"
+            role="button"
+            tabindex="0"
+            @click="onItemClick(a.id)"
+            @keydown="onKey($event, a.id)"
+          >
+            <SmartImg class="alarm-feed-pic" :src="a.img" :alt="a.type" />
+            <div class="alarm-feed-meta">
+              <div class="alarm-feed-hd">
+                <strong>{{ a.title }}</strong>
+                <span class="alarm-src" :class="`alarm-src-${a.src}`">{{ alarmSrcOf(a.src).tag }}</span>
+              </div>
+              <p>{{ a.desc }}</p>
+            </div>
+            <span class="alarm-feed-time">{{ a.rel }}</span>
           </div>
-          <span class="alarm-feed-time">{{ a.rel }}</span>
         </div>
       </div>
+    </div>
+    <div v-if="pageN > 1" class="alarm-feed-dots">
+      <button
+        v-for="p in pageN"
+        :key="p"
+        class="alarm-feed-dot"
+        :class="{ on: idx % pageN === p - 1 }"
+        type="button"
+        :data-feed-page="p - 1"
+        :aria-label="`第${p}页`"
+        @click="onDot(p - 1)"
+      ></button>
     </div>
   </div>
 </template>

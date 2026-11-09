@@ -5,10 +5,10 @@ import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { mineNotes } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
-import type { DeviceKind } from '@/types'
 import AlarmDetail from '@/views/sub/AlarmDetail.vue'
+import AlarmHist from '@/views/sub/AlarmHist.vue'
+import ClimbPage from '@/views/sub/ClimbPage.vue'
 import DevicePage from '@/views/sub/DevicePage.vue'
-import DeviceReport from '@/views/sub/DeviceReport.vue'
 import InspectList from '@/views/sub/InspectList.vue'
 import UavPage from '@/views/sub/UavPage.vue'
 
@@ -75,18 +75,9 @@ const viewKey = computed(() => {
   if (!sub.isOpen) return ''
   const v = sub.view
   if (v.kind === 'alarm-detail') return `detail:${v.id}`
-  if (v.kind === 'device' || v.kind === 'device-report') return `${v.kind}:${v.device}`
+  if (v.kind === 'device') return `${v.kind}:${v.device}`
   return v.kind
 })
-
-/**
- * 日报按钮对应的设备类型。
- *
- * 兜底 crane 而不是 null：按钮只在 kind === 'device' 时渲染（sub.showReport），
- * 两者同源，非设备页时这个值根本读不到；但模板里要的是一个确定类型，
- * 给 null 会让 handler 的类型检查过不去。
- */
-const reportDevice = computed<DeviceKind>(() => (sub.view.kind === 'device' ? sub.view.device : 'crane'))
 
 watch(
   viewKey,
@@ -219,29 +210,17 @@ onUnmounted(() => {
         </button>
       </div>
       <h1 class="nav-title" id="subTitle">{{ sub.title }}</h1>
-      <div class="nav-side right">
-        <!--
-          设备详情页右上角的「日报」入口（原 #btnCraneReport）。
-          只在设备详情出现：到了日报页自己就该隐藏，否则等于原地打转。
-        -->
-        <button
-          v-if="sub.showReport"
-          class="nav-btn nav-report"
-          id="btnDeviceReport"
-          type="button"
-          @click="sub.openReport(reportDevice)"
-        >
-          日报
-        </button>
-      </div>
+      <div class="nav-side right"></div>
     </nav>
 
     <div class="subpage-body" id="subBody">
       <InspectList v-if="sub.view.kind === 'inspect-list'" />
       <AlarmDetail v-else-if="sub.view.kind === 'alarm-detail' && detail" :alarm="detail" />
       <DevicePage v-else-if="sub.view.kind === 'device'" :kind="sub.view.device" />
-      <DeviceReport v-else-if="sub.view.kind === 'device-report'" :kind="sub.view.device" />
       <UavPage v-else-if="sub.view.kind === 'uav'" />
+      <ClimbPage v-else-if="sub.view.kind === 'climb'" />
+      <AlarmHist v-else-if="sub.view.kind === 'alarm-hist'" />
+      <AlarmHist v-else-if="sub.view.kind === 'alarm-hist-day'" :day="sub.view.date" />
       <div v-else-if="sub.view.kind === 'placeholder'" class="card">
         <h4 class="sub-ph-title">{{ placeholderName }}</h4>
         <p class="empty-note">{{ placeholderNote }}</p>

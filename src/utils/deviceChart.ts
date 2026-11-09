@@ -93,6 +93,47 @@ function seriesOf(unit: DeviceUnit, metric: DeviceMetric, count: number): { date
   return { dates, vals }
 }
 
+export interface DeviceMonthRow {
+  date: string
+  vals: Record<string, number>
+}
+
+/** 月度报表各指标的取值边界（原 craneChartSeries / liftChartSeries 的 clamp 表） */
+const KEY_CLAMP: Record<string, (v: number) => number> = {
+  trips: (v) => Math.max(1, Math.round(v)),
+  people: (v) => Math.max(1, Math.round(v)),
+  weight: (v) => Math.max(0.1, Math.round(v * 100) / 100),
+  load: (v) => Math.max(0.1, Math.round(v * 100) / 100),
+  time: (v) => Math.max(0.2, Math.round(v * 10) / 10),
+  util: (v) => Math.max(8, Math.min(96, Math.round(v))),
+  rate: (v) => Math.max(8, Math.min(96, Math.round(v))),
+}
+
+/**
+ * 作业报表的月度行（2026-11 设计稿 gx2 版，原 craneMonthRows/liftMonthRows）：
+ * 近 21 天（今天不含）的每日指标值。最近 7 天取真实历史，更早的用
+ * seriesOf 同款的稳定派生值补齐 —— 同一台同一天永远算出同一个数。
+ */
+export function deviceMonthRows(unit: DeviceUnit, keys: string[]): DeviceMonthRow[] {
+  const dates = lastDates(22).slice(0, -1)
+  const known: Record<string, Record<string, number>> = {}
+  for (const day of unit.history) known[day.date] = day.vals
+  return dates.map((date) => {
+    const vals: Record<string, number> = {}
+    for (const key of keys) {
+      if (known[date]?.[key] != null) {
+        vals[key] = known[date]![key]
+        continue
+      }
+      const past = unit.history.map((d) => d.vals[key]).filter((v) => v != null) as number[]
+      const base = past.length ? past.reduce((s, v) => s + v, 0) / past.length : 1
+      const clamp = KEY_CLAMP[key] ?? ((v: number) => v)
+      vals[key] = clamp(base + (rand01(`${unit.id}|${date}|${key}`) - 0.5) * base * 0.56)
+    }
+    return { date, vals }
+  })
+}
+
 export function deviceTrendModel(
   unit: DeviceUnit,
   metric: DeviceMetric,
