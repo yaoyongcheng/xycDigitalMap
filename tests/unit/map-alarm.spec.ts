@@ -83,24 +83,22 @@ describe('二维 / 三维地图', () => {
     return w
   }
 
-  it('默认三维：底图是 site-map，设施点与报警点同时在场', async () => {
+  it('默认三维：底图是 site-map，只有报警点（2026-11 起设施撒点下线）', async () => {
     const w = await openMap()
 
     expect(w.find('.map-canvas img').attributes('src')).toContain('site-map.webp')
-    expect(w.findAll('.map-pin').length).toBeGreaterThan(0)
+    expect(w.findAll('.map-pin')).toHaveLength(0)
     expect(w.findAll('.alarm-pin')).toHaveLength(4)
     expect(w.find('.map-land-flat').text()).toBe('二维地图')
     w.unmount()
   })
 
-  it('切二维：换正射底图、隐藏设施点、报警点换坐标', async () => {
+  it('切二维：换正射底图、报警点换坐标', async () => {
     const w = await openMap()
 
     await w.find('.map-land-flat').trigger('click')
 
     expect(w.find('.map-canvas img').attributes('src')).toContain('site-flat.webp')
-    // 设施撒点只有三维坐标，硬搬到正射影像上会指错位置 —— 必须隐藏
-    expect(w.findAll('.map-pin')).toHaveLength(0)
     expect(w.findAll('.alarm-pin')).toHaveLength(4)
     expect(w.find('.alarm-pin').attributes('style')).toContain('left: 34%')
     expect(w.find('.map-land').classes()).toContain('is-flat')

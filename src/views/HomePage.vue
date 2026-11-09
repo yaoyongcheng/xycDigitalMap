@@ -2,15 +2,10 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import HomeProgress from '@/components/ui/HomeProgress.vue'
-import MapInfoCard from '@/components/ui/MapInfoCard.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
-import { mapPoints } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
-import { useCamStore } from '@/stores/cam'
-import { useHomeStore } from '@/stores/home'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
-import type { Building, MapPoint } from '@/types'
 import HomeSheet from './home/HomeSheet.vue'
 
 /**
@@ -20,16 +15,14 @@ import HomeSheet from './home/HomeSheet.vue'
  * + 全屏按钮（app.js:1715）。
  * 抽屉与其内的四个面板交由 HomeSheet 组件。
  *
- * 2026-10 改造新增：
- *   ① .home-map 内嵌 MapViewer —— 静态底图升级为可拖拽/缩放/撒点的
- *      交互地图层（点位点击：cam/crane 打开监控，building 弹进度摘要）
- *   ② 抽屉支持跟手拖拽 + 三档吸附（收起/半开/全开），档位状态在
- *      shell.sheetLevel；拖拽中的临时位置走 dragTop 内联样式，
- *      松手吸附后全开/收起仍交还 CSS 变量与 class 体系
+ * 2026-10 改造新增：.home-map 内嵌 MapViewer —— 静态底图升级为可拖拽/
+ *   缩放的交互地图层；2026-11 设计稿（gx2 换底图）起底图上只保留
+ *   报警撒点，设施/楼栋撒点与楼栋信息卡整体下线。
+ * ② 抽屉支持跟手拖拽 + 三档吸附（收起/半开/全开），档位状态在
+ *    shell.sheetLevel；拖拽中的临时位置走 dragTop 内联样式，
+ *    松手吸附后全开/收起仍交还 CSS 变量与 class 体系
  */
 const shell = useShellStore()
-const cam = useCamStore()
-const home = useHomeStore()
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
 
@@ -228,23 +221,8 @@ function onMapFull(): void {
   shell.openMapLand()
 }
 
-/** 楼栋撒点的信息卡（2026-10 第二轮改造：Toast 升级为地图内底部信息卡） */
-const infoBuilding = ref<Building | null>(null)
-
 /** 当日预警撒点（三维图坐标） */
 const mapAlarmPins = computed(() => alarm.mapAlarms('pin'))
-
-/** 地图点位点击：监控/塔吊直接打开对应点位画面，楼栋弹信息卡 */
-function onMapPoint(p: MapPoint): void {
-  if ((p.kind === 'cam' || p.kind === 'crane') && p.camId) {
-    infoBuilding.value = null
-    cam.openCam(p.camId)
-    return
-  }
-  if (p.kind === 'building') {
-    infoBuilding.value = home.siteBuildings.find((x) => x.name === p.name) ?? null
-  }
-}
 
 /**
  * 报警撒点点击 → 预警详情。
@@ -253,7 +231,6 @@ function onMapPoint(p: MapPoint): void {
  * 没有「上一层列表」可回（与原版轮播、onAlarmPin 的口径一致）。
  */
 function onMapAlarm(id: string): void {
-  infoBuilding.value = null
   subpage.openAlarmDetail(id, false)
 }
 </script>
@@ -277,15 +254,12 @@ function onMapAlarm(id: string): void {
           容器尺寸、响应手势（MapViewer 的 suspended 说明见组件内注释）。
         -->
         <MapViewer
-          :points="mapPoints"
           :alarms="mapAlarmPins"
           fit="cover"
           compact
           :suspended="shell.mapLandOpen"
-          @select="onMapPoint"
           @alarm="onMapAlarm"
         />
-        <MapInfoCard :building="infoBuilding" @close="infoBuilding = null" />
       </div>
       <div class="home-top">
         <div class="home-project-row">

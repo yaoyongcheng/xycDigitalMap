@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import MapViewer from '@/components/ui/MapViewer.vue'
-import { mapPoints } from '@/data/config'
 import type { MapPoint } from '@/types'
 
 import { ResizeObserverMock } from '../helpers/browser'
@@ -178,10 +177,10 @@ describe('components/ui/MapViewer', () => {
       expect(svg.element.textContent).toBe('')
     })
 
-    it('全部 12 个演示点位都能渲染出图标', async () => {
-      await setupMounted({ points: mapPoints })
-      expect(wrapper.findAll('.map-pin')).toHaveLength(12)
-      expect(wrapper.findAll('.pin-dot svg path').length).toBeGreaterThan(12)
+    it('全部演示点位都能渲染出图标', async () => {
+      await setupMounted({ points: POINTS })
+      expect(wrapper.findAll('.map-pin')).toHaveLength(POINTS.length)
+      expect(wrapper.findAll('.pin-dot svg path').length).toBeGreaterThan(POINTS.length)
     })
 
     it('compact 只挂 class，不改变几何数据', async () => {

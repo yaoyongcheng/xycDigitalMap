@@ -2,16 +2,13 @@
 import { computed, ref, watch } from 'vue'
 
 import HomeProgress from '@/components/ui/HomeProgress.vue'
-import MapInfoCard from '@/components/ui/MapInfoCard.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
-import { crewKpis, mapPoints } from '@/data/config'
+import { crewKpis } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
-import { useCamStore } from '@/stores/cam'
 import { useHomeStore } from '@/stores/home'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
-import type { Building, MapPoint } from '@/types'
 
 /**
  * 横屏地图全屏层
@@ -19,15 +16,15 @@ import type { Building, MapPoint } from '@/types'
  * 对应原 index.html:43-67 + openMapLand/closeMapLand（app.js:1701-1713）。
  *
  * 2026-10 改造：
- *   - 静态 <img> 换成 MapViewer（cover 铺满 + 缩放/拖拽/撒点 + 总览缩放），
- *     点位点击行为与首页一致（cam/crane 开监控，building 弹信息卡）。
- *   - 落地原版规划但从未实现的底部 KPI 数据坞与右侧开关列：
- *     DOM 结构按原版预留的 .land-dock/.land-kpis/.land-crew/.land-pair/
- *     .land-side/.land-side-btn 样式搭建（app.css:735-870），数据全部
- *     来自现有 store —— 人员概况与安全面板同源（config.crewKpis）。
+ *   - 静态 <img> 换成 MapViewer（cover 铺满 + 缩放/拖拽/撒点 + 总览缩放）。
+ *   - 落地原版规划但从未实现的底部 KPI 数据坞：
+ *     DOM 结构按原版预留的 .land-dock/.land-kpis/.land-crew/.land-pair
+ *     样式搭建（app.css:802-870），数据全部来自现有 store ——
+ *     人员概况与安全面板同源（config.crewKpis）。
+ * 2026-11 设计稿（gx2 换底图）：底图上只保留报警撒点，设施/楼栋撒点、
+ *   楼栋信息卡与右侧「数据」收起开关整体下线（首页同步）。
  */
 const shell = useShellStore()
-const cam = useCamStore()
 const home = useHomeStore()
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
@@ -37,9 +34,7 @@ const subpage = useSubpageStore()
  *
  * 两张底图不是同一张图的比例变换：三维图是透视渲染（1024×709），
  * 二维图是正射影像（1024×747），取景范围也不同。因此：
- *   · 报警点有各自一套坐标（Alarm.flat / Alarm.pin）；
- *   · 设施撒点（监控/塔吊/楼栋）只有三维图坐标，切到二维时隐藏 ——
- *     硬搬会在照片上指错位置，比不显示更糟。
+ *   · 报警点有各自一套坐标（Alarm.flat / Alarm.pin）。
  * 关闭地图时自动复位成三维，下次进来不会停在二维（与原版 closeMapLand 一致）。
  */
 const flat = ref(false)
@@ -50,8 +45,6 @@ const MAP_SRC = {
 } as const
 
 const mapSrc = computed(() => (flat.value ? MAP_SRC.flat : MAP_SRC.map))
-
-const facilityPoints = computed(() => (flat.value ? [] : mapPoints))
 
 const alarmPins = computed(() => alarm.mapAlarms(flat.value ? 'flat' : 'pin'))
 
@@ -67,16 +60,6 @@ function onAlarmPin(id: string): void {
   shell.closeMapLand()
   subpage.openAlarmDetail(id, false)
 }
-
-/**
- * KPI 数据坞开关（原版规划的 #btnLandKpi / .kpis-off 状态）。
- * 竖屏下卡片改为横向滑动（CSS portrait 媒体查询），高度只有约
- * 一半屏盒，不再默认收起；任何朝向都可点「数据」手动收起。
- */
-const kpisOff = ref(false)
-
-/** 楼栋信息卡（撒点点击弹出） */
-const infoBuilding = ref<Building | null>(null)
 
 /** 设备在线统计：siteEquip 全部机组 的 on 汇总 */
 const equipStat = computed(() => {
@@ -96,30 +79,13 @@ const avgRate = computed(() =>
 
 /** 无人机今日已完成作业数（2026-11 设计稿：卡片指标改成「作业任务 x/y」） */
 const droneRuns = computed(() => home.siteEquip.find((d) => d.id === 'drone')?.jobs?.done ?? 0)
-
-function onMapPoint(p: MapPoint): void {
-  if ((p.kind === 'cam' || p.kind === 'crane') && p.camId) {
-    // 先退出横屏地图再开监控：cam.openCam 的 setCamLand(false) 会无条件
-    // 清掉 .phone 的横屏态（原版既存行为），若留着 mapLand 打开，
-    // 关闭监控后会看到一个失了横屏布局的地图层。
-    shell.closeMapLand()
-    // 登记返回约定：监控返回键关闭播放器后重新回到全屏地图。
-    // 必须在 closeMapLand 之后写（它会清标记）。
-    shell.mapLandReturn = true
-    cam.openCam(p.camId)
-    return
-  }
-  if (p.kind === 'building') {
-    infoBuilding.value = home.siteBuildings.find((x) => x.name === p.name) ?? null
-  }
-}
 </script>
 
 <template>
   <div
     class="map-land"
     id="mapLand"
-    :class="{ open: shell.mapLandOpen, 'kpis-off': kpisOff, 'is-flat': flat }"
+    :class="{ open: shell.mapLandOpen, 'is-flat': flat }"
     :hidden="!shell.mapLandOpen"
     :aria-hidden="!shell.mapLandOpen"
   >
@@ -134,16 +100,13 @@ function onMapPoint(p: MapPoint): void {
         该层是常驻 DOM（靠 .open 显隐），不挂起就等于第二个实例一直在跑。
       -->
       <MapViewer
-        :points="facilityPoints"
         :alarms="alarmPins"
         :src="mapSrc"
         fit="cover"
         allow-zoom-out
         :suspended="!shell.mapLandOpen"
-        @select="onMapPoint"
         @alarm="onAlarmPin"
       />
-      <MapInfoCard :building="infoBuilding" @close="infoBuilding = null" />
     </div>
     <div class="land-top">
       <div class="land-brand">
@@ -180,21 +143,8 @@ function onMapPoint(p: MapPoint): void {
       </div>
     </div>
 
-    <!-- 右侧开关列（原版规划，.land-side 样式已预留） -->
-    <div class="land-side">
-      <button
-        class="land-side-btn"
-        id="btnLandKpi"
-        type="button"
-        :aria-pressed="kpisOff"
-        @click="kpisOff = !kpisOff"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V9M10 19V4M16 19v-7M21 19H3"/></svg>
-        <span>数据</span>
-      </button>
-    </div>
-
-    <!-- 底部 KPI 数据坞（原版规划的 landKpis，样式 app.css:802-870 已预留） -->
+    <!-- 底部 KPI 数据坞（原版规划的 landKpis，样式 app.css:802-870 已预留）；
+         数据坞常显 —— 2026-11 设计稿起移除右侧「数据」收起开关 -->
     <div class="land-dock">
       <!-- 横屏：4 张分组卡片 -->
       <div class="land-kpis">

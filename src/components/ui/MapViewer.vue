@@ -24,7 +24,12 @@ import type { MapAlarm, MapPoint } from '@/types'
  */
 const props = withDefaults(
   defineProps<{
-    points: MapPoint[]
+    /**
+     * 设施撒点（监控/塔吊/楼栋）。2026-11 设计稿（gx2 换底图）起生产
+     * 界面不再传 —— 底图上只保留报警点位；prop 保留供组件能力与
+     * 单测复用，接后端后若恢复设施层可直接传回。
+     */
+    points?: MapPoint[]
     /** cover：铺满容器（裁切多余部分）；contain：完整容纳（留白） */
     fit?: 'cover' | 'contain'
     /** 底图地址，默认取 PWA base 下的 site-map.webp */
@@ -62,6 +67,7 @@ const props = withDefaults(
     alarms?: MapAlarm[]
   }>(),
   {
+    points: () => [],
     fit: 'cover',
     src: `${import.meta.env.BASE_URL}img/site-map.webp`,
     compact: false,

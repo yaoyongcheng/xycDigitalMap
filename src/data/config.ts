@@ -1,4 +1,4 @@
-import type { Alarm, MapPoint, MineMenu, PatrolCat, PatrolPhoto, TabId } from '@/types'
+import type { Alarm, MineMenu, PatrolCat, PatrolPhoto, TabId } from '@/types'
 
 /**
  * 纯静态配置常量
@@ -156,32 +156,4 @@ export const crewKpis: [number, string, string][] = [
   [40, '人', '正在上班'],
   [76, '人', '今日出勤'],
   [47.5, '%', '出勤率'],
-]
-
-/**
- * 地图撒点（交互地图层新增，非原版内容）
- *
- * 坐标为相对底图 site-map.webp（1024×709，2026-11 设计稿 gx2 版换图，
- * 旧版 1024×735 实拍点云图留档 legacy/img-unused/）的百分比，
- * 按底图内容目测定标：
- *   - cam/crane 点位关联 cameras 中的真实点位 id，点击直接打开监控
- *   - building 点位关联 siteBuildings 的楼栋名，点击弹出进度摘要
- * 接入后端后应由接口返回坐标，此处为演示标定值。
- */
-export const mapPoints: MapPoint[] = [
-  // 出入口摄像头（新图场地四周环路：主入口在南侧，东西北各有出入口）
-  { id: 'mp-g1', kind: 'cam', name: '1#门', x: 31, y: 88, camId: 'g1' },
-  { id: 'mp-g4', kind: 'cam', name: '4#门', x: 8, y: 68, camId: 'g4' },
-  { id: 'mp-g2a', kind: 'cam', name: '2#门', x: 88, y: 58, camId: 'g2a' },
-  { id: 'mp-cama', kind: 'cam', name: '场内A', x: 47, y: 60, camId: 'cama' },
-  // 塔吊（新图三台黄塔吊，取其中两台挂真实点位）
-  { id: 'mp-crane2', kind: 'crane', name: '2#塔吊', x: 30, y: 24, camId: 'crane2' },
-  { id: 'mp-crane4', kind: 'crane', name: '4#塔吊', x: 44, y: 27, camId: 'crane4' },
-  // 楼栋
-  { id: 'mp-hotel', kind: 'building', name: '酒店', x: 52, y: 44 },
-  { id: 'mp-b1', kind: 'building', name: '1#楼', x: 22, y: 32 },
-  { id: 'mp-b2', kind: 'building', name: '2#楼', x: 36, y: 42 },
-  { id: 'mp-b3', kind: 'building', name: '3#楼', x: 43, y: 62 },
-  { id: 'mp-b4', kind: 'building', name: '4#楼', x: 56, y: 58 },
-  { id: 'mp-kg', kind: 'building', name: '幼儿园', x: 61, y: 78 },
 ]
