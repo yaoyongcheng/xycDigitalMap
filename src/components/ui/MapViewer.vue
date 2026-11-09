@@ -69,7 +69,7 @@ const props = withDefaults(
   {
     points: () => [],
     fit: 'cover',
-    src: `${import.meta.env.BASE_URL}img/site-map.webp`,
+    src: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261109`,
     compact: false,
     allowZoomOut: false,
     suspended: false,

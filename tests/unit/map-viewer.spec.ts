@@ -146,9 +146,9 @@ describe('components/ui/MapViewer', () => {
   /* ---------------- 基础渲染 ---------------- */
 
   describe('渲染', () => {
-    it('底图默认取 PWA base 下的 site-map.webp', async () => {
+    it('底图默认取 PWA base 下的 site-map.webp（带缓存版本号）', async () => {
       await setupMounted()
-      expect(wrapper.find('img').attributes('src')).toBe('/img/site-map.webp')
+      expect(wrapper.find('img').attributes('src')).toBe('/img/site-map.webp?v=20261109')
     })
 
     it('底图地址可被覆盖', async () => {

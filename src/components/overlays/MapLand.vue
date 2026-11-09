@@ -34,8 +34,8 @@ const subpage = useSubpageStore()
 const flat = ref(false)
 
 const MAP_SRC = {
-  map: `${import.meta.env.BASE_URL}img/site-map.webp`,
-  flat: `${import.meta.env.BASE_URL}img/site-flat.webp`,
+  map: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261109`,
+  flat: `${import.meta.env.BASE_URL}img/site-flat.webp?v=20261109`,
 } as const
 
 const mapSrc = computed(() => (flat.value ? MAP_SRC.flat : MAP_SRC.map))
