@@ -129,6 +129,8 @@
 
   /* 深色底分隔线：--line 是浅灰，落在深色面上几乎不可见 */
   --line-dark: rgba(255, 255, 255, 0.06);
+  /* 深色底上的强调分隔线（设备卡头与数据区之间）：比 --line-dark 更明显 */
+  --line-dark-strong: rgba(255, 255, 255, 0.16);
   /* 深色浮层的强调描边（弹层上沿、输入框聚焦）：带蓝味，只用于「浮起来」的那一层 */
   --line-dark-2: rgba(110, 168, 255, 0.22);
 
@@ -7330,7 +7332,10 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  /* 负 margin 抵消 .dev-card 的左右 padding，让卡头分隔线撑满卡片宽度 */
+  margin: 0 -12px 10px;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--line-dark-strong);
 }
 
 .dev-card-hd strong {
@@ -7869,22 +7874,30 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 .dev-info {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+  overflow: hidden;
 }
 
 .dev-info-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
+  padding: 14px 12px;
+  border-top: 1px solid var(--line-dark);
   font-size: var(--fs-12);
   color: var(--ink-3-dark);
 }
 
+.dev-info-row:first-child { border-top: 0; }
+
+.dev-info-row span { flex: none; }
+
 .dev-info-row b {
-  margin-left: auto;
   font-size: var(--fs-13);
   font-weight: 650;
-  color: var(--ink-2-dark);
+  color: var(--ink-1-dark);
   text-align: right;
 }
 

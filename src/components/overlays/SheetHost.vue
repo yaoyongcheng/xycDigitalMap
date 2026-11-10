@@ -53,7 +53,8 @@ const subtitle = computed(() => {
   // 巡检大图不设副标题：分类 / 来源 / 时间都在下面的 meta 三行里，
   // 标题行再来一遍就是同一句话写两次
   if (sheet.kind === 'patrol') return ''
-  if (sheet.kind === 'device-history') return deviceUnit.value?.name ?? ''
+  if (sheet.kind === 'device-history' || sheet.kind === 'device-info')
+    return deviceUnit.value?.name ?? ''
   return ''
 })
 </script>
