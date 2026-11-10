@@ -66,6 +66,16 @@ function showOnline(d: Equip): boolean {
   return d.units.length > 1 || d.id === 'drone'
 }
 
+/**
+ * 拆分指标值里的单位（原 renderEquip:990-992）：
+ * 设计稿把「1.87t / 26次 / 2min」拆成数字 + <i class="eq-stat-unit">单位</i>，
+ * 单位用 14px 小字，和 18px 数字形成主次，而不是整串一样大的白字。
+ */
+function splitStat(value: string): { num: string; unit: string } {
+  const m = value.match(/^([\d.]+)(.*)$/)
+  return m && m[2] ? { num: m[1], unit: m[2] } : { num: value, unit: '' }
+}
+
 function onlineLabel(d: Equip): string {
   return d.id === 'drone' ? '设备状态' : '在线设备'
 }
@@ -226,16 +236,18 @@ function onKey(e: KeyboardEvent, i: number): void {
               <b><em>{{ d.jobs.done }}<i>/{{ d.jobs.total }}</i></em></b>
               <span>{{ d.metric }}</span>
             </span>
-            <!-- 塔机：双指标（原 d.stats 分支） -->
+            <!-- 塔机：双指标（原 d.stats 分支，单位拆小字） -->
             <template v-else-if="d.stats">
               <span v-for="s in d.stats" :key="s.metric" class="eq-val">
-                <b>{{ s.value }}</b>
+                <b>
+                  {{ splitStat(s.value).num }}<i v-if="splitStat(s.value).unit" class="eq-stat-unit"> {{ splitStat(s.value).unit }}</i>
+                </b>
                 <span>{{ s.metric }}</span>
               </span>
             </template>
             <!-- 其余：单指标 -->
             <span v-else class="eq-val">
-              <b>{{ d.value }}</b>
+              <b>{{ splitStat(d.value).num }}<i v-if="splitStat(d.value).unit" class="eq-stat-unit"> {{ splitStat(d.value).unit }}</i></b>
               <span>{{ d.metric }}</span>
             </span>
           </span>
