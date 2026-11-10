@@ -53,6 +53,14 @@ function stop(): void {
   idx.value = 0
 }
 
+/** 只停自动轮播定时器，不动 idx（拖动接管时用） */
+function pause(): void {
+  window.clearInterval(timer)
+  window.clearTimeout(wrapTimer)
+  timer = 0
+  wrapTimer = 0
+}
+
 /** 轨道宽 = 页数 × 100%，每页占 100/页数 %（原 startAlarmFeed 的宽度铺排） */
 function layout(track: HTMLElement, total: number): number {
   const unit = 100 / total
@@ -64,21 +72,26 @@ function layout(track: HTMLElement, total: number): number {
   return unit
 }
 
-/** 原 paintDots + go 的合并（app.js:377-387） */
-function go(unit: number, target: number, animate = true): void {
+/** 轨道当前单位宽（loop 页数对应的百分比步长） */
+function unitPct(): number {
+  return 100 / loop.value.length
+}
+
+/** 把轨道平移到目标页（animate=false 立即定位；true 走 0.45s 吸附动画） */
+function go(target: number, animate = true): void {
   window.clearTimeout(wrapTimer)
   idx.value = target
   const track = trackEl.value
   if (!track) return
-  track.style.transition = animate ? 'transform 0.45s ease' : 'none'
-  track.style.transform = `translateX(-${target * unit}%)`
+  track.style.transition = animate ? 'transform 0.45s var(--ease-std)' : 'none'
+  track.style.transform = `translateX(-${target * unitPct()}%)`
 }
 
 /** 原 next 的回卷分支：翻过末页后瞬间归零（app.js:391-396） */
-function goNext(unit: number): void {
-  go(unit, idx.value + 1)
+function goNext(): void {
+  go(idx.value + 1)
   if (idx.value >= pageN.value) {
-    wrapTimer = window.setTimeout(() => go(unit, 0, false), 460)
+    wrapTimer = window.setTimeout(() => go(0, false), 460)
   }
 }
 
@@ -87,38 +100,136 @@ function start(): void {
   stop()
   const track = trackEl.value
   if (!track || pageN.value <= 1) return
-  const unit = layout(track, loop.value.length)
-  go(unit, 0, false)
-  timer = window.setInterval(() => goNext(unit), 4000)
+  layout(track, loop.value.length)
+  go(0, false)
+  timer = window.setInterval(() => goNext(), 4000)
+}
+
+/** 原 restart（app.js:416-419）：只重置 4s 计时，不重铺排、不跳页 */
+function restart(): void {
+  window.clearInterval(timer)
+  window.clearTimeout(wrapTimer)
+  timer = 0
+  wrapTimer = 0
+  if (pageN.value <= 1) return
+  timer = window.setInterval(() => goNext(), 4000)
 }
 
 /** 圆点跳页（app.js:402-407） */
 function onDot(page: number): void {
-  const track = trackEl.value
-  if (!track) return
-  go(100 / loop.value.length, page)
-  start()
+  if (!trackEl.value) return
+  go(page)
+  restart()
 }
 
-/** 左右滑动切换，阈值 36px（app.js:409-418） */
-let sx = 0
+/* ---------------------------------------------------------------------
+ * 跟手滑动（2026-11 优化：从「松手才判断」升级为手指拖动即时反馈）
+ *
+ *   pointerdown 捕获指针并记录起点；pointermove 里实时写 translateX 让
+ *   轨道贴着手指走（此时关掉 transition，避免吸附动画拖慢跟手）；松手时
+ *   依「位移 + 速度」决定翻页还是回弹，再恢复 transition 做吸附动画。
+ *
+ *   点击/滑动区分：位移不足 CLICK_SLOP（8px）视作点击，放行子项 click
+ *   打开详情；超过则视为滑动，用 dragged 标记吞掉随后的 click，避免
+ *   「滑动结束正好停在某条上」误触发详情。
+ * ------------------------------------------------------------------- */
+const CLICK_SLOP = 8
+/** 翻页需要的位移阈值：超半页或速度足够快都翻，否则回弹 */
+const SWIPE_RATIO = 0.32
+
+const dragging = ref(false)
+/** 拖动中被抑制的 click 标记（拖动结束后短暂置位，吃掉接下来的一次 click） */
+let suppressClick = false
+
+let startX = 0
+let startIdx = 0
+let lastX = 0
+let lastT = 0
+
 function onDown(e: PointerEvent): void {
-  sx = e.clientX
-}
-function onUp(e: PointerEvent): void {
-  const dx = e.clientX - sx
-  if (Math.abs(dx) < 36) return
-  const unit = 100 / loop.value.length
-  if (dx < 0) {
-    goNext(unit)
-  } else {
-    go(unit, (idx.value - 1 + pageN.value) % pageN.value)
+  if (pageN.value <= 1) return
+  const win = e.currentTarget as HTMLElement
+  win.setPointerCapture(e.pointerId)
+  dragging.value = true
+  suppressClick = false
+  startX = lastX = e.clientX
+  lastT = e.timeStamp
+  startIdx = idx.value
+  // 关 transition + 停在自动轮播，交给手指接管
+  pause()
+  const track = trackEl.value
+  if (track) {
+    track.style.transition = 'none'
+    track.style.transform = `translateX(-${startIdx * unitPct()}%)`
   }
-  start()
+}
+
+function onMove(e: PointerEvent): void {
+  if (!dragging.value) return
+  lastX = e.clientX
+  lastT = e.timeStamp
+  const dx = e.clientX - startX
+  // 位移超过点击阈值即进入滑动态，之后不把松手当点击
+  if (Math.abs(dx) > CLICK_SLOP) suppressClick = true
+  const track = trackEl.value
+  if (!track) return
+  const unit = unitPct()
+  const base = startIdx * unit
+  track.style.transform = `translateX(${-base + (dx / (track.clientWidth || 1)) * 100}%)`
+}
+
+function onUp(e: PointerEvent): void {
+  if (!dragging.value) return
+  dragging.value = false
+  const win = e.currentTarget as HTMLElement
+  if (win.hasPointerCapture(e.pointerId)) win.releasePointerCapture(e.pointerId)
+  const track = trackEl.value
+  if (!track) {
+    restart()
+    return
+  }
+  const dx = lastX - startX
+  const dt = Math.max(1, e.timeStamp - lastT)
+  const vx = dx / dt // px/ms
+
+  // 位移换算成「页」：正 = 手指右滑（回上一页），负 = 左滑（下一页）
+  const pagesMoved = -(dx / (track.clientWidth || 1))
+  let target = startIdx
+
+  if (!suppressClick) {
+    // 位移太小，当点击处理：吸附回原页即可（详情打开由 click 事件负责）
+    target = startIdx
+  } else if (pagesMoved > 0) {
+    // 想翻下一页：位移过半或甩动速度足够快才翻，否则回弹
+    target = pagesMoved >= SWIPE_RATIO || vx < -0.4 ? startIdx + 1 : startIdx
+  } else {
+    // 想回上一页
+    target = -pagesMoved >= SWIPE_RATIO || vx > 0.4 ? startIdx - 1 : startIdx
+  }
+
+  // 回卷边界：多页时 loop 末尾有补页，翻到 pageN 后需无感回卷到 0
+  if (target >= pageN.value) {
+    target = pageN.value
+    go(target, true)
+    wrapTimer = window.setTimeout(() => go(0, false), 460)
+  } else if (target < 0) {
+    go(0, true)
+  } else {
+    go(target, true)
+  }
+
+  // 拖动结束后短暂抑制一次 click，防止滑动停在条目上误触发
+  // （click 会在 pointerup 之后紧随派发；此处不主动清除，留给 onItemClick
+  //   消费一次后复位，避免 setTimeout 与 click 的派发顺序竞争）
+  restart()
 }
 
 /** 原 homePanels 委托的 [data-alarm] 分支 —— 现直达详情 */
 function onItemClick(id: string): void {
+  if (suppressClick) {
+    suppressClick = false
+    return
+  }
   emit('open', id)
 }
 
@@ -144,7 +255,9 @@ onUnmounted(() => {
     <div
       class="alarm-feed-win"
       @pointerdown="onDown"
+      @pointermove="onMove"
       @pointerup="onUp"
+      @pointercancel="onUp"
     >
       <div class="alarm-feed-track" ref="trackEl">
         <div v-for="(pg, p) in loop" :key="p" class="alarm-feed-page">
