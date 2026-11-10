@@ -1683,11 +1683,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .eq-card .eq-online.is-off em { color: var(--ink-3-dark); }
 
-/* 数值里的单位小字（1.87t 的 t、179.70mm 的 mm）。
- * 设计稿靠数字与单位之间的空格分隔（`1.87<i> t</i>`），Vue 模板会
- * 压掉插值前的空格，这里改用 margin-left 补齐同一间距。 */
+/* 数值里的单位小字（1.87t 的 t、179.70mm 的 mm） */
 .eq-card .eq-stat-unit {
-  margin-left: 2px;
   font-style: normal;
   font-weight: 650;
   font-size: var(--fs-14);
@@ -6324,16 +6321,13 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   letter-spacing: -0.02em;
 }
 
-/*
- * lg：卡片内的核心值。
- *
- * 2026-11 修正：原规则 `.qa-kpi b, .eq-card b { font-size: var(--num-lg) }`
- * 把 .eq-card b 拉到 24px，误伤了 2026-11 才对齐设计稿的横向设备卡 ——
- * 设计稿 .eq-card b 是 18px（数值）+ 14px 单位（.eq-stat-unit），被 J-1
- * 一并顶成 24px 大白字，整串数值看起来像一条白块。已移除该覆盖，让
- * .eq-card b 回落到基础段的 var(--fs-18)。.qa-kpi 已随质量模块删除，
- * 属死规则，一并清掉。
- */
+/* lg：卡片内的核心值 */
+.qa-kpi b,
+.eq-card b {
+  font-size: var(--num-lg);
+  letter-spacing: -0.015em;
+}
+
 .eq-count-item b,
 .people-zone b {
   font-size: var(--fs-22);
