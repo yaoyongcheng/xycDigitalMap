@@ -180,15 +180,38 @@ export function alarmTrendSvg(fillId: string, latestCount: number): string {
 }
 
 /**
- * 原 js/app.js:192-244 peopleHourSvg() 的模型版。
- * 按时段的人员在场曲线（工人在职绿线 + 管理人员蓝线）。
- * 只画到当前小时为止，未到的时段标签淡化处理。
+ * 真实分时人数（来自 `todayPersonHourStat`）。
+ *
+ * 三个数组按下标一一对应：`hours[i]` 时刻有 `workers[i]` 名工人、
+ * `managers[i]` 名管理人员在册。小时数以接口返回为准（现场是 0..17 整点），
+ * 不假设固定刻度。
  */
-export function peopleHourModel(nowHour: number): LineModel {
-  const hourNums = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
+export interface HourLiveData {
+  hours: number[]
+  workers: number[]
+  managers: number[]
+}
+
+/** 共用绘制参数：把「刻度 / 数据 / 上限」抽出来，演示版与真实版只差这三样 */
+interface HourChartSpec {
+  /** 横轴数值小时（判定「未到时段」用） */
+  hourNums: number[]
+  workersAll: number[]
+  managersAll: number[]
+  nowHour: number
+  /** 纵轴上限 */
+  maxY: number
+  /** 该下标是否显示刻度文案 */
+  pickLabel: (i: number, n: number) => boolean
+}
+
+/**
+ * 分时人数折线图（整点在场人数）。演示数据版与真实数据版共用这一份几何，
+ * 保证两种数据源画出来的图形观感一致。
+ */
+function hourChart(spec: HourChartSpec): LineModel {
+  const { hourNums, workersAll, managersAll, nowHour, maxY, pickLabel } = spec
   const hours = hourNums.map((h) => h + ':00')
-  const workersAll = [2, 2, 2, 8, 36, 33, 18, 24, 27, 12, 4, 2]
-  const managersAll = [2, 2, 2, 2, 7, 19, 3, 5, 10, 6, 2, 2]
   const liveN = hourNums.reduce((n, h, i) => (h <= nowHour ? i + 1 : n), 0)
   const workers = workersAll.slice(0, liveN)
   const managers = managersAll.slice(0, liveN)
@@ -198,9 +221,10 @@ export function peopleHourModel(nowHour: number): LineModel {
   const pr = 16
   const pt = 10
   const pb = 22
-  const maxY = 40
   const ticksN = hours.length
-  const xAt = (i: number): number => pl + (i / (ticksN - 1)) * (w - pl - pr)
+  /* 单点（只有一个整点有数据）时避免除零 */
+  const span = Math.max(ticksN - 1, 1)
+  const xAt = (i: number): number => pl + (i / span) * (w - pl - pr)
   const yAt = (v: number): number => pt + (1 - v / maxY) * (h - pt - pb)
   const wPts: Pt[] = workers.map((v, i) => [xAt(i), yAt(v)])
   const mPts: Pt[] = managers.map((v, i) => [xAt(i), yAt(v)])
@@ -211,7 +235,8 @@ export function peopleHourModel(nowHour: number): LineModel {
   const area = wPts.length
     ? `${wLine} L${xAt(last).toFixed(1)},${base} L${xAt(0).toFixed(1)},${base} Z`
     : ''
-  const grids = [0, 10, 20, 30, 40]
+  /* 四条等分网格线：上限 40 时正好是 0/10/20/30/40，与原先写死的刻度一致 */
+  const grids = Array.from({ length: 5 }, (_, k) => Math.round((maxY * k) / 4))
     .map((t) => {
       const y = yAt(t).toFixed(1)
       return `<line x1="${pl}" x2="${w - pr}" y1="${y}" y2="${y}"/><text x="${pl - 4}" y="${(+y + 3).toFixed(1)}" text-anchor="end">${t}</text>`
@@ -227,11 +252,11 @@ export function peopleHourModel(nowHour: number): LineModel {
    *
    * 改成 i%3：1:00 / 7:00 / 13:00 / 19:00 / 23:00，步长 69px（末段 50px），
    * 任何两个标签之间都留得下空气。末点必须保留 —— 它是「现在」的锚。
+   * 真实数据（0..17 整点共 18 个刻度）由调用方传 pickLabel 换成四等分。
    */
   const labels = hours
     .map((_d, i) => {
-      const show = i === 0 || i === ticksN - 1 || i % 3 === 0
-      if (!show) return ''
+      if (!pickLabel(i, ticksN)) return ''
       const anchor = i === 0 ? 'start' : i === ticksN - 1 ? 'end' : 'middle'
       const dim = i >= liveN ? ` opacity="0.35"` : ''
       return `<text x="${xAt(i).toFixed(1)}" y="${h - 4}" text-anchor="${anchor}"${dim}>${hourNums[i]}:00</text>`
@@ -293,6 +318,60 @@ export function peopleHourModel(nowHour: number): LineModel {
     ],
     ys: [pad(workersAll).map(yOf), pad(managersAll).map(yOf)],
   }
+}
+
+/**
+ * 原 js/app.js:192-244 peopleHourSvg() 的模型版。
+ * 按时段的人员在场曲线（工人在职绿线 + 管理人员蓝线）。
+ * 只画到当前小时为止，未到的时段标签淡化处理。
+ *
+ * 传入 `live` 时改用接口真实数据（`todayPersonHourStat`）：刻度按接口返回的
+ * 小时数走、纵轴上限按实际峰值放大，其余几何与演示版共用同一份绘制代码。
+ * 不传则维持原版的演示曲线（1:1 复刻基线，单测锁住了这份输出）。
+ */
+export function peopleHourModel(nowHour: number, live?: HourLiveData): LineModel {
+  if (live && live.hours.length > 1 && live.workers.length && live.managers.length) {
+    /*
+     * 掐掉「当前整点」这个还没结算完的点。
+     *
+     * 现场接口是按时段累加在场人次的：18 点查 17:00 这一格必然是 0（这一小时
+     * 刚开始，还没有人「在场满」）。原样画出来会让曲线在最右边垂直跳水，
+     * 看着像「人都走光了」，与事实相反。只在 hour >= 当前小时 且两条线都是 0
+     * 时才掐，历史时段里真正的 0（比如凌晨）不受影响。
+     */
+    let end = live.hours.length
+    while (
+      end > 2 &&
+      live.workers[end - 1] === 0 &&
+      live.managers[end - 1] === 0 &&
+      live.hours[end - 1] >= nowHour
+    ) {
+      end -= 1
+    }
+    const hs = live.hours.slice(0, end)
+    const ws = live.workers.slice(0, end)
+    const ms = live.managers.slice(0, end)
+    const peak = Math.max(...ws, ...ms, 1)
+    return hourChart({
+      hourNums: hs,
+      workersAll: ws,
+      managersAll: ms,
+      nowHour,
+      // 向上取整到 10 的整数倍，峰值不会顶到边框
+      maxY: Math.max(10, Math.ceil(peak / 10) * 10),
+      // 18 个刻度按 i%3 会挤成 7 个标签（约 46px 一个），改成四等分只剩 4 个
+      pickLabel: (i, n) => i === 0 || i === n - 1 || i === Math.round((n - 1) / 3) || i === Math.round(((n - 1) * 2) / 3),
+    })
+  }
+
+  return hourChart({
+    hourNums: [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23],
+    workersAll: [2, 2, 2, 8, 36, 33, 18, 24, 27, 12, 4, 2],
+    managersAll: [2, 2, 2, 2, 7, 19, 3, 5, 10, 6, 2, 2],
+    nowHour,
+    maxY: 40,
+    pickLabel: (i, n) => i === 0 || i === n - 1 || i % 3 === 0,
+  })
 }
 
 /** 兼容旧签名：只取 SVG 字符串（v-html 渲染路径） */

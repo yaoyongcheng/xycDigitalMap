@@ -12,19 +12,22 @@
 
 ---
 
-## 一、后端与鉴权：一共有四套
+## 一、后端与鉴权：一共有五套（四个服务）
 
-项目不是「一个后端」，而是四套完全不同的数据源。这决定了不能只写一个 `request()`。
+项目不是「一个后端」，而是五套（其中 A′ 与 A 同机器不同端口）完全不同的数据源。
+这决定了不能只写一个 `request()`。
 
 | 代号 | 地址 | 鉴权 | 用途 |
 |---|---|---|---|
-| **A. 业务接口** | `http://115.159.67.12:8081` | 用户登录 → `Authorization: Bearer {token}`（RSA 加密登录） | 用户、设备台账、时序数据、视频报警、天气 |
+| **A. 业务接口** | `http://115.159.67.12:8081` | 用户登录 → `Authorization: Bearer {token}`（RSA 加密登录） | 用户、设备台账、时序数据、天气 |
+| **A′. 工作流服务** | 同一台机器的 **`:8085`** | 同上的 `Bearer {token}` | 视频报警列表 / 报警截图 |
 | **B. 大屏 open** | `https://dw.yzw.cn/open` | 项目级 `accessKey` + RSA-SHA256 签名（**无需登录**） | 人员/考勤/组织/网关标签/报警记录 |
 | **C. 物联网网关** | `https://iot.cscec3b-iti.com` | `appKey/appSecret` 换 token（`X-Access-Token`） | 设备实时数据、告警事件、电梯/塔机 |
 | **D. 第三方** | `https://open.ys7.com`（萤石云）、`https://account.keehang.com:23443`（无人机） | 各自 appKey / CAS 账号 | 监控视频流、无人机任务 |
 
-已于上一阶段完成的部分：A 的登录三件套（`public-key` / `login` / `me`）+ token 注入。
-本阶段新增：B 的签名客户端（`src/api/open.ts`）。
+已完成：A 的登录三件套（`public-key` / `login` / `me`）+ token 注入（阶段 0）、
+B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分时人数（阶段 2）。
+阶段 2 顺带查明「视频报警在 8085 而不在 8081」，见 A′ 与第二节的说明。
 
 ---
 
@@ -40,18 +43,23 @@
 | GET | `/api/user/auth/me/unity-permission` | 权限菜单 | 我的页菜单项 | ⬜ 阶段 7 |
 | GET | `/api/data/areas?page=1&page_size=100&project_id=` | 总平区域标签 | 地图撒点 | ⬜ 阶段 5 |
 | GET | `/api/data/buildings` | 楼栋清单 | 进度/楼栋分布 | ⬜ 阶段 5 |
-| GET | `/api/data/deviceinfos?page=1&page_size=100&project_id=` | 设备台账 | 智控设备列表/详情 | ⬜ 阶段 2 |
-| POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据（查询语义） | 设备实时状态页 | ⬜ 阶段 2 |
-| POST | `/api/data/v1/tsdb/queryEvent` | 事件查询 | 报警/事件时间线 | ⬜ 阶段 2 |
-| POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 塔机详情「吊次」 | ⬜ 阶段 2 |
+| GET | `/api/data/deviceinfos?page=1&page_size=100&project_id=` | 设备台账 | 智控设备列表/详情 | ⬜ 阶段 3 |
+| POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据（查询语义） | 设备实时状态页 | ⬜ 阶段 3 |
+| POST | `/api/data/v1/tsdb/queryEvent` | 事件查询 | 报警/事件时间线 | ⬜ 阶段 3 |
+| POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 塔机详情「吊次」 | ⬜ 阶段 3 |
 | POST | `/api/webgateway/v1/access/token` | IOT 网关换令牌 | C 组全部请求的前置 | ⬜ 阶段 3 |
-| GET | `/api/video/alarms?page=1&page_size=50&sceneCode=` | 视频报警列表 | 智眸/报警预警 | ⬜ 阶段 3 |
-| GET | `/api/video/alarms/{id}/picture` | 报警截图 | 预警详情大图 | ⬜ 阶段 3 |
+| GET | `/api/video/alarms?page=1&page_size=50&sceneCode=` | 视频报警列表 | 智眸/报警预警 | ⬜ 阶段 3，**注意在 8085** |
+| GET | `/api/video/alarms/{id}/picture` | 报警截图（返回 base64） | 预警详情大图 | ⬜ 阶段 3，**注意在 8085** |
 | GET | `/api/map/amap/weather/live?city=` | 实时天气 | 首页天气角标 | ⬜ 阶段 4 |
 | GET | `/api/map/amap/weather/forecast?city=` | 天气预报 | 同上 | ⬜ 阶段 4 |
 | 🔒 DELETE | `/api/video/alarms/{id}` | **删除报警** | — | 写，不调用 |
 | 🔒 PATCH | `/api/video/alarms/{id}/status` | **修改报警状态** | — | 写，不调用 |
 | 🔒 POST | `/api/webgateway/v1/auth/api/appUser/logout` | **IOT 登出** | — | 写，不调用 |
+
+> **视频报警不在 8081**。`Unity` 端的 `GetWFUrl(8085, …)` 把这两条打到**工作流服务
+> 8085**（同一台机器，只换端口）：`:8081` 上访问 `/api/video/alarms` 是
+> `404 page not found`，`:8085` 上是 `{"code":401,"message":"未提供认证令牌"}`。
+> 所以接它需要 `API_BASE` 之外再一个 `WF_BASE`（同 host、端口 8085）。
 
 ### B. 大屏 open（`https://dw.yzw.cn/open`，只读）
 
@@ -60,31 +68,42 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 
 | 路径 | 用途 | 对应页面 | 状态 |
 |---|---|---|---|
-| `/bigScreen/BigsHome/personOverall` | 人员总览（在册/在岗/出勤/出勤率） | 首页·人员总览 | ✅ **本阶段已接** |
-| `/bigScreen/BigsHome/todayTeamsAtteStat` | 今日班组出勤 | 首页·今日班组出勤 | ⬜ 阶段 2 |
-| `/bigScreen/BigsHome/todayPersonHourStat` | 今日分时人数（管理/工人） | 首页·时段趋势 | ⬜ 阶段 2 |
-| `/bigScreen/BigsHome/weekEnterpriseAtteStat` | 周企业出勤 | 首页·企业考勤 | ⬜ 阶段 2 |
-| `/bigScreen/bigAlarm/getAlarmRecord` | 报警记录（分页） | 报警预警列表/历史 | ⬜ 阶段 2 |
-| `/bigScreen/bigAlarm/getMonthRecordStatus` | 月度按状态统计 | 报警历史图表 | ⬜ 阶段 2 |
-| `/bigScreen/bigAlarm/getMonthRecordSubType` | 月度按子类型统计 | 报警历史图表 | ⬜ 阶段 2 |
-| `/bigScreen/bigAlarm/getMonthEnterpriseRecordNum` | 企业维度记录数 | 报警下钻 | ⬜ 阶段 2 |
-| `/bigScreen/bigAlarm/getMonthOrganRecordNum` | 组织维度记录数 | 报警下钻 | ⬜ 阶段 2 |
-| `/organ/list` | 组织/企业清单 | 人员分布、班组下钻 | ⬜ 阶段 5 |
-| `/person/page` | 人员花名册 | 人员列表 | ⚠️ **403 接口权限未获取** |
-| `/report/attendance/attendanceDay` | 日考勤明细 | 考勤页 | ⚠️ **403 接口权限未获取** |
-| `/location/snapshootProjectPersonCountV3` | 项目人员数量快照 | 人员分布 | ⬜ 阶段 5 |
-| `/location/personCurLocation/v2` | 人员当前位置 | 人员分布/地图撒点 | ⬜ 阶段 5 |
-| `/location/track` | 人员轨迹 | 轨迹回放 | ⬜ 阶段 5 |
+| `/bigScreen/BigsHome/personOverall` | 人员总览（在册/在岗/出勤/出勤率） | 首页·人员总览 | ✅ **阶段 1 已接** |
+| `/bigScreen/BigsHome/todayTeamsAtteStat` | 今日班组出勤（3 个班组） | 首页·今日班组出勤 | ✅ **阶段 2 已接** |
+| `/bigScreen/BigsHome/todayPersonHourStat` | 今日分时人数（管理/工人） | 首页·今日分时人数 | ✅ **阶段 2 已接** |
+| `/bigScreen/BigsHome/weekEnterpriseAtteStat` | 周企业出勤（近 7 日 × 3 企业） | 暂无消费点（已备客户端） | ✅ 可用 |
+| `/bigScreen/bigAlarm/getAlarmRecord` | 报警记录（分页） | 报警预警列表/历史 | ⚠️ **实测恒为 0 条**（见下） |
+| `/bigScreen/bigAlarm/getMonthRecordStatus` | 月度按状态统计 | 报警历史图表 | ⚠️ 实测 `[]` |
+| `/bigScreen/bigAlarm/getMonthRecordSubType` | 月度按子类型统计 | 报警历史图表 | ⚠️ 实测 `[]` |
+| `/bigScreen/bigAlarm/getMonthEnterpriseRecordNum` | 企业维度记录数 | 报警下钻 | ⬜ 阶段 5 |
+| `/bigScreen/bigAlarm/getMonthOrganRecordNum` | 组织维度记录数 | 报警下钻 | ⬜ 阶段 5 |
+| `/organ/list` | 组织/企业清单 | 人员分布、班组下钻 | ✅ 可用（实测 200） |
+| `/person/page` | 人员花名册 | 人员列表 | ⚠️ **57007 接口权限未获取** |
+| `/report/attendance/attendanceDay` | 日考勤明细 | 考勤页 | ⚠️ **57007 接口权限未获取** |
+| `/location/snapshootProjectPersonCountV3` | 项目人员数量快照 | 人员分布 | ⚠️ **57007 接口权限未获取** |
+| `/location/personCurLocation/v2` | 人员当前位置 | 人员分布/地图撒点 | ⚠️ **57007 接口权限未获取** |
+| `/location/track` | 人员轨迹 | 轨迹回放 | ⚠️ 同上（未单独验证，同属 location 分组） |
 | `/device/label/page` | 定位标签（实测 200 条） | 人员定位设备 | ⬜ 阶段 5 |
 | `/device/label/getLabelOrPersonRelation` | 标签-人员绑定 | 人员定位 | ⬜ 阶段 5 |
 | `/device/gateway/page` | 网关（实测 24 条） | 设备管理 | ⬜ 阶段 5 |
 | `/device/gateway/pageByProjectId` | 项目网关 | 设备管理 | ⬜ 阶段 5 |
 | `/device/beacon/page` | 信标（实测 78 条） | 设备管理 | ⬜ 阶段 5 |
-| `/device/danger/page` | 危险源 | 隐患卡 | ⬜ 阶段 5 |
+| `/device/danger/page` | 危险源 | 隐患卡 | ⚠️ 实测 `total=0`（现场未录危险源） |
 
-> 权限缺口说明：`/person/page` 与 `/report/attendance/attendanceDay` 用当前
-> accessKey 返回 `57007 接口权限未获取` —— 不是我们调错，是项目没开通这两个接口的
-> 授权。需要现场平台给 accessKey 加权限，代码侧已留好调用点。
+> **权限缺口说明**：`/person/page`、`/report/attendance/attendanceDay`、
+> `/location/*` 用当前 accessKey 全部返回 `57007 接口权限未获取` —— 不是我们调错，
+> 是项目没开通这几个接口的授权。需要现场平台给 accessKey 加权限，代码侧已留好调用点。
+>
+> **报警数据缺口**：`/bigScreen/bigAlarm/*` 虽然 HTTP 200、`statusCode 20000`，但
+> 试过无参、`page/pageSize`、`startTime/endTime`（当天/整月/跨年）以及
+> `month/date/yearMonth` 各种组合，`total` 恒为 `0`、月度统计恒为 `[]` ——
+> 这个项目的大屏报警模块没数据，不是参数问题。首页「报警预警」要么继续用演示
+> 数据，要么改接 A 组视频报警（需登录，见下节 8085）。
+>
+> **工种缺口**：`todayPersonHourStat` 只分「管理 / 工人」，四套后端都没有「按工种
+> 统计人数」的端点（Unity 端只有客户端枚举 `WorkTypeToEnum`）。所以设计稿的
+> 「今日出勤工种」卡在阶段 2 被换成了有真数据的「今日分时人数」，`.trade-*`
+> 样式一并删除，`data/config.ts: tradeRows` 保留作设计稿参考并加了警示注释。
 
 ### C. 物联网网关（`https://iot.cscec3b-iti.com`）
 
@@ -115,17 +134,17 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 
 | # | 页面/区块 | 当前数据来源 | 应接接口 | 阶段 |
 |---|---|---|---|---|
-| 1 | 首页·人员总览 | `data/config.ts: crewKpis` | B `personOverall` | ✅ 已完成 |
-| 2 | 首页·今日班组出勤 | `data/config.ts: squadRows` | B `todayTeamsAtteStat` | 2 |
-| 3 | 首页·今日出勤工种 | `data/config.ts: tradeRows` | B `todayPersonHourStat`（按工种需另接口） | 2 |
-| 4 | 首页·报警预警 + 轮播 | `stores/alarm.ts` 常量 | B `getAlarmRecord` / A `/api/video/alarms` | 2 |
-| 5 | 报警历史（按日） | 同源常量 | B `getMonthRecord*` | 2 |
-| 6 | 首页·人员分布 | `stores/home.ts: peopleTree` | B `location/*` + `organ/list` | 5 |
-| 7 | 智控·设备列表/四卡 | `stores/home.ts: siteEquip` | A `deviceinfos` + C `queryRealTimeData` | 2 |
+| 1 | 首页·人员总览 | `data/config.ts: crewKpis` | B `personOverall` | ✅ 阶段 1 |
+| 2 | 首页·今日班组出勤 | `data/config.ts: squadRows` | B `todayTeamsAtteStat` | ✅ 阶段 2 |
+| 3 | 首页·今日分时人数（原「今日出勤工种」） | `utils/chart.ts` 演示曲线 | B `todayPersonHourStat` | ✅ 阶段 2（工种无接口，已换卡） |
+| 4 | 首页·报警预警 + 轮播 | `stores/alarm.ts` 常量 | B `getAlarmRecord`（恒空）/ 8085 `/api/video/alarms` | 3 |
+| 5 | 报警历史（按日） | 同源常量 | B `getMonthRecord*`（恒空）/ 8085 | 3 |
+| 6 | 首页·人员分布 | `stores/home.ts: peopleTree` | B `location/*`（**57007 无权限**）+ `organ/list` | 5（受阻） |
+| 7 | 智控·设备列表/四卡 | `stores/home.ts: siteEquip` | A `deviceinfos` + C `queryRealTimeData` | 3 |
 | 8 | 设备详情·实时状态 | `data/device.ts` 常量 | C `queryRealTimeDataV2` + `queryEvent` | 3 |
 | 9 | 塔机·吊次/工作循环 | `data/device.ts` 常量 | A/C `getWorkCycleInfoHis` | 3 |
-| 10 | 智眸·现场快照（监控九宫格） | 静态图 | A `/api/video/alarms` + D 萤石云直播 | 3 |
-| 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page` | 5 |
+| 10 | 智眸·现场快照（监控九宫格） | 静态图 | 8085 `/api/video/alarms` + D 萤石云直播 | 3 |
+| 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page`（实测 0 条） | 5（无数据） |
 | 12 | 巡检任务清单 | `views/sub/InspectList.vue` 常量 | D `/task/list`、`/task/exec/list/record` | 6 |
 | 13 | 首页天气 | 无 | A `amap/weather` | 4 |
 | 14 | 无人机·航线与任务 | `stores` 常量 + 静态图 | D `/dashboard/*`、`/live/stream/list` | 6 |
@@ -137,21 +156,39 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 每一阶段都以「可独立上线、可回到演示数据」为界；接口失败一律回落演示数据，
 不让页面出现空数字或一直转圈。
 
-| 阶段 | 内容 | 产出 | 风险 |
+| 阶段 | 内容 | 产出 | 状态 |
 |---|---|---|---|
-| **1（本轮）** | 接口全量清单 + 大屏 open 签名客户端 + 首页人员总览四指标 | `src/api/open.ts`、`src/api/overview.ts`、`stores/overview.ts` | 低 |
-| **2** | 首页其余三卡：班组出勤、分时人数、报警记录与趋势 | `api/home.ts` + `stores/alarm.ts` 换源 | 中：`getAlarmRecord` 需摸清筛选参数 |
-| **3** | 智控：设备台账 + 实时数据（IOT token 参数待补） | `api/device.ts` + 设备页换源 | 中高：IOT 登录参数还需再挖 |
-| **4** | 天气、权限菜单（`unity-permission`） | `api/weather.ts`、我的页菜单由权限驱动 | 低 |
-| **5** | 人员分布 / 定位 / 隐患 / 网关标签（5 个查询接口） | `api/people.ts`、`api/iotDevice.ts` | 中：数据量大，需分页与缓存 |
-| **6** | 无人机与塔机专用服务（CAS 登录、任务、工作循环） | `api/drone.ts`、`api/crane.ts` | 高：第三方账号与鉴权各异 |
-| **7** | 写接口接入（报警状态变更、删除、登出） | 统一走「显式确认 + 默认关闭」的写入通道 | 高：必须先有服务端代理与审计，**联调不落数据** |
+| **1** | 接口全量清单 + 大屏 open 签名客户端 + 首页人员总览四指标 | `src/api/open.ts`、`src/api/overview.ts`、`stores/overview.ts` | ✅ 已完成 |
+| **2** | 首页班组出勤 + 分时人数（报警顺延） | `src/api/home.ts`、`stores/overview.ts`、`utils/chart.ts`、`SafetyPanel.vue` | ✅ 已完成 |
+| **3** | 报警（8085 视频报警）+ 智控设备台账与实时数据（IOT token 待补） | `api/videoAlarm.ts`、`api/device.ts` | ⬜ 需现场账号 |
+| **4** | 天气、权限菜单（`unity-permission`） | `api/weather.ts`、我的页菜单由权限驱动 | ⬜ |
+| **5** | 人员分布 / 定位 / 隐患 / 网关标签 | `api/people.ts`、`api/iotDevice.ts` | ⏸ 授权未开通，仅 `organ/list` 可用 |
+| **6** | 无人机与塔机专用服务（CAS 登录、任务、工作循环） | `api/drone.ts`、`api/crane.ts` | ⬜ |
+| **7** | 写接口接入（报警状态变更、删除、登出） | 统一走「显式确认 + 默认关闭」的写入通道 | ⬜ 需服务端代理与审计 |
 
-### 阶段 1 的验收口径
+### 阶段 2 的验收口径（已达成）
 
-- 首页「人员总览」四指标来自 `GET /open/bigScreen/BigsHome/personOverall`；
-- 断网 / 接口 403 / 签名失效时自动回落 `crewKpis` 常量，页面不空、不报错；
-- 单测覆盖签名串、信封兼容（`success` / `successful`）、失败回落、失败冷却。
+- 「今日班组出勤」来自 `GET /open/bigScreen/BigsHome/todayTeamsAtteStat`，实测 3 个
+  班组（管理人员 12/19 63.16%、劳务班组 31/103 30.10%、产业工人班组 6/38 15.79%）；
+- 「今日分时人数」来自 `GET /open/bigScreen/BigsHome/todayPersonHourStat`，实测
+  0..17 整点两条曲线（工人峰值 18、管理峰值 13）；
+- 两个接口各自独立成败（`Promise.allSettled`）：任一失败只影响它那块，回落演示数据；
+- 曲线会掐掉「当前整点」那个还没结算的 0，避免右端垂直跳水成「人都走光了」；
+- 单测覆盖字段收敛（`hours` 是小时数不是人数）、脏行丢弃、并集对齐补 0、空数组回落、
+  单接口失败不影响其他块。
+
+### 阶段 3 的启动条件（报警）
+
+`/bigScreen/bigAlarm/*` 在这个项目里恒为空，唯一的真实报警源是 **8085**
+`/api/video/alarms`，它要求 `Authorization: Bearer {token}` —— 必须有现场账号才能
+联调。已从 `AIAlarmListRequester` 的状态机里挖出全部要素，拿到账号即可一次接完：
+
+- 请求：`GET {WF_BASE}:8085/api/video/alarms?page=1&page_size=50&sceneCode=P000000076`
+  （`sceneCode` 就是 Unity 端 `StaticParameter.ProjectId`，值 `P000000076`）；
+- 响应：`{ code, data: { list: [...] } }`（注意是 `data.list`，不是 `data.rows`）；
+- 行字段：`Id`(int) / `CaptureTime` / `AlertName` / `AlertType` / `HandleStatus` / `ChannelNo`；
+- 截图：`GET /api/video/alarms/{Id}/picture` 返回 **base64 字符串**（客户端
+  `Base64ToSprite`），转 `data:image/jpeg;base64,…` 直接用。
 
 ---
 

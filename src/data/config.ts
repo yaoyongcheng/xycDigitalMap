@@ -172,7 +172,13 @@ export const crewKpis: [number, string, string][] = [
 
 /**
  * 今日出勤工种（2026-11 对齐设计稿 gx2 新增，原 app.js renderTradeChart）
- * 条形图数据：工种名 + 人数。条形宽度按「人数 / 最大人数」折算。
+ *
+ * ⚠️ **没有接口来源，当前页面也不再消费它**：
+ * 四套后端（:8081 / 大屏 open / IOT 网关 / 第三方）都没有「按工种统计人数」的
+ * 端点，Unity 端也只有客户端枚举 `WorkTypeToEnum`（管理/普工/其它/木工），
+ * 没有取数接口。首页这张卡在接入真实数据时换成了「今日分时人数」
+ * （`todayPersonHourStat`，真数据）。这份数据留作设计稿参考，不要再当兜底用 ——
+ * 它和真实人数对不上，混在一起会误导现场。
  */
 export const tradeRows: [string, number][] = [
   ['管理人员', 66],

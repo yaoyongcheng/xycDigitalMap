@@ -3,11 +3,10 @@ import { computed, onMounted } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
-import { squadRows, tradeRows } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useOverviewStore } from '@/stores/overview'
 import { useSubpageStore } from '@/stores/subpage'
-import { alarmTrendModel } from '@/utils/chart'
+import { alarmTrendModel, peopleHourModel } from '@/utils/chart'
 import AlarmFeed from './parts/AlarmFeed.vue'
 import PeopleDist from './parts/PeopleDist.vue'
 
@@ -15,11 +14,16 @@ import PeopleDist from './parts/PeopleDist.vue'
  * 首页 · 安全管理面板
  *
  * 对应原 js/app.js:368-411 renderSafety()。
- * 两块内容：预警（统计 + 趋势 + 轮播）与人员（概况 + 区域分布 + 出勤工种/班组）。
+ * 两块内容：预警（统计 + 趋势 + 轮播）与人员（概况 + 区域分布 + 出勤）。
  *
  * 2026-11 对齐设计稿 gx2：人员块从「作业人数 / 区域分布 / 时段趋势」调整为
- * 设计稿的「人员总览 / 人员分布 / 今日出勤工种 / 今日班组出勤」四卡；
- * 原「今日时段趋势」卡（对应设计稿死代码 peopleHourSvg）下线。
+ * 设计稿的「人员总览 / 人员分布 / 今日出勤工种 / 今日班组出勤」四卡。
+ *
+ * 2026-11 接入真实接口：设计稿的「今日出勤工种」在全项目四套后端里都**没有**
+ * 对应接口（工种维度只有客户端枚举 `WorkTypeToEnum`，没有取数端点），而
+ * 「今日班组出勤」有 `todayTeamsAtteStat`、分时人数有 `todayPersonHourStat`。
+ * 于是这张卡换成有真数据的「今日分时人数」—— 免得三张真数据卡里夹一张假数据，
+ * 反而更难判断哪个能信。视觉沿用设计稿里已下线但样式仍在的 `.people-hour`。
  */
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
@@ -41,6 +45,14 @@ const crewNums = computed(() =>
     decimals: Number.isInteger(n) ? 0 : 1,
   })),
 )
+
+/**
+ * 今日分时人数曲线。
+ *
+ * `overview.hourLive` 为空（接口没通 / 数据不足）时传 undefined，
+ * `peopleHourModel` 会自动回落到原版演示曲线 —— 图表不会画成一条空线。
+ */
+const hourModel = computed(() => peopleHourModel(new Date().getHours(), overview.hourLive))
 
 /**
  * 数据时效戳 —— 有接口数据时用它自己的取数时刻，否则退回面板挂载时刻。
@@ -117,15 +129,15 @@ function onAlarmOpen(id: string): void {
         </div>
       </div>
 
-      <div class="home-chart-card trade-card">
-        <span class="home-card-lab">今日出勤工种</span>
-        <div class="trade-list">
-          <div v-for="[name, n] in tradeRows" :key="name" class="trade-row">
-            <b>{{ name }}</b>
-            <div class="trade-bar"><i :style="{ width: (n / tradeRows[0][1] * 100).toFixed(1) + '%' }"></i></div>
-            <em>{{ n }}</em>
+      <div class="home-chart-card people-hour">
+        <div class="people-hour-hd">
+          <span class="home-card-lab">今日分时人数</span>
+          <div class="people-hour-leg">
+            <span><i class="g"></i>工人</span>
+            <span><i class="b"></i>管理</span>
           </div>
         </div>
+        <TouchChart :model="hourModel" />
       </div>
 
       <div class="home-chart-card squad-card">
@@ -137,7 +149,7 @@ function onAlarmOpen(id: string): void {
           </div>
         </div>
         <div class="squad-list">
-          <div v-for="[name, n, rate] in squadRows" :key="name" class="squad-row">
+          <div v-for="[name, n, rate] in overview.teamRows" :key="name" class="squad-row">
             <div class="squad-hd"><b>{{ name }}</b><em>{{ n }}人</em><span>{{ rate }}</span></div>
             <div class="squad-bar"><i :style="{ width: rate }"></i></div>
           </div>

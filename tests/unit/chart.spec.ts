@@ -240,3 +240,42 @@ describe('utils/chart', () => {
     })
   })
 })
+
+describe('peopleHourModel 接真实数据', () => {
+  const live = {
+    hours: [8, 9, 10, 11, 12],
+    workers: [2, 18, 18, 15, 14],
+    managers: [1, 5, 6, 6, 4],
+  }
+
+  it('刻度用接口的小时数，系列值原样上屏', () => {
+    const m = peopleHourModel(12, live)
+    expect(m.ticks).toEqual(['8:00', '9:00', '10:00', '11:00', '12:00'])
+    expect(m.series[0].values).toEqual([2, 18, 18, 15, 14])
+    expect(m.series[1].values).toEqual([1, 5, 6, 6, 4])
+  })
+
+  it('纵轴上限按实际峰值放大到 10 的整数倍', () => {
+    // 峰值 18 → 20，最高点不该贴边
+    const m = peopleHourModel(12, live)
+    const top = Math.min(...(m.ys[0].filter((v) => v != null) as number[]))
+    expect(top).toBeGreaterThan(10)
+    expect(top).toBeLessThan(148 - 22)
+  })
+
+  it('未结算的当前整点不画成 0（否则右端会垂直跳水）', () => {
+    const m = peopleHourModel(12, { ...live, hours: [8, 9, 10, 11, 12], workers: [2, 18, 18, 15, 0], managers: [1, 5, 6, 6, 0] })
+    expect(m.ticks).not.toContain('12:00')
+    expect(m.series[0].values).toEqual([2, 18, 18, 15])
+  })
+
+  it('历史时段里真正的 0 保留，不会被误掐', () => {
+    const m = peopleHourModel(12, { hours: [6, 7, 8], workers: [0, 0, 5], managers: [0, 0, 2] })
+    expect(m.series[0].values).toEqual([0, 0, 5])
+  })
+
+  it('数据不足两个整点时回落演示曲线', () => {
+    const demo = peopleHourModel(12)
+    expect(peopleHourModel(12, { hours: [9], workers: [1], managers: [1] }).svg).toBe(demo.svg)
+  })
+})

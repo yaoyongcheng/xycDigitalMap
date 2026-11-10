@@ -2958,54 +2958,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
   overflow: visible;
 }
 
-/* ---------- 今日出勤工种 / 今日班组出勤（2026-11 对齐设计稿 gx2） ---------- */
+/* ---------- 今日班组出勤（2026-11 对齐设计稿 gx2） ---------- */
 
-.trade-card { padding: 8px 10px 10px; }
-
-.trade-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.trade-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.trade-row b {
-  width: 4.2em;
-  flex: none;
-  font-size: var(--fs-12);
-  font-weight: 600;
-  color: var(--ink-2-dark);
-}
-
-.trade-bar {
-  flex: 1;
-  height: 8px;
-  border-radius: var(--r-pill);
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-}
-
-.trade-bar i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--blue), var(--blue-dark));
-}
-
-.trade-row em {
-  width: 22px;
-  flex: none;
-  text-align: right;
-  font-style: normal;
-  font-size: var(--fs-13);
-  font-weight: 700;
-  color: var(--ink-1-dark);
-}
+/*
+ * 原「今日出勤工种」卡片的 .trade-* 样式已随卡片一并移除：
+ * 全项目四套后端都没有「按工种取数」的接口，这张卡在接入真实数据时换成了
+ * 「今日分时人数」（复用上面的 .people-hour），留着样式只会变成又一组无人
+ * 消费的死代码。
+ */
 
 .squad-card { padding: 8px 10px 10px; }
 
