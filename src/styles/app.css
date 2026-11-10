@@ -1527,10 +1527,15 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 卡片从「上下两行」改横向：左 64px 设备照片（eq-ico）+ 中 eq-main
  * （eq-hd 名称行 + eq-vals 数值行）+ 右圆形箭头；eq-grid 单列。
  * 塔机双指标（is-crane）、爬架三格 + 异常行（is-climb）见下方专属段。
+ *
+ * 列宽必须写 minmax(0, 1fr) 而不是 1fr：卡片是 width:100% 的 grid item，
+ * 1fr 的自动最小值会取到卡片在该轨道里的 min-content（366px > 轨道可用
+ * 的 332px），轨道被撑破后卡片整体右移 17px 顶出浮层，右侧圆形箭头就贴
+ * 在浮层边上、被上层的 overflow:hidden 切掉半个。
  */
 .eq-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -1539,6 +1544,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   align-items: center;
   gap: 12px;
   width: 100%;
+  min-width: 0;
   text-align: left;
   background: #fff;
   border: 0;
@@ -1548,6 +1554,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font: inherit;
   cursor: default;
 }
+
+/* 名称不伸展，状态点跟在名字后面（设计稿 app.css:1504 的同名规则） */
+.eq-card .eq-hd strong { flex: none; }
 
 .eq-card.drill { cursor: pointer; }
 
@@ -1719,6 +1728,12 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .eq-card.is-climb .eq-hd strong { flex: none; }
+
+/*
+ * 爬架三格是「两数字 + 斜杠」，18px 才排得下；不写这条会被后面的数字阶梯
+ * （.eq-card b → --num-lg 24px）接管，三格互相挤出去、连成 35/3636/3636/36。
+ */
+.eq-card.is-climb .eq-val b { font-size: var(--fs-18); }
 
 .eq-card.is-climb .is-bad b { color: var(--danger-dark); }
 
@@ -3987,18 +4002,104 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-size: var(--fs-11);
 }
 
+/*
+ * 航拍大图 = 设计稿的全屏 photo-stage（原 index.html:318-333 + app.css:3557-3630）
+ *
+ * 三段式：顶栏「关闭 / 标题 / 原图 · 下载」、弹性图片区、底部手势提示。
+ * 复用 .cam-shot-pop 的绝对定位与层级，把原先「居中一张图 + 右上角关闭」
+ * 的内部排布整块换掉，因此下面要把基础段给的 padding / align-items 抵消掉。
+ */
 .cam-shot-pop.air-pop {
-  background: var(--page);
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+  background: var(--bg-1);
 }
 
-.cam-shot-pop.air-pop p {
-  color: var(--text);
+.photo-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 8px 10px;
+  background: var(--bg-1);
 }
 
-.air-pop .cam-shot-close {
-  background: var(--surface-2);
-  color: var(--text);
+.photo-bar strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 设计稿 15px：介于 --fs-14 与 --fs-16 之间，字阶特例 */
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink-1-dark);
 }
+
+.photo-bar-acts {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.photo-bar-btn {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-8);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.photo-bar-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 图片区：缩放后的图不能顶到顶栏/提示行上，靠这里裁掉多余部分 */
+.photo-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  display: grid;
+  place-items: center;
+}
+
+/*
+ * 宽高写 auto 而不是继承基础段的 width:100%：
+ * useImageZoom 用 offsetWidth/Height 算平移边界，图片盒子必须等于画面尺寸，
+ * 拉满宽度再靠 object-fit 信箱化会让边界算大，拖到「露边」的位置才停。
+ */
+.photo-view img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transform-origin: center center;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.photo-tip {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 8px 12px 12px;
+  text-align: center;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+}
+
+/* 倍率角标挂在图片区内（基础段的 .cam-shot-pop .zoom-badge bottom:52px 是给旧版底部说明文字让位的） */
+.air-pop .photo-view .zoom-badge { bottom: 12px; }
 
 .air-pop img.pos-tl { object-position: 22% 18%; }
 .air-pop img.pos-tr { object-position: 78% 18%; }
@@ -4928,9 +5029,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   color: var(--ink-3-dark);
 }
 
-/* eq-more 的圆形底与蓝箭头由基础段提供，深浅色同款，无需覆盖 */
-
-/* eq-more 的圆形底与蓝箭头由基础段提供，深浅色同款，无需覆盖 */
+/* eq-more 的圆形底与蓝箭头由基础段提供，深色浮层上底色调深一档（原 app.css:6263） */
+#page-home .eq-more {
+  color: var(--blue-dark);
+  background: rgba(76, 159, 255, 0.2);
+}
 
 /* 爬架异常卡在深色浮层上的红绿态与浅色同值（--danger-dark / --ok-dark） */
 

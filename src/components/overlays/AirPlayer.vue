@@ -101,13 +101,6 @@ watch([() => air.airPopOpen, () => air.airPopIdx], () => {
 })
 watch(() => currentShot.value?.img, resetZoom)
 
-/** 原 app.js:1552 airPopMeta.textContent */
-const popMeta = computed(() => {
-  const s = currentShot.value
-  if (!s) return ''
-  return `定点航拍  ${label.value}  ${s.time}`
-})
-
 /* ---------- 原图 / 下载（2026-11 设计稿 gx2 版，原 photo-stage 顶栏 app.js:764-785） ---------- */
 
 const shell = useShellStore()
@@ -118,11 +111,34 @@ watch([() => air.airPopOpen, () => air.airPopIdx], () => {
   hd.value = false
 })
 
+/**
+ * 顶栏标题（原 openPhotoStage 传的 photo.name：`定点航拍 今天 08:15`）。
+ * 原版是单独一行的居中原信息（双空格留气口），这里进了顶栏 ——
+ * 单空格排版 + 省略号截断，日期再长也不会把「原图 / 下载」挤出去。
+ */
+const popTitle = computed(() => {
+  const s = currentShot.value
+  if (!s) return ''
+  return `定点航拍 ${label.value} ${s.time}`
+})
+
+/**
+ * 切原图：列表/大图首屏加载的是压缩图（几百 KB），点了这里才换成
+ * img/hd/ 下的高清原图 —— 现场判读要细节，但没必要为每次打开付那份流量。
+ * 换源后当前缩放得复位，否则 4× 停在旧图上，新图一进来直接糊出边界。
+ */
+function onHd(): void {
+  if (hd.value) return
+  hd.value = true
+  resetZoom()
+}
+
 async function onDownload(): Promise<void> {
   const s = currentShot.value
   if (!s) return
   try {
-    await downloadPhoto(s.img, `${label.value} ${s.time} 航拍`)
+    // 文件名与顶栏标题一致（原 app.js:770 用 photo.name，落盘 photo.name + ".jpg"）
+    await downloadPhoto(s.img, popTitle.value)
     shell.showToast('已开始下载', 'success')
   } catch {
     shell.showToast('下载失败', 'warn')
@@ -173,6 +189,11 @@ async function onDownload(): Promise<void> {
       </button>
     </div>
 
+    <!--
+      航拍大图：设计稿的全屏 photo-stage（原 index.html:318-333 + app.css:3557-3630）。
+      三段式 —— 顶栏「关闭 / 标题 / 原图 · 下载」、弹性图片区、底部手势提示。
+      图片先给压缩图，点「原图」才换 img/hd/ 下的高清版。
+    -->
     <div
       class="cam-shot-pop air-pop"
       id="airPop"
@@ -180,25 +201,34 @@ async function onDownload(): Promise<void> {
       :hidden="!air.airPopOpen"
       :aria-hidden="!air.airPopOpen"
     >
-      <button class="cam-shot-close" id="btnAirClose" type="button" @click="onPopClose">关闭</button>
-      <SmartImg
-        id="airPopImg"
-        :pos="currentShot?.pos"
-        :src="currentShot ? (hd ? photoHd(currentShot.img) : currentShot.img) : ''"
-        alt=""
-        class="zoomable"
-        :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
-        :style="imgStyle"
-        v-on="zoomHandlers"
-      />
-      <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
-      <p id="airPopMeta">{{ popMeta }}</p>
-      <div class="photo-actions">
-        <button class="photo-btn" type="button" :disabled="hd" @click="hd = true">
-          {{ hd ? '已是原图' : '原图' }}
+      <div class="photo-bar">
+        <button class="photo-bar-btn" id="btnAirClose" type="button" @click="onPopClose">
+          关闭
         </button>
-        <button class="photo-btn" type="button" @click="onDownload">下载</button>
+        <strong>{{ popTitle }}</strong>
+        <div class="photo-bar-acts">
+          <button class="photo-bar-btn" type="button" :disabled="hd" @click="onHd">
+            {{ hd ? '已是原图' : '原图' }}
+          </button>
+          <button class="photo-bar-btn" type="button" @click="onDownload">下载</button>
+        </div>
       </div>
+
+      <div class="photo-view">
+        <SmartImg
+          id="airPopImg"
+          :pos="currentShot?.pos"
+          :src="currentShot ? (hd ? photoHd(currentShot.img) : currentShot.img) : ''"
+          alt=""
+          class="zoomable"
+          :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
+          :style="imgStyle"
+          v-on="zoomHandlers"
+        />
+        <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
+      </div>
+
+      <p class="photo-tip">双指缩放，单指拖动</p>
     </div>
   </div>
 </template>
