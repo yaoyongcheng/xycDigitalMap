@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { b2FloorCount, b2Occupied } from '@/data/config'
+import { b1Occupied, b2FloorCount, b2Occupied, b3Occupied } from '@/data/config'
 import type { Building, Equip, HomeMod, PeopleNode } from '@/types'
 
 /**
@@ -22,9 +22,18 @@ export const useHomeStore = defineStore('home', () => {
   /** 原 js/app.js:334 —— 人员分布下钻到的节点，null 表示区域列表 */
   const peopleNode = ref<PeopleNode | null>(null)
 
-  /** 原 js/app.js:320-332 */
+  /** 原 js/app.js:448-454（2026-11 对齐设计稿 gx2，5 区域） */
   const peopleTree = ref<PeopleNode[]>([
     { id: 'yard', name: '场布', count: 38 },
+    {
+      id: 'b1',
+      name: '1#楼',
+      count: 4,
+      children: Array.from({ length: b2FloorCount }, (_, i) => {
+        const n = i + 1
+        return { id: 'b1-' + n, name: n + 'F', count: b1Occupied[n] || 0 }
+      }),
+    },
     {
       id: 'b2',
       name: '2#楼',
@@ -32,6 +41,15 @@ export const useHomeStore = defineStore('home', () => {
       children: Array.from({ length: b2FloorCount }, (_, i) => {
         const n = i + 1
         return { id: 'b2-' + n, name: n + 'F', count: b2Occupied[n] || 0 }
+      }),
+    },
+    {
+      id: 'b3',
+      name: '3#楼',
+      count: 3,
+      children: Array.from({ length: b2FloorCount }, (_, i) => {
+        const n = i + 1
+        return { id: 'b3-' + n, name: n + 'F', count: b3Occupied[n] || 0 }
       }),
     },
     { id: 'base', name: '地下室', count: 2 },

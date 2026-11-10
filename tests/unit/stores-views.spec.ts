@@ -168,9 +168,9 @@ describe('stores · alarm / home / subpage', () => {
       expect(useHomeStore().homeMod).toBe('safety')
     })
 
-    it('人员树三层结构，2#楼楼层数与稀疏表对齐', () => {
+    it('人员树五区域结构，楼栋楼层数与稀疏表对齐', () => {
       const home = useHomeStore()
-      expect(home.peopleTree.map((n) => n.id)).toEqual(['yard', 'b2', 'base'])
+      expect(home.peopleTree.map((n) => n.id)).toEqual(['yard', 'b1', 'b2', 'b3', 'base'])
 
       const b2 = home.peopleTree.find((n) => n.id === 'b2')!
       expect(b2.children).toHaveLength(5)
@@ -185,7 +185,7 @@ describe('stores · alarm / home / subpage', () => {
     it('人员总数 = 各区之和', () => {
       const home = useHomeStore()
       const total = home.peopleTree.reduce((s, n) => s + n.count, 0)
-      expect(total).toBe(38 + 6 + 2)
+      expect(total).toBe(38 + 4 + 6 + 3 + 2)
     })
 
     describe('peopleChildren', () => {

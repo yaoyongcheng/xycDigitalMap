@@ -3,10 +3,10 @@ import { computed } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
-import { crewKpis } from '@/data/config'
+import { crewKpis, squadRows, tradeRows } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useSubpageStore } from '@/stores/subpage'
-import { alarmTrendModel, peopleHourModel } from '@/utils/chart'
+import { alarmTrendModel } from '@/utils/chart'
 import AlarmFeed from './parts/AlarmFeed.vue'
 import PeopleDist from './parts/PeopleDist.vue'
 
@@ -14,20 +14,17 @@ import PeopleDist from './parts/PeopleDist.vue'
  * 首页 · 安全管理面板
  *
  * 对应原 js/app.js:368-411 renderSafety()。
- * 两块内容：预警（统计 + 趋势 + 轮播）与人员（概况 + 区域分布 + 时段趋势）。
+ * 两块内容：预警（统计 + 趋势 + 轮播）与人员（概况 + 区域分布 + 出勤工种/班组）。
+ *
+ * 2026-11 对齐设计稿 gx2：人员块从「作业人数 / 区域分布 / 时段趋势」调整为
+ * 设计稿的「人员总览 / 人员分布 / 今日出勤工种 / 今日班组出勤」四卡；
+ * 原「今日时段趋势」卡（对应设计稿死代码 peopleHourSvg）下线。
  */
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
 
 /** 原 alarmTrendSvg() 无参调用，fillId 走默认值 'alarmFill'（触控层用模型版） */
 const trendModel = computed(() => alarmTrendModel(alarm.latest.length))
-
-/**
- * 原 js/app.js:197 —— 内部取 new Date().getHours()，此处显式传入。
- * 用 computed 而非常量：跨小时停留时原版每次重渲染都会重算，
- * 这里面板重新挂载时也会重算，行为一致。
- */
-const hourModel = computed(() => peopleHourModel(new Date().getHours()))
 
 /** 数值滚动用的解析结果（crewKpis 与横屏 KPI 坞同源；小数位按原始值决定） */
 const crewNums = crewKpis.map(([n]) => ({
@@ -85,10 +82,10 @@ function onAlarmOpen(id: string): void {
   </div>
 
   <div class="safe-block">
-    <h4>人员</h4>
+    <h4>人员管理</h4>
     <div class="safe-stack">
       <div class="home-chart-card crew-card">
-        <span class="home-card-lab">作业人数</span>
+        <span class="home-card-lab">人员总览</span>
         <div class="crew-overview">
           <div v-for="([, unit, name], i) in crewKpis" :key="i" class="crew-kpi">
             <b><CountUp :value="crewNums[i].value" :decimals="crewNums[i].decimals" sticky /><em>{{ unit }}</em></b><span>{{ name }}</span>
@@ -97,22 +94,37 @@ function onAlarmOpen(id: string): void {
       </div>
 
       <div class="home-chart-card people-dist">
-        <span class="home-card-lab">人员区域分布</span>
+        <span class="home-card-lab">人员分布</span>
         <div id="peopleDist">
           <PeopleDist />
         </div>
       </div>
 
-      <div class="home-chart-card people-hour">
-        <div class="people-hour-hd">
-          <span class="home-card-lab">今日时段趋势</span>
-          <div class="people-hour-leg">
-            <span><i class="g"></i>工人</span>
-            <span><i class="b"></i>管理人员</span>
+      <div class="home-chart-card trade-card">
+        <span class="home-card-lab">今日出勤工种</span>
+        <div class="trade-list">
+          <div v-for="[name, n] in tradeRows" :key="name" class="trade-row">
+            <b>{{ name }}</b>
+            <div class="trade-bar"><i :style="{ width: (n / tradeRows[0][1] * 100).toFixed(1) + '%' }"></i></div>
+            <em>{{ n }}</em>
           </div>
         </div>
-        <div class="people-hour-y">人数</div>
-        <TouchChart :model="hourModel" />
+      </div>
+
+      <div class="home-chart-card squad-card">
+        <div class="people-hour-hd">
+          <span class="home-card-lab">今日班组出勤</span>
+          <div class="people-hour-leg">
+            <span><i class="g"></i>出勤率</span>
+            <span><i class="b"></i>出勤人数</span>
+          </div>
+        </div>
+        <div class="squad-list">
+          <div v-for="[name, n, rate] in squadRows" :key="name" class="squad-row">
+            <div class="squad-hd"><b>{{ name }}</b><em>{{ n }}人</em><span>{{ rate }}</span></div>
+            <div class="squad-bar"><i :style="{ width: rate }"></i></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

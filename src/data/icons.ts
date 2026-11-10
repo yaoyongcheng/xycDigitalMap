@@ -117,39 +117,36 @@ const ICON_MAP = {
   /* ---------------- 首页四大模块（HomeSheet） ---------------- */
 
   /*
-   * 首页三模块（2026-10 版本同步 · 第三批，几何取自设计稿）
+   * 首页三模块（2026-10 版本同步 · 第三批，2026-11 对齐设计稿 gx2 几何）
    *
-   * 原来的 mod-safety / mod-quality / mod-progress / mod-equip 四枚随模块
-   * 4 → 3 一并替换：盾牌与时钟代表的「护栏 / 进度」不再是入口的语义，
-   * 现在是「看得见（智眸）／巡得勤（智巡）／控得住（智控）」。
-   * 描边统一 1.8（原 1.7）—— 新几何用了更细的取景框，1.7 在小尺寸下发虚。
+   * 图标严格对照设计稿 index.html:186-198 的内联 SVG：
+   *   智巡 = 盾牌（shield）、智眸 = 眼睛（eye）、智控 = 滑块调节（slider）。
+   * 此前「看得见/巡得勤」的语义自创了几何（取景框、待办清单），现改回
+   * 设计稿原几何，避免与视觉稿不一致。
+   * 描边统一 1.8 + 圆头（原 1.7），新几何线条更细，1.7 在 26px 下发虚。
    */
+  'mod-shield': {
+    viewBox: '0 0 24 24',
+    attrs: MOD_STROKE,
+    shapes: [
+      { tag: 'path', d: 'M12 3.6 19 6.2v5.3c0 4.1-2.7 7-7 8.7-4.3-1.7-7-4.6-7-8.7V6.2L12 3.6z' },
+    ],
+  },
   'mod-eye': {
     viewBox: '0 0 24 24',
     attrs: MOD_STROKE,
     shapes: [
-      { tag: 'path', d: 'M8.2 4.6H4.8v3.4M15.8 4.6h3.4v3.4M8.2 19.4H4.8v-3.4M15.8 19.4h3.4v-3.4' },
-      { tag: 'path', d: 'M7.2 12s2.2-3.4 4.8-3.4 4.8 3.4 4.8 3.4-2.2 3.4-4.8 3.4S7.2 12 7.2 12z' },
-      { tag: 'circle', cx: 12, cy: 12, r: 1.5 },
-    ],
-  },
-  'mod-patrol': {
-    viewBox: '0 0 24 24',
-    attrs: MOD_STROKE,
-    shapes: [
-      { tag: 'rect', x: 6.4, y: 5.2, width: 11.2, height: 14.4, rx: 2 },
-      { tag: 'path', d: 'M9.2 5.2V4.2h5.6v1' },
-      { tag: 'path', d: 'M8.9 12.6 10.8 14.5l4.2-4.5' },
+      { tag: 'path', d: 'M2.8 12S6.4 7 12 7s9.2 5 9.2 5-3.6 5-9.2 5S2.8 12 2.8 12z' },
+      { tag: 'circle', cx: 12, cy: 12, r: 2.2 },
     ],
   },
   'mod-control': {
     viewBox: '0 0 24 24',
     attrs: MOD_STROKE,
     shapes: [
-      { tag: 'rect', x: 6.4, y: 7.6, width: 11.2, height: 9.4, rx: 2.2 },
-      { tag: 'circle', cx: 10, cy: 12.2, r: 1.15 },
-      { tag: 'circle', cx: 14, cy: 12.2, r: 1.15 },
-      { tag: 'path', d: 'M12 7.6V4.8M12 4.8h2.4M8.4 17v2.4M15.6 17v2.4' },
+      { tag: 'path', d: 'M4 8h16M4 16h16' },
+      { tag: 'circle', cx: 9, cy: 8, r: 2.1 },
+      { tag: 'circle', cx: 15, cy: 16, r: 2.1 },
     ],
   },
 

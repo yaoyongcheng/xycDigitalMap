@@ -1295,24 +1295,45 @@ button, input, textarea { font-family: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  padding: 2px 0 10px;
+  justify-content: center;
+  gap: 1px;
+  padding: 7px 2px 6px;
   position: relative;
   cursor: pointer;
 }
 
+/* 2026-11 对齐设计稿 gx2：图标 + 文案横排，副标题 small 居下一行 */
+.home-mod-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  line-height: 1.2;
+}
+
 .home-mod svg {
-  width: 26px;
-  height: 26px;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
 }
 
-.home-mod span {
-  font-size: var(--fs-14);
+.home-mod-main span {
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.home-mod small {
+  font-size: var(--fs-11);
   font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink-3-dark);
+  white-space: nowrap;
 }
 
-.home-mod.on { color: var(--blue); font-weight: 650; }
-.home-mod.on span { font-weight: 650; }
+.home-mod.on { color: var(--blue-dark); font-weight: 600; }
+.home-mod.on .home-mod-main span { font-weight: 600; }
+.home-mod.on small { color: #7EB6FF; }
 
 /*
  * 选中指示条已从「每个按钮各自的 ::after」改为一条共用的滑动条，
@@ -2963,6 +2984,115 @@ button, input, textarea { font-family: inherit; color: inherit; }
   width: 100%;
   height: 132px;
   overflow: visible;
+}
+
+/* ---------- 今日出勤工种 / 今日班组出勤（2026-11 对齐设计稿 gx2） ---------- */
+
+.trade-card { padding: 8px 10px 10px; }
+
+.trade-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.trade-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trade-row b {
+  width: 4.2em;
+  flex: none;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink-2-dark);
+}
+
+.trade-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.trade-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--blue-dark));
+}
+
+.trade-row em {
+  width: 22px;
+  flex: none;
+  text-align: right;
+  font-style: normal;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.squad-card { padding: 8px 10px 10px; }
+
+.squad-card .people-hour-hd { margin-bottom: 8px; }
+
+.squad-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.squad-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.squad-hd b {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink-2-dark);
+}
+
+.squad-hd em {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--blue-dark);
+}
+
+.squad-hd span {
+  flex-shrink: 0;
+  width: 52px;
+  text-align: right;
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--ok-dark);
+}
+
+.squad-bar {
+  height: 4px;
+  margin-top: 4px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.squad-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--blue-dark));
 }
 
 .crew-item {

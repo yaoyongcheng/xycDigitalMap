@@ -114,12 +114,16 @@ describe('首页三模块', () => {
     setActivePinia(createPinia())
   })
 
-  it('名称与顺序是 智眸 / 智巡 / 智控', () => {
+  it('名称与顺序是 智巡 / 智眸 / 智控（含副标题）', () => {
     const w = mount(HomeSheet, { props: { dragTop: null } })
     const mods = w.findAll('.home-mod')
 
     expect(mods).toHaveLength(3)
-    expect(mods.map((b) => b.text())).toEqual(['智眸', '智巡', '智控'])
+    expect(mods.map((b) => b.text())).toEqual([
+      '智巡风险预警・人员动态',
+      '智眸现场快照・实景核验',
+      '智控集群管控・数驱作业',
+    ])
     expect(mods.map((b) => b.attributes('data-mod'))).toEqual(['safety', 'patrol', 'equip'])
     w.unmount()
   })

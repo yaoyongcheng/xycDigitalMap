@@ -16,9 +16,14 @@ import type { HomeMod } from '@/types'
  * + homeMods 切换委托（app.js:941-947）。
  *
  * 面板分发替代原版的 if/else 链（2026-10 版本同步 · 第三批：4 → 3）：
- *   safety -> SafetyPanel（智眸） / patrol -> PatrolPanel（智巡）
+ *   safety -> SafetyPanel（智巡） / patrol -> PatrolPanel（智眸）
  *   equip  -> EquipPanel（智控）
  * 质量管理与进度管理两个面板已按设计稿删除。
+ *
+ * 名称口径（2026-11 对齐设计稿 gx2）：设计稿 data-mod=safety 的按钮文案
+ * 是「智巡」（报警预警 + 人员动态）、data-mod=progress 是「智眸」
+ * （现场快照 + 实景核验）。此前项目按「看得见/巡得勤」的语义把两词
+ * 对调了，现统一回设计稿口径。
  *
  * 原版 renderHomePanel 在切到 safety 时还会 requestAnimationFrame
  * 启动预警轮播、切走时停止 —— 该职责已下沉到 SafetyPanel 自身
@@ -50,16 +55,17 @@ function onGrab(e: PointerEvent): void {
 const grabLabel = computed(() => ['展开面板', '收起面板', '半开面板'][props.level])
 
 /**
- * 三模块（2026-10 版本同步 · 第三批）
+ * 三模块（2026-10 版本同步 · 第三批，2026-11 对齐设计稿 gx2 文案与图标）
  *
- * 名称从「安全管理 / 质量管理 / 进度管理 / 装备管控」换成
- * 「智眸 / 智巡 / 智控」：四个入口收成三个，剩下的三个各自对应
- * 「看得见（AI 识别报警）／巡得勤（巡检照片）／控得住（设备）」。
+ * 名称与副标严格对照设计稿 index.html:186-198：
+ *   safety  → 智巡 / 风险预警・人员动态（盾牌图标）
+ *   patrol  → 智眸 / 现场快照・实景核验（眼睛图标）
+ *   equip   → 智控 / 集群管控・数驱作业（滑块调节图标）
  */
-const mods: { id: HomeMod; label: string; icon: IconName }[] = [
-  { id: 'safety', label: '智眸', icon: 'mod-eye' },
-  { id: 'patrol', label: '智巡', icon: 'mod-patrol' },
-  { id: 'equip', label: '智控', icon: 'mod-control' },
+const mods: { id: HomeMod; label: string; sub: string; icon: IconName }[] = [
+  { id: 'safety', label: '智巡', sub: '风险预警・人员动态', icon: 'mod-shield' },
+  { id: 'patrol', label: '智眸', sub: '现场快照・实景核验', icon: 'mod-eye' },
+  { id: 'equip', label: '智控', sub: '集群管控・数驱作业', icon: 'mod-control' },
 ]
 
 /**
@@ -111,8 +117,11 @@ const modIndex = computed(() => Math.max(0, mods.findIndex((m) => m.id === home.
         type="button"
         @click="home.homeMod = m.id"
       >
-        <SvgIcon :name="m.icon" />
-        <span>{{ m.label }}</span>
+        <span class="home-mod-main">
+          <SvgIcon :name="m.icon" />
+          <span>{{ m.label }}</span>
+        </span>
+        <small>{{ m.sub }}</small>
       </button>
       <!-- 共用滑块：绝对定位不参与 grid 排版，靠 --i 决定滑到第几列 -->
       <span class="home-mod-ind" :style="{ '--i': modIndex }" aria-hidden="true"><i></i></span>

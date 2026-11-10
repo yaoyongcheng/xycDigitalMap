@@ -32,7 +32,7 @@ describe('data/icons + SvgIcon', () => {
       expect(ALL_NAMES).toEqual(
         expect.arrayContaining([
           'tab-home', 'tab-work', 'tab-msg', 'tab-mine',
-          'mod-eye', 'mod-patrol', 'mod-control',
+          'mod-eye', 'mod-shield', 'mod-control',
           'menu-sites', 'menu-setting', 'menu-about',
           'msg-people', 'drone', 'cal',
           'work-cam', 'work-hazard', 'work-todo',

@@ -71,6 +71,14 @@ export const b2Occupied: Record<number, number> = { 1: 5, 4: 1 }
 export const b2FloorCount = 5
 
 /*
+ * 1#楼 / 3#楼占位（2026-11 对齐设计稿 gx2，原 js/app.js:448-454 peopleTree）
+ * 设计稿用 peopleBuilding(id, name, occupied, floorCount) 动态生成三栋楼；
+ * 此前项目只保留了 2#楼，1#楼 / 3#楼被精简，现补回以对齐设计稿 5 区域。
+ */
+export const b1Occupied: Record<number, number> = { 1: 3, 2: 1 }
+export const b3Occupied: Record<number, number> = { 1: 2, 3: 1 }
+
+/*
  * 原 qaSteps（验收工序环形图）与 milestones（里程碑时间轴）随 2026-10 版本
  * 同步删除：设计稿把「质量管理」与「进度管理」两个首页模块整块拿掉，
  * 这两个数组再没有消费方。
@@ -156,4 +164,37 @@ export const crewKpis: [number, string, string][] = [
   [40, '人', '正在上班'],
   [76, '人', '今日出勤'],
   [47.5, '%', '出勤率'],
+]
+
+/**
+ * 今日出勤工种（2026-11 对齐设计稿 gx2 新增，原 app.js renderTradeChart）
+ * 条形图数据：工种名 + 人数。条形宽度按「人数 / 最大人数」折算。
+ */
+export const tradeRows: [string, number][] = [
+  ['管理人员', 66],
+  ['普工', 28],
+  ['木工', 22],
+  ['钢筋工', 17],
+  ['杂工', 7],
+  ['架子工', 6],
+  ['司索工', 6],
+  ['模板工', 6],
+  ['砌筑工', 5],
+  ['保安', 4],
+]
+
+/**
+ * 今日班组出勤（2026-11 对齐设计稿 gx2 新增，原 app.js renderSquadChart）
+ * 出勤率条数据：班组名 + 出勤人数 + 出勤率字符串（直接作条宽与右侧文字）。
+ */
+export const squadRows: [string, number, string][] = [
+  ['湖北庞源', 6, '85.70%'],
+  ['松滋艺筑管理人员', 5, '55.60%'],
+  ['松滋艺筑普工', 15, '25.90%'],
+  ['武汉工建', 3, '25.00%'],
+  ['松滋艺筑钢筋工', 6, '11.80%'],
+  ['产业工人', 1, '6.70%'],
+  ['艺筑木工班组', 4, '3.50%'],
+  ['东方装饰作业人员', 0, '0.00%'],
+  ['湖北楚峰', 0, '0.00%'],
 ]
