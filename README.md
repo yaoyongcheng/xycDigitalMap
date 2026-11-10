@@ -92,7 +92,8 @@ npm run typecheck  # 仅做类型检查
 
 > ⚠️ 本地 `npm run dev` 是 HTTP 页面，可直接联调；部署到 GitHub Pages 后页面是 HTTPS，
 > 而现场接口只有 HTTP，浏览器会按「混合内容」拦截。登录页会提前给出提示。
-> 上线要么给接口配 HTTPS，要么把前端部署到 HTTP 环境。
+> 上线有三条路：给接口配 HTTPS（最优）、在同域加一层 HTTPS 反代、或者整个站点走 HTTP
+> ——最后一条见下方「HTTP 部署」。
 
 ## 两条架构约束（改动前必读）
 
@@ -140,6 +141,64 @@ https://yaoyongcheng.github.io/xycDigitalMap/
 > ⚠️ `vite.config.ts` 的 `base` 必须与仓库名逐字符匹配（含大写）。
 > 若改为根路径部署，把 `base` 换成 `'/'` 并同步调整 `workbox.navigateFallback`。
 
+### HTTP 部署（绕开混合内容）
+
+先说结论：**GitHub Pages 对 `*.github.io` 强制 HTTPS，仓库设置里没有关闭开关**，
+所以「把这个 Pages 站点改成 HTTP」本身做不到 —— 想走 HTTP 只能自托管。
+
+仓库自带一个零依赖静态服务 `server/serve.mjs`，直接复用 Pages 那份 `dist/`：
+
+```bash
+npm run deploy:http              # 先构建再起服务（默认 8080）
+npm run serve:http -- --port 80  # dist 已构建时只起服务
+```
+
+启动后打印可访问地址：
+
+```
+本机     http://localhost:8080/xycDigitalMap/
+局域网   http://192.168.8.54:8080/xycDigitalMap/   ← 手机同 WiFi 用这个
+```
+
+站点挂在 `/xycDigitalMap/`（与 `vite.config.ts` 的 `base` 一致，故无需二次构建），
+访问 `/` 会 302 过去。`assets/` 永久缓存、`sw.js` 与 HTML 强制回源。
+
+实测（局域网 HTTP 地址）：登录页不再出现混合内容提示，填错误账号能拿到服务端原文
+「用户名或密码错误」，说明取公钥 → RSA 加密 → 登录端点整条链路在 HTTP 下是通的。
+
+**要公网 HTTP**：把 `dist/` 拷到现场服务器，nginx 吃静态文件即可：
+
+```nginx
+server {
+  listen 80;
+  server_name _;
+  root /var/www;
+  location = / { return 302 /xycDigitalMap/; }
+  location /xycDigitalMap/ {
+    # 单页回退：不带扩展名的路径交给 index.html
+    try_files $uri $uri/ /xycDigitalMap/index.html;
+  }
+  # 哈希文件名可长缓存；sw.js 必须回源，否则新版本永远发现不了
+  location ~* ^/xycDigitalMap/assets/ {
+    add_header Cache-Control "public, max-age=31536000, immutable";
+  }
+  location = /xycDigitalMap/sw.js {
+    add_header Cache-Control "no-cache";
+  }
+}
+```
+
+**HTTP 的固有代价**（浏览器规范，任何 HTTP 部署都一样，不是本项目的 bug）：
+
+- **Service Worker 不注册** → 没有离线缓存，也不能「添加到主屏幕」当 App 用；
+- **`navigator.share` 不可用** → 航拍 / 巡检的「下载」回退成落文件，
+  不再弹系统分享面板存相册；
+- 剪贴板、定位等 API 受限（非安全上下文）。
+
+想同时保住 PWA 与「存相册」，就别降级站点，而是在同域加一层 HTTPS 反代把 `/api`
+转到现场 HTTP 服务（此时构建给 `VITE_API_BASE=/api`）—— 站点仍是 HTTPS，
+混合内容不存在，PWA 与 share 全保留。
+
 ### 真机测试的 HTTPS 约束
 
 用 `npm run dev -- --host` 让手机经局域网 IP 访问时，地址是 `http://192.168.x.x:5173`
@@ -147,6 +206,9 @@ https://yaoyongcheng.github.io/xycDigitalMap/
 
 推荐用 Chrome USB 端口转发绕开（`chrome://inspect` → Port forwarding），
 手机侧地址变为 `localhost`，SW 即可注册。
+
+同一条限制对 `npm run serve:http`（上方 HTTP 部署）一样成立 —— 非 localhost 的
+HTTP 地址本来就进不了安全上下文。
 
 ## 后续计划
 
