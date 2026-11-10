@@ -76,7 +76,7 @@ function liveCells(u: DeviceUnit): [string, string][] {
             </button>
           </div>
 
-          <div class="dev-card-grid" :class="{ 'is-pair': kind === 'crane' }">
+          <div class="dev-card-grid">
             <div v-for="[label, value] in liveCells(u)" :key="label">
               <span>{{ label }}</span>
               <b>{{ value }}</b>

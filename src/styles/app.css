@@ -133,6 +133,8 @@
   --line-dark-strong: rgba(255, 255, 255, 0.16);
   /* 深色浮层的强调描边（弹层上沿、输入框聚焦）：带蓝味，只用于「浮起来」的那一层 */
   --line-dark-2: rgba(110, 168, 255, 0.22);
+  /* 状态胶囊的描边（待机 / 停止这类中性态）：比 --line-dark-strong 更细更淡 */
+  --ring-dark: rgba(154, 171, 190, 0.7);
 
   /* 强调色 · 深色底提亮版（浅色底用上面的 --blue / --ok / --warn / --danger） */
   --blue-dark: #4C9FFF;
@@ -140,6 +142,8 @@
   --warn-dark: #F5C14A;
   --danger-dark: #FF6B6B;
   --orange-dark: #FF9A4D;
+  /* 实心强调色上的文字（状态胶囊的绿底黑字）：不能直接用 --ink-*，那组是给底色当字的 */
+  --on-ok: #06281a;
   /* 深色地图上的「在线」青 + 浅色列表上的「在线」绿 + 质量预警琥珀 */
   --cyan: #6EE7FF;
   --online: #22C55E;
@@ -7465,14 +7469,48 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   color: var(--blue-2);
 }
 
-.dev-status { font-size: var(--fs-11); font-weight: 650; }
-.dev-status.is-ok { color: var(--ok-dark); }
-.dev-status.is-wait { color: var(--warn-dark); }
-.dev-status.is-off { color: var(--ink-4-dark); }
+/*
+ * 状态胶囊（2026-11 设计稿 crane-card-head > strong b，原 app.css:6638-6660）
+ *
+ * 三档语义各不相同，别合并成「都描边」或「都填色」：
+ *   · is-ok   工作中 / 在线 —— 实心绿底 + 深绿字，全场唯一的高亮态
+ *   · is-wait 待机 / 停止   —— 透明底 + 一圈灰描边（灰环用 inset 阴影画，
+ *                              不用 border：胶囊高度已被 2px 内边距压到 22px，
+ *                              再加 1px border 会把行高从 18 顶到 20）
+ *   · is-off  离线          —— 只剩灰字，不描边
+ */
+.dev-status {
+  flex: none;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-12);
+  font-weight: 700;
+  line-height: 18px;
+  white-space: nowrap;
+}
 
+.dev-status.is-ok {
+  color: var(--on-ok);
+  background: var(--ok-dark);
+}
+
+.dev-status.is-wait {
+  color: var(--ink-3-dark);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ring-dark);
+}
+
+.dev-status.is-off { color: var(--ink-3-dark); }
+
+/*
+ * 实时卡四格两列（设计稿 crane-card-pair，塔机电梯同款）。
+ * 轨道写 minmax(0, 1fr) 而不是 1fr：1fr 的自动最小值会取单元格 min-content，
+ * 「当前高度」这类长标签会把轨道顶宽、右侧数值挤出卡片。
+ */
 .dev-card-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px 12px;
 }
 
@@ -8428,13 +8466,8 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   color: var(--danger-dark);
 }
 
-/* 设备详情页顶部的 live/report 双页签与实时卡的两格布局 */
+/* 设备详情页顶部的 live/report 双页签（实时卡的列宽见上方 .dev-card-grid） */
 .dev-view-tabs { margin-bottom: 12px; }
-
-/* 电梯卡四格走设计稿的三列（6576-6583），塔机卡两格收成两列（crane-card-pair） */
-.dev-card-grid { grid-template-columns: 1.15fr 0.8fr 1fr; }
-
-.dev-card-grid.is-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 /*
  * 大图弹层的「原图 / 下载」操作区（2026-11 设计稿 gx2 版，原 photo-stage

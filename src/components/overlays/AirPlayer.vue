@@ -7,8 +7,9 @@ import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useShellStore } from '@/stores/shell'
+import { useAlbumFile } from '@/utils/albumSave'
 import { addDays, formatCamDate, startOfDay } from '@/utils/date'
-import { downloadPhoto, photoHd } from '@/utils/photoHd'
+import { photoHd, savePhoto } from '@/utils/photoHd'
 import { useSlideOverlay } from '@/utils/slideOverlay'
 import { useImageZoom } from '@/utils/zoom'
 
@@ -133,15 +134,33 @@ function onHd(): void {
   resetZoom()
 }
 
+/**
+ * 「存相册」用的预转文件：大图打开后先把 jpg 备好，点下载时才能在同一个
+ * 用户手势里调起系统分享面板（详见 utils/albumSave.ts 的注释）。
+ * 关弹层时 src 变 undefined，在途任务随之作废。
+ */
+const { file: albumFile } = useAlbumFile(
+  computed(() => (air.airPopOpen ? currentShot.value?.img : undefined)),
+  () => popTitle.value,
+)
+
+/**
+ * 下载 = 存进手机相册（2026-11）。
+ *
+ * 手机浏览器没有写相册的 Web API，只能借系统分享面板落进相册
+ * （iOS「存储图像」/ Android「保存到相册」）；桌面或分享不可用时才退回
+ * a[download] 存文件。返回值决定提示文案：取消时不弹 toast。
+ */
 async function onDownload(): Promise<void> {
   const s = currentShot.value
   if (!s) return
   try {
     // 文件名与顶栏标题一致（原 app.js:770 用 photo.name，落盘 photo.name + ".jpg"）
-    await downloadPhoto(s.img, popTitle.value)
-    shell.showToast('已开始下载', 'success')
+    const res = await savePhoto(s.img, popTitle.value, albumFile.value)
+    if (res === 'album') shell.showToast('已保存到相册', 'success')
+    else if (res === 'download') shell.showToast('已开始下载', 'success')
   } catch {
-    shell.showToast('下载失败', 'warn')
+    shell.showToast('保存失败', 'warn')
   }
 }
 </script>

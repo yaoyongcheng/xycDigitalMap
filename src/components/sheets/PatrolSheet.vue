@@ -3,7 +3,8 @@ import { computed, ref } from 'vue'
 
 import { patrolCats, patrolPhotos } from '@/data/config'
 import { useShellStore } from '@/stores/shell'
-import { downloadPhoto, photoHd } from '@/utils/photoHd'
+import { useAlbumFile } from '@/utils/albumSave'
+import { photoHd, savePhoto } from '@/utils/photoHd'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -45,13 +46,23 @@ const {
   reset: zoomReset,
 } = useImageZoom()
 
+/**
+ * 存相册的预转 jpg：弹层一打开就在后台备好，点「下载」时才能在同一个
+ * 用户手势里调起系统分享面板（见 utils/albumSave.ts）。
+ */
+const { file: albumFile } = useAlbumFile(
+  () => photo.value?.img,
+  () => photo.value?.name ?? '',
+)
+
 async function onDownload(): Promise<void> {
   if (!photo.value) return
   try {
-    await downloadPhoto(photo.value.img, photo.value.name)
-    shell.showToast('已开始下载', 'success')
+    const res = await savePhoto(photo.value.img, photo.value.name, albumFile.value)
+    if (res === 'album') shell.showToast('已保存到相册', 'success')
+    else if (res === 'download') shell.showToast('已开始下载', 'success')
   } catch {
-    shell.showToast('下载失败', 'warn')
+    shell.showToast('保存失败', 'warn')
   }
 }
 

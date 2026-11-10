@@ -92,11 +92,60 @@ async function toJpegBlob(url: string): Promise<Blob> {
   return blob
 }
 
-/** 下载当前图（原图优先，输出 jpg）：fetch → canvas 转码 → a[download]，失败交给调用方提示 */
-export async function downloadPhoto(src: string, name: string): Promise<void> {
+/* ---------- 存相册 / 下载 ---------- */
+
+/** 保存结果：album = 已存进相册（分享面板完成）；download = 落成文件；cancel = 用户取消 */
+export type SaveResult = 'album' | 'download' | 'cancel'
+
+/** 原图优先，转成 jpg 的 File（可直接塞进 navigator.share 的 files） */
+export async function photoJpegFile(src: string, name: string): Promise<File> {
   const url = new URL(photoHd(src), window.location.href).href
-  const blob = await toJpegBlob(url)
-  const objUrl = URL.createObjectURL(blob)
+  return new File([await toJpegBlob(url)], `${name}.jpg`, { type: 'image/jpeg' })
+}
+
+/** Web Share 的文件分享（lib.dom 里的 ShareData 未覆盖 files，这里自己收窄） */
+interface FileShareData {
+  files: File[]
+  title?: string
+}
+type ShareCapable = Navigator & {
+  canShare?: (data?: FileShareData) => boolean
+  share?: (data?: FileShareData) => Promise<void>
+}
+
+/**
+ * 当前环境是否具备「系统分享面板」的能力（不看具体文件类型）。
+ *
+ * 只在触摸设备上算可用：桌面 Chrome 也支持 navigator.share（会弹 Windows 的
+ * 系统分享），但桌面用户点「下载」要的是落一个文件，不是弹系统分享。
+ */
+export function canShareFiles(): boolean {
+  const coarse = window.matchMedia?.('(pointer: coarse)')
+  if (!coarse?.matches) return false
+  const nav = navigator as ShareCapable
+  return typeof nav.share === 'function' && typeof nav.canShare === 'function'
+}
+
+/**
+ * 能不能把这张图交给系统分享面板（→ 相册）。
+ *
+ * 手机浏览器没有把图片写进系统相册的 Web API（既没有相册权限，也没有目录访问），
+ * 唯一能把文件交出去的口子是系统分享面板：iOS 里选「存储图像」、Android 里选
+ * 「保存到相册 / 照片」，落点就是相册。所以「存相册」= navigator.share(files)。
+ */
+function canShareToAlbum(file: File): boolean {
+  if (!canShareFiles()) return false
+  try {
+    return (navigator as ShareCapable).canShare!({ files: [file] })
+  } catch {
+    // 部分 WebView 的 canShare 收到 files 会直接抛，按不支持处理
+    return false
+  }
+}
+
+/** 兜底：a[download] 存成文件（桌面直接落下载目录，移动端落「文件/下载」） */
+function saveAsFile(file: Blob, name: string): void {
+  const objUrl = URL.createObjectURL(file)
   const a = document.createElement('a')
   a.href = objUrl
   a.download = `${name}.jpg`
@@ -104,4 +153,34 @@ export async function downloadPhoto(src: string, name: string): Promise<void> {
   a.click()
   a.remove()
   window.setTimeout(() => URL.revokeObjectURL(objUrl), 1500)
+}
+
+/**
+ * 保存当前图（原图优先，输出 jpg）。
+ *
+ * `ready` 是提前转好的文件：分享面板要求在用户手势里调用，点按钮后再
+ * fetch + canvas 转码（几百毫秒、跨好几个 task）在旧版 iOS 上会把这次手势
+ * 耗掉，面板压根不弹。调用方可在打开大图的空档先备好（见 utils/albumSave.ts），
+ * 传进来就能在同一次任务里直接 share。没备好也不要紧，照样等转完再试。
+ *
+ * 取消（AbortError）不算失败，也不再兜底下载 —— 否则点「取消」反而落一份文件。
+ */
+export async function savePhoto(
+  src: string,
+  name: string,
+  ready?: File | null,
+): Promise<SaveResult> {
+  const file = ready ?? (await photoJpegFile(src, name))
+  const nav = navigator as ShareCapable
+  if (canShareToAlbum(file)) {
+    try {
+      await nav.share!({ files: [file], title: name })
+      return 'album'
+    } catch (err) {
+      if ((err as DOMException | undefined)?.name === 'AbortError') return 'cancel'
+      // NotAllowedError（丢手势）等：面板没弹出来，退回文件下载
+    }
+  }
+  saveAsFile(file, name)
+  return 'download'
 }
