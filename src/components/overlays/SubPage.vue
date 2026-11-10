@@ -220,7 +220,6 @@ onUnmounted(() => {
       <UavPage v-else-if="sub.view.kind === 'uav'" />
       <ClimbPage v-else-if="sub.view.kind === 'climb'" />
       <AlarmHist v-else-if="sub.view.kind === 'alarm-hist'" />
-      <AlarmHist v-else-if="sub.view.kind === 'alarm-hist-day'" :day="sub.view.date" />
       <div v-else-if="sub.view.kind === 'placeholder'" class="card">
         <h4 class="sub-ph-title">{{ placeholderName }}</h4>
         <p class="empty-note">{{ placeholderNote }}</p>

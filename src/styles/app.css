@@ -8109,98 +8109,12 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 /*
  * 报警预警历史页（2026-11 设计稿 gx2 版同步，原 app.css:2360-2496）。
- * 浅色子页：汇总头 + 按日行（可 drill-in）+ insp-item 列表。
- * 设计稿把 .alarm-hist-row 渲染函数漏在了 renderAlarmHist 外面（死代码），
- * 但 data-hist-day 委托与 openAlarmHistDay 都是活的 —— 这里按 CSS 意图
- * 把行渲染出来，让 drill-in 可达。
+ * 浅色子页：今日/历史两页签 + insp-item 列表。
+ * 设计稿里 .alarm-hist-row（按日行）与 renderAlarmHistDay（按日 drill-in）
+ * 都是未调用的死代码，历史预警页签实际结构是「日期选择器 → 日历 →
+ * 所选日期的列表」，不做按日行平铺、也不做 drill-in。
  */
 .alarm-hist-page { padding-bottom: 12px; }
-
-.alarm-hist-sum {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  padding: 14px 16px;
-  border-radius: var(--r-12);
-  background: var(--surface);
-}
-
-.alarm-hist-sum span {
-  font-size: var(--fs-13);
-  color: var(--muted);
-}
-
-.alarm-hist-sum b {
-  font-size: 28px;
-  line-height: 1;
-  font-weight: 700;
-  color: var(--danger);
-}
-
-.alarm-hist-sum b i,
-.alarm-hist-row b i {
-  margin-left: 2px;
-  font-style: normal;
-  font-size: var(--fs-12);
-  font-weight: 600;
-}
-
-.alarm-hist-sum em {
-  margin-left: 8px;
-  font-style: normal;
-  font-size: var(--fs-12);
-  font-weight: 500;
-  color: var(--muted);
-}
-
-.alarm-hist-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: var(--r-12);
-  background: var(--surface);
-}
-
-.alarm-hist-row span {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.alarm-hist-row em {
-  margin-left: 8px;
-  font-style: normal;
-  font-size: var(--fs-12);
-  font-weight: 500;
-  color: var(--muted);
-}
-
-.alarm-hist-row b {
-  font-size: var(--fs-18);
-  font-weight: 700;
-  color: var(--danger);
-}
-
-.alarm-hist-row b.is-zero { color: var(--ink-4); }
-
-button.alarm-hist-row {
-  width: 100%;
-  border: 0;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.alarm-hist-go {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  color: var(--ink-4);
-}
 
 /* 历史页里的来源徽标换浅底深字（深色版徽标在浅底上看不清） */
 .alarm-hist-page .alarm-src-drone { background: #E8F3FF; color: #2B6CB0; }

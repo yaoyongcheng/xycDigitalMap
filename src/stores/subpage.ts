@@ -2,7 +2,6 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { useAlarmStore } from './alarm'
-import { dateKey } from '@/utils/date'
 import type { DeviceKind } from '@/types'
 
 /**
@@ -33,8 +32,6 @@ export type SubView =
   | { kind: 'climb' }
   /** 报警预警历史（2026-11 设计稿 gx2 版新增，今日/历史两页签） */
   | { kind: 'alarm-hist' }
-  /** 报警历史按日 drill-in（X月X日预警） */
-  | { kind: 'alarm-hist-day'; date: string }
 
 export const useSubpageStore = defineStore('subpage', () => {
   const alarm = useAlarmStore()
@@ -82,10 +79,6 @@ export const useSubpageStore = defineStore('subpage', () => {
         return '智能爬架'
       case 'alarm-hist':
         return '报警预警'
-      case 'alarm-hist-day': {
-        const [, m, d] = view.value.date.split('-').map(Number)
-        return `${m}月${d}日预警`
-      }
       default:
         return ''
     }
@@ -134,13 +127,6 @@ export const useSubpageStore = defineStore('subpage', () => {
     alarm.histCalOpen = false
     back.value = null
     view.value = { kind: 'alarm-hist' }
-  }
-
-  /** 打开某日预警（原 openAlarmHistDay）：返回回到历史页 */
-  function openAlarmHistDay(d: Date): void {
-    alarm.histCalOpen = false
-    back.value = { kind: 'alarm-hist' }
-    view.value = { kind: 'alarm-hist-day', date: dateKey(d) }
   }
 
   /** 打开设备详情（原 openCranePage / openLiftPage / openUavPage） */
@@ -220,7 +206,6 @@ export const useSubpageStore = defineStore('subpage', () => {
     openInspectList,
     openAlarmDetail,
     openAlarmHist,
-    openAlarmHistDay,
     openDevice,
     openUav,
     openClimb,
