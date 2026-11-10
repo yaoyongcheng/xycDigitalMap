@@ -10,6 +10,7 @@ import AlarmHist from '@/views/sub/AlarmHist.vue'
 import ClimbPage from '@/views/sub/ClimbPage.vue'
 import DevicePage from '@/views/sub/DevicePage.vue'
 import InspectList from '@/views/sub/InspectList.vue'
+import LoginPage from '@/views/sub/LoginPage.vue'
 import UavPage from '@/views/sub/UavPage.vue'
 
 /**
@@ -220,6 +221,7 @@ onUnmounted(() => {
       <UavPage v-else-if="sub.view.kind === 'uav'" />
       <ClimbPage v-else-if="sub.view.kind === 'climb'" />
       <AlarmHist v-else-if="sub.view.kind === 'alarm-hist'" />
+      <LoginPage v-else-if="sub.view.kind === 'login'" />
       <div v-else-if="sub.view.kind === 'placeholder'" class="card">
         <h4 class="sub-ph-title">{{ placeholderName }}</h4>
         <p class="empty-note">{{ placeholderNote }}</p>

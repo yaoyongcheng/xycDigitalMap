@@ -65,6 +65,35 @@ npm run typecheck  # 仅做类型检查
 > 两条架构约束（单文件 CSS 级联 / 覆盖层 .open 常驻）本次改造均遵守：
 > 新增样式全部追加在 app.css 末尾，覆盖层结构未动。
 
+## 账号登录（2026-11）
+
+「我的」页接入了现场服务器的真实鉴权（接口与 Unity 端「向阳村-万联装备集群作业系统」一致）。
+
+**登录流程**（`src/api/auth.ts`）：
+
+1. `GET /api/user/auth/public-key` → `{ code, message, data: { public_key } }`（1024 位 PEM）
+2. `POST /api/user/auth/login`，body `{ encrypted_data }`；
+   `encrypted_data = Base64(RSA_PKCS1v15(JSON.stringify({ username, password })))`
+3. 响应 `{ access_token, expires_in }` → 建立本地会话
+
+> 服务端拒绝明文登录（返回「为了安全起见，登录请求必须加密」），所以两步都不能省。
+> WebCrypto 只支持 RSA-OAEP、不支持 PKCS#1 v1.5 加密，因此用 `jsencrypt`。
+> RSA 1024 单块明文上限 117 字节，超长会在本地先拦下并提示。
+
+**Token 注入**：`src/api/http.ts` 的 `request(path, { auth: true })` 自动加
+`Authorization: Bearer {token}`（同 Unity 端 `GetTokenHeader`）；401 会清会话并提示重新登录。
+业务接口以后统一走这个封装，不要各自 `fetch`。
+
+**会话持久化**：token 存 localStorage（键 `xyc.auth.session`，只存 token/过期时间/账号/姓名，
+**不存密码**），刷新后自动恢复；过期或登出即清。服务端没有 refresh token 端点，静态站点
+不落盘就得每次重登 —— 更严格的做法是服务端下发 httpOnly Cookie，属后端改造项。
+
+**接口地址**：默认 `http://115.159.67.12:8081`，可用 `VITE_API_BASE` 覆盖（模板见 `.env.example`）。
+
+> ⚠️ 本地 `npm run dev` 是 HTTP 页面，可直接联调；部署到 GitHub Pages 后页面是 HTTPS，
+> 而现场接口只有 HTTP，浏览器会按「混合内容」拦截。登录页会提前给出提示。
+> 上线要么给接口配 HTTPS，要么把前端部署到 HTTP 环境。
+
 ## 两条架构约束（改动前必读）
 
 ### 1. 样式必须保持单文件全局，不要拆 `<style scoped>`

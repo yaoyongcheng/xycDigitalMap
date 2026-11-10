@@ -10,6 +10,7 @@ import BackBar from '@/components/ui/BackBar.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import MinePage from '@/views/MinePage.vue'
@@ -359,6 +360,15 @@ describe('交互优化回归', () => {
   })
 
   describe('退出登录二次确认', () => {
+    /** 2026-11：菜单 / 退出按钮只在登录态出现，先播一个会话 */
+    beforeEach(() => {
+      const auth = useAuthStore()
+      auth.token = 'test-token'
+      auth.username = '13800000000'
+      auth.displayName = '张工'
+      auth.role = '安全员'
+    })
+
     it('首次点击只进入待确认，3s 无操作自动解除', async () => {
       const w = mount(MinePage)
       const shell = useShellStore()
@@ -380,7 +390,7 @@ describe('交互优化回归', () => {
       expect(shell.toastType).toBe('success')
       expect(w.find('.profile-banner').classes()).toContain('is-out')
       expect(w.find('#mineMenu').exists()).toBe(false)
-      expect(w.find('#btnRelogin').exists()).toBe(true)
+      expect(w.find('#btnLogin').exists()).toBe(true)
     })
   })
 

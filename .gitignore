@@ -30,6 +30,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# 环境变量（真实值不提交，模板见 .env.example）
+.env
+.env.*
+!.env.example
+
 # 编辑器缓存
 .idea/
 *.suo

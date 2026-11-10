@@ -7,10 +7,19 @@ import { createPinia } from 'pinia'
 import './styles/app.css'
 
 import App from './App.vue'
+import { useAuthStore } from './stores/auth'
 import { registerServiceWorker } from './utils/pwa'
 import { mountDiag, unmountDiag } from './utils/diag'
 
-createApp(App).use(createPinia()).mount('#app')
+const pinia = createPinia()
+createApp(App).use(pinia).mount('#app')
+
+/**
+ * 尽早建一次会话 store：它负责从 localStorage 恢复 token 并注册到 api/http 的
+ * 请求头注入钩子上。若等到用户点开「我的」才创建，首屏就可能带着空 token 去
+ * 请求需要鉴权的接口（表现为莫名 401）。
+ */
+useAuthStore(pinia)
 
 // 真机诊断浮层：仅当 URL 带 ?diag 时挂载，正常访问首行即返回、零开销。详见 utils/diag.ts
 mountDiag()

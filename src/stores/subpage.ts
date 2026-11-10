@@ -32,6 +32,8 @@ export type SubView =
   | { kind: 'climb' }
   /** 报警预警历史（2026-11 设计稿 gx2 版新增，今日/历史两页签） */
   | { kind: 'alarm-hist' }
+  /** 账号登录（2026-11 新增，「我的」入口，真实接口鉴权） */
+  | { kind: 'login' }
 
 export const useSubpageStore = defineStore('subpage', () => {
   const alarm = useAlarmStore()
@@ -79,6 +81,8 @@ export const useSubpageStore = defineStore('subpage', () => {
         return '智能爬架'
       case 'alarm-hist':
         return '报警预警'
+      case 'login':
+        return '账号登录'
       default:
         return ''
     }
@@ -154,6 +158,15 @@ export const useSubpageStore = defineStore('subpage', () => {
   }
 
   /**
+   * 打开账号登录页（2026-11 新增）。
+   * 从「我的」进入，登录成功后由页面自己 close() 回上一页。
+   */
+  function openLogin(): void {
+    back.value = null
+    view.value = { kind: 'login' }
+  }
+
+  /**
    * 原 closeSub(force) —— 三级优先返回：
    *   ① 巡检日历展开时先收日历
    *   ② 有上一级则回退一级
@@ -210,6 +223,7 @@ export const useSubpageStore = defineStore('subpage', () => {
     openUav,
     openClimb,
     openSub,
+    openLogin,
     close,
     dismiss,
   }

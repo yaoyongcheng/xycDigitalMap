@@ -8,6 +8,7 @@ import { nextTick } from 'vue'
 
 import TabBar from '@/components/shell/TabBar.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
+import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useMsgStore } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
@@ -345,6 +346,10 @@ describe('结构性守卫', () => {
     })
 
     it('我的页：3 个菜单项各一枚图标', () => {
+      // 2026-11 起菜单只在登录态出现（登录态由 stores/auth 驱动）
+      const auth = useAuthStore()
+      auth.token = 'test-token'
+      auth.username = '13800000000'
       const w = mount(MinePage)
       expect(w.findAll('.menu-item')).toHaveLength(3)
       expect(w.findAll('.menu-ico svg path')).toHaveLength(3)
