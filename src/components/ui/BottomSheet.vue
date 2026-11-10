@@ -44,7 +44,10 @@ function onKey(e: KeyboardEvent): void {
 onMounted(() => {
   const active = document.activeElement
   restoreTo = active instanceof HTMLElement && active !== document.body ? active : null
-  panel.value?.focus()
+  // preventScroll 必须有：面板是从屏幕外升起（popRise 的 translateY(100%)）才到位，
+  // 直接 focus 会让浏览器把它「滚进视口」——整页先下移一个面板高度、动画结束
+  // 再被滚动锚定拉回原位，观感就是页面跟着从上往下弹了一下。
+  panel.value?.focus({ preventScroll: true })
   window.addEventListener('keydown', onKey)
 })
 
@@ -52,7 +55,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
   // 触发按钮可能已随视图卸载（例如从子页打开弹层后又关闭了子页），
   // 那就别再抢焦点 —— 抢到游离节点上等于什么都没做，还会打断转场
-  if (restoreTo?.isConnected) restoreTo.focus()
+  if (restoreTo?.isConnected) restoreTo.focus({ preventScroll: true })
   restoreTo = null
 })
 </script>
