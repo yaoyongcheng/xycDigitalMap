@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
-import { crewKpis, squadRows, tradeRows } from '@/data/config'
+import { squadRows, tradeRows } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
+import { useOverviewStore } from '@/stores/overview'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendModel } from '@/utils/chart'
 import AlarmFeed from './parts/AlarmFeed.vue'
@@ -22,25 +23,41 @@ import PeopleDist from './parts/PeopleDist.vue'
  */
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
+const overview = useOverviewStore()
 
 /** 原 alarmTrendSvg() 无参调用，fillId 走默认值 'alarmFill'（触控层用模型版） */
 const trendModel = computed(() => alarmTrendModel(alarm.latest.length))
 
-/** 数值滚动用的解析结果（crewKpis 与横屏 KPI 坞同源；小数位按原始值决定） */
-const crewNums = crewKpis.map(([n]) => ({
-  value: n,
-  decimals: Number.isInteger(n) ? 0 : 1,
-}))
+/**
+ * 数值滚动用的解析结果。
+ *
+ * 2026-11 接入真实接口：数据源改为 overview store（`/bigScreen/BigsHome/personOverall`），
+ * 取不到时 store 内部回落到 data/config.ts 的 crewKpis，所以这里无需判空。
+ * 小数位仍按最终值决定 —— 出勤率可能是 30 或 30.0，随接口返回。
+ */
+const crewNums = computed(() =>
+  overview.kpis.map(([n]) => ({
+    value: n,
+    decimals: Number.isInteger(n) ? 0 : 1,
+  })),
+)
 
 /**
- * 数据时效戳（2026-10 改造新增）——面板挂载时刻。
+ * 数据时效戳 —— 有接口数据时用它自己的取数时刻，否则退回面板挂载时刻。
  * 静态演示数据容易被误认为实时数据，标注时间降低误读。
  */
-const updTime = (() => {
+const mountTime = (() => {
   const d = new Date()
   const p = (n: number): string => String(n).padStart(2, '0')
   return `${p(d.getHours())}:${p(d.getMinutes())}`
 })()
+
+const updTime = computed(() => overview.updatedAt || mountTime)
+
+// 面板挂载即取一次；store 内部有并发去重与失败冷却
+onMounted(() => {
+  void overview.load()
+})
 
 /**
  * 原 homePanels 委托的 [data-alarm] 分支。
@@ -87,7 +104,7 @@ function onAlarmOpen(id: string): void {
       <div class="home-chart-card crew-card">
         <span class="home-card-lab">人员总览</span>
         <div class="crew-overview">
-          <div v-for="([, unit, name], i) in crewKpis" :key="i" class="crew-kpi">
+          <div v-for="([, unit, name], i) in overview.kpis" :key="i" class="crew-kpi">
             <b><CountUp :value="crewNums[i].value" :decimals="crewNums[i].decimals" sticky /><em>{{ unit }}</em></b><span>{{ name }}</span>
           </div>
         </div>

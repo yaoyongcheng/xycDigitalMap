@@ -156,8 +156,12 @@ export const airPos = [
 export const hazardKindList = ['安全防护', '文明施工', '用电隐患', '消防通道', '其他']
 
 /**
- * 人员概况四指标（原 renderSafety 内联硬编码，非接口数据）。
- * 安全面板与横屏 KPI 数据坞共用，接后端后由接口替换。
+ * 人员概况四指标（原 renderSafety 内联硬编码）。
+ *
+ * 2026-11 起**只作回落值**：真实数据来自大屏 open 接口
+ * `GET /bigScreen/BigsHome/personOverall`（见 stores/overview.ts）。
+ * 现场断网、接口未授权、签名失效时用这份演示数据兜底，避免首页出现空数字。
+ * 标签与单位以这里为唯一来源，接口侧只提供数值。
  */
 export const crewKpis: [number, string, string][] = [
   [160, '人', '项目人数'],
