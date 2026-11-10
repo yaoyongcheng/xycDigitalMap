@@ -7205,6 +7205,44 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .dev-page { padding-bottom: calc(12px + var(--safe-bot)); }
 
+/*
+ * 下划线式页签（原 app.css:5482-5519 .uav-tabs）：塔机 / 电梯详情页顶部的
+ * 「设备实时状态 / 作业报表」双页签。未选中灰、选中白 + 底部白色短下划线。
+ * 此前迁移漏了这组基础样式，页签 button 落到浏览器默认背景（浅底）叠上
+ * 继承自 .subpage.is-dark 的浅色文字，白底白字成了白条。
+ */
+.uav-tabs {
+  display: flex;
+  gap: 22px;
+  padding: 4px 16px 0;
+  border-bottom: 1px solid var(--line-dark);
+}
+
+.uav-tabs button {
+  position: relative;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3-dark);
+  font-size: var(--fs-16);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.uav-tabs button.on { color: var(--ink-1-dark); }
+
+.uav-tabs button.on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: var(--r-2);
+  background: var(--ink-1-dark);
+}
+
 .dev-block { padding: 16px 16px 0; }
 
 .dev-block + .dev-block {
@@ -8201,14 +8239,35 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .report-points span { min-width: 0; }
 
-/* 日报/周报/月报三粒度页签撑满整行 */
+/* 日报/周报/月报三粒度页签：胶囊式（原 app.css:5677-5702 .uav-block .uav-tabs），
+ * 覆盖基础 .uav-tabs 的下划线式 —— 整组灰底、无边框、选中蓝底白字。 */
 .uav-tabs.report-span {
   display: flex;
   width: 100%;
+  gap: 2px;
   margin-bottom: 12px;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--r-8);
+  background: var(--bg-3);
 }
 
-.uav-tabs.report-span button { flex: 1; }
+.uav-tabs.report-span button {
+  flex: 1;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-6);
+  font-size: var(--fs-13);
+  font-weight: 500;
+}
+
+.uav-tabs.report-span button.on {
+  background: rgba(47, 124, 255, 0.85);
+  color: #fff;
+}
+
+.uav-tabs.report-span button.on::after { content: none; }
 
 .report-fleet { margin-top: 8px; }
 
