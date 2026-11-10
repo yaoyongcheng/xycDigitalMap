@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
-import HomeProgress from '@/components/ui/HomeProgress.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useShellStore } from '@/stores/shell'
@@ -31,7 +30,7 @@ const pageEl = ref<HTMLElement | null>(null)
 /**
  * --sheet-up-top 的合理上限（px）。
  *
- * .home-progress 恒定在首页顶部区域，正常结果约 110~150px，300px 已相当宽松。
+ * .home-project-row 恒定在首页顶部区域，正常结果约 110~150px，300px 已相当宽松。
  * 这里刻意用绝对值而不是「页面高度的百分比」：真机诊断显示，出问题的那一刻
  * 页面高度本身也会异常（Safari 恢复标签页时先以错误的视口高度渲染一瞬），
  * 百分比阈值会跟着一起放大而失效 —— 实测放行过一个 505px 的坏值。
@@ -43,13 +42,13 @@ let recalibrateTimer = 0
 
 /**
  * 测量全开档的抽屉顶位置（原 js/app.js:927-939 setSheetUp 的取值部分）。
- * 需要真实测量 .home-progress 的位置，故直接操作 DOM（这是测量，不是状态）。
+ * 需要真实测量 .home-project-row 的位置，故直接操作 DOM（这是测量，不是状态）。
  * 测量不合法（布局未就绪/异常视口）时返回 null，由调用方决定回退。
  */
 function measureExpandedTop(): number | null {
   const el = pageEl.value
   if (!el) return null
-  const prog = el.querySelector('.home-progress')
+  const prog = el.querySelector('.home-project-row')
   if (!prog) return null
   const pageRect = el.getBoundingClientRect()
   const progRect = prog.getBoundingClientRect()
@@ -269,7 +268,6 @@ function onMapAlarm(id: string): void {
             全屏
           </button>
         </div>
-        <HomeProgress />
       </div>
     </div>
 

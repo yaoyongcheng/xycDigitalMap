@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import HomeProgress from '@/components/ui/HomeProgress.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useAlarmStore } from '@/stores/alarm'
@@ -86,7 +85,6 @@ function onAlarmPin(id: string): void {
     <div class="land-top">
       <div class="land-brand">
         <div class="land-project">向阳村项目智能建造管理平台</div>
-        <HomeProgress />
       </div>
       <div class="land-actions">
         <!--

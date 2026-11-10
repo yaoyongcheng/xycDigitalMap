@@ -268,14 +268,6 @@ const ICON_MAP = {
       { tag: 'path', d: 'M7.8 10.3 9 7.8h6.2' },
     ],
   },
-  'tool-nav': {
-    viewBox: '0 0 24 24',
-    attrs: WHITE_STROKE,
-    shapes: [
-      { tag: 'path', d: 'M21 4 3.8 11.2l7.4 1.6L12.8 20z' },
-      { tag: 'path', d: 'M11.2 12.8 21 4' },
-    ],
-  },
 
   /* ---------------- 通用 ---------------- */
 

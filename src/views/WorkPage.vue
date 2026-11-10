@@ -39,12 +39,6 @@ const tools: { color: string; title: string; desc: string; icon: IconName }[] = 
     desc: '车辆出入场调度管理',
     icon: 'tool-horizontal',
   },
-  {
-    color: 'orange',
-    title: '工地地图导航',
-    desc: '施工工地场内区域定位与导航',
-    icon: 'tool-nav',
-  },
 ]
 
 function onShortClick(work: string): void {

@@ -94,7 +94,7 @@ watchEffect(() => {
 
 <template>
   <div class="stage">
-    <div class="stage-title">工地数字地图 · 移动端标准版</div>
+    <div class="stage-title">向阳村项目智能建造管理平台</div>
     <div class="phone" :class="{ 'is-landscape': shell.isLandscape }">
       <div class="phone-screen">
         <StatusBar />

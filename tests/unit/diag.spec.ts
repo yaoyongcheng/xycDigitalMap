@@ -216,7 +216,7 @@ describe('utils/diag', () => {
     it('计数行能反映真实节点数', () => {
       expect(text()).toContain('计数 #page-home=1')
       expect(text()).toContain('.home-sheet=0')
-      expect(text()).toContain('.home-progress=0')
+      expect(text()).toContain('.home-project-row=0')
     })
 
     it('缺少 transform / transition 时回落到 (none)', () => {

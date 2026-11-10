@@ -36,7 +36,7 @@ describe('data/icons + SvgIcon', () => {
           'menu-sites', 'menu-setting', 'menu-about',
           'msg-people', 'drone', 'cal',
           'work-cam', 'work-hazard', 'work-todo',
-          'tool-vertical', 'tool-horizontal', 'tool-nav',
+          'tool-vertical', 'tool-horizontal',
         ]),
       )
     })

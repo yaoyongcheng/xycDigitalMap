@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import { patrolCats, patrolPhotos } from '@/data/config'
 import { useShellStore } from '@/stores/shell'
 import { downloadPhoto, photoHd } from '@/utils/photoHd'
+import { useImageZoom } from '@/utils/zoom'
 
 /**
  * 巡检大图（2026-10 版本同步 · 第三批）
@@ -31,6 +32,19 @@ const catName = computed(() => {
 /** 原图切换是单向的（设计稿同样置灰「已是原图」），且切过去后重置缩放由 zoom 层自愈 */
 const hd = ref(false)
 
+/**
+ * 双指缩放 / 单指拖动（2026-11 补，对齐设计稿 #photoStage 的
+ * 「双指缩放，单指拖动」提示）。与预警详情大图、航拍弹层同款 useImageZoom。
+ */
+const {
+  zoomed: imgZoomed,
+  label: zoomLabel,
+  imgStyle,
+  animating: zoomAnim,
+  handlers: zoomHandlers,
+  reset: zoomReset,
+} = useImageZoom()
+
 async function onDownload(): Promise<void> {
   if (!photo.value) return
   try {
@@ -40,12 +54,25 @@ async function onDownload(): Promise<void> {
     shell.showToast('下载失败', 'warn')
   }
 }
+
+/** 切原图后图源变化，缩放应还原到 1×（与航拍弹层切换一致） */
+function onHd(): void {
+  hd.value = true
+  zoomReset()
+}
 </script>
 
 <template>
   <div v-if="photo">
     <figure class="patrol-view">
-      <img :class="photo.pos" :src="hd ? photoHd(photo.img) : photo.img" :alt="photo.name" />
+      <img
+        :class="[photo.pos, 'zoomable', { 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }]"
+        :src="hd ? photoHd(photo.img) : photo.img"
+        :alt="photo.name"
+        :style="imgStyle"
+        v-on="zoomHandlers"
+      />
+      <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
     </figure>
 
     <div class="patrol-meta">
@@ -60,7 +87,7 @@ async function onDownload(): Promise<void> {
     </div>
 
     <div class="photo-actions">
-      <button class="photo-btn" type="button" :disabled="hd" @click="hd = true">
+      <button class="photo-btn" type="button" :disabled="hd" @click="onHd">
         {{ hd ? '已是原图' : '原图' }}
       </button>
       <button class="photo-btn" type="button" @click="onDownload">下载</button>

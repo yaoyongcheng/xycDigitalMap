@@ -300,12 +300,12 @@ describe('结构性守卫', () => {
       expect(useShellStore().activeTab).toBe('work')
     })
 
-    it('工作台：7 枚图标共 22 条形状', () => {
+    it('工作台：6 枚图标共 20 条形状', () => {
       const w = mount(WorkPage)
       expect(w.findAll('.work-short')).toHaveLength(4)
       expect(w.findAll('.work-short svg')).toHaveLength(4)
-      expect(w.findAll('.tool-ico svg')).toHaveLength(3)
-      expect(shapes(w)).toBe(22)
+      expect(w.findAll('.tool-ico svg')).toHaveLength(2)
+      expect(shapes(w)).toBe(20)
       assertAllSvgReal(w)
     })
 

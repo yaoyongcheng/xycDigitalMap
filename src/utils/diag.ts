@@ -12,12 +12,10 @@
 function snapshot(): string {
   const pg = document.querySelector<HTMLElement>('#page-home')
   /*
-   * 关键：一律在 #page-home 内部查找。
-   * 页面上存在第二个 .home-progress（在横屏地图层 .map-land 里，尺寸恒为 0），
-   * 用 document.querySelector 会抓到那个，读出误导性的 0。
+   * 关键：一律在 #page-home 内部查找，避免抓到横屏地图层里的同名节点。
    */
   const sheet = pg?.querySelector<HTMLElement>('.home-sheet') ?? null
-  const prog = pg?.querySelector<HTMLElement>('.home-progress') ?? null
+  const prog = pg?.querySelector<HTMLElement>('.home-project-row') ?? null
   const phone = document.querySelector<HTMLElement>('.phone')
   const vv = window.visualViewport
   const rect = (el: HTMLElement | null) => (el ? Math.round(el.getBoundingClientRect().top) : '-')
@@ -39,7 +37,7 @@ function snapshot(): string {
     `progBottom(首页内)=${bottom(prog)}`,
     `来源=${pg?.style.getPropertyValue('--sheet-up-top') ? 'JS内联' : 'CSS默认(118px)'}`,
     // 元素计数：用于发现重复节点（多一份就会让定位表现错乱）
-    `计数 #page-home=${document.querySelectorAll('#page-home').length} .home-sheet=${document.querySelectorAll('.home-sheet').length} .home-map=${document.querySelectorAll('.home-map').length} .home-progress=${document.querySelectorAll('.home-progress').length}`,
+    `计数 #page-home=${document.querySelectorAll('#page-home').length} .home-sheet=${document.querySelectorAll('.home-sheet').length} .home-map=${document.querySelectorAll('.home-map').length} .home-project-row=${document.querySelectorAll('.home-project-row').length}`,
     ...feedLines(pg),
   ].join('\n')
 }
