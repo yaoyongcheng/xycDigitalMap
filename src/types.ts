@@ -81,6 +81,15 @@ export interface Alarm {
    * 只有 `:8085` 的真实数据带；测试夹具可以不填，消费方要能容忍缺失。
    */
   channelNo?: number
+  /**
+   * 服务端已读/处理状态（`handleStatus`）：0 = 未读/待处理，1 = 已读/已处理。
+   *
+   * 这是**唯一权威**的已读来源（参考 Unity 端 `AIAlarmMessage.AlarmStatus` ←
+   * 接口 `handleStatus`，消息列表据此显示未读红点，`PATCH .../status` 把它置 1）。
+   * 服务端持久化，刷新不丢 —— 早先靠前端本地 Set 记已读，刷新即归零，是错的。
+   * 测试夹具可以不填，消费方按「缺省未读」处理。
+   */
+  handleStatus?: number
   /** 三维地图上的标注（无则不在三维图上撒点） */
   pin?: AlarmSpot
   /** 二维地图上的标注 */

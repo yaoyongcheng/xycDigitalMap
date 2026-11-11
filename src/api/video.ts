@@ -160,8 +160,8 @@ async function wfGet(path: string, token: string, signal?: AbortSignal): Promise
 /**
  * 拉一页视频报警。
  *
- * 只读接口 —— 同组还有 DELETE /api/video/alarms/{id} 与 PATCH .../status，
- * 按项目约定（写接口一律接但不调用）不在客户端暴露。
+ * 只读接口 —— 同组还有 DELETE /api/video/alarms/{id}，按项目约定
+ * （写接口一律接但不调用）不在客户端暴露。标记已读（PATCH .../status）见下。
  */
 export async function fetchVideoAlarms(
   token: string,
@@ -170,6 +170,58 @@ export async function fetchVideoAlarms(
   const { page = 1, pageSize = 50, sceneCode = SCENE_CODE, signal } = opts
   const q = `?page=${page}&page_size=${pageSize}&sceneCode=${encodeURIComponent(sceneCode)}`
   return parseVideoAlarms(await wfGet(`/api/video/alarms${q}`, token, signal))
+}
+
+/**
+ * 标记一条报警的已读/处理状态。
+ *
+ * 契约来自 Unity 端 `AIAlarmHelp.UpdateAlarmStatusCoroutine`：
+ *   PATCH {8085}/api/video/alarms/{id}/status
+ *   Body `{"status": 1}`（1 = 已读，0 = 未读）
+ *   响应 `{code, message}`，code === 200 算成功。
+ *
+ * 这是「消息已读」的唯一权威落点：状态存在服务端，刷新/换端不丢。前端只是
+ * 乐观更新本地，最终以服务端为准。
+ */
+export async function setAlarmStatus(
+  token: string,
+  id: string,
+  status: 0 | 1,
+  signal?: AbortSignal,
+): Promise<void> {
+  let res: Response
+  try {
+    res = await fetch(`${WF_BASE}/api/video/alarms/${encodeURIComponent(id)}/status`, {
+      method: 'PATCH',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ status }),
+      signal,
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw new ApiError(0, '请求已取消')
+    throw new ApiError(0, '视频报警服务不可达')
+  }
+
+  if (res.status === 401) {
+    notifyUnauthorized()
+    throw new ApiError(401, '登录已过期，请重新登录')
+  }
+
+  let body: unknown
+  try {
+    body = res.status === 204 ? null : await res.json()
+  } catch {
+    body = null
+  }
+  const code = num((body as Record<string, unknown>)?.code, res.ok ? 200 : res.status)
+  if (!res.ok || code !== 200) {
+    const msg = str((body as Record<string, unknown>)?.message) || `标记已读失败（HTTP ${res.status}）`
+    throw new ApiError(code, msg)
+  }
 }
 
 /**

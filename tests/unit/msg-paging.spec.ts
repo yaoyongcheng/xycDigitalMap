@@ -107,7 +107,8 @@ describe('阶段 6 · 消息 20 条/页分页查询', () => {
     expect(msg.pageNo).toBe(1)
     expect(msg.hasMore).toBe(true)
     expect(msg.hiddenCount).toBe(1805)
-    expect(msg.unreadTotal).toBe(1825)
+    // 未读数 = 已加载报警里 handleStatus !== 1 的条数（45 条全缺省未读）
+    expect(msg.unreadTotal).toBe(45)
     expect(fetch).not.toHaveBeenCalled()
   })
 

@@ -185,6 +185,42 @@ describe('阶段 5 · 真实数据', () => {
       expect(useMsgStore().unreadTotal).toBe(1)
       w.unmount()
     })
+
+    it('已读状态来自服务端 handleStatus，未读红点据此显示', () => {
+      const feed = camAlarmFixtures().slice(0, 3)
+      feed[1].handleStatus = 1 // 这条已读
+      useAlarmStore().liveAlarms = feed
+      const msg = useMsgStore()
+
+      // 已读那条不显示未读角标
+      expect(msg.messages[0].unread).toBe(1)
+      expect(msg.messages[1].unread).toBe(0)
+      expect(msg.messages[2].unread).toBe(1)
+      expect(msg.unreadTotal).toBe(2) // 3 条里 1 条已读
+    })
+
+    it('点开消息乐观置已读并发 PATCH /status，body 为 {status:1}', async () => {
+      signIn()
+      const feed = camAlarmFixtures().slice(0, 2)
+      useAlarmStore().liveAlarms = feed
+      const asMock = fetch as unknown as ReturnType<typeof vi.fn>
+
+      const msg = useMsgStore()
+      await msg.markRead(feed[1].id) // id = va-102 → 远程 102
+      await flushPromises()
+
+      // 乐观更新：本地这条已置 1
+      expect(feed[1].handleStatus).toBe(1)
+      expect(msg.unreadTotal).toBe(1)
+
+      // 发出了 PATCH 请求，路径 /api/video/alarms/102/status
+      const patchCall = asMock.mock.calls.find((c) => String(c[1]?.method) === 'PATCH')
+      expect(patchCall).toBeTruthy()
+      const [url, init] = patchCall as [string, RequestInit]
+      expect(String(url)).toContain('/api/video/alarms/102/status')
+      expect(JSON.parse(String(init.body))).toEqual({ status: 1 })
+      expect(init.method).toBe('PATCH')
+    })
   })
 
   describe('人员分布：真实区域台账 + 人数空态', () => {

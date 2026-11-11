@@ -14,7 +14,7 @@ import type { Alarm } from '@/types'
 export function camAlarmFixtures(): Alarm[] {
   const today = dateKey(new Date())
   const yesterday = dateKey(addDays(new Date(), -1))
-  const mk = (id: string, at: string, channelNo: number): Alarm => ({
+  const mk = (id: string, at: string, channelNo: number, handleStatus = 0): Alarm => ({
     id: `va-${id}`,
     day: 'today',
     src: 'cam',
@@ -26,6 +26,7 @@ export function camAlarmFixtures(): Alarm[] {
     at,
     geo: '',
     channelNo,
+    handleStatus,
   })
 
   return [

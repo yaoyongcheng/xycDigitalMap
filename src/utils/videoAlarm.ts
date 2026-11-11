@@ -167,6 +167,8 @@ export function toAlarm(v: VideoAlarm, now: Date = new Date()): Alarm | null {
     geo: '',
     // 阶段 5：监控点位按真实通道号分组；0 视为「没标通道」
     channelNo: v.channelNo > 0 ? v.channelNo : undefined,
+    // 服务端已读状态透传：消息未读数、未读红点都靠它，不能丢（0=未读，1=已读）
+    handleStatus: v.handleStatus,
   }
 }
 

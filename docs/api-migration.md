@@ -563,6 +563,60 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 
 ---
 
+## 四点十、阶段 7：消息已读改服务端 handleStatus + PATCH 标记（2026-11-11 第七轮）
+
+### 1. 问题
+
+用户反馈「已读的消息会做已读标记吗？刷新之后消息数量没变」。根因：上一版
+（阶段 5/6）把已读态做成**前端内存 `Set`**，刷新即归零，角标反弹。
+
+### 2. 参照来源（Unity 端《万联装备集群作业系统》反编译）
+
+桌面端在 `HotUpdateScripts.dll` 里有一套完整的已读逻辑，逆向结论：
+
+- 数据模型 `AIAlarmMessage.AlarmStatus` ← 接口每行的 `handleStatus`
+  （`0` = 未读/待处理，`1` = 已读/已处理）；
+- 展示模型 `AlarmNoticeData.isRead`、UI 项 `AlarmNoticeItem.IsRead` +
+  `unreadDot`，红点显示条件是 `status == 0`；
+- 标记已读走**服务端写接口**：
+  `PATCH {8085}/api/video/alarms/{id}/status`，body `{"status": 1}`，
+  响应 `{code, message}`、`code === 200` 算成功；
+- `AIAlarmDetail.UpdateLocalAlarmStatus` 先**本地乐观更新**（改 status + 按钮
+  文案「标记为已读↔标记为未读」），再发 PATCH，成功回调用 `onComplete(true)`。
+
+关键点：**已读状态是服务端持久化的，不是客户端本地状态**。这才是「刷新不丢」的
+正确来源 —— 上一版本地 Set 的思路从一开始就错了。
+
+### 3. 本项目落地
+
+- `Alarm` 类型新增 `handleStatus?: number`（0 未读 / 1 已读，缺省按未读）；
+  `toAlarm()` 不再丢弃 `VideoAlarm.handleStatus`。
+- `api/video.ts` 新增 `setAlarmStatus(token, id, 0|1)`，实现上面的 PATCH 契约
+  （401 同样走 `notifyUnauthorized()`）。
+- `stores/msg.ts`：`messages.unread` 改读 `a.handleStatus === 1 ? 0 : 1`；
+  `unreadTotal` 改为「已加载报警里 handleStatus !== 1 的条数」（不再用
+  `total - readIds.size`，否则现场 1800+ 条未读会让角标永远钉在 99+，点开也看不出
+  变化）；`markRead(id)` 乐观置本地 `handleStatus=1` 再发 PATCH，失败静默（下次
+  同步以服务端为准回正）。本地 Set / localStorage 持久化整段删除。
+- 写接口**首次真正接进业务**：这是用户明确要求「参照参考项目已读逻辑」，且该接口
+  的唯一语义就是标记已读，联调已用 no-op（原值）先验契约、再实测点开→刷新闭环。
+
+### 4. 验收（现场账号 · headless Chrome 390×844 · 真实接口）
+
+```
+目标报警 id=86020 handleStatus=0
+点开前  unread=400 targetStatus=0
+点开后  本地乐观 unread=399 targetStatus=1；服务端 handleStatus=1（PATCH 已生效）
+刷新后  targetStatus=1 且 unread=399（服务端持久化，已读不丢）
+恢复现场 PATCH status=0 → 200，把测试目标改回未读
+```
+
+- 单测 **632 条全过**（26 文件；`stage5.spec.ts` 新增「服务端 handleStatus 已读 /
+  点开乐观置 1 且 PATCH body 为 `{status:1}`」2 条）、`vue-tsc --noEmit` 无错、
+  `npm run build` 通过。
+
+---
+
 ## 五、两个必须知道的隐患
 
 1. **私钥在客户端**。大屏 open 用项目级私钥签名，原厂把私钥内嵌在桌面端；本项目
