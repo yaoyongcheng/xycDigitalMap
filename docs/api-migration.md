@@ -21,6 +21,7 @@
 |---|---|---|---|
 | **A. 业务接口** | `http://115.159.67.12:8081` | 用户登录 → `Authorization: Bearer {token}`（RSA 加密登录） | 用户、设备台账、时序数据、天气 |
 | **A′. 工作流服务** | 同一台机器的 **`:8085`** | 同上的 `Bearer {token}` | 视频报警列表 / 报警截图 |
+| **A″. 认证旁路** | `http(s)://{host}`（**无端口**） | 同上的 `Bearer {token}` | 登出 `/v1/auth/logout`、续期 `/v1/auth/refresh` |
 | **B. 大屏 open** | `https://dw.yzw.cn/open` | 项目级 `accessKey` + RSA-SHA256 签名（**无需登录**） | 人员/考勤/组织/网关标签/报警记录 |
 | **C. 物联网网关** | `https://iot.cscec3b-iti.com` | `appKey/appSecret` 换 token（`X-Access-Token`） | 设备实时数据、告警事件、电梯/塔机 |
 | **D. 第三方** | `https://open.ys7.com`（萤石云）、`https://account.keehang.com:23443`（无人机） | 各自 appKey / CAS 账号 | 监控视频流、无人机任务 |
@@ -48,8 +49,10 @@ B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分�
 | POST | `/api/data/v1/tsdb/queryEvent` | 事件查询 | 报警/事件时间线 | ⬜ 阶段 3 |
 | POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 塔机详情「吊次」 | ⬜ 阶段 3 |
 | POST | `/api/webgateway/v1/access/token` | IOT 网关换令牌 | C 组全部请求的前置 | ⬜ 阶段 3 |
-| GET | `/api/video/alarms?page=1&page_size=50&sceneCode=` | 视频报警列表 | 智眸/报警预警 | ⬜ 阶段 3，**注意在 8085** |
-| GET | `/api/video/alarms/{id}/picture` | 报警截图（返回 base64） | 预警详情大图 | ⬜ 阶段 3，**注意在 8085** |
+| GET | `/api/video/alarms?page=1&page_size=50&sceneCode=` | 视频报警列表 | 智眸/报警预警 | ✅ **已接**（阶段 3，**在 8085**） |
+| GET | `/api/video/alarms/{id}/picture` | 报警截图（返回 base64） | 预警详情大图 | ✅ **已接**（阶段 3，**在 8085**） |
+| POST | `/v1/auth/logout` | 登出 | 我的·退出登录 | ✅ **已接**（基址 `ServerUrl`，**无端口**） |
+| POST | `/v1/auth/refresh` | 令牌续期（到期前 5 分钟） | 会话保活 | ⬜ 待接（同一基址） |
 | GET | `/api/map/amap/weather/live?city=` | 实时天气 | 首页天气角标 | ⬜ 阶段 4 |
 | GET | `/api/map/amap/weather/forecast?city=` | 天气预报 | 同上 | ⬜ 阶段 4 |
 | 🔒 DELETE | `/api/video/alarms/{id}` | **删除报警** | — | 写，不调用 |
@@ -137,8 +140,8 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 1 | 首页·人员总览 | `data/config.ts: crewKpis` | B `personOverall` | ✅ 阶段 1 |
 | 2 | 首页·今日班组出勤 | `data/config.ts: squadRows` | B `todayTeamsAtteStat` | ✅ 阶段 2 |
 | 3 | 首页·今日分时人数（原「今日出勤工种」） | `utils/chart.ts` 演示曲线 | B `todayPersonHourStat` | ✅ 阶段 2（工种无接口，已换卡） |
-| 4 | 首页·报警预警 + 轮播 | `stores/alarm.ts` 常量 | B `getAlarmRecord`（恒空）/ 8085 `/api/video/alarms` | 3 |
-| 5 | 报警历史（按日） | 同源常量 | B `getMonthRecord*`（恒空）/ 8085 | 3 |
+| 4 | 首页·报警预警 + 轮播 | 已登录 → 8085 真数据；未登录 → 常量 | 8085 `/api/video/alarms` | ✅ 阶段 3（登录后生效） |
+| 5 | 报警历史（按日） | 真数据覆盖到的日期用真值，其余沿用演示 | 8085 `/api/video/alarms`（按日过滤） | ✅ 阶段 3 |
 | 6 | 首页·人员分布 | `stores/home.ts: peopleTree` | B `location/*`（**57007 无权限**）+ `organ/list` | 5（受阻） |
 | 7 | 智控·设备列表/四卡 | `stores/home.ts: siteEquip` | A `deviceinfos` + C `queryRealTimeData` | 3 |
 | 8 | 设备详情·实时状态 | `data/device.ts` 常量 | C `queryRealTimeDataV2` + `queryEvent` | 3 |
@@ -177,7 +180,23 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 - 单测覆盖字段收敛（`hours` 是小时数不是人数）、脏行丢弃、并集对齐补 0、空数组回落、
   单接口失败不影响其他块。
 
-### 阶段 3 的启动条件（报警）
+### 阶段 3 落地记录（报警 + 登出）
+
+现场服务器在 2026-11-11 上午整体不可达（8081/8085/80 全端口 connect timeout、
+ICMP 全丢、traceroute 无响应），所以这一轮用**本地 mock 服务**把链路跑通验证，
+真机联调仍需等主机恢复。已验证的部分：
+
+- `src/api/video.ts` → `src/utils/videoAlarm.ts` → `stores/alarm.ts`：
+  登录后拉真实报警，映射成项目内的 `Alarm`（首页轮播/巡检列表/预警详情/地图撒点
+  四处无需改动）；退出登录即 `clearLive()` 回落演示数据；
+- 详情页按服务端 `Id` 异步拉抓拍图（`data:image/jpeg;base64,…`），拉不到保留占位图；
+- **登出**对齐 `LoginRequestHelper.LoginOut`：`POST {ServerUrl}/v1/auth/logout`，
+  基址是 `ServerConfig.BaseUrl`（`http(s)://host`，**不带端口**），带 Bearer、空 body。
+  本地会话**先清再请求**，服务端失败一律吞掉 —— 网络一抖就退不出去是更糟的体验。
+- 顺带发现同组还有一个 `POST /v1/auth/refresh`（Unity 在 token 到期前 5 分钟调用），
+  比「过期即踢」体验好，留给下一轮。
+
+### 阶段 3 的接口契约（报警）
 
 `/bigScreen/bigAlarm/*` 在这个项目里恒为空，唯一的真实报警源是 **8085**
 `/api/video/alarms`，它要求 `Authorization: Bearer {token}` —— 必须有现场账号才能

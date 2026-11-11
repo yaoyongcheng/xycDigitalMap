@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchProfile, login } from '@/api/auth'
+import { SERVER_ORIGIN } from '@/api/config'
 import { encryptLoginPayload, MAX_PLAIN_BYTES } from '@/api/crypto'
 import { ApiError, bindSession, request } from '@/api/http'
 import { ACCOUNT_KEY, STORAGE_KEY, useAuthStore } from '@/stores/auth'
@@ -217,7 +218,7 @@ describe('会话 store', () => {
     const auth = useAuthStore()
     expect(auth.isLoggedIn).toBe(true)
 
-    auth.logout()
+    await auth.logout()
     expect(auth.isLoggedIn).toBe(false)
     expect(auth.token).toBe('')
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
@@ -233,5 +234,88 @@ describe('会话 store', () => {
 
     expect(auth.token).toBe('')
     expect(shell.toast).toBe('登录已过期，请重新登录')
+  })
+})
+
+/**
+ * 登出（2026-11 接口迁移 · 对齐 Unity 端 LoginRequestHelper.LoginOut）
+ *
+ * 三条契约都来自反编译，且都容易写错：
+ *   · 路径是 `/v1/auth/logout`，不在 `/api/user/auth` 之下；
+ *   · 基址是 `ServerUrl`（`http(s)://host`，**无端口**），不是登录用的 8081；
+ *   · 本地必须先清再请求 —— 服务端失败也照样退出。
+ */
+describe('登出', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    bindSession({ token: () => '', unauthorized: () => {} })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  function signIn(): void {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ token: 'tok-9', expiresAt: 0, username: 'u' }))
+  }
+
+  it('ServerUrl 不带端口（Unity 端 BaseUrl 就是这么拼的）', () => {
+    expect(SERVER_ORIGIN).toBe('http://115.159.67.12')
+  })
+
+  it('POST 到 /v1/auth/logout，空 body，带 Bearer', async () => {
+    const f = vi.fn(async () => envelope({ code: 200, message: 'ok' }))
+    vi.stubGlobal('fetch', f)
+    signIn()
+    const auth = useAuthStore()
+    await auth.logout()
+
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('http://115.159.67.12/v1/auth/logout')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBeUndefined()
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-9')
+  })
+
+  it('本地先清会话，再发请求（token 显式带过去，不靠 store）', async () => {
+    signIn()
+    const auth = useAuthStore()
+    let tokenAtRequest = 'not-called'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        tokenAtRequest = auth.token
+        return envelope({ code: 200 })
+      }),
+    )
+    await auth.logout()
+
+    // 请求发出时本地会话已清空 —— 说明用的是显式传入的那份 token
+    expect(tokenAtRequest).toBe('')
+    expect(auth.isLoggedIn).toBe(false)
+  })
+
+  it('服务端失败（500 / 不可达）不抛错，本地照样退出', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => envelope({ code: 500, message: '内部错误' }, 500)))
+    signIn()
+    const auth = useAuthStore()
+    await expect(auth.logout()).resolves.toBeUndefined()
+    expect(auth.isLoggedIn).toBe(false)
+
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    signIn()
+    const auth2 = useAuthStore()
+    await expect(auth2.logout()).resolves.toBeUndefined()
+    expect(auth2.token).toBe('')
+  })
+
+  it('没登录时直接返回，不白发请求', async () => {
+    const f = vi.fn()
+    vi.stubGlobal('fetch', f)
+    const auth = useAuthStore()
+    await auth.logout()
+    expect(f).not.toHaveBeenCalled()
   })
 })

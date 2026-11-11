@@ -61,6 +61,14 @@ export interface RequestOptions {
    * 登录相关接口（public-key / login）必须传 false —— 那时还没有 token。
    */
   auth?: boolean
+  /**
+   * 显式指定这次请求用的 token，覆盖会话里的当前值。
+   *
+   * 只有一个场景需要：登出。登出时本地会话要**先清**（用户点了就立刻退出，
+   * 不能等服务端回包），但清完之后 tokenProvider() 已经返回空，
+   * 于是这次请求反而没了鉴权头 —— 服务端会拒掉，会话在服务端永远不失效。
+   */
+  token?: string
   signal?: AbortSignal
 }
 
@@ -76,7 +84,7 @@ function networkMessage(err: unknown): string {
 /** 发一个请求并返回 `data`；任何非 200 的业务码都抛 ApiError */
 export async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const url = /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`
-  const token = opts.auth === false ? '' : tokenProvider()
+  const token = opts.token ?? (opts.auth === false ? '' : tokenProvider())
 
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json'

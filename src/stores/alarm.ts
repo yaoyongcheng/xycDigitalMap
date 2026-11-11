@@ -2,6 +2,8 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { addDays, dateKey, formatMD, monthStart, protoToday, sameDay, startOfDay } from '@/utils/date'
+import { fetchVideoAlarms } from '@/api/video'
+import { toAlarms } from '@/utils/videoAlarm'
 import type { Alarm, MapAlarm } from '@/types'
 
 /**
@@ -52,8 +54,86 @@ export const useAlarmStore = defineStore('alarm', () => {
     { id: 'h-soil', day: 'hist', src: 'drone', type: '裸土未覆盖', title: '扬尘报警', desc: '基坑周边裸土未覆盖，扬尘超标。', img: 'img/alarm-soil.webp', rel: relOf(-4, '08:46'), at: atOf(-4, '08:46'), geo: '114.24757700124480,30.53319822009112' },
   ])
 
+  /* ---------- 真实报警（A′ 组 :8085 视频报警） ---------- */
+
+  /**
+   * 接口拉回来的真实报警。
+   *
+   * 与种子 `alarms` 并存而不是替换它，三个原因：
+   *   ① 演示数据里 hist 那 4 条撑着「按日补齐」的模板池，替换掉历史页就没内容了；
+   *   ② 接口只在**已登录**时才拉，未登录/离线时要保持可看的演示界面；
+   *   ③ 接口失败时不能把已经拉到的真实数据也清空（刷新失败比没有数据更常见）。
+   * 因此这里只做「有真数据就用真数据」的覆盖语义：latest 优先取这里。
+   */
+  const liveAlarms = ref<Alarm[]>([])
+
+  /** 拉取状态：页面据此决定要不要显示「同步中」角标 */
+  const liveState = ref<'idle' | 'loading' | 'ok' | 'error'>('idle')
+
+  /** 最近一次失败原因（成功时清空） */
+  const liveError = ref('')
+
+  /** 有没有拿到过真实报警 —— 用于区分「接口空结果」与「还没拉过」 */
+  const hasLive = computed(() => liveAlarms.value.length > 0)
+
+  /** 上限 50 条：够撑首页轮播与近几日历史，又不至于把基64截图一起拖慢 */
+  const LIVE_PAGE_SIZE = 50
+
+  /** 失败冷却（与首页人员块同一个口径：60s 内不重复打） */
+  const LIVE_RETRY_MS = 60_000
+  let liveTriedAt = 0
+
+  /**
+   * 从视频报警接口同步真实报警。
+   *
+   * 只在**已登录**时调用 —— 该接口要求 Bearer，未登录必然 401，没必要打一趟。
+   * 成功后按 `alarms` 的语义整理（时间倒序、按日归类），失败保留现有数据并记下原因；
+   * 一次失败后 60s 内不再重试，避免用户在首页反复切换面板时打爆接口。
+   *
+   * 返回是否真正取到了数据，便于调用方决定是否提示。
+   */
+  async function syncFromVideo(token: string, force = false): Promise<boolean> {
+    if (!token) return false
+    if (liveState.value === 'loading') return false
+    if (!force && liveState.value === 'error' && Date.now() - liveTriedAt < LIVE_RETRY_MS) return false
+
+    liveState.value = 'loading'
+    liveTriedAt = Date.now()
+    try {
+      const page = await fetchVideoAlarms(token, { pageSize: LIVE_PAGE_SIZE })
+      const rows = toAlarms(page.rows)
+      if (rows.length) {
+        liveAlarms.value = rows
+        liveState.value = 'ok'
+        liveError.value = ''
+        return true
+      }
+      // 接口成功但一条都没有：不动已有数据（可能是真没报警，也可能是这个项目的
+      // 通道还没配），只把状态标成 ok，让人知道「不是请求失败」
+      liveState.value = 'ok'
+      liveError.value = ''
+      return false
+    } catch (err) {
+      liveState.value = 'error'
+      liveError.value = err instanceof Error ? err.message : '报警同步失败'
+      return false
+    }
+  }
+
+  /** 退出登录 / 清会话时把真实数据一并清掉，别让下一个人看到上一个人的现场 */
+  function clearLive(): void {
+    liveAlarms.value = []
+    liveState.value = 'idle'
+    liveError.value = ''
+    liveTriedAt = 0
+  }
+
   /** 原 js/app.js:257 —— 首页安全面板与轮播只看当日 */
-  const latest = computed(() => alarms.value.filter((a) => a.day === 'today'))
+  const latest = computed(() =>
+    hasLive.value
+      ? liveAlarms.value.filter((a) => a.day === 'today')
+      : alarms.value.filter((a) => a.day === 'today'),
+  )
 
   /**
    * 历史记录模板池（原 app.js:2778-2787 ALARM_POOL）。
@@ -82,6 +162,10 @@ export const useAlarmStore = defineStore('alarm', () => {
     const off = Math.round((startOfDay(protoToday()).getTime() - startOfDay(d).getTime()) / 86400000)
     if (off < 0) return null
     if (off === 0) return latest.value.length
+    // 真实数据覆盖到的那几天按真实条数算，否则日历上的圆点会与点进去的列表不符
+    const key = dateKey(d)
+    const live = liveAlarms.value.filter((a) => a.at.slice(0, 10) === key).length
+    if (live) return live
     const known = [8, 13, 16, 6, 3, 2]
     if (off <= known.length) return known[off - 1]
     const older = [5, 1, 4, 7, 2, 9, 3, 6, 0, 4, 8, 2, 5, 1, 3, 6, 2, 0, 4, 7, 3, 1, 5, 2]
@@ -99,7 +183,7 @@ export const useAlarmStore = defineStore('alarm', () => {
     if (sameDay(d, protoToday())) return latest.value.slice()
     const key = dateKey(d)
     const n = dayCount(d) ?? 0
-    const out = alarms.value
+    const out = [...liveAlarms.value, ...alarms.value]
       .filter((a) => a.day === 'hist' && a.at.slice(0, 10) === key)
       .slice(0, n)
     const off = Math.round((startOfDay(protoToday()).getTime() - startOfDay(d).getTime()) / 86400000)
@@ -148,12 +232,14 @@ export const useAlarmStore = defineStore('alarm', () => {
   /** 原 js/app.js:684-696 的 alarmsOnDate(d) —— 历史页按日筛选 */
   function alarmsOnDate(d: Date): Alarm[] {
     const key = dateKey(d)
-    return alarms.value.filter((a) => a.day === 'hist' && a.at.slice(0, 10) === key)
+    return [...liveAlarms.value, ...alarms.value].filter(
+      (a) => a.day === 'hist' && a.at.slice(0, 10) === key,
+    )
   }
 
-  /** 原多处以 inspectAlarms.find(...) 内联实现 */
+  /** 原多处以 inspectAlarms.find(...) 内联实现；真实报警也要能点进详情 */
   function byId(id: string): Alarm | undefined {
-    return alarms.value.find((a) => a.id === id)
+    return liveAlarms.value.find((a) => a.id === id) ?? alarms.value.find((a) => a.id === id)
   }
 
   /**
@@ -175,6 +261,12 @@ export const useAlarmStore = defineStore('alarm', () => {
   return {
     alarms,
     latest,
+    liveAlarms,
+    liveState,
+    liveError,
+    hasLive,
+    syncFromVideo,
+    clearLive,
     inspTab,
     inspHistDate,
     inspCalMonth,

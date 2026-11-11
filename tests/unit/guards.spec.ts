@@ -171,7 +171,8 @@ describe('结构性守卫', () => {
         expect(existsSync(join(ROOT, f))).toBe(true)
       }
       // 引用点应在这些文件里：配置、两个 store、地图视图、样式、类型注释、
-      // 智控面板（2026-11 设计稿：设备立绘搬进 eq-ico）、hd 原图映射表
+      // 智控面板（2026-11 设计稿：设备立绘搬进 eq-ico）、hd 原图映射表、
+      // 视频报警 → Alarm 的分类配图（2026-11 接口迁移阶段 3）
       expect([...owners].sort()).toEqual([
         'src/components/overlays/MapLand.vue',
         'src/components/ui/MapViewer.vue',
@@ -181,6 +182,7 @@ describe('结构性守卫', () => {
         'src/styles/app.css',
         'src/types.ts',
         'src/utils/photoHd.ts',
+        'src/utils/videoAlarm.ts',
         'src/views/home/EquipPanel.vue',
         'src/views/sub/UavPage.vue',
       ])

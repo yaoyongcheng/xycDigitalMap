@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
+import { fetchAlarmPicture } from '@/api/video'
 import type { Alarm } from '@/types'
 import { alarmSrcOf } from '@/data/config'
+import { useAuthStore } from '@/stores/auth'
+import { remoteIdOf } from '@/utils/videoAlarm'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -27,12 +30,41 @@ const { zoomed, label, imgStyle, animating, handlers, reset } = useImageZoom()
 
 // 从上一条预警切到下一条时，沿用上一张的缩放会让用户莫名其妙
 watch(() => props.alarm.img, reset)
+
+/**
+ * 真实抓拍图（2026-11 接口迁移 · 阶段 3）。
+ *
+ * `img` 字段是演示配图占位：视频报警的抓拍要按服务端 Id 单独拉一次
+ * （`/api/video/alarms/{id}/picture` 返回 base64 纯文本）。拉不到就保持占位图 ——
+ * 详情页的核心是这张图，宁可显示一张「示意」，也不能留白或者一直转圈。
+ */
+const auth = useAuthStore()
+const remoteShot = ref('')
+
+watch(
+  () => props.alarm.id,
+  async (id) => {
+    remoteShot.value = ''
+    const rid = remoteIdOf(props.alarm)
+    if (!rid || !auth.token) return
+    // 切走之后再回来的旧请求就别写回去了
+    try {
+      const url = await fetchAlarmPicture(auth.token, rid)
+      if (props.alarm.id === id) remoteShot.value = url
+    } catch {
+      /* 抓拍图缺失 / 已过期 / 网络不可达：保留占位图 */
+    }
+  },
+  { immediate: true },
+)
+
+const heroSrc = computed(() => remoteShot.value || props.alarm.img)
 </script>
 
 <template>
   <div class="alarm-hero">
     <img
-      :src="alarm.img"
+      :src="heroSrc"
       :alt="alarm.type"
       class="zoomable"
       :class="{ 'is-zoomed': zoomed, 'is-anim': animating }"
@@ -54,6 +86,6 @@ watch(() => props.alarm.img, reset)
     <h4>识别结果</h4>
     <div class="alarm-kv"><span>识别类型</span><em>{{ alarm.type }}</em><b>自动</b><i>0级</i></div>
     <div class="alarm-kv"><span>地址</span><em>湖北省武汉市汉阳区江堤街道江永堤路铉龙城</em></div>
-    <div class="alarm-kv"><span>经纬度</span><em class="alarm-geo">{{ alarm.geo }}</em></div>
+    <div class="alarm-kv"><span>经纬度</span><em class="alarm-geo">{{ alarm.geo || '—' }}</em></div>
   </div>
 </template>

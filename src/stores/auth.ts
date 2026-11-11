@@ -1,8 +1,9 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchProfile, login as loginRequest } from '@/api/auth'
+import { fetchProfile, login as loginRequest, logout as logoutRequest } from '@/api/auth'
 import { ApiError, bindSession } from '@/api/http'
+import { useAlarmStore } from './alarm'
 import { useShellStore } from './shell'
 
 /**
@@ -109,6 +110,9 @@ export const useAuthStore = defineStore('auth', () => {
     role.value = ''
     clearExpiryTimer()
     writeStorage(STORAGE_KEY, null)
+    // 真实报警是「谁的现场」相关的数据，会话一清就一起清 ——
+    // 否则换个人登录前，首页还挂着上一个人拉到的报警
+    useAlarmStore().clearLive()
   }
 
   /** 启动时从本地恢复；已过期则直接丢掉 */
@@ -168,8 +172,25 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function logout(): void {
+  /**
+   * 退出登录。
+   *
+   * **本地先清、再通知服务端**（顺序不能反）：
+   *   用户点下确认的那一瞬间就该离开登录态，不能因为服务端慢或不可达而卡在
+   *   「正在退出…」；而服务端注销要用的 token 此时已被清掉，所以显式带过去。
+   *
+   * 服务端失败一律吞掉：登出是「本地意图」，服务端只是顺带把这张票作废。
+   * 反过来（等成功才清本地）会让网络一抖就退不出去，是更糟的体验。
+   */
+  async function logout(): Promise<void> {
+    const t = token.value
     clear()
+    if (!t) return
+    try {
+      await logoutRequest(t)
+    } catch {
+      // 服务端不可达 / 令牌已过期 / 该端点未开放 —— 都不影响已经完成的本地登出
+    }
   }
 
   /** 上次登录过的账号（登录页预填） */

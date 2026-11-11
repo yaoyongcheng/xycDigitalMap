@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { useOverviewStore } from '@/stores/overview'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendModel, peopleHourModel } from '@/utils/chart'
@@ -26,6 +27,7 @@ import PeopleDist from './parts/PeopleDist.vue'
  * 反而更难判断哪个能信。视觉沿用设计稿里已下线但样式仍在的 `.people-hour`。
  */
 const alarm = useAlarmStore()
+const auth = useAuthStore()
 const subpage = useSubpageStore()
 const overview = useOverviewStore()
 
@@ -69,7 +71,25 @@ const updTime = computed(() => overview.updatedAt || mountTime)
 // 面板挂载即取一次；store 内部有并发去重与失败冷却
 onMounted(() => {
   void overview.load()
+  // 真实报警只在已登录时拉：视频报警接口要 Bearer，未登录必定 401。
+  // 拉不到时 store 保留演示数据，页面不会空、也不会转圈。
+  if (auth.token) void alarm.syncFromVideo(auth.token)
 })
+
+/**
+ * 登录态变化时补拉一次报警。
+ *
+ * 首页面板是常驻组件（切 tab 只切 class，不重新挂载），`onMounted` 全程只跑一次。
+ * 用户「先进首页 → 再去我的登录 → 回首页」时 token 才出现，光靠 onMounted
+ * 永远等不到 —— 表现就是登录成功、人员数据也变成了真值，唯独报警还是演示数据。
+ * 退出登录的清理由 auth store 的 clear() 负责（调用 alarm.clearLive）。
+ */
+watch(
+  () => auth.token,
+  (t) => {
+    if (t) void alarm.syncFromVideo(t)
+  },
+)
 
 /**
  * 原 homePanels 委托的 [data-alarm] 分支。

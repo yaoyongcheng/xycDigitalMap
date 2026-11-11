@@ -54,7 +54,8 @@ function onLogout(): void {
     return
   }
   disarmLogout()
-  auth.logout()
+  // 本地立即退出，服务端注销在后台进行（失败静默，见 stores/auth.ts:logout）
+  void auth.logout()
   shell.showToast('已退出登录', 'success')
 }
 
