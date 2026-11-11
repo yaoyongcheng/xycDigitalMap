@@ -1,8 +1,9 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
+import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { b1Occupied, b2FloorCount, b2Occupied, b3Occupied } from '@/data/config'
-import type { Building, Equip, HomeMod, PeopleNode } from '@/types'
+import type { Equip, HomeMod, PeopleNode } from '@/types'
 
 /**
  * 首页
@@ -12,10 +13,22 @@ import type { Building, Equip, HomeMod, PeopleNode } from '@/types'
  * 2026-10 版本同步 · 第三批：模块从「安全 / 质量 / 进度 / 设备」收成
  * 「智眸 / 智巡 / 智控」——质量管理与进度管理整块删除，qaCats 随之移除；
  * 智巡的照片数据是常量，放在 data/config.ts 而不进 store。
- * siteEquip / siteBuildings 在原版有第二消费点，但均位于横屏地图的死代码链上
- * （landDevices / landBuildings），跳过死代码后它们实际是单域数据，归到此处。
+ *
+ * **2026-11 第二轮：智控四卡改由设备台账接口派生。**
+ * 原先这里写着 4 条设备的字面量（塔机 3 台 / 电梯 4 台 / 无人机 1 架 / 爬架 1 台），
+ * 台数与在线态全是设计稿示意值。现在改为 `useDeviceLedgerStore().equip`：
+ *   · 四张卡恒定存在（入口不能消失），台数/在线数来自 `:8084` 台账；
+ *   · 未登录、加载中、失败都只是「units 为空」，由面板给对应的空态，
+ *     不再往卡片里塞假数字；
+ *   · 数值位只放台账里真有的字段（高度），没有就不渲染 —— 见 utils/deviceLedger.ts。
+ *
+ * `siteBuildings`（6 栋楼的进度）一并删除：设计稿在 2026-10 改版后已无任何
+ * 消费点，留着只是又一份没有出口的假数据。楼栋接口 `fetchBuildings()`
+ * 已备在 api/data.ts，将来加回进度页时直接接。
  */
 export const useHomeStore = defineStore('home', () => {
+  const ledger = useDeviceLedgerStore()
+
   /** 原 js/app.js:60 —— 当前面板。被 switchTab(L70) 读取以决定是否启预警轮播 */
   const homeMod = ref<HomeMod>('safety')
 
@@ -56,51 +69,13 @@ export const useHomeStore = defineStore('home', () => {
   ])
 
   /**
-   * 原 js/app.js:851-878（2026-11 设计稿 gx2 版）
+   * 智控四卡（原 js/app.js:851-878）。
    *
-   * 设备从 9 条收成 4 条：六台机器人整组删除；塔机加「今日吊重 + 今日吊次」
-   * 双指标；电梯的卡片指标换成「累计运行时间」；无人机改成「作业任务 1/3」
-   * 且整机离线；爬架改成异常态（卡片数据取自 data/climb.ts）。
-   *
-   * 机组数量刻意与详情页（data/device.ts）同源而不是照抄设计稿首页：
-   * 设计稿自己就对不上（首页 4 台塔机 / 7 台电梯，详情页却是 3 台 / 4 台），
-   * 点进卡片数字对不上会被当成 bug —— 按「卡片即入口」的项目约定，
-   * 台数以详情页为准。
+   * 结构与设计稿一致：塔机 / 电梯 / 无人机 / 爬架，四类都能下钻到详情页。
+   * 台数不再写死 —— `card.units` 就是台账里的真实设备，`equipCount()` 据此
+   * 算在线 x/y 与状态色；某一类 0 台时卡片仍在（入口），显示 0/0。
    */
-  const siteEquip = ref<Equip[]>([
-    { id: 'crane', name: '智能塔机', value: '1.87t', metric: '今日吊重', ico: 'crane', page: 'crane',
-      stats: [
-        { value: '1.87t', metric: '今日吊重' },
-        { value: '26次', metric: '今日吊次' },
-      ],
-      units: [
-        { name: '1#塔机', on: true, rows: [] },
-        { name: '2#塔机', on: true, rows: [] },
-        { name: '3#塔机', on: true, rows: [] },
-      ] },
-    { id: 'lift', name: '智能电梯', value: '2min', metric: '累计运行时间', ico: 'lift', page: 'lift',
-      units: [
-        { name: '智能电梯1-1', on: true, rows: [] },
-        { name: '智能电梯1-2', on: false, rows: [] },
-        { name: '智能电梯2-1', on: false, rows: [] },
-        { name: '智能电梯2-2', on: true, rows: [] },
-      ] },
-    { id: 'drone', name: '无人机', value: '1/3', metric: '作业任务', ico: 'drone', page: 'uav',
-      jobs: { done: 1, total: 3 },
-      units: [{ name: '无人机', on: false, rows: [] }] },
-    { id: 'climb', name: '智能爬架', value: '异常', metric: '左右倾斜', ico: 'climb', page: 'climb',
-      units: [{ name: '智能爬架', on: true, rows: [] }] },
-  ])
-
-  /** 原 js/app.js:414-421 */
-  const siteBuildings = ref<Building[]>([
-    { name: '酒店', done: 16, total: 16, plan: '正常', rate: 96 },
-    { name: '1#楼', done: 1, total: 8, plan: '正常', rate: 92 },
-    { name: '2#楼', done: 1, total: 33, plan: '正常', rate: 88 },
-    { name: '3#楼', done: 1, total: 33, plan: '正常', rate: 71 },
-    { name: '4#楼', done: 1, total: 8, plan: '正常', rate: 90 },
-    { name: '幼儿园', done: 3, total: 3, plan: '正常', rate: 94 },
-  ])
+  const siteEquip = computed<Equip[]>(() => ledger.equip)
 
   /** 原 js/app.js:336-338 peopleChildren() */
   function peopleChildren(): PeopleNode[] {
@@ -122,7 +97,6 @@ export const useHomeStore = defineStore('home', () => {
     peopleNode,
     peopleTree,
     siteEquip,
-    siteBuildings,
     peopleChildren,
     equipCount,
   }

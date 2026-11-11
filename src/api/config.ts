@@ -58,6 +58,43 @@ function swapPort(base: string, port: number): string {
 }
 
 /**
+ * 数据服务基址（设备台账 / 楼栋 / 区域）。
+ *
+ * 2026-11 第二轮实测发现：`/api/data/*` **既不在 8081 也不在 8085**。
+ * 反编译只知道路径，没记端口；两台服务上都回 `404 page not found`。
+ * 把 80/443/8080–8091/9000 全扫一遍后定位到 **`:8084`**：
+ *
+ *   `GET :8084/api/data/deviceinfos` → 200（本项目 8 台设备）
+ *   `GET :8084/api/data/buildings`   → 200
+ *   `GET :8084/api/data/areas`       → 200
+ *
+ * 鉴权与登录同一个 Bearer token（无 token → `401 {"error":"Authorization header required"}`），
+ * 所以它和 8085 一样受会话守卫约束。响应信封是 `{code:200,message,data:{list,total}}`。
+ *
+ * 同机器的其它端口（探测记录，省得下次再扫）：
+ *   · `:8080` 大屏 SPA（任意路径回 index.html，POST 回 405）
+ *   · `:8088` 高德天气代理（免登录，见 WEATHER_BASE）
+ *   · `:8090/:9000` 各有一个前端站点
+ *   · 其余 8082/8083/8086/8087/8089/8091 均 404
+ */
+export const DATA_BASE = (
+  (import.meta.env.VITE_DATA_BASE as string | undefined)?.trim() || swapPort(API_BASE, 8084)
+).replace(/\/+$/, '')
+
+/**
+ * 天气代理基址（`:8088`，**免登录**）。
+ *
+ * 反编译里写的是 `{API_BASE}/api/map/amap/weather/live`，实测 8081/8084 都 404；
+ * 真身是 8088 上的同名路径，直接回高德原始结构：
+ * `{status:"1", lives:[{province,city,weather,temperature,winddirection,windpower,humidity}]}`。
+ *
+ * 目前设计稿没有天气位，先留客户端备用（同 `weekEnterpriseAtteStat` 的处理）。
+ */
+export const WEATHER_BASE = (
+  (import.meta.env.VITE_WEATHER_BASE as string | undefined)?.trim() || swapPort(API_BASE, 8088)
+).replace(/\/+$/, '')
+
+/**
  * 视频报警的场景码（= Unity 端 `StaticParameter.ProjectId`）。
  *
  * 项目固定值，不是用户输入；换项目时用 VITE_SCENE_CODE 覆盖。

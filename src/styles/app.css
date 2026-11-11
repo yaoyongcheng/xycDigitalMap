@@ -1712,53 +1712,12 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-size: 0.85em;
 }
 
-/* 爬架专属卡：纵向两段（照片行 + 异常行），三格正常数带红绿态 */
-.eq-card.is-climb {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-}
-
-.eq-climb-top {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.eq-card.is-climb .eq-vals {
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.eq-card.is-climb .eq-hd strong { flex: none; }
-
 /*
- * 爬架三格是「两数字 + 斜杠」，18px 才排得下；不写这条会被后面的数字阶梯
- * （.eq-card b → --num-lg 24px）接管，三格互相挤出去、连成 35/3636/3636/36。
+ * 爬架专属卡（.eq-card.is-climb 的纵向两段 + 三格正常数 + 异常行）已于
+ * 2026-11 第二轮删除：那三格「35/36 正常」来自 data/climb.ts 里 36 条手写
+ * 机位读数，四套后端都没有爬架传感器接口 —— 编造的正常率比空着更容易被当真。
+ * 现在爬架卡与其它三类同构，只显示台账里的在线数与爬升高度。
  */
-.eq-card.is-climb .eq-val b { font-size: var(--fs-18); }
-
-.eq-card.is-climb .is-bad b { color: var(--danger-dark); }
-
-.eq-card.is-climb .is-ok b { color: var(--ok-dark); }
-
-.eq-card.is-climb .eq-val b em,
-.eq-card.is-climb .eq-val b i {
-  font-style: normal;
-  font-weight: 700;
-}
-
-.eq-card.is-climb .eq-alert {
-  display: block;
-  padding: 6px 10px;
-  border-radius: var(--r-8);
-  background: rgba(255, 92, 108, 0.12);
-  font-size: var(--fs-12);
-  font-weight: 650;
-  line-height: 1.35;
-  color: var(--danger-dark);
-}
 
 .pg-list {
   display: flex;
@@ -2618,6 +2577,19 @@ button, input, textarea { font-family: inherit; color: inherit; }
   margin-left: 6px;
   padding: 0 12px;
   font-size: var(--fs-12);
+}
+
+/*
+ * 空态的第二行：解释「为什么没有」。
+ *
+ * 比主文案低一档字色与字号，只用在需要说明原因的场合（如作业报表缺的是
+ * tsdb 接口、爬架缺的是传感器接口）；纯「暂无数据」不写第二行。
+ */
+.data-empty-sub {
+  max-width: 30em;
+  color: var(--ink-4);
+  font-size: var(--fs-12);
+  line-height: 1.6;
 }
 
 /* 图表位空态：保持与图表相近的高度，避免卡片突然塌陷 */

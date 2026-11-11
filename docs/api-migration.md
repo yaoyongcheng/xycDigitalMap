@@ -19,12 +19,14 @@
 
 | 代号 | 地址 | 鉴权 | 用途 |
 |---|---|---|---|
-| **A. 业务接口** | `http://115.159.67.12:8081` | 用户登录 → `Authorization: Bearer {token}`（RSA 加密登录） | 用户、设备台账、时序数据、天气 |
+| **A. 业务接口** | `http://115.159.67.12:8081` | 用户登录 → `Authorization: Bearer {token}`（RSA 加密登录） | 用户、天气代理入口 |
 | **A′. 工作流服务** | 同一台机器的 **`:8085`** | 同上的 `Bearer {token}` | 视频报警列表 / 报警截图 |
-| **A″. 认证旁路** | `http(s)://{host}`（**无端口**） | 同上的 `Bearer {token}` | ⚠️ 反编译里登出/续期用这个基址，但现场实测 404 —— 见下方「登出」一条 |
+| **A″. 数据服务** | 同一台机器的 **`:8084`** | 同上的 `Bearer {token}` | 设备台账 / 楼栋 / 区域 |
+| **A‴. 认证旁路** | `http(s)://{host}`（**无端口**） | 同上的 `Bearer {token}` | ⚠️ 反编译里登出/续期用这个基址，但现场实测 404 —— 见下方「登出」一条 |
 | **B. 大屏 open** | `https://dw.yzw.cn/open` | 项目级 `accessKey` + RSA-SHA256 签名（**无需登录**） | 人员/考勤/组织/网关标签/报警记录 |
 | **C. 物联网网关** | `https://iot.cscec3b-iti.com` | `appKey/appSecret` 换 token（`X-Access-Token`） | 设备实时数据、告警事件、电梯/塔机 |
 | **D. 第三方** | `https://open.ys7.com`（萤石云）、`https://account.keehang.com:23443`（无人机） | 各自 appKey / CAS 账号 | 监控视频流、无人机任务 |
+| **E. 天气代理** | 同一台机器的 **`:8088`** | **免登录** | 高德实时/预报天气 |
 
 已完成：A 的登录三件套（`public-key` / `login` / `me`）+ token 注入（阶段 0）、
 B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分时人数（阶段 2）。
@@ -41,20 +43,20 @@ B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分�
 | GET | `/api/user/auth/public-key` | 取登录公钥 | 登录页 | ✅ 已接 |
 | POST | `/api/user/auth/login` | 登录（body 为 RSA 密文） | 登录页 | ✅ 已接 |
 | GET | `/api/user/auth/me` | 当前用户 | 我的页 | ✅ 已接 |
-| GET | `/api/user/auth/me/unity-permission` | 权限菜单 | 我的页菜单项 | ⬜ 阶段 7 |
-| GET | `/api/data/areas?page=1&page_size=100&project_id=` | 总平区域标签 | 地图撒点 | ⬜ 阶段 5 |
-| GET | `/api/data/buildings` | 楼栋清单 | 进度/楼栋分布 | ⬜ 阶段 5 |
-| GET | `/api/data/deviceinfos?page=1&page_size=100&project_id=` | 设备台账 | 智控设备列表/详情 | ⬜ 阶段 3 |
-| POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据（查询语义） | 设备实时状态页 | ⬜ 阶段 3 |
-| POST | `/api/data/v1/tsdb/queryEvent` | 事件查询 | 报警/事件时间线 | ⬜ 阶段 3 |
-| POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 塔机详情「吊次」 | ⬜ 阶段 3 |
-| POST | `/api/webgateway/v1/access/token` | IOT 网关换令牌 | C 组全部请求的前置 | ⬜ 阶段 3 |
+| GET | `/api/user/auth/me/unity-permission` | 权限菜单 | 我的页菜单项 | ✅ **可用**（返回项目→权限位映射，形如 `{"P000000076":"1",…}`；暂无消费点） |
+| GET | `/api/data/areas?page=1&page_size=100&project_id=` | 总平区域标签 | 地图撒点 | ✅ **客户端已备**（**在 8084**，见下；暂无消费点） |
+| GET | `/api/data/buildings` | 楼栋清单 | 进度/楼栋分布 | ✅ **客户端已备**（**在 8084**；设计稿改版后无消费点） |
+| GET | `/api/data/deviceinfos?page=1&page_size=100&project_id=` | 设备台账 | 智控设备列表/详情 | ✅ **已接**（**在 8084**，阶段 4） |
+| POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据（查询语义） | 设备实时状态页 | ⚠️ **全部端口 404**（见下） |
+| POST | `/api/data/v1/tsdb/queryEvent` | 事件查询 | 报警/事件时间线 | ⚠️ 同上 |
+| POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 塔机详情「吊次」 | ⚠️ 同上 |
+| POST | `/api/webgateway/v1/access/token` | IOT 网关换令牌 | C 组全部请求的前置 | ⬜ 阶段 6 |
 | GET | `/api/video/alarms?page=1&page_size=50&sceneCode=` | 视频报警列表 | 智眸/报警预警 | ✅ **已接**（阶段 3，**在 8085**） |
 | GET | `/api/video/alarms/{id}/picture` | 报警截图 | 预警详情大图 | ✅ **已接**（阶段 3，**在 8085**；base64 在 `data.pictureData`） |
 | POST | `/api/user/auth/logout` | 登出 | 我的·退出登录 | ✅ **已接**（`:8081` 登录域下；`/v1/auth/logout` 与裸源站实测全 404） |
 | POST | `/v1/auth/refresh` | 令牌续期（到期前 5 分钟） | 会话保活 | ⬜ 待接（同一基址） |
-| GET | `/api/map/amap/weather/live?city=` | 实时天气 | 首页天气角标 | ⬜ 阶段 4 |
-| GET | `/api/map/amap/weather/forecast?city=` | 天气预报 | 同上 | ⬜ 阶段 4 |
+| GET | `/api/map/amap/weather/live?city=` | 实时天气 | 首页天气角标 | ✅ **可用**（**在 8088，免登录**；设计稿无天气位，暂无消费点） |
+| GET | `/api/map/amap/weather/forecast?city=` | 天气预报 | 同上 | ⬜ 未验证（同端口推断可用） |
 | 🔒 DELETE | `/api/video/alarms/{id}` | **删除报警** | — | 写，不调用 |
 | 🔒 PATCH | `/api/video/alarms/{id}/status` | **修改报警状态** | — | 写，不调用 |
 | 🔒 POST | `/api/webgateway/v1/auth/api/appUser/logout` | **IOT 登出** | — | 写，不调用 |
@@ -63,6 +65,28 @@ B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分�
 > 8085**（同一台机器，只换端口）：`:8081` 上访问 `/api/video/alarms` 是
 > `404 page not found`，`:8085` 上是 `{"code":401,"message":"未提供认证令牌"}`。
 > 所以接它需要 `API_BASE` 之外再一个 `WF_BASE`（同 host、端口 8085）。
+>
+> **`/api/data/*` 也不在 8081**（2026-11 第二轮实测）。反编译只记了路径没记端口，
+> 8081/8085 上全是 `404 page not found`。把 80/443/8080–8091/9000 扫了一遍，
+> 按端口拆开是这样（记下来省得下次再扫）：
+>
+> | 端口 | 是什么 | 验证方式 |
+> |---|---|---|
+> | 80 | nginx，`/api/*` 一律 404 | `404 Not Found / nginx/1.24.0` |
+> | 443 | TLS 未配置，握手失败 | `fetch failed` |
+> | **8080** | 大屏 SPA，任意路径回 `index.html`，POST 回 405 | `<title>工地数…` |
+> | **8081** | 用户体系（登录/me/权限） | `/api/user/auth/*` 200 |
+> | **8084** | **数据服务**：设备台账 / 楼栋 / 区域 | `/api/data/deviceinfos` 200 |
+> | **8085** | 工作流：视频报警 + 抓拍图 | `/api/video/alarms` 401→200 |
+> | **8088** | 高德天气代理（免登录） | `/api/map/amap/weather/live` 200 |
+> | 8090 / 9000 | 各有一个前端站点 | `<!doctype html>` |
+> | 8082/8083/8086/8087/8089/8091 | 无匹配路由 | 404 |
+>
+> **tsdb 与塔机工作循环确实调不到**：`/api/data/v1/tsdb/queryRealTimeDataV2`、
+> `/queryEvent`、`/api/towercranedataservice/getWorkCycleInfoHis` 在以上**所有端口**
+> 都是 404（也试过 `/api/v1/tsdb/*`、`/api/data/tsdb/*` 等变体）。这几条要么在
+> 未开放的网关后面，要么当前部署没装。结论：设备的**作业指标**（吊次/吊重/
+> 利用率/历史曲线）暂时无源，页面给空态；**静态台账**（型号属性/在线态）有源。
 
 ### B. 大屏 open（`https://dw.yzw.cn/open`，只读）
 
@@ -143,14 +167,15 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 4 | 首页·报警预警 + 轮播 | 8085 真数据；未登录 → 登录引导（不再用常量） | 8085 `/api/video/alarms` | ✅ 阶段 3 + 数据收口 |
 | 5 | 报警历史（按日） | 全部真实，翻到更早日期按需回补 | 8085 `/api/video/alarms`（分页累积） | ✅ 阶段 3 + 数据收口 |
 | 6 | 首页·人员分布 | `stores/home.ts: peopleTree` | B `location/*`（**57007 无权限**）+ `organ/list` | 5（受阻） |
-| 7 | 智控·设备列表/四卡 | `stores/home.ts: siteEquip` | A `deviceinfos` + C `queryRealTimeData` | 3 |
-| 8 | 设备详情·实时状态 | `data/device.ts` 常量 | C `queryRealTimeDataV2` + `queryEvent` | 3 |
-| 9 | 塔机·吊次/工作循环 | `data/device.ts` 常量 | A/C `getWorkCycleInfoHis` | 3 |
-| 10 | 智眸·现场快照（监控九宫格） | 静态图 | 8085 `/api/video/alarms` + D 萤石云直播 | 3 |
+| 7 | 智控·设备列表/四卡 | **真实台账**（`:8084` `deviceinfos`，8 台） | A `deviceinfos` + C `queryRealTimeData` | ✅ 阶段 4（实时数据无源） |
+| 8 | 设备详情·实时状态 | 台账字段（高度/司机/安检/质检报告） | C `queryRealTimeDataV2` + `queryEvent`（**全端口 404**） | ✅ 阶段 4（作业指标空态） |
+| 9 | 塔机·吊次/工作循环 | 空态 | A/C `getWorkCycleInfoHis`（**全端口 404**） | ⚠️ 无源，等网关开放 |
+| 10 | 智眸·现场快照（监控九宫格） | 静态图 | 8085 `/api/video/alarms` + D 萤石云直播 | 6 |
 | 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page`（实测 0 条） | 5（无数据） |
 | 12 | 巡检任务清单 | `views/sub/InspectList.vue` 常量 | D `/task/list`、`/task/exec/list/record` | 6 |
-| 13 | 首页天气 | 无 | A `amap/weather` | 4 |
+| 13 | 首页天气 | 无（设计稿无天气位） | E `:8088` amap/weather（**可用**） | ✅ 客户端待接，无消费点 |
 | 14 | 无人机·航线与任务 | `stores` 常量 + 静态图 | D `/dashboard/*`、`/live/stream/list` | 6 |
+| 15 | 智能爬架·机位读数 | **空态**（原 36 条手写读数已删） | 无任何后端接口 | ⚠️ 无源 |
 
 ---
 
@@ -163,8 +188,8 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 |---|---|---|---|
 | **1** | 接口全量清单 + 大屏 open 签名客户端 + 首页人员总览四指标 | `src/api/open.ts`、`src/api/overview.ts`、`stores/overview.ts` | ✅ 已完成 |
 | **2** | 首页班组出勤 + 分时人数（报警顺延） | `src/api/home.ts`、`stores/overview.ts`、`utils/chart.ts`、`SafetyPanel.vue` | ✅ 已完成 |
-| **3** | 报警（8085 视频报警）+ 智控设备台账与实时数据（IOT token 待补） | `api/videoAlarm.ts`、`api/device.ts` | ⬜ 需现场账号 |
-| **4** | 天气、权限菜单（`unity-permission`） | `api/weather.ts`、我的页菜单由权限驱动 | ⬜ |
+| **3** | 报警（8085 视频报警）+ 智控设备台账与实时数据（IOT token 待补） | `api/video.ts`、`api/data.ts`、`stores/deviceLedger.ts` | ✅ 报警 + 台账已完成；实时数据无源 |
+| **4** | 天气、权限菜单（`unity-permission`） | `api/weather.ts` 待接手 | ✅ 两个接口已验证可用，客户端未接（无消费点） |
 | **5** | 人员分布 / 定位 / 隐患 / 网关标签 | `api/people.ts`、`api/iotDevice.ts` | ⏸ 授权未开通，仅 `organ/list` 可用 |
 | **6** | 无人机与塔机专用服务（CAS 登录、任务、工作循环） | `api/drone.ts`、`api/crane.ts` | ⬜ |
 | **7** | 写接口接入（报警状态变更、删除、登出） | 统一走「显式确认 + 默认关闭」的写入通道 | ⬜ 需服务端代理与审计 |
@@ -268,6 +293,88 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 实现：`stores/subpage.ts` 的 `loginNotice / loginNext / openLogin(notice, next) /
 resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 不走 `request()` 的服务也能把 401 同步给会话层。
+
+---
+
+## 四点六、阶段 4：设备台账（数据服务 `:8084`）+ 设备侧演示数据清零
+
+### 1. 新发现的第四个服务：`:8084`
+
+`/api/data/*` 既不在 8081（用户体系）也不在 8085（工作流），而在 **8084**，
+鉴权沿用同一个 Bearer token。端口拓扑与探测过程见第二节的表格。
+
+### 2. 设备台账契约（实测）
+
+- 请求：`GET :8084/api/data/deviceinfos?page=1&page_size=100&project_id=P000000076`
+  - `project_id` 传空串会返回**全部项目**的设备（8 条 → 数十条），必须带本项目 sceneCode；
+  - `page_size` 上限 200；本项目 `total = 8`，一页拉完。
+- 响应：`{ code:200, message:"success", data:{ list, total, page, page_size } }`
+- 行字段：`id`(int 主键) / `project_id` / `device_name` / `online_status`(1|0) /
+  `device_info:{ extra_fields, responsible_person, status_text, update_time }`
+- **`extra_fields` 是 JSON 字符串**（不是数组）：`[{"label":"高度","value":"64"},…]`，
+  无人机那台是空串。直接当数组用会拿到 undefined，必须 `JSON.parse` + 容错。
+- 无 token → `401 {"error":"Authorization header required"}`（**没有 `code` 字段**，
+  与 Go 信封不同，`request()` 靠 HTTP 状态码兜住）。
+
+本项目 8 台设备（真实）：
+
+| 类别 | 设备 | 台账字段 |
+|---|---|---|
+| 塔机 ×4 | 智能塔机2/3/4、传统塔机5 | 高度、塔吊司机、安检有效期、质检报告状态 |
+| 电梯 ×2 | 智能电梯1、智能电梯2 | 高度、安检有效期 |
+| 爬架 ×1 | 2#智能爬架 | 爬升高度 |
+| 无人机 ×1 | 无人机 | （空） |
+
+### 3. 接口 → 页面
+
+- `src/api/data.ts`：`fetchDeviceInfos / fetchBuildings / fetchAreas`（后者两个已备、暂无消费点）
+- `src/utils/deviceLedger.ts`：**唯一的映射层**
+  - `categoryOf(name)`：设备名关键词归类（服务端没有类型字段；「传统塔机5」也是塔机；
+    爬架规则排在电梯之前，防止「XX电梯爬架」这类名字串类）
+  - `parseExtraFields(raw)`：脏数据一律丢行不抛错
+  - `toUnit(row)`：→ 设备卡（四格按偏好字段排序、高度补 `m`、info 含责任人/更新时间）
+  - `toEquip(rows)`：→ 首页四卡（**卡片恒定 4 张**，某类 0 台显示 0/0；数值位只放高度）
+- `src/stores/deviceLedger.ts`：`state: idle/loading/ok/error`，失败 60s 冷却，
+  并发去重，`apply()` 供测试/离线注入，`reset()` 由 `auth.clear()` 调用。
+- `src/data/device.ts`：删除 3 台塔机 + 4 台电梯的完整假数据（含 7 天曲线），
+  只保留一个 `reactive` 的「当前真实机组」登记表 —— `deviceSet()` 被 5 个组件
+  在 `computed` 里同步调用，非响应式的话台账后到也不会重算。
+
+### 4. 设备侧演示数据清零清单
+
+| 区块 | 原演示内容 | 现在 |
+|---|---|---|
+| 首页四卡台数/在线数 | 写死 塔机3 / 电梯4 / 无人机1 / 爬架1 | 台账真实台数（本项目 4/2/1/1），在线数按 `online_status` |
+| 首页卡数值位 | 今日吊重 1.87t、累计运行时间 2min、作业任务 1/3 | 台账真有的字段（最大高度 / 爬升高度），无人机留空 |
+| 爬架卡三格 + 异常行 | 36 条手写机位读数（30# 179.70mm） | 删除 `data/climb.ts`；卡片与其它三类同构 |
+| 设备详情机组 | 3 台塔机 / 4 台电梯（备案号、型号、出厂时间） | 台账 4 台塔机 / 2 台电梯，字段即 `extra_fields` |
+| 详情卡今日吊次/吊重 + 负荷条 | 10 次 / 10.00t / 32% | **删除**（tsdb 无源） |
+| 作业报表（日/周/月） | 7 天历史 + 21 天派生序列 | **空态**「暂无作业报表数据」，说明缺的是实时数据接口 |
+| 设备信息弹层 | 产权备案号等 5 行 | 台账全字段 + 责任人 + 更新时间 |
+| 历史数据弹层 | 7 天读数 + 利用率仪表 | **空态** |
+| 爬架详情 | 36 行机位 + 3 页签 | 台账属性（在线/爬升高度）+ 机位空态 |
+| 首页楼栋进度 `siteBuildings` | 6 栋楼（已无任何消费点） | 删除；`fetchBuildings()` 客户端已备 |
+
+### 5. 登录守卫（设备侧）
+
+台账要 Bearer，所以智控面板 / 设备页 / 爬架页都接同一套守卫：
+
+| 场景 | 表现 |
+|---|---|
+| 未登录打开智控 | 「登录后可查看设备台账与运行状态」+ 去登录 |
+| 未登录深链进设备页 | 「登录后可查看智能塔机运行状态」+ 去登录，`loginNext` 记回该页 |
+| 已登录但 401 | 走 `auth.expire()`：清会话（含 `deviceLedger.reset()`）+ toast + 回登录 |
+| 加载中 / 失败 | 「正在加载设备台账…」/ 错误文案 + 重试 |
+
+### 6. 验收（2026-11-11 现场账号，headless Chrome + 真实接口）
+
+- 智控面板：`4 种 / 8 台`；塔机 `4/4 · 70m`、电梯 `2/2 · 60m`、无人机 `1/1`（无高度位）、
+  爬架 `1/1 · 21m 爬升高度`；
+- 塔机详情：4 台机组，四格为 `高度 10.3m/70m/32.5m/64m`、`塔吊司机 机师`、
+  `安检有效期 2026-12-10`、`质检报告状态 正常`；
+- 作业报表：空态文案正确，无任何合计数字；
+- 单测 596 条全过（新增 `device-ledger.spec` 11 条 + 重写 `device-page.spec`），
+  `vue-tsc --noEmit` 无错，`npm run build` 通过。
 
 ---
 

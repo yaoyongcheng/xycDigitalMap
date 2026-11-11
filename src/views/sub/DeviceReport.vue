@@ -26,6 +26,16 @@ const props = defineProps<{ kind: DeviceKind }>()
 const shell = useShellStore()
 const set = computed(() => deviceSet(props.kind))
 
+/**
+ * 报表是否可用。
+ *
+ * 报表的所有数字（吊次、吊重、利用率、机队分台）都由 `history` 派生，而
+ * `history` 来自 tsdb 实时数据接口 —— 该接口在当前部署上 404（台账接口只给
+ * 静态属性）。没有历史数据时整块替换为空态：设计稿的日报/周报/月报表
+ * 结构仍在，只是不再拿编造的 7 天曲线去填。
+ */
+const hasData = computed(() => set.value.units.some((u) => (u.history?.length ?? 0) > 0))
+
 type Span = 'day' | 'week' | 'month'
 const span = ref<Span>('day')
 watch(
@@ -204,7 +214,15 @@ async function onShare(): Promise<void> {
 </script>
 
 <template>
-  <section class="dev-block">
+  <!-- 没有历史作业数据（tsdb 未开放）→ 明确空态，不渲染任何编号 -->
+  <section v-if="!hasData" class="dev-block">
+    <div class="data-empty" data-empty="device-report">
+      <p>暂无作业报表数据</p>
+      <p class="data-empty-sub">报表依赖设备实时作业数据，当前接口未开放；设备台账只能提供静态信息。</p>
+    </div>
+  </section>
+
+  <section v-else class="dev-block">
     <div class="uav-tabs report-span">
       <button type="button" :class="{ on: span === 'day' }" :aria-pressed="span === 'day'" @click="span = 'day'">日报</button>
       <button type="button" :class="{ on: span === 'week' }" :aria-pressed="span === 'week'" @click="span = 'week'">周报</button>

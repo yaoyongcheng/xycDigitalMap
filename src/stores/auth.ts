@@ -5,6 +5,7 @@ import { fetchProfile, login as loginRequest, logout as logoutRequest } from '@/
 import { clearPictureCache } from '@/api/video'
 import { ApiError, bindSession } from '@/api/http'
 import { useAlarmStore } from './alarm'
+import { useDeviceLedgerStore } from './deviceLedger'
 import { useShellStore } from './shell'
 import { useSubpageStore } from './subpage'
 
@@ -132,6 +133,9 @@ export const useAuthStore = defineStore('auth', () => {
     // 真实报警是「谁的现场」相关的数据，会话一清就一起清 ——
     // 否则换个人登录前，首页还挂着上一个人拉到的报警
     useAlarmStore().clearLive()
+    // 设备台账同理（:8084 也要 Bearer）：不清的话智控面板会继续显示
+    // 上一个账号/上一个项目拉到的机组
+    useDeviceLedgerStore().reset()
     // 抓拍图缓存在模块级 Map 里，不跟着 store 走；不清的话下一个人
     // 点开同一条报警会看到上一个人的现场照片
     clearPictureCache()

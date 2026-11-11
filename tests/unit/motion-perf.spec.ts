@@ -9,6 +9,8 @@ import { nextTick } from 'vue'
 import CountUp from '@/components/ui/CountUp.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
+import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useShellStore } from '@/stores/shell'
 import EquipPanel from '@/views/home/EquipPanel.vue'
 import HomeSheet from '@/views/home/HomeSheet.vue'
@@ -19,6 +21,7 @@ import { alarmTone } from '@/utils/alarmTone'
 import { mountDiag, unmountDiag } from '@/utils/diag'
 
 import { alarmFixtures } from '../fixtures/alarms'
+import { deviceRows } from '../fixtures/ledger'
 import { ResizeObserverMock } from '../helpers/browser'
 
 /**
@@ -316,6 +319,11 @@ describe('第二轮体验优化回归', () => {
 
   describe('图例类可点元素的键盘可达', () => {
     it('装备图例：Enter 与点击等价', async () => {
+      // 图例只在台账到手后渲染（2026-11 第二轮：设备侧全部改真实数据），
+      // 所以先灌一份台账夹具，否则这里拿到的是登录引导
+      useAuthStore().token = 'test-token'
+      useDeviceLedgerStore().apply(deviceRows())
+
       const wrapper = mount(EquipPanel)
       const items = wrapper.findAll('.eq-status-leg > div')
       expect(items.length).toBe(2)

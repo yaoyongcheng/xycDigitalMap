@@ -1,92 +1,85 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 
-import { CLIMB_LR_LIMIT, CLIMB_TOTAL, CLIMB_UPDATED, climbSensors, splitUnit } from '@/data/climb'
+import { useAuthStore } from '@/stores/auth'
+import { useDeviceLedgerStore } from '@/stores/deviceLedger'
+import { useSubpageStore } from '@/stores/subpage'
 
 /**
  * 智能爬架详情页（2026-11 设计稿 gx2 版同步）
  *
  * 对应原 js/app.js:2474-2574 renderClimb + openClimbPage：深色子页，
- * ① climb-sum 两格（传感器数量 38 / 更新时间）→ ② 三个读数页签
- * （左右倾斜 / 前后倾斜 / 载荷）→ ③ climb-board 机位列表（36 行，
- * 左右倾斜页签里超 60mm 的机位整行标红）。页签默认停在左右倾斜，
- * 与首页卡片「异常」态同源 —— 异常行只由 data/climb.ts 的 bad 标记推导。
+ * ① climb-sum 两格（传感器数量 / 更新时间）→ ② 三个读数页签 → ③ 机位列表。
+ *
+ * **2026-11 第二轮：36 条机位读数全部删除。**
+ * 它们原本是 data/climb.ts 里手写的常量（含「30# 机位左右倾斜 179.70mm」这条
+ * 唯一异常），四套后端里没有任何爬架传感器接口，台账（`:8084`）只给到
+ * 「2#智能爬架 / 在线 / 爬升高度 21」。所以本页只展示台账真有的东西：
+ * 设备名、在线状态、爬升高度、更新时间；机位读数区显示空态。
  */
-type ClimbTab = 'lr' | 'fb' | 'load'
+const ledger = useDeviceLedgerStore()
+const auth = useAuthStore()
+const subpage = useSubpageStore()
 
-const tabs: { id: ClimbTab; name: string }[] = [
-  { id: 'lr', name: '左右倾斜' },
-  { id: 'fb', name: '前后倾斜' },
-  { id: 'load', name: '载荷' },
-]
+onMounted(() => {
+  if (auth.token) void ledger.load(auth.token)
+})
 
-const tab = ref<ClimbTab>('lr')
+/** 台账里的爬架（正常只有 1 台） */
+const units = computed(() => ledger.categoryUnits('climb'))
+const unit = computed(() => units.value[0])
 
-const known = climbSensors.length
-const badRows = computed(() => climbSensors.filter((s) => s.bad))
-const normal = computed(() => known - badRows.value.length)
+/** 爬升高度这类台账字段（已格式化，如 '21m'） */
+const fields = computed(() => unit.value?.cells ?? [])
 
-/** 当前页签取的读数字段 */
-const field = computed(() => (tab.value === 'fb' ? 'fb' : tab.value === 'load' ? 'load' : 'lr') as 'lr' | 'fb' | 'load')
+function retry(): void {
+  if (auth.token) void ledger.load(auth.token, true)
+}
 
-/** 当前页签是否参与异常标红（设计稿只有左右倾斜页签传 badKey） */
-const markBad = computed(() => tab.value === 'lr')
-
-/** 「x/ymm」拆段后的展示行 */
-const lines = computed(() =>
-  climbSensors.map((s) => ({
-    id: s.id,
-    value: s[field.value],
-    time: s.time,
-    bad: markBad.value && !!s.bad,
-  })),
-)
-
-const issues = computed(() =>
-  badRows.value.map((s) => `${s.id}#机位 ${s.lr}，超过 ${CLIMB_LR_LIMIT}`),
-)
+function goLogin(): void {
+  subpage.openLogin('登录后可查看智能爬架状态', { kind: 'climb' })
+}
 </script>
 
 <template>
   <div class="climb-page">
-    <div class="climb-sum">
-      <div>
-        <span>传感器数量</span>
-        <b>{{ CLIMB_TOTAL }}</b>
-      </div>
-      <div>
-        <span>更新时间</span>
-        <b class="is-time">{{ CLIMB_UPDATED }}</b>
-      </div>
+    <div v-if="!auth.isLoggedIn" class="data-empty" data-empty="climb">
+      <p>登录后可查看智能爬架状态</p>
+      <button class="data-empty-btn" type="button" @click="goLogin">去登录</button>
     </div>
 
-    <div class="dev-tabs climb-view">
-      <button
-        v-for="t in tabs"
-        :key="t.id"
-        type="button"
-        :class="{ on: tab === t.id }"
-        :aria-pressed="tab === t.id"
-        @click="tab = t.id"
-      >
-        {{ t.name }}
-      </button>
-    </div>
-
-    <section class="climb-board">
-      <header>
-        <b :class="badRows.length ? 'is-bad' : 'is-ok'">
-          {{ normal }}<i>/{{ known }}</i>
-        </b>
-      </header>
-      <p v-for="text in issues" :key="text" class="climb-issue">{{ text }}</p>
-      <div class="climb-lines">
-        <div v-for="line in lines" :key="line.id" class="climb-line" :class="{ 'is-bad': line.bad }">
-          <b>{{ line.id }}#</b>
-          <span>{{ splitUnit(line.value).num }}<i v-if="splitUnit(line.value).unit" class="eq-stat-unit"> {{ splitUnit(line.value).unit }}</i></span>
-          <time>{{ line.time }}</time>
+    <template v-else>
+      <div class="climb-sum">
+        <div>
+          <span>设备数量</span>
+          <b>{{ units.length }}</b>
+        </div>
+        <div>
+          <span>设备状态</span>
+          <b class="is-time">{{ unit?.status ?? '—' }}</b>
         </div>
       </div>
-    </section>
+
+      <!-- 台账字段（爬升高度等） -->
+      <div v-if="fields.length" class="dev-info">
+        <div class="dev-info-row"><span>设备名称</span><b>{{ unit?.name }}</b></div>
+        <div v-for="[label, value] in fields" :key="label" class="dev-info-row">
+          <span>{{ label }}</span><b>{{ value }}</b>
+        </div>
+      </div>
+
+      <!-- 机位读数：没有接口，明确空态 -->
+      <div v-if="ledger.state === 'loading'" class="data-empty" data-empty="climb">
+        <p>正在加载设备台账…</p>
+      </div>
+      <div v-else-if="ledger.state === 'error'" class="data-empty" data-empty="climb">
+        <p>{{ ledger.error || '设备台账加载失败' }}</p>
+        <button class="data-empty-btn" type="button" @click="retry">重试</button>
+      </div>
+      <div v-else class="data-empty" data-empty="climb">
+        <p>暂无爬架机位读数</p>
+        <p class="data-empty-sub">四套后端均未提供爬架传感器接口，当前只能展示台账中的设备属性。</p>
+      </div>
+    </template>
   </div>
 </template>

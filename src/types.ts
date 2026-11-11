@@ -91,16 +91,9 @@ export interface MineMenu {
   name: string
 }
 
-/** 楼栋进度（对应原 siteBuildings 数组） */
-export interface Building {
-  name: string
-  done: number
-  total: number
-  plan: string
-  rate: number
-}
-
-/** 质量类目（对应原 qaCats 数组） */
+/**
+ * 质量类目（对应原 qaCats 数组）
+ */
 export interface QaCat {
   name: string
   last: number
@@ -146,12 +139,18 @@ export interface EquipUnit {
   rows: [string, string][]
 }
 
-/** 设备（对应原 siteEquip 数组。2026-11 设计稿收成 4 条：塔机/电梯/无人机/爬架） */
+/**
+ * 设备（对应原 siteEquip 数组。2026-11 设计稿收成 4 条：塔机/电梯/无人机/爬架）
+ *
+ * 2026-11 第二轮：value/metric 改为可选 —— 首页四卡改由设备台账接口派生，
+ * 塔机与电梯除了「在线 x/y」还有一个真实字段（高度）可放，无人机没有数值，
+ * 这时不该硬塞一个占位符号进设计稿的数值位。
+ */
 export interface Equip {
   id: string
   name: string
-  value: string
-  metric: string
+  value?: string
+  metric?: string
   ico: string
   /** 有独立详情页的设备（2026-11 设计稿：四类全部可下钻） */
   page?: 'crane' | 'lift' | 'uav' | 'climb'
@@ -216,9 +215,14 @@ export interface DeviceUnit {
   live?: { value: string; pct: number }
   /** 昨日报警次数（塔机有，电梯没有）；日报里的报警角标用它 */
   alarms?: string
-  /** 当日指标（数字，绘图与日报用） */
+  /**
+   * 当日指标与近 7 日历史。
+   *
+   * 2026-11 第二轮起这两个字段**可能是空对象 / 空数组**：作业指标来自 tsdb
+   * 实时数据接口，而该接口在当前部署上 404（详见 docs/api-migration.md），
+   * 台账接口只有设备的静态属性。页面在空数据时显示空态，不再用编造的曲线填充。
+   */
   today: Record<string, number>
-  /** 历史：昨天往前 7 天，[0] 最新 */
   history: DeviceDay[]
 }
 

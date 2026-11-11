@@ -2,10 +2,12 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useAlarmStore } from '@/stores/alarm'
+import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useHomeStore } from '@/stores/home'
 import { useSubpageStore } from '@/stores/subpage'
 import type { Equip } from '@/types'
 import { alarmFixtures } from '../fixtures/alarms'
+import { deviceRows } from '../fixtures/ledger'
 import { addDays, dateKey, formatMD, inspCalMaxDay, monthStart, protoToday } from '@/utils/date'
 
 /** 构造一台仅用于 equipCount 分支覆盖的设备 */
@@ -26,7 +28,7 @@ function equipWith(...onFlags: boolean[]): Equip {
  * 这三个 store 是「同一份数据被多处消费」的关键环节：
  *   - alarm  的实时数据被首页趋势图、巡检列表、详情页、预警轮播四处读取
  *     （store 只存接口数据，用例通过夹具注入一份确定的数据）
- *   - home   的楼栋 / 人员 / 设备数据带派生计算（楼层人数、设备在线状态）
+ *   - home   的人员树派生与设备在线状态（设备侧已改由台账接口驱动）
  *   - subpage 的三级返回优先级 + is-alarm 由视图派生（原版在这里有过 bug）
  */
 describe('stores · alarm / home / subpage', () => {
@@ -211,17 +213,36 @@ describe('stores · alarm / home / subpage', () => {
       })
     })
 
-    it('4 台设备（2026-11 设计稿收编），id 唯一且都有单元明细', () => {
+    it('四张卡恒定存在（入口不消失），台数来自台账', () => {
       const home = useHomeStore()
       expect(home.siteEquip).toHaveLength(4)
       const ids = home.siteEquip.map((d) => d.id)
       expect(ids).toEqual(['crane', 'lift', 'drone', 'climb'])
+      // 台账未加载（未登录 / 刚启动）时每类都是 0 台，而不是写死的 3 台 / 4 台
       for (const d of home.siteEquip) {
-        expect(d.units.length).toBeGreaterThan(0)
+        expect(d.units).toEqual([])
         expect(d.name).toBeTruthy()
-        expect(d.value).toBeTruthy()
-        expect(d.metric).toBeTruthy()
+        // 数值位只放台账真有的字段，没有就留空
+        expect(d.value).toBeUndefined()
       }
+    })
+
+    it('台账到位后台数与在线数跟着走', () => {
+      const ledger = useDeviceLedgerStore()
+      ledger.apply(deviceRows())
+      const home = useHomeStore()
+
+      const crane = home.siteEquip.find((d) => d.id === 'crane')!
+      // 4 台塔机，智能塔机3 离线
+      expect(home.equipCount(crane)).toEqual({ on: 3, total: 4, st: 'warn' })
+      expect(crane.value).toBe('70m')
+
+      const lift = home.siteEquip.find((d) => d.id === 'lift')!
+      expect(home.equipCount(lift)).toEqual({ on: 2, total: 2, st: 'on' })
+
+      const climb = home.siteEquip.find((d) => d.id === 'climb')!
+      expect(home.equipCount(climb)).toEqual({ on: 1, total: 1, st: 'on' })
+      expect(climb.metric).toBe('爬升高度')
     })
 
     describe('equipCount', () => {
@@ -241,31 +262,6 @@ describe('stores · alarm / home / subpage', () => {
         const home = useHomeStore()
         expect(home.equipCount(equipWith(false, false))).toEqual({ on: 0, total: 2, st: 'off' })
       })
-
-      it('真实数据的在线状态与手写明细一致', () => {
-        const home = useHomeStore()
-        // 台数与详情页（data/device.ts）同源：设计稿首页的 7 台与其详情页
-        // 自相矛盾，按「卡片即入口」约定取详情页口径
-        const lift = home.siteEquip.find((d) => d.id === 'lift')!
-        expect(home.equipCount(lift)).toEqual({ on: 2, total: 4, st: 'warn' })
-
-        // 塔机 1#/2#/3# 三台全部在线，与详情页机组一一对应
-        const crane = home.siteEquip.find((d) => d.id === 'crane')!
-        expect(home.equipCount(crane)).toEqual({ on: 3, total: 3, st: 'on' })
-      })
-    })
-
-    it('6 栋楼，完成数不超过总数、进度率为百分数', () => {
-      const home = useHomeStore()
-      expect(home.siteBuildings.map((b) => b.name)).toEqual([
-        '酒店', '1#楼', '2#楼', '3#楼', '4#楼', '幼儿园',
-      ])
-      for (const b of home.siteBuildings) {
-        expect(b.done).toBeGreaterThanOrEqual(0)
-        expect(b.done).toBeLessThanOrEqual(b.total)
-        expect(b.rate).toBeGreaterThanOrEqual(0)
-        expect(b.rate).toBeLessThanOrEqual(100)
-      }
     })
   })
 
