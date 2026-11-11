@@ -10,7 +10,9 @@ import CountUp from '@/components/ui/CountUp.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
+import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
+import { usePatrolStore } from '@/stores/patrol'
 import { useShellStore } from '@/stores/shell'
 import EquipPanel from '@/views/home/EquipPanel.vue'
 import HomeSheet from '@/views/home/HomeSheet.vue'
@@ -337,15 +339,31 @@ describe('第二轮体验优化回归', () => {
       wrapper.unmount()
     })
 
-    it('智巡分类：键盘 Enter / Space 等价于点击', async () => {
-      const wrapper = mount(PatrolPanel)
-      const cats = wrapper.findAll('.patrol-cats button')
-      expect(cats.length).toBe(6)
+    it('智巡照片卡片：键盘 Enter / Space 等价于点击', async () => {
+      // 2026-11 阶段 8：照片改接 keehang 真实航拍媒体后，原来的六个
+      // 「分类」按钮删掉了（分类是设计稿的人工归类，服务端没有这个字段）。
+      // 照片卡片本身仍是原生 button，键盘可达性要保住。
+      const patrol = usePatrolStore()
+      patrol.apply([
+        {
+          id: '147744-DJI_1.jpeg',
+          name: 'DJI_1.jpeg',
+          url: 'https://oss.keehang.com/iot-media/DJI_1.jpeg',
+          taskName: '向阳村-安全巡检',
+          jobId: 147744,
+          time: '2026-07-15 09:38:39',
+          size: 5_378_048,
+          mediaType: 'image/jpeg',
+        },
+      ])
 
-      // 原生 button 的键盘语义由浏览器给出，这里验的是「点击确实换了分类」
-      await cats[2].trigger('click')
-      expect(cats[2].classes()).toContain('on')
-      expect(cats[0].classes()).not.toContain('on')
+      const wrapper = mount(PatrolPanel)
+      const cards = wrapper.findAll('.patrol-card')
+      expect(cards.length).toBe(1)
+      // 原生 button 的键盘语义由浏览器给出，这里验的是「按 Enter 确实开了弹层」
+      await cards[0].trigger('keydown', { key: 'Enter' })
+      await cards[0].trigger('click')
+      expect(useBottomSheetStore().kind).toBe('patrol')
       wrapper.unmount()
     })
   })

@@ -6,8 +6,10 @@ import { clearPictureCache } from '@/api/video'
 import { ApiError, bindSession } from '@/api/http'
 import { useAlarmStore } from './alarm'
 import { useDeviceLedgerStore } from './deviceLedger'
+import { usePatrolStore } from './patrol'
 import { useShellStore } from './shell'
 import { useSubpageStore } from './subpage'
+import { useUavStore } from './uav'
 
 /**
  * 登录会话
@@ -136,6 +138,10 @@ export const useAuthStore = defineStore('auth', () => {
     // 设备台账同理（:8084 也要 Bearer）：不清的话智控面板会继续显示
     // 上一个账号/上一个项目拉到的机组
     useDeviceLedgerStore().reset()
+    // 无人机任务与巡检照片：keehang 用的是项目级服务凭据（不随用户会话走），
+    // 但仍要清缓存 —— 换账号后继续看旧任务会串项目
+    useUavStore().reset()
+    usePatrolStore().reset()
     // 抓拍图缓存在模块级 Map 里，不跟着 store 走；不清的话下一个人
     // 点开同一条报警会看到上一个人的现场照片
     clearPictureCache()

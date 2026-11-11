@@ -6,6 +6,7 @@ import { useAirHazardStore } from '@/stores/airHazard'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
+import { usePatrolStore } from '@/stores/patrol'
 import { useShellStore } from '@/stores/shell'
 import { addDays } from '@/utils/date'
 
@@ -379,36 +380,60 @@ describe('stores', () => {
   /* ============================================================ */
 
   describe('airHazard', () => {
-    describe('航拍派生', () => {
-      it('照片数在 8~10 之间随日期偏移循环', () => {
+    describe('航拍派生（2026-11 阶段 8：改真实航拍照片）', () => {
+      /**
+       * 原先是「按日期偏移派生 8~10 张编出来的照片」，图片在两张静态 webp 间轮换、
+       * 时刻取自写死的 airTimes。现在照片来自真实媒体，按**拍摄日期**过滤 ——
+       * 日期对不上就是没有，不拿别的日期的照片冒充。
+       */
+      function seedPatrol(dates: string[]): void {
+        const patrol = usePatrolStore()
+        patrol.apply(
+          dates.map((d, i) => ({
+            id: `p${i}`,
+            name: `${d}.jpeg`,
+            url: `https://oss.keehang.com/iot-media/${d}.jpeg`,
+            taskName: '向阳村-安全巡检',
+            jobId: 100 + i,
+            time: `${d} 09:00:00`,
+            size: 1024,
+            mediaType: 'image/jpeg',
+          })),
+        )
+      }
+
+      it('只列出拍摄日期与选中日一致的照片', () => {
+        seedPatrol(['2026-07-15', '2026-07-14'])
         const air = useAirHazardStore()
-        expect(air.airShots(0)).toHaveLength(8)
-        expect(air.airShots(1)).toHaveLength(9)
-        expect(air.airShots(2)).toHaveLength(10)
-        expect(air.airShots(3)).toHaveLength(8)
-        expect(air.airShots(-2)).toHaveLength(10)
+        air.airDate = new Date(2026, 6, 15)
+
+        expect(air.airList).toHaveLength(1)
+        expect(air.airList[0].time).toBe('09:00')
+        expect(air.airList[0].img).toContain('2026-07-15')
       })
 
-      it('时间取自 airTimes 前缀，裁切位循环取 airPos', () => {
+      it('日期对不上时为空，不回落任何演示图', () => {
+        seedPatrol(['2026-07-15'])
         const air = useAirHazardStore()
-        const shots = air.airShots(0)
-        expect(shots[0].time).toBe('07:22')
-        expect(shots.map((s) => s.pos)).toEqual([
-          'pos-tl', 'pos-tr', 'pos-c', 'pos-bl', 'pos-br', 'pos-l', 'pos-r', 'pos-t',
-        ])
+        air.airDate = new Date(2026, 6, 1)
+
+        expect(air.airList).toHaveLength(0)
       })
 
-      it('取图在两张航拍图之间轮换且都是 WebP', () => {
+      it('没有任何真实照片时为空（不编造数量）', () => {
         const air = useAirHazardStore()
-        for (const s of air.airShots(0)) expect(s.img).toMatch(/^img\/aerial-[ab]\.webp$/)
-        expect(air.airShots(0)[0].img).not.toBe(air.airShots(1)[0].img)
+        expect(air.airList).toHaveLength(0)
       })
 
-      it('airList 按当前选中日期派生', () => {
+      it('airList 随选中日期变化', () => {
+        seedPatrol(['2026-07-15', '2026-07-14'])
         const air = useAirHazardStore()
-        expect(air.airList).toHaveLength(8)
-        air.airDate = new Date(2026, 9, 14)
-        expect(air.airList.length).toBeGreaterThanOrEqual(8)
+        air.airDate = new Date(2026, 6, 15)
+        expect(air.airList).toHaveLength(1)
+
+        air.airDate = new Date(2026, 6, 14)
+        expect(air.airList).toHaveLength(1)
+        expect(air.airList[0].img).toContain('2026-07-14')
       })
     })
 

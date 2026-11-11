@@ -3,13 +3,15 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick } from 'vue'
 
+import type { DroneTaskRecord } from '@/api/drone'
+import { clearSession } from '@/api/drone'
 import SheetHost from '@/components/overlays/SheetHost.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
-import { uavChecks } from '@/data/device'
 import { useAuthStore } from '@/stores/auth'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useSubpageStore } from '@/stores/subpage'
+import { useUavStore } from '@/stores/uav'
 import EquipPanel from '@/views/home/EquipPanel.vue'
 import { SKEL_DELAY } from '@/utils/slowLoading'
 import { deviceRows, ledgerEnvelope } from '../fixtures/ledger'
@@ -312,11 +314,58 @@ describe('智能爬架（真实台账 + 空态）', () => {
 })
 
 describe('无人机页', () => {
+  /** stub 返回的执行记录；用例按需改写 */
+  let stubRecords: DroneTaskRecord[] = []
+  /** stub 返回的遥测 */
+  let stubTelemetry: Record<string, unknown> = {}
+
   beforeEach(() => {
     setActivePinia(createPinia())
+    stubRecords = []
+    stubTelemetry = {}
+    // 无人机页挂载即 load()，不 stub 会真的去请求 keehang 平台。
+    // 这里按真实响应形状返回，用例改写 stubRecords / stubTelemetry 即可。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        const ok = (data: unknown) => ({ ok: true, status: 200, json: async () => ({ code: 200, data }) })
+        if (u.includes('/cas/auth/login')) return ok({ tgt: 'T', st: 'ST' })
+        if (u.includes('/cas/auth/validate')) return ok({ uid: '1', token: 'TK' })
+        if (u.includes('/task/exec/list/record')) return ok(stubRecords)
+        if (u.includes('/dashboard/device/cache/telemetry')) return ok(stubTelemetry)
+        return ok({})
+      }),
+    )
   })
 
-  it('实时监控 / 任务 / 参数 / 下发四块齐备（阶段 6 前仍为设计稿常量）', async () => {
+  afterEach(async () => {
+    // 先排空待决请求：上一个用例若没等 load() 结束，桩已被 unstubGlobals
+    // 清掉，再放行就会真的打到 keehang 线上，并把会话写回模块级缓存。
+    await flushPromises()
+    clearSession()
+    vi.unstubAllGlobals()
+  })
+
+  /** 造一条今天的执行记录（服务端 start 是 ISO 串） */
+  function todayRecord(over: Partial<DroneTaskRecord> = {}): DroneTaskRecord {
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    const start = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T15:00:00`
+    return {
+      id: 147744,
+      taskName: '向阳村-安全巡检',
+      lineId: 12,
+      dockId: 23452,
+      start,
+      end: start,
+      status: 1,
+      scheduled: true,
+      ...over,
+    }
+  }
+
+  it('四块齐备：实时监控 / 任务管理 / 设备参数 / 任务下发', async () => {
     const sub = useSubpageStore()
     sub.openUav()
     const w = mount(Host)
@@ -325,28 +374,106 @@ describe('无人机页', () => {
     expect(w.find('#subTitle').text()).toBe('无人机')
     expect(w.find('.subpage').classes()).toContain('is-dark')
     expect(w.findAll('.dev-block')).toHaveLength(4)
-    expect(w.findAll('.uav-stats > div')).toHaveLength(11)
-    expect(w.findAll('.dev-block')[2].findAll('.uav-stats > div')).toHaveLength(8)
-    expect(w.find('.uav-gate').text()).toBe('可下发')
     w.unmount()
   })
 
-  it('五项起飞条件全过时才能下发', () => {
-    expect(uavChecks.every((c) => c.ok)).toBe(true)
-    for (const c of uavChecks) expect(c.risk).toBeTruthy()
-  })
-
-  it('切到机库是加载态，不显示实时画面', async () => {
+  it('实时画面不再挂静态示意图，明说视频流未接入', async () => {
     const sub = useSubpageStore()
     sub.openUav()
     const w = mount(Host)
     await nextTick()
 
-    expect(w.find('.uav-stage img').exists()).toBe(true)
-    const dock = w.findAll('.dev-tabs button').find((b) => b.text() === '机库')
-    await dock!.trigger('click')
     expect(w.find('.uav-stage').classes()).toContain('is-wait')
     expect(w.find('.uav-stage img').exists()).toBe(false)
+    expect(w.find('.uav-stage').text()).toContain('实时视频流未接入')
     w.unmount()
+  })
+
+  it('任务数取真实执行记录，不写死', async () => {
+    stubRecords = [todayRecord({ id: 1 }), todayRecord({ id: 2, status: 2 })]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const stats = w.findAll('.dev-block')[1].findAll('.uav-stats > div')
+    expect(stats).toHaveLength(3)
+    expect(stats[0].text()).toContain('2') // 今日任务
+    expect(stats[1].text()).toContain('1') // 已完成
+    w.unmount()
+  })
+
+  it('没有执行记录时给空态，不回落演示任务', async () => {
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    expect(w.text()).toContain('今日暂无无人机任务')
+    w.unmount()
+  })
+
+  it('设备参数用真实遥测；取不到的字段显示「—」而不是 0', async () => {
+    stubRecords = [todayRecord()]
+    stubTelemetry = {
+      status: 1,
+      lat: '30.5123',
+      lng: '114.4567',
+      batteryInfo: { batteries: [{ capacityPercent: 88, temperature: 29.3 }] },
+      horizontalSpeed: 0,
+      verticalSpeed: null,
+      altitude: 117,
+      attitudeHead: null,
+    }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const stats = w.findAll('.dev-block')[2].findAll('.uav-stats > div')
+    expect(stats).toHaveLength(8)
+    expect(stats[1].text()).toContain('88%') // 电量
+    expect(stats[3].text()).toContain('0m/s') // 水平速度
+    // 垂直速度 / 航向角遥测没给 → 「—」，不能写成 0
+    expect(stats[4].text()).toContain('—')
+    expect(stats[6].text()).toContain('29.3℃')
+    w.unmount()
+  })
+
+  it('缺数据的起飞条件按「未知」处理，不可下发并写明缺哪个指标', async () => {
+    stubRecords = [todayRecord()]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    // 风速 / 雨量 / 网络速率遥测接口没提供 → 不放行（把「没数据」当「满足」是放松安全门）
+    const uav = useUavStore()
+    expect(uav.canDispatch).toBe(false)
+    expect(w.find('.uav-gate').text()).toBe('不可下发')
+    expect(w.find('.uav-allow').text()).toContain('数据未接入')
+    expect(w.find('.uav-send').attributes('disabled')).toBeDefined()
+    w.unmount()
+  })
+
+  it('遥测缺失时，电量也按未知处理', async () => {
+    stubRecords = [todayRecord()]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    mount(Host)
+    await flushPromises()
+
+    const uav = useUavStore()
+    const battery = uav.checks.find((c) => c.name === '电量')
+    expect(battery?.unknown).toBe(true)
+    expect(battery?.ok).toBe(false)
   })
 })

@@ -7,9 +7,9 @@ import DeviceInfoSheet from '@/components/sheets/DeviceInfoSheet.vue'
 import PatrolSheet from '@/components/sheets/PatrolSheet.vue'
 import UavRouteSheet from '@/components/sheets/UavRouteSheet.vue'
 import UavTodaySheet from '@/components/sheets/UavTodaySheet.vue'
-import { patrolPhotos } from '@/data/config'
 import { deviceSet } from '@/data/device'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
+import { usePatrolStore } from '@/stores/patrol'
 
 /**
  * 弹层宿主（2026-10 版本同步 · 第一批建立，第四批补齐内容）
@@ -22,11 +22,12 @@ import { useBottomSheetStore } from '@/stores/bottomSheet'
  * 各内容只负责标题下面那块。
  */
 const sheet = useBottomSheetStore()
+const patrol = usePatrolStore()
 
-/** 当前巡检照片（kind 为 patrol 时有效） */
+/** 当前巡检照片（kind 为 patrol 时有效；2026-11 阶段 8 起是真实航拍照片） */
 const photo = computed(() => {
   if (sheet.kind !== 'patrol') return undefined
-  return patrolPhotos.find((p) => p.id === sheet.id)
+  return patrol.photos.find((p) => p.id === sheet.id)
 })
 
 /** 当前设备详情机组（device-info / device-history 时有效） */

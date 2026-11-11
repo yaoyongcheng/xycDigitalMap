@@ -1,17 +1,20 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { airImgs, airPos, airTimes, hazardKindList } from '@/data/config'
-import { dayOffsetOf, startOfDay } from '@/utils/date'
+import { hazardKindList } from '@/data/config'
+import { dateKey, startOfDay } from '@/utils/date'
 // 与 cam 互相调用 closeXxx（原版 openAir 关 cam，openCam 关 air）。
 // 循环 import 安全：两端都只在函数体内惰性调用 useXxxStore()。
 import { useCamStore } from './cam'
+import { usePatrolStore } from './patrol'
 
 /** 无人机巡检照片（由 airShots 派生） */
 export interface AirShot {
   time: string
   img: string
   pos: string
+  /** 所属任务名（真实媒体带，演示数据没有） */
+  taskName?: string
 }
 
 /** 隐患上报的提交载荷（接口接入后即为 POST body） */
@@ -35,13 +38,45 @@ export interface AddFilesResult {
  * 无人机巡检 + 隐患上报
  *
  * 两者在原版均为单域状态，合并为一个 store 以减少文件数（依据迁移方案）。
+ *
+ * 2026-11 阶段 8：**航拍照片改接真实数据**。
+ * 原先 `airShots(day)` 按日期偏移派生 8~10 张照片，图片取自
+ * `data/config.ts` 的 `airImgs`（两张静态图轮流用），时刻取自 `airTimes`
+ * （十个写死的时间点）—— 整套都是编的。
+ * 现在照片来自 keehang 平台的真实航拍媒体（见 `stores/patrol.ts`），
+ * 按**拍摄日期**过滤：选到哪一天就显示那天的真实航拍，没有就是没有。
  */
 export const useAirHazardStore = defineStore('airHazard', () => {
+  /** 真实航拍照片来源（阶段 8：巡检照片改接 keehang 媒体接口） */
+  const patrol = usePatrolStore()
+
   /** 原 js/app.js:1334 */
   const airDate = ref<Date>(startOfDay(new Date()))
 
   /** 原 js/app.js:1335 —— 航拍日历当前显示月份 */
   const airCalMonth = ref<Date>(startOfDay(new Date()))
+
+  /**
+   * 选中日期当天的真实航拍照片。
+   *
+   * 原 js/app.js:1338-1345 按日期偏移派生 8~10 张（图片与时间全是编的）。
+   * 现在从真实媒体里按**拍摄日期**过滤：日期对不上一张都没有 —— 
+   * 宁可空着，也不用别的日期的照片冒充。
+   */
+  const airShots = computed<AirShot[]>(() => {
+    const key = dateKey(airDate.value)
+    return patrol.list
+      .filter((p) => p.time.slice(0, 10) === key)
+      .map((p) => ({
+        time: p.time.slice(11, 16),
+        img: p.url,
+        pos: 'fit',
+        taskName: p.taskName,
+      }))
+  })
+
+  /** 原 js/app.js:1364 —— airList 是派生值，用 computed */
+  const airList = computed<AirShot[]>(() => airShots.value)
 
   /** 原为 #airCal 的 .hide 类 */
   const airCalOpen = ref(false)
@@ -83,19 +118,6 @@ export const useAirHazardStore = defineStore('airHazard', () => {
    * 目前没有后端，落到这个 ref 上，接入接口后即为 POST 的 body。
    */
   const lastSubmit = ref<HazardPayload | null>(null)
-
-  /** 原 js/app.js:1338-1345 —— 按日期偏移派生照片数（8~10 张） */
-  function airShots(day: number): AirShot[] {
-    const n = 8 + (Math.abs(day) % 3)
-    return airTimes.slice(0, n).map((t, i) => ({
-      time: t,
-      img: airImgs[(i + Math.abs(day)) % airImgs.length],
-      pos: airPos[i % airPos.length],
-    }))
-  }
-
-  /** 原 js/app.js:1364 —— airList 是派生值，用 computed */
-  const airList = computed<AirShot[]>(() => airShots(dayOffsetOf(airDate.value)))
 
   /** 原 js/app.js:1425-1433 resetHazard() —— 同时释放已创建的 ObjectURL */
   function resetHazard(): void {

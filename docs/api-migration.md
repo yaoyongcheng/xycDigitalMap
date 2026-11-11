@@ -110,18 +110,18 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | `/location/snapshootProjectPersonCountV3` | 项目人员数量快照 | 人员分布 | ⚠️ **57007 接口权限未获取** |
 | `/location/personCurLocation/v2` | 人员当前位置 | 人员分布/地图撒点 | ⚠️ **57007 接口权限未获取** |
 | `/location/track` | 人员轨迹 | 轨迹回放 | ⚠️ 同上（未单独验证，同属 location 分组） |
-| `/device/label/page` | 定位标签（实测 200 条） | 人员定位设备 | ⬜ 阶段 5 |
-| `/device/label/getLabelOrPersonRelation` | 标签-人员绑定 | 人员定位 | ⬜ 阶段 5 |
-| `/device/gateway/page` | 网关（实测 24 条） | 设备管理 | ⬜ 阶段 5 |
-| `/device/gateway/pageByProjectId` | 项目网关 | 设备管理 | ⬜ 阶段 5 |
-| `/device/beacon/page` | 信标（实测 78 条） | 设备管理 | ⬜ 阶段 5 |
+| `/device/label/page` | 定位标签（实测 200 条） | 人员定位设备 | ✅ 阶段 8 已接客户端（**行内无区域字段**） |
+| `/device/label/getLabelOrPersonRelation` | 标签-人员绑定 | 人员定位 | ⬜ 未验证 |
+| `/device/gateway/page` | 网关（实测 24 条） | 设备管理 | ⬜ 未验证 |
+| `/device/gateway/pageByProjectId` | 项目网关（实测 102 条，含 areaName） | 设备管理 | ✅ 阶段 8 已接客户端 |
+| `/device/beacon/page` | 信标（实测 78 条） | 设备管理 | ✅ 阶段 8 已接客户端 |
 | `/device/danger/page` | 危险源 | 隐患卡 | ⚠️ 实测 `total=0`（现场未录危险源） |
 
-> **CloudWAF 拦截（2026-11-11 下午新增）**：`https://dw.yzw.cn/open/*` 目前被
-> CloudWAF 整体拦成 **HTTP 418 HTML 拦截页**，连此前已接通、实测有数据的
-> `personOverall` / `todayTeamsAtteStat` 也一样返回 418（不是签名错、不是 57007）。
-> 这是外部网关策略，代码侧无法绕过；页面按「接口失败 → 明确空态」处理，
-> 不要因此把演示数据加回来。恢复后签名客户端无需改动即可继续用。
+> **CloudWAF 拦截（已恢复，2026-11-11 第八轮复查）**：下午曾整体拦成 **HTTP 418
+> HTML 拦截页**，晚上复查已恢复，`/device/*` 三项都通。
+> ⚠️ 但 WAF 对同一密钥的自动化请求会**间歇拦截**（同一私钥刚成功、下一发 418）：
+> 探测脚本必须带退避重试，否则会把「WAF 挡了」误读成「接口没有」。
+> 代码侧无需改动，页面按「接口失败 → 明确空态」处理，不要因此把演示数据加回来。
 >
 > **权限缺口说明**：`/person/page`、`/report/attendance/attendanceDay`、
 > `/location/*` 用当前 accessKey 全部返回 `57007 接口权限未获取` —— 不是我们调错，
@@ -142,21 +142,21 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 
 | 方法 | 路径 | 用途 | 状态 |
 |---|---|---|---|
-| POST | `/api/webgateway/v1/access/token` | 换 token | ⬜ 阶段 3（已探测到需补参数） |
-| POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据 | ⬜ 阶段 3 |
-| POST | `/api/data/v1/tsdb/queryEvent` | 告警事件 | ⬜ 阶段 3 |
+| POST | `/api/webgateway/v1/access/token` | 换 token | ✅ 阶段 8 已接（body `{ak, sk}`，成功码 `status===0`，令牌头 `X-APP-USER`） |
+| POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据 | ✅ 阶段 8 已接客户端（**缺 sn，卡在台账没有序列号字段**） |
+| POST | `/api/data/v1/tsdb/queryEvent` | 告警事件 | ✅ 阶段 8 已接客户端（同上） |
 | 🔒 POST | `/api/webgateway/v1/auth/api/appUser/logout` | 登出 | 写，不调用 |
 
 ### D. 第三方与专用服务
 
 | 方法 | 地址 | 用途 | 状态 |
 |---|---|---|---|
-| GET | `https://open.ys7.com/api/lapp/token/get?appKey=&appSecret=` | 萤石云 token | ⬜ 阶段 6 |
-| GET | `https://open.ys7.com/api/lapp/v2/live/address/get?...` | 监控直播地址（HLS/FLV） | ⬜ 阶段 6 |
-| POST | `https://account.keehang.com:23443/cas/auth/login` | 无人机平台登录 | ⬜ 阶段 6 |
-| POST | `https://account.keehang.com:23443/cas/auth/validate` | 校验 | ⬜ 阶段 6 |
-| GET | `https://tciccs.cscec3bxjy.cn:30400/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环 | ⬜ 阶段 6 |
-| GET | 无人机：`/live/stream/list`、`/task/list`、`/task/exec/list/record`、`/dashboard/task/list/record`、`/audit_center/get_by_device_id`、`{0}/media/task/job/{1}` | 航线、任务、审计、媒体 | ⬜ 阶段 6 |
+| GET | `https://open.ys7.com/api/lapp/token/get?appKey=&appSecret=` | 萤石云 token | ⚠️ 阶段 8 实测 `code:-1`，**凭据已失效** |
+| GET | `https://open.ys7.com/api/lapp/v2/live/address/get?...` | 监控直播地址（HLS/FLV） | ⚠️ 同上，无源 |
+| POST | `https://account.keehang.com:23443/cas/auth/login` | 无人机平台登录 | ✅ 阶段 8 已接（body `{account, password}`） |
+| POST | `https://account.keehang.com:23443/cas/auth/validate` | 校验 | ✅ 阶段 8 已接（body `{st}`，**不是 tgt**） |
+| GET | `https://tciccs.cscec3bxjy.cn:30400/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环 | ⬜ 未验证 |
+| GET | 无人机：`/task/list`、`/task/exec/list/record`、`/dashboard/device/cache/telemetry/{id}/1`、`/media/task/job/{jobId}` | 航线、任务、遥测、媒体 | ✅ 阶段 8 已接（**必须带 pid 过滤**；媒体按执行记录 id 取） |
 | 🔒 POST | `https://iot.keehang.com/dashboard/#/control?st=`（下发控制） | 无人机控制 | 写，不调用 |
 
 ---
@@ -174,13 +174,13 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 5 | 报警历史（按日） | 全部真实，翻到更早日期按需回补 | 8085 `/api/video/alarms`（分页累积） | ✅ 阶段 3 + 数据收口 |
 | 6 | 首页·人员分布 | **真实区域台账**（`:8084` `areas`，本项目 9 条）；人数位「—」 | B `location/*`（**57007 无权限 + CloudWAF 418**）+ `organ/list` | ✅ 阶段 5（区域已接；人数仍无源） |
 | 7 | 智控·设备列表/四卡 | **真实台账**（`:8084` `deviceinfos`，8 台） | A `deviceinfos` + C `queryRealTimeData` | ✅ 阶段 4（实时数据无源） |
-| 8 | 设备详情·实时状态 | 台账字段（高度/司机/安检/质检报告） | C `queryRealTimeDataV2` + `queryEvent`（**全端口 404**） | ✅ 阶段 4（作业指标空态） |
+| 8 | 设备详情·实时状态 | 台账字段（高度/司机/安检/质检报告） | C `queryRealTimeDataV2` + `queryEvent`（**阶段 8 确认在 C 组存活，但台账没有 sn**） | ✅ 阶段 4（作业指标空态） |
 | 9 | 塔机·吊次/工作循环 | 空态 | A/C `getWorkCycleInfoHis`（**全端口 404**） | ⚠️ 无源，等网关开放 |
 | 10 | 智眸·现场快照（监控点位/抓拍） | **真实报警派生**（通道 + 日期 + `picture` base64） | 8085 `/api/video/alarms` + D 萤石云直播 | ✅ 阶段 5（抓拍已接；实时流仍无源） |
-| 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page`（实测 0 条） | 5（无数据） |
-| 12 | 巡检任务清单 | `views/sub/InspectList.vue` 常量 | D `/task/list`、`/task/exec/list/record` | 6 |
-| 13 | 首页天气 | 无（设计稿无天气位） | E `:8088` amap/weather（**可用**） | ✅ 客户端待接，无消费点 |
-| 14 | 无人机·航线与任务 | `stores` 常量 + 静态图 | D `/dashboard/*`、`/live/stream/list` | 6 |
+| 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page`（实测 0 条） | 5（无数据，隐患上报是写接口） |
+| 12 | 巡检任务清单 | **真实航拍照片**（keehang 媒体，按拍摄时间倒序） | D `/task/exec/list/record` + `/media/task/job/{id}` | ✅ 阶段 8 |
+| 13 | 首页天气 | 无（设计稿无天气位） | E `:8088` amap/weather（**可用**） | ✅ 阶段 8 客户端已接，无消费点 |
+| 14 | 无人机·航线与任务 | **真实任务 / 遥测 / 航线**（keehang） | D `/task/exec/list/record`、`/dashboard/device/cache/telemetry/{id}/1`、`/task/list` | ✅ 阶段 8（实时画面与航线下发仍无 REST 端点） |
 | 15 | 智能爬架·机位读数 | **空态**（原 36 条手写读数已删） | 无任何后端接口 | ⚠️ 无源 |
 | 16 | 消息中心 + tabbar 角标 | **真实报警派生**（一条报警一条消息、按 id 记已读） | 无独立消息接口，源为 8085 `/api/video/alarms` | ✅ 阶段 5 |
 
@@ -197,8 +197,8 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | **2** | 首页班组出勤 + 分时人数（报警顺延） | `src/api/home.ts`、`stores/overview.ts`、`utils/chart.ts`、`SafetyPanel.vue` | ✅ 已完成 |
 | **3** | 报警（8085 视频报警）+ 智控设备台账与实时数据（IOT token 待补） | `api/video.ts`、`api/data.ts`、`stores/deviceLedger.ts` | ✅ 报警 + 台账已完成；实时数据无源 |
 | **4** | 天气、权限菜单（`unity-permission`） | `api/weather.ts` 待接手 | ✅ 两个接口已验证可用，客户端未接（无消费点） |
-| **5** | 人员分布 / 定位 / 隐患 / 网关标签 | `api/people.ts`、`api/iotDevice.ts` | ⏸ 授权未开通，仅 `organ/list` 可用 |
-| **6** | 无人机与塔机专用服务（CAS 登录、任务、工作循环） | `api/drone.ts`、`api/crane.ts` | ⬜ |
+| **5** | 人员分布 / 定位 / 隐患 / 网关标签 | `api/people.ts`、`api/iotDevice.ts` | ✅ 阶段 8 已接定位台账客户端（**标签无区域字段，人数位仍「—」**）；`location/*` 仍 57007 |
+| **6** | 无人机与塔机专用服务（CAS 登录、任务、工作循环） | `api/drone.ts`、`api/crane.ts` | ✅ 阶段 8 已接 keehang 全链路（CAS 两步 / 任务 / 遥测 / 航线 / 媒体）；塔机 `getWorkCycleInfoHis` 未验证 |
 | **7** | 写接口接入（报警状态变更、删除、登出） | 统一走「显式确认 + 默认关闭」的写入通道 | ⬜ 需服务端代理与审计 |
 
 ### 阶段 2 的验收口径（已达成）
@@ -614,6 +614,160 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 - 单测 **632 条全过**（26 文件；`stage5.spec.ts` 新增「服务端 handleStatus 已读 /
   点开乐观置 1 且 PATCH body 为 `{status:1}`」2 条）、`vue-tsc --noEmit` 无错、
   `npm run build` 通过。
+
+---
+
+## 四点十一、阶段 8：无人机 / 巡检照片 / 定位台账 / 天气（2026-11-11 第八轮）
+
+### 1. 先推翻三条旧结论
+
+本轮开工前先复查了上一轮记下的「死路」，结果推翻了三条：
+
+| 旧结论 | 复查实测 |
+|---|---|
+| CloudWAF 418 拦截，大屏 open 全挂 | **已恢复**。`/device/label/page`(200 条)、`/device/gateway/pageByProjectId`(102 条)、`/device/beacon/page`(78 条) 都通 |
+| tsdb `queryRealTimeDataV2` 全端口 404 | **在 C 组 `iot.cscec3b-iti.com` 上存活**（404 的是 8084 上的同名路径）。ak/sk 换 token 成功 |
+| 阶段 5/6「授权未开通 / 无凭据」 | 凭据从 Unity DLL 反编译提取：IOT ak/sk、keehang CAS 账号、萤石云 appKey |
+
+> 复查纪律：CloudWAF 对同一密钥的自动化请求会**间歇拦截**（同一私钥刚成功、
+> 下一发 418）。探测脚本必须带退避重试，否则会把「WAF 挡了」误读成「接口没有」。
+
+### 2. 新增四组客户端
+
+| 文件 | 组 | 鉴权 | 用途 |
+|---|---|---|---|
+| `src/api/drone.ts` | D 组 keehang | **CAS 两步** login→validate | 无人机任务 / 遥测 / 航线 / 媒体 |
+| `src/api/iot.ts` | C 组 iot.cscec3b-iti.com | ak/sk 换 token（`X-APP-USER` 头） | tsdb 实时数据与事件 |
+| `src/api/iotDevice.ts` | B 组大屏 open | 项目级 RSA 签名（免登录） | 定位标签 / 网关 / 信标 |
+| `src/api/weather.ts` | E 组 `:8088` | 免登录 | 高德天气代理 |
+
+**keehang CAS 是两步**（踩过一次坑）：
+
+```
+① POST https://account.keehang.com:23443/cas/auth/login
+   body {account, password}          ← 字段名是 account 不是 username
+   → {code:200, data:{tgt, st, userDetail:{uid}}}
+② POST https://account.keehang.com:23443/cas/auth/validate
+   body {st}                          ← 用 st，不是 tgt（传 tgt 报「参数输入错误」）
+   → {code:200, data:{uid, token, timestamp}}
+之后每个业务请求带 KH-USER-ID / KH-TOKEN 两个头
+```
+
+**C 组的成功码是 `status === 0`**（不是 200），换令牌 body 是 `{ak, sk}`
+（不是 appKey/appSecret）—— 判错成功码会把失败当成功。
+
+**E 组 `city` 要的是六位 adcode**（武汉 `420100`），传城市名会 400。
+
+### 3. 演示数据清零（本轮删掉的全部常量）
+
+| 常量 | 原处 | 去向 |
+|---|---|---|
+| `patrolPhotos`（17 张静态图） | `data/config.ts` | 真实航拍媒体（keehang OSS 直链） |
+| `patrolCats`（六个手工分类） | `data/config.ts` | **整组删除** —— 分类是设计稿的人工归类，服务端无此字段 |
+| `airImgs` / `airTimes` / `airPos` | `data/config.ts` | 真实媒体按拍摄日期过滤 |
+| `uavLive` / `uavTodayTasks` / `uavRoutes` / `uavChecks` | `data/device.ts` | keehang 任务 / 遥测 / 航线 |
+
+「六个分类」删除是有意的：照片一到就不知道该归哪类，与其用假分类框住真照片，
+不如按拍摄时间倒序铺开并标出「所属任务 + 时间」，让看的人自己判断。
+
+### 4. 起飞条件改成三态（安全门）
+
+遥测接口只给电量 / 电池温度 / 速度 / 高度 / 航向角，**风速、雨量、网络速率
+三项没有数据源**。原版的 `uavChecks` 由写死的 `uavLive` 派生，五项永远全过。
+
+现在改成三态：`ok` 满足 / `bad` 明确不满足 / `unknown` **该指标没有数据源**。
+`canDispatch = checks.every(c => c.ok)` —— **有未知项也不放行**。把「没数据」
+当成「条件满足」是放松安全门的方向，该拦的飞行没拦。未知项在界面上写明
+「风速数据未接入」，让人知道还差什么。
+
+### 5. 航线下发：**没有** REST 端点，如实告知
+
+实测 keehang 的 `/task/start`、`/task/exec/start`、`/task/control` 等一律 404。
+原厂 Unity 端是打开网页控制台 `iot.keehang.com/dashboard/#/control?st={token}`
+由那个页面下发。所以航线弹层**只读**：列出真实航线（实测本项目 15 条）、
+显示选中那条的详情、给出平台地址，并明说「航线下发需在无人机平台操作，本页
+不代为下发」。保留一个假的「已下发」toast 是在骗现场调度 —— 那条航线真的不会飞。
+
+### 6. 实时视频流：不挂静态图冒充
+
+萤石云凭据实测已失效（`code:-1`），keehang 直播流需另一套鉴权且未验证。
+UavPage 的画面区改成明说「实时视频流未接入 / 萤石云凭据已失效」，
+不再挂一张静态示意图当直播画面 —— 示意图长得像现场画面，会被当成实时情况看。
+
+### 7. 巡检照片为什么不自动加载缩略图
+
+真实 DJI 原图单张 5~8MB（实测 5 378 048 字节）。列表里直接 `<img src>` 会把流量
+吃光。列表只显示「所属任务 + 拍摄时间 + 体积摘要」，**点开大图时才加载原图**
+（用户主动行为，走 `utils/albumSave.ts` 的预转机制）。
+
+### 8. 定位标签拿不到区域 → 人数位仍为「—」
+
+`/device/label/page` 每行绑定了 `personId` 且有 `isOnline`，但**标签行没有
+区域/网关字段**（实测 keys：`labelSn,personId,thirdpartyPersonId,isOnline,
+isEnable,power,isMotionless,softVersion,expiredDate,maxCsqRssi,runModel,
+press,tamperProof`）。区域信息只在网关的 `areaName` 上，两边**无法关联**。
+
+所以「区域人数 = 该区域下在线标签数」这条链路走不通，首页人员分布的人数位
+维持「—」，不硬凑数字。`api/iotDevice.ts` 先把三组原始数据收回来，关联逻辑
+放在 `utils/locateDevice.ts`（尚未创建），关联不上就退回「—」。
+
+顺带修正两处字段语义：
+- 信标行的 `gatewaySn` 其实是**信标自己**的 SN（前缀 `YZPB`），`gatewayName`
+  才是它挂在哪个网关下。
+- `fetchAll` 分页按唯一键去重：实测 `total=102` 但当页只回 1 行，不去重的话
+  同一批行会被累加 5 次，在线设备数虚高。
+
+### 9. C 组 tsdb：**接口通，但本项目拿不到 sn**
+
+`queryRealTimeDataV2` 收 `{queryList:[{productCode, sn, field, code}]}`，
+`productCode` 就是项目码 `P000000076`。但 `:8084` 的设备台账只有 `device_name`
+与 `device_info.extra_fields`，**没有序列号字段**，`sn` 填不出来。
+
+所以这一层只能拿到「接口可用」这个结论，设备详情页的作业指标（吊次 / 吊重 /
+利用率）**保持空态**。客户端先建好，等台账补上 `sn` 即可直接用。
+
+### 10. 本轮改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `src/api/drone.ts` | 新增：CAS 两步登录、任务 / 遥测 / 航线 / 媒体 |
+| `src/api/iot.ts` | 新增：ak/sk 换 token、tsdb 实时数据 / 事件 |
+| `src/api/iotDevice.ts` | 新增：定位标签 / 网关 / 信标（分页去重） |
+| `src/api/weather.ts` | 新增：高德天气代理 |
+| `src/stores/uav.ts` | 新增：无人机 store（三态起飞条件） |
+| `src/stores/patrol.ts` | 新增：巡检照片 store |
+| `src/stores/airHazard.ts` | 航拍派生改为按真实拍摄日期过滤 |
+| `src/stores/auth.ts` | `clear()` 里加 `useUavStore().reset()`（清缓存令牌） |
+| `src/views/sub/UavPage.vue` | 四块改真数据；画面区明说未接入 |
+| `src/views/home/PatrolPanel.vue` | 照片墙改真数据，删分类 |
+| `src/components/sheets/PatrolSheet.vue` | 大图元信息改服务端字段 |
+| `src/components/sheets/UavTodaySheet.vue` | 今日任务改真数据 |
+| `src/components/sheets/UavRouteSheet.vue` | 航线改真数据 + 如实告知下发通道 |
+| `src/components/overlays/SheetHost.vue` | 弹层标题取真实文件名 |
+| `src/data/config.ts` `src/data/device.ts` | 删演示常量 |
+
+### 11. 单测
+
+新增两个文件（`drone.spec.ts` 29 条、`iot-weather.spec.ts` 25 条），并改了 6 个
+既有文件：
+
+- `bottom-sheet.spec.ts`：弹层入口从演示照片墙改为往 patrol store 灌真实照片；
+  标题断言从「项目全景」改为文件名。
+- `patrol.spec.ts`：卡片不再显示文件名（显示任务 + 时间），断言随之改；补 fetch
+  断网桩，避免用例真的去请求 keehang。
+- `device-page.spec.ts`：无人机页四块断言重写；桩返回真实形态的执行记录与遥测。
+- `motion-perf.spec.ts`：「智巡分类」用例改为「智巡照片卡片」—— 六个分类已删除。
+- `guards.spec.ts`：图片引用清单移出 `data/config.ts` 与 `views/sub/UavPage.vue`
+  （演示图删完后自然不再引用）。
+- `stores.spec.ts`：航拍派生用例改为按真实日期过滤。
+
+> **踩到的测试陷阱**：`vitest.config.ts` 开了 `unstubGlobals: true`，桩会在每个用例
+> 前被清掉。若上一个用例有**未 await** 的请求，它会在桩被清后真的打到线上，
+> 并把 keehang 的模块级会话写回缓存（表现为随机失败 + 日志里的 401）。
+> 解法：`afterEach` 里先 `await flushPromises()` 排空待决请求，再 `clearSession()`，
+> 最后 `vi.unstubAllGlobals()`。
+
+- 全量 **689 条全过**（28 文件）、`vue-tsc --noEmit` 无错、`npm run build` 通过。
 
 ---
 

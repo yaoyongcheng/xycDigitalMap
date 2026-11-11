@@ -172,19 +172,20 @@ describe('结构性守卫', () => {
       for (const f of owners) {
         expect(existsSync(join(ROOT, f))).toBe(true)
       }
-      // 引用点应在这些文件里：配置、地图视图、样式、智控面板、hd 原图映射表、
+      // 引用点应在这些文件里：地图视图、样式、智控面板、hd 原图映射表、
       // 视频报警 → Alarm 的分类配图。
       // 2026-11 阶段 5 移出两个：stores/cam.ts（改真实抓拍图）、
       // types.ts（Camera 注释里的图片字面量随演示点位一起删掉）。
+      // 2026-11 阶段 8 再移出两个：data/config.ts（演示照片常量全删，
+      // 改真实航拍图）、views/sub/UavPage.vue（静态示意图当直播画面，
+      // 已改成明说「实时视频流未接入」）。
       expect([...owners].sort()).toEqual([
         'src/components/overlays/MapLand.vue',
         'src/components/ui/MapViewer.vue',
-        'src/data/config.ts',
         'src/styles/app.css',
         'src/utils/photoHd.ts',
         'src/utils/videoAlarm.ts',
         'src/views/home/EquipPanel.vue',
-        'src/views/sub/UavPage.vue',
       ])
     })
   })

@@ -56,34 +56,21 @@ export function deviceSet(kind: DeviceKind): {
 
 /* ---------------- 无人机 ---------------- */
 
-export interface UavTask {
-  time: string
-  name: string
-  state: '执行中' | '待执行' | '已完成'
-  pct?: number
-}
-
-export const uavRoutes = [
-  { id: 'daily', name: '向阳村日常巡航', meta: '全场航线 · 约 18 分钟' },
-  { id: 'crane', name: '塔吊巡查航线', meta: '塔吊作业区 · 约 8 分钟' },
-  { id: 'face', name: '作业面定点航线', meta: '主体作业面 · 约 6 分钟' },
-  { id: 'loop', name: '场区环绕航线', meta: '基坑一周 · 约 12 分钟' },
-]
-
-export const uavTodayTasks: UavTask[] = [
-  { time: '08:30', name: '向阳村日常巡航', state: '执行中', pct: 62 },
-  { time: '10:00', name: '塔吊巡查航线', state: '待执行' },
-  { time: '14:30', name: '作业面定点航线', state: '已完成' },
-]
-
-/** 机载实时读数：起飞条件校验与设备参数共用同一份 */
-export const uavLive = { wind: 2, battery: 78, netKbps: 2079, temp: 28.8, rain: false }
-
-/** 起飞条件（原 uavDispatchChecks） */
-export const uavChecks = [
-  { name: '风速', ok: uavLive.wind <= 8, risk: '风速超过 8m/s' },
-  { name: '电量', ok: uavLive.battery >= 30, risk: '电量低于 30%' },
-  { name: '网络质量', ok: uavLive.netKbps >= 500, risk: '网络质量不足' },
-  { name: '电池温度', ok: uavLive.temp >= 0 && uavLive.temp <= 45, risk: '电池温度异常' },
-  { name: '雨量', ok: !uavLive.rain, risk: '当前有雨' },
-]
+/*
+ * 2026-11 阶段 8 删除：无人机在本文件里的全部演示数据。
+ *
+ *   uavRoutes     —— 四条写死的航线（向阳村日常巡航 / 塔吊巡查航线 …）
+ *   uavTodayTasks —— 三条写死的任务（08:30 日常巡航 / 10:00 塔吊巡查 / 14:30 作业面）
+ *   uavLive       —— 机载读数 { wind:2, battery:78, netKbps:2079, temp:28.8, rain:false }
+ *   uavChecks     —— 起飞条件校验（由 uavLive 派生，所以五项**永远全过**）
+ *
+ * 全部改接 keehang 平台的真实接口（见 `api/drone.ts` 与 `stores/uav.ts`）：
+ *   航线     → GET /task/list?recycle=0&deviceId={机库}&pid={项目}（实测 15 条）
+ *   任务     → GET /task/exec/list/record?pid={项目}
+ *   机载读数 → GET /dashboard/device/cache/telemetry/{设备id}/1
+ *   航拍照片 → GET /media/task/job/{执行记录id}
+ *
+ * 其中 uavChecks 最需要删：它由 uavLive 派生，所以「起飞条件校验」永远显示
+ * 通过 —— 现场调度看到的是一道**永远敞开的门**。现在改成三态（满足 / 不满足 /
+ * 数据未接入），数据未接入的一律不放行。
+ */
