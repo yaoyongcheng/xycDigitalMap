@@ -126,6 +126,10 @@ export const useAlarmStore = defineStore('alarm', () => {
     if (!token) return false
     if (liveState.value === 'loading') return false
     if (!force && liveState.value === 'error' && Date.now() - liveTriedAt < RETRY_MS) return false
+    // 已经成功同步过就直接复用：首页安全面板（onMounted + watch token）与
+    // 消息页（刷新后直接落在消息 tab）都会触发这里，不拦的话首屏 400 条
+    // 会被来回打好几遍，现场网络下纯属浪费
+    if (!force && liveState.value === 'ok' && liveAlarms.value.length) return true
 
     liveState.value = 'loading'
     liveTriedAt = Date.now()
@@ -170,6 +174,18 @@ export const useAlarmStore = defineStore('alarm', () => {
       liveState.value = 'error'
       liveError.value = err instanceof Error ? err.message : '报警同步失败'
     }
+  }
+
+  /**
+   * 把外部（消息页按 20 条/页分页查询）拿到的真实报警并入集合。
+   *
+   * 消息页有自己的小页游标，不能复用 `pagesLoaded`（那是首屏 200 条/页的口径），
+   * 但拉回来的报警必须进这里 —— 否则点消息进详情时 `byId()` 找不到、抓拍图也
+   * 拉不到。`total` 取两者较大值，避免小页查询把服务端总数改小。
+   */
+  function appendLive(incoming: Alarm[], totalCount = 0): void {
+    if (totalCount > 0) total.value = Math.max(total.value, totalCount)
+    merge(incoming)
   }
 
   /** 退出登录 / 清会话时把真实数据一并清掉，别让下一个人看到上一个人的现场 */
@@ -300,6 +316,7 @@ export const useAlarmStore = defineStore('alarm', () => {
     trend,
     syncFromVideo,
     ensureDate,
+    appendLive,
     clearLive,
     inspTab,
     inspHistDate,

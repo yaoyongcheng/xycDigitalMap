@@ -8885,3 +8885,36 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   box-shadow: none;
   cursor: default;
 }
+
+/* =====================================================================
+ * 消息页下滑分页（2026-11 阶段 6）
+ *
+ * 报警首屏 400 条、现场全量 1800+，列表按 20 条一屏展开。底部四态
+ * （加载中 / 失败重试 / 还有更多 / 已到底）就地占位，慢请求铺的灰条
+ * 与 .msg-item 同构，数据回填时版式不跳。
+ */
+.msg-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 12px 22px;
+  color: var(--ink-3);
+  font-size: var(--fs-12);
+  text-align: center;
+}
+
+.msg-more.is-end { color: var(--ink-4); }
+
+.msg-more-btn {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--r-8);
+  background: var(--surface);
+  color: var(--blue);
+  font-size: var(--fs-12);
+  cursor: pointer;
+}
+
+.msg-more-skel { width: 100%; padding: 4px 0; }
