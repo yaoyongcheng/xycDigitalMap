@@ -3,10 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import { useAirHazardStore } from '@/stores/airHazard'
+import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
+import { addDays } from '@/utils/date'
 
 import { blobUrls } from '../helpers/browser'
+import { camAlarmFixtures } from '../fixtures/camAlarms'
 
 function pngFile(name = 'shot.png'): File {
   return new File(['x'], name, { type: 'image/png' })
@@ -27,11 +31,16 @@ describe('stores', () => {
   beforeEach(() => {
     localStorage.clear()
     setActivePinia(createPinia())
+    // 注意：这里**不能**提前实例化 auth/shell store。auth 会连带创建 shell，
+    // 而 shell 的抽屉档位在初始化时就读 localStorage 并把默认值写回去；
+    // 下面「抽屉档位持久化」用例随后才 setItem 就再也读不到了。
+    // 阶段 5 的报警夹具只放进 cam 自己的 beforeEach。
   })
 
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   /* ============================================================ */
@@ -193,86 +202,77 @@ describe('stores', () => {
 
   /* ============================================================ */
 
-  describe('cam', () => {
-    it('18 个点位，图片统一为同一张（原版现状）', () => {
-      const cam = useCamStore()
-      expect(cam.cameras).toHaveLength(18)
-      for (const c of cam.cameras) {
-        expect(c.img).toBe('img/cam-crane2.webp')
-        expect(c.pos).toBe('')
-      }
-      expect(cam.cameras.every((c) => !/\.jpe?g$|\.png$/.test(c.img))).toBe(true)
+  describe('cam（2026-11 阶段 5：真实通道与报警抓拍）', () => {
+    beforeEach(() => {
+      // 点位/抓拍来自真实报警，openCam 有登录守卫；抓拍图请求用桩挡掉
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, text: async () => '' })))
+      const auth = useAuthStore()
+      auth.token = 'test-token'
+      auth.expiresAt = Date.now() + 3_600_000
+      useAlarmStore().liveAlarms = camAlarmFixtures()
     })
 
-    it('按 group 分组，顺序与点位顺序一致', () => {
+    it('点位来自真实报警通道，不挂演示示意图', () => {
       const cam = useCamStore()
-      expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([
-        ['出入口', 9],
-        ['场内', 7],
-        ['塔吊', 2],
-      ])
+      expect(cam.cameras.map((c) => c.id)).toEqual(['ch-2', 'ch-3'])
+      expect(cam.cameras.map((c) => c.name)).toEqual(['2号通道', '3号通道'])
+      expect(cam.cameras.every((c) => c.group === '视频监控')).toBe(true)
+      expect(cam.cameras.every((c) => c.img === '')).toBe(true)
     })
 
-    it('默认选中首个点位', () => {
+    it('按 group 分组：真实点位只有一组', () => {
       const cam = useCamStore()
-      expect(cam.camId).toBe('g1')
-      expect(cam.currentCam.name).toBe('1#门监控')
+      expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([['视频监控', 2]])
+    })
+
+    it('没有报警数据时点位为空，currentCam 给兜底对象', () => {
+      useAlarmStore().liveAlarms = []
+      const cam = useCamStore()
+      expect(cam.cameras).toEqual([])
+      expect(cam.currentCam.name).toBe('暂无监控点位')
+      expect(cam.camShots).toEqual([])
     })
 
     it('切换点位后 currentCam 跟随', () => {
       const cam = useCamStore()
-      cam.camId = 'crane4'
-      expect(cam.currentCam.name).toBe('4#塔吊')
+      cam.camId = 'ch-3'
+      expect(cam.currentCam.name).toBe('3号通道')
     })
 
     it('camId 指向不存在的点位时回退到首个', () => {
       const cam = useCamStore()
       cam.camId = 'nope'
-      expect(cam.currentCam.id).toBe('g1')
+      expect(cam.currentCam.id).toBe('ch-2')
     })
 
-    describe('抓拍派生', () => {
-      it('固定 3 张，时间与裁切位固定', () => {
+    describe('报警抓拍派生', () => {
+      it('今天 2 号通道 3 条，时间取 captureTime，无假裁切位', () => {
         const cam = useCamStore()
-        expect(cam.camShots.map((s) => s.time)).toEqual(['08:12', '12:36', '16:50'])
-        expect(cam.camShots.map((s) => s.pos)).toEqual(['pos-left', 'pos-right', 'pos-bottom'])
+        cam.camId = 'ch-2'
+        expect(cam.camShots.map((s) => s.time)).toEqual(['08:12:00', '12:36:00', '16:50:00'])
+        expect(cam.camShots.map((s) => s.pos)).toEqual(['', '', ''])
+        expect(cam.camShots.map((s) => s.remoteId)).toEqual(['101', '102', '103'])
       })
 
-      it('抓拍池里都是 WebP（图片压缩后不得残留 jpg 引用）', () => {
+      it('按通道隔离：3 号通道只有 1 条', () => {
         const cam = useCamStore()
-        for (const id of cam.cameras.map((c) => c.id)) {
-          for (const s of cam.shotsFor(id, 0)) {
-            expect(s.img).toMatch(/^img\/.+\.webp$/)
-          }
-        }
+        cam.camId = 'ch-3'
+        expect(cam.camShots).toHaveLength(1)
+        expect(cam.camShots[0].time).toBe('09:05:00')
       })
 
-      it('抓拍池三项同图 —— 换日期取图不变（原版现状，接入接口后应改）', () => {
+      it('按日期筛选：昨天 1 条，没记录的日子是空数组', () => {
         const cam = useCamStore()
-        const day0 = cam.shotsFor('g1', 0).map((s) => s.img)
-        const day1 = cam.shotsFor('g1', 1).map((s) => s.img)
-        expect(day0).toEqual(day1)
-        expect(new Set(day0).size).toBe(1)
-      })
-
-      it('无论日期多远都恒定 3 张（取图索引按池长取模，不会越界）', () => {
-        const cam = useCamStore()
-        for (const day of [0, 1, 2, 7, 30, 400]) {
-          const shots = cam.shotsFor('g2b', day)
-          expect(shots).toHaveLength(3)
-          for (const s of shots) {
-            expect(s.img).toBeTruthy()
-            expect(s.time).toBeTruthy()
-          }
-        }
+        expect(cam.shotsFor('ch-2', 1)).toHaveLength(1)
+        expect(cam.shotsFor('ch-2', 7)).toEqual([])
       })
 
       it('日期变更驱动 camShots 重算', async () => {
         const cam = useCamStore()
-        cam.camShotDate = new Date(2026, 9, 1)
+        cam.camId = 'ch-2'
+        cam.camShotDate = addDays(new Date(), -1)
         await nextTick()
-        expect(cam.camShots).toHaveLength(3)
-        expect(cam.camShots.map((s) => s.pos)).toEqual(['pos-left', 'pos-right', 'pos-bottom'])
+        expect(cam.camShots.map((s) => s.time)).toEqual(['10:00:00'])
       })
     })
 
@@ -282,8 +282,8 @@ describe('stores', () => {
         cam.isLive = true
         cam.camCalOpen = true
         cam.camShotDate = new Date(2026, 0, 1)
-        cam.applyCam('crane2')
-        expect(cam.camId).toBe('crane2')
+        cam.applyCam('ch-3')
+        expect(cam.camId).toBe('ch-3')
         expect(cam.isLive).toBe(false)
         expect(cam.camCalOpen).toBe(false)
         expect(cam.camShotDate.getDate()).toBe(new Date().getDate())
@@ -292,14 +292,14 @@ describe('stores', () => {
       it('keepLive 为真时保留直播态', () => {
         const cam = useCamStore()
         cam.isLive = true
-        cam.applyCam('crane2', true)
+        cam.applyCam('ch-3', true)
         expect(cam.isLive).toBe(true)
       })
 
-      it('未知 id 回退到首个点位', () => {
+      it('未知 id 回退到首个真实点位', () => {
         const cam = useCamStore()
         cam.applyCam('unknown')
-        expect(cam.camId).toBe('g1')
+        expect(cam.camId).toBe('ch-2')
       })
     })
 
@@ -313,7 +313,7 @@ describe('stores', () => {
         air.hazardOpen = true
         shell.isLandscape = true
 
-        cam.openCam('camb')
+        cam.openCam('ch-3')
         expect(air.isOpen).toBe(false)
         expect(air.hazardOpen).toBe(false)
         expect(shell.isLandscape).toBe(false)
@@ -321,7 +321,7 @@ describe('stores', () => {
         expect(cam.isOpen).toBe(true)
         expect(cam.camMode).toBe('live')
         expect(cam.isLive).toBe(false)
-        expect(cam.camId).toBe('camb')
+        expect(cam.camId).toBe('ch-3')
       })
 
       it('closeCam 复位全部覆盖层状态', () => {

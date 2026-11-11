@@ -16,7 +16,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchDeviceInfos, type DeviceInfoRow } from '@/api/data'
+import { fetchAreas, fetchDeviceInfos, type AreaRow, type DeviceInfoRow } from '@/api/data'
 import { setLiveUnits } from '@/data/device'
 import { categoryOf, toEquip, toUnit, type DeviceCategory } from '@/utils/deviceLedger'
 import type { DeviceKind, DeviceUnit, Equip } from '@/types'
@@ -35,6 +35,17 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
   const error = ref('')
   /** 成功取数的时刻（HH:mm） */
   const updatedAt = ref('')
+
+  /**
+   * 项目区域清单（同一个 `:8084` 服务，阶段 5 给首页「人员分布」用）。
+   *
+   * 独立成一块状态：区域接口挂了不该把设备台账一起判失败，反之亦然。
+   * 现场 `areas` 有 9 条真实区域，但**没有任何人数/定位字段** ——
+   * 所以页面只能展示区域名，人数位显示「—」，不许拿 0 顶替。
+   */
+  const areas = ref<AreaRow[]>([])
+  const areasState = ref<LedgerState>('idle')
+  const areasError = ref('')
 
   let lastFailAt = 0
   let inflight: Promise<void> | null = null
@@ -71,6 +82,29 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     syncLive()
   }
 
+  /** 测试接线点：直接灌入区域清单 */
+  function applyAreas(list: AreaRow[]): void {
+    areas.value = list
+    areasState.value = 'ok'
+    areasError.value = ''
+  }
+
+  /** 拉区域清单；失败只影响这一块，且不参与台账的 60s 冷却 */
+  async function loadAreas(token: string, force = false): Promise<void> {
+    if (!token) return
+    if (!force && (areasState.value === 'loading' || areasState.value === 'ok')) return
+    areasState.value = 'loading'
+    try {
+      areas.value = await fetchAreas()
+      areasState.value = 'ok'
+      areasError.value = ''
+    } catch (e) {
+      areasState.value = 'error'
+      areasError.value = e instanceof Error ? e.message : '区域清单加载失败'
+      areas.value = []
+    }
+  }
+
   function stamp(): string {
     const d = new Date()
     const p = (n: number): string => String(n).padStart(2, '0')
@@ -89,6 +123,8 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     if (!force && state.value === 'error' && Date.now() - lastFailAt < RETRY_GAP) return
 
     state.value = 'loading'
+    // 人员分布常驻首页，区域清单与台账同源同 token，顺带拉一次（不阻塞台账）
+    void loadAreas(token, force)
     inflight = (async () => {
       try {
         const list = await fetchDeviceInfos()
@@ -118,6 +154,9 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     error.value = ''
     updatedAt.value = ''
     lastFailAt = 0
+    areas.value = []
+    areasState.value = 'idle'
+    areasError.value = ''
     syncLive()
   }
 
@@ -135,5 +174,10 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     apply,
     load,
     reset,
+    areas,
+    areasState,
+    areasError,
+    applyAreas,
+    loadAreas,
   }
 })

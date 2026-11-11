@@ -36,14 +36,11 @@ export const mineNotes: Record<string, string> = {
   关于: '版本号、更新日志与第三方许可说明。当前为演示版，版本信息由 PWA 更新提示提供。',
 }
 
-/**
- * 原 js/app.js:50 —— 抓拍池，3 项均为同一张图
- * 图片统一为 WebP（2026-10 图片压缩，原 .jpg 源图移入 legacy/img-unused/）
+/*
+ * 2026-11 阶段 5 删除：camShotPool（3 项全是同一张 cam-crane2.webp）与
+ * camShotTimes（08:12 / 12:36 / 16:50）。监控点位与抓拍已改为 :8085 真实
+ * 报警按通道 + 日期派生，见 stores/cam.ts。
  */
-export const camShotPool = ['img/cam-crane2.webp', 'img/cam-crane2.webp', 'img/cam-crane2.webp']
-
-/** 原 js/app.js:51 */
-export const camShotTimes = ['08:12', '12:36', '16:50']
 
 /** 原 js/app.js:259 —— 预警轮播可视条数 */
 export const ALARM_FEED_SHOW = 3
@@ -66,17 +63,11 @@ export function alarmSrcOf(src: Alarm['src']): (typeof ALARM_SRC)[Alarm['src']] 
   return ALARM_SRC[src] ?? ALARM_SRC.drone
 }
 
-/** 原 js/app.js:318-319 —— 2#楼各层占用人数的稀疏表 + 总层数 */
-export const b2Occupied: Record<number, number> = { 1: 5, 4: 1 }
-export const b2FloorCount = 5
-
 /*
- * 1#楼 / 3#楼占位（2026-11 对齐设计稿 gx2，原 js/app.js:448-454 peopleTree）
- * 设计稿用 peopleBuilding(id, name, occupied, floorCount) 动态生成三栋楼；
- * 此前项目只保留了 2#楼，1#楼 / 3#楼被精简，现补回以对齐设计稿 5 区域。
+ * 2026-11 阶段 5 删除：b1/b2/b3Occupied 与 b2FloorCount（三栋楼各层人数）。
+ * 人员分布改列 :8084 真实区域台账，人数位显示「—」—— 没有定位接口，
+ * 不许拿设计稿的稀疏表顶数字。见 stores/home.ts。
  */
-export const b1Occupied: Record<number, number> = { 1: 3, 2: 1 }
-export const b3Occupied: Record<number, number> = { 1: 2, 3: 1 }
 
 /*
  * 原 qaSteps（验收工序环形图）与 milestones（里程碑时间轴）随 2026-10 版本
@@ -174,18 +165,10 @@ export const hazardKindList = ['安全防护', '文明施工', '用电隐患', '
  * （`todayPersonHourStat`，真数据）。这份数据留作设计稿参考，不要再当兜底用 ——
  * 它和真实人数对不上，混在一起会误导现场。
  */
-export const tradeRows: [string, number][] = [
-  ['管理人员', 66],
-  ['普工', 28],
-  ['木工', 22],
-  ['钢筋工', 17],
-  ['杂工', 7],
-  ['架子工', 6],
-  ['司索工', 6],
-  ['模板工', 6],
-  ['砌筑工', 5],
-  ['保安', 4],
-]
+/*
+ * 2026-11 阶段 5 删除：tradeRows 的 10 行数字。零消费点、无接口来源，
+ * 留着只会被后来人误当成兜底数据。
+ */
 
 /**
  * 今日班组出勤 —— **已删除演示值**（2026-11）。

@@ -2,7 +2,6 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
-import { b1Occupied, b2FloorCount, b2Occupied, b3Occupied } from '@/data/config'
 import type { Equip, HomeMod, PeopleNode } from '@/types'
 
 /**
@@ -35,38 +34,20 @@ export const useHomeStore = defineStore('home', () => {
   /** 原 js/app.js:334 —— 人员分布下钻到的节点，null 表示区域列表 */
   const peopleNode = ref<PeopleNode | null>(null)
 
-  /** 原 js/app.js:448-454（2026-11 对齐设计稿 gx2，5 区域） */
-  const peopleTree = ref<PeopleNode[]>([
-    { id: 'yard', name: '场布', count: 38 },
-    {
-      id: 'b1',
-      name: '1#楼',
-      count: 4,
-      children: Array.from({ length: b2FloorCount }, (_, i) => {
-        const n = i + 1
-        return { id: 'b1-' + n, name: n + 'F', count: b1Occupied[n] || 0 }
-      }),
-    },
-    {
-      id: 'b2',
-      name: '2#楼',
-      count: 6,
-      children: Array.from({ length: b2FloorCount }, (_, i) => {
-        const n = i + 1
-        return { id: 'b2-' + n, name: n + 'F', count: b2Occupied[n] || 0 }
-      }),
-    },
-    {
-      id: 'b3',
-      name: '3#楼',
-      count: 3,
-      children: Array.from({ length: b2FloorCount }, (_, i) => {
-        const n = i + 1
-        return { id: 'b3-' + n, name: n + 'F', count: b3Occupied[n] || 0 }
-      }),
-    },
-    { id: 'base', name: '地下室', count: 2 },
-  ])
+  /**
+   * 人员分布（2026-11 阶段 5：改真实区域台账）。
+   *
+   * 原先是 5 个手写区域 + 三栋楼各 5 层人数（`b*Occupied` 稀疏表），全是
+   * 设计稿示意值。现在只列 `:8084 /api/data/areas` 返回的真实区域（现场 9 条）。
+   *
+   * **人数没有数据源**：大屏 open 的 `location/*` 返回 57007 无权限，
+   * `:8084` 的 Swagger 里 20 个路由全是区域/楼栋/设备/房间的 CRUD，
+   * 没有任何人员定位或人数接口。所以 `count` 一律 `null`，页面渲「—」
+   * 并说明原因 —— 0 是个结论，此刻没资格下。
+   */
+  const peopleTree = computed<PeopleNode[]>(() =>
+    ledger.areas.map((a) => ({ id: `area-${a.id}`, name: a.area_name, count: null })),
+  )
 
   /**
    * 智控四卡（原 js/app.js:851-878）。

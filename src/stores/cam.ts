@@ -1,63 +1,119 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
-import { camShotPool, camShotTimes } from '@/data/config'
-import { dayOffsetOf, startOfDay } from '@/utils/date'
-import { useShellStore } from './shell'
-// cam 与 airHazard 互相调用对方的 closeXxx（原版 openCam 会关掉 air/hazard，
-// openAir 会关掉 cam）。import 是循环的，但两端都只在函数体内惰性调用
-// useXxxStore()，模块求值期不触碰对方，故安全。
+import { fetchAlarmPicture } from '@/api/video'
+import { addDays, dateKey, dayOffsetOf, startOfDay } from '@/utils/date'
+import { remoteIdOf } from '@/utils/videoAlarm'
 import { useAirHazardStore } from './airHazard'
-import type { Camera } from '@/types'
-
-/** 抓拍项（由 shotsFor 派生） */
-export interface CamShot {
-  time: string
-  img: string
-  pos: string
-}
+import { useAlarmStore } from './alarm'
+import { useAuthStore } from './auth'
+import { useShellStore } from './shell'
+import { useSubpageStore } from './subpage'
+import type { Alarm, Camera } from '@/types'
 
 /**
- * 监控
+ * 监控（2026-11 阶段 5：点位与抓拍改真实数据）
  *
- * cameras 被 cam 全域与「工作台」快捷入口共用（app.js:1001），故进 store。
+ * 原版是 18 个写死的点位名，`.map()` 把 img 统一刷成同一张
+ * `cam-crane2.webp`，再按「点位序号 + 日期偏移」轮转出每天 3 张假抓拍 ——
+ * 切点位画面完全不变（原版现状，1:1 复刻时保留）。现在改为：
+ *
+ *   · 点位 = `:8085` 真实报警里的 `channelNo` 去重（现场 2/3/4/5/6 五个通道）；
+ *   · 抓拍 = 该通道、该日期的真实报警，时间取 `captureTime`；
+ *   · 图片 = `/api/video/alarms/{id}/picture` 的真实 base64，按需加载 + 缓存；
+ *   · 没有实时流接口（萤石云未接），所以直播位显示「最近一次报警抓拍」，
+ *     并在无图/未登录时给明确占位，不再挂一张示意图假装是直播。
+ *
+ * 点位分组、日历、转场、横屏等交互状态保持原样，避免改动牵连全站。
  */
+
+export interface CamShot {
+  /** 抓拍时刻 HH:mm:ss（来自 captureTime） */
+  time: string
+  /** 已加载的抓拍图 dataURL；未加载为空串（SmartImg 会显示占位） */
+  img: string
+  pos: string
+  /** 本地 Alarm.id，点开消息/详情用 */
+  alarmId: string
+  /** 服务端 Id，截图接口用 */
+  remoteId: string
+}
+
+/** 没有任何真实点位时的兜底，保证 `currentCam.name` 之类取值不会炸 */
+const EMPTY_CAM: Camera = {
+  id: '',
+  name: '暂无监控点位',
+  group: '视频监控',
+  img: '',
+  pos: '',
+}
+
+/** 一次最多预取几张抓拍（每张约 1MB，手机流量下不能放开拉） */
+const PREFETCH_N = 6
+
+/** 通道号（点位的 id 形如 ch-3） */
+function channelOf(id: string): number {
+  const m = /^ch-(\d+)$/.exec(id)
+  return m ? Number(m[1]) : 0
+}
+
 export const useCamStore = defineStore('cam', () => {
   const shell = useShellStore()
+  const alarm = useAlarmStore()
+  const auth = useAuthStore()
+
+  /** 真实报警按通道聚合（只保留服务端标了通道号的） */
+  const channelCounts = computed(() => {
+    const m = new Map<number, number>()
+    for (const a of alarm.liveAlarms) {
+      if (!a.channelNo || a.channelNo <= 0) continue
+      m.set(a.channelNo, (m.get(a.channelNo) ?? 0) + 1)
+    }
+    return m
+  })
+
+  /** 每个通道最近一条报警（直播位封面 + 预取入口） */
+  const latestByChannel = computed(() => {
+    const m = new Map<number, Alarm>()
+    for (const a of alarm.liveAlarms) {
+      if (!a.channelNo || a.channelNo <= 0) continue
+      if (!m.has(a.channelNo)) m.set(a.channelNo, a)
+    }
+    return m
+  })
+
+  /** 抓拍图缓存：remoteId → dataURL。登出时清空 */
+  const pictures = ref<Record<string, string>>({})
+  const pending = new Set<string>()
+
+  function imgOf(remoteId: string): string {
+    return remoteId ? pictures.value[remoteId] ?? '' : ''
+  }
 
   /**
-   * 原 js/app.js:30-49
-   * 注意尾部 .map((c) => Object.assign(c, { img: 'img/cam-crane2.webp', pos: '' }))
-   * 会把 18 个点位的 img 统一成同一张图、pos 统一置空 —— 这是原版现状，
-   * 1:1 复刻下如实保留（接口接入后此处应改为真实点位图与裁切位置）。
+   * 真实点位。channelNo 是唯一可靠的标识 —— 服务端不下发点位名称，
+   * 所以只能叫「N号通道」，不编「1#门监控」这种名字。
    */
-  const cameras = ref<Camera[]>(
-    [
-      { id: 'g1', name: '1#门监控', group: '出入口' },
-      { id: 'g1a', name: '1#门安全通道门禁监控', group: '出入口' },
-      { id: 'g2a', name: '2#门监控1', group: '出入口' },
-      { id: 'g2b', name: '2#门监控2', group: '出入口' },
-      { id: 'g3out', name: '3#门外监控', group: '出入口' },
-      { id: 'g4', name: '4#门监控', group: '出入口' },
-      { id: 'g4a', name: '4#门安全通道门禁监控', group: '出入口' },
-      { id: 'g5', name: '5#门监控', group: '出入口' },
-      { id: 'g5out', name: '5#门外监控', group: '出入口' },
-      { id: 'cama', name: '监控A', group: '场内' },
-      { id: 'camb', name: '监控B', group: '场内' },
-      { id: 'weigh', name: '地磅全景', group: '场内' },
-      { id: 'rebar', name: '钢筋加工棚', group: '场内' },
-      { id: 'yard1', name: '场内1', group: '场内' },
-      { id: 'yard2', name: '场内2', group: '场内' },
-      { id: 'talk', name: '安全讲台', group: '场内' },
-      { id: 'crane2', name: '2#塔吊', group: '塔吊' },
-      { id: 'crane4', name: '4#塔吊', group: '塔吊' },
-    ].map((c) => Object.assign(c, { img: 'img/cam-crane2.webp', pos: '' }) as Camera),
+  const cameras = computed<Camera[]>(() =>
+    [...channelCounts.value.keys()]
+      .sort((a, b) => a - b)
+      .map((ch) => {
+        const latest = latestByChannel.value.get(ch)
+        return {
+          id: `ch-${ch}`,
+          name: `${ch}号通道`,
+          group: '视频监控' as const,
+          channelNo: ch,
+          img: latest ? imgOf(remoteIdOf(latest)) : '',
+          pos: '',
+        }
+      }),
   )
 
-  /** 原 js/app.js:1026 —— 当前点位，初值为首个 */
-  const camId = ref<string>(cameras.value[0].id)
+  /** 原 js/app.js:1026 —— 当前点位。没有点位时为空串，不再依赖 cameras[0] */
+  const camId = ref<string>('')
 
-  /** 原 js/app.js:1027 —— 'live' | 'shots'，控制 camLiveView / camShotsView 的 .hide */
+  /** 原 js/app.js:1027 —— 'live' | 'shots' */
   const camMode = ref<'live' | 'shots'>('live')
 
   /** 原 js/app.js:1028 —— 抓拍视图选中日期 */
@@ -66,38 +122,49 @@ export const useCamStore = defineStore('cam', () => {
   /** 原 js/app.js:1029 —— 抓拍日历当前显示月份 */
   const camCalMonth = ref<Date>(startOfDay(new Date()))
 
-  /** 原为 #camCal 的 .hide 类 */
   const camCalOpen = ref(false)
-
-  /** 原为 #camPlayer 的 .open / hidden —— 覆盖层常驻 DOM，靠 class 切换 */
   const isOpen = ref(false)
-
-  /** 原为 #camPlayer 的 .live 类（直播播放态，与 camMode 是两个独立概念） */
   const isLive = ref(false)
-
-  /** 原为 #camShotPop 的 .open / hidden */
   const shotPopOpen = ref(false)
-
-  /** 原通过 data-shot 索引定位当前大图 */
   const shotPopIdx = ref(0)
 
-  /** 当前点位对象 */
-  const currentCam = computed(() => cameras.value.find((c) => c.id === camId.value) ?? cameras.value[0])
+  const currentCam = computed<Camera>(
+    () => cameras.value.find((c) => c.id === camId.value) ?? cameras.value[0] ?? EMPTY_CAM,
+  )
 
-  /** 原 js/app.js:1068-1075 —— 按点位与日期偏移派生 3 张抓拍图 */
-  function shotsFor(id: string, day: number): CamShot[] {
-    const i = cameras.value.findIndex((c) => c.id === id)
-    return camShotTimes.map((t, n) => ({
-      time: t,
-      img: camShotPool[(i + Math.abs(day) + n) % camShotPool.length],
-      pos: ['pos-left', 'pos-right', 'pos-bottom'][n],
-    }))
+  /** 当前通道最近一条报警（可能是几天前，但确实是这个点位的最后一张真实图） */
+  const latestShot = computed(() => {
+    const ch = channelOf(currentCam.value.id)
+    return ch ? latestByChannel.value.get(ch) : undefined
+  })
+
+  /**
+   * 原 js/app.js:1068-1075 的 `shotsFor(id, dayOffset)`。
+   *
+   * 签名保留（dayOffset：今天 0 / 昨天 1），语义换成「按通道 + 真实日期
+   * 过滤报警」。没有记录的那天就是空数组，不再轮转假图凑 3 张。
+   */
+  function shotsFor(id: string, dayOffset: number): CamShot[] {
+    const ch = channelOf(id)
+    if (!ch) return []
+    const key = dateKey(addDays(startOfDay(new Date()), -dayOffset))
+    return alarm.liveAlarms
+      .filter((a) => a.channelNo === ch && a.at.slice(0, 10) === key)
+      .map((a) => {
+        const remoteId = remoteIdOf(a)
+        return {
+          time: a.at.slice(11, 19),
+          img: imgOf(remoteId),
+          pos: '',
+          alarmId: a.id,
+          remoteId,
+        }
+      })
   }
 
-  /** 原 js/app.js:1173 —— camShots 是派生值，故用 computed */
   const camShots = computed<CamShot[]>(() => shotsFor(camId.value, dayOffsetOf(camShotDate.value)))
 
-  /** 原按 group 字段分组（renderCamChips 内联实现，app.js:1150-1158） */
+  /** 原按 group 字段分组 */
   const grouped = computed(() => {
     const groups: { name: string; items: Camera[] }[] = []
     for (const c of cameras.value) {
@@ -112,30 +179,103 @@ export const useCamStore = defineStore('cam', () => {
   })
 
   /**
-   * 原 js/app.js:1196-1201 setCamLand(on)
-   * 同时切两个 class（.phone 的 is-landscape 与 #camPlayer 的 is-land）。
-   * 原版还写 #camLandText 文本，交由 CamPlayer 组件响应式绑定。
+   * 按需取真实抓拍图。
+   * 失败（含 401、无图）静默留空：SmartImg 会显示占位，不会破图。
    */
+  async function ensurePictures(remoteIds: string[]): Promise<void> {
+    if (!auth.token) return
+    const todo = [...new Set(remoteIds)].filter((id) => id && !pictures.value[id] && !pending.has(id))
+    if (!todo.length) return
+    for (const id of todo) pending.add(id)
+    await Promise.allSettled(
+      todo.map(async (id) => {
+        try {
+          const src = await fetchAlarmPicture(auth.token, id)
+          pictures.value = { ...pictures.value, [id]: src }
+        } finally {
+          pending.delete(id)
+        }
+      }),
+    )
+  }
+
+  /** 只在真的要看图时预取：直播位 1 张，抓拍视图额外 6 张 */
+  function prefetch(): void {
+    const ids: string[] = []
+    const latest = latestShot.value
+    if (latest) ids.push(remoteIdOf(latest))
+    if (camMode.value === 'shots') {
+      for (const s of camShots.value.slice(0, PREFETCH_N)) ids.push(s.remoteId)
+    }
+    void ensurePictures(ids)
+  }
+
+  // 首屏 / 登录态后到 / 切点位 / 切日期 / 切视图 都要补一次预取
+  watch(
+    () => [
+      auth.token,
+      camId.value,
+      camMode.value,
+      camShotDate.value.getTime(),
+      alarm.liveAlarms.length,
+    ],
+    () => prefetch(),
+    { immediate: true },
+  )
+
+  /**
+   * 点位是异步到手的，`openCam('')` 可能发生在报警同步完成之前。
+   * 那时 `applyCam()` 只能把 camId 设成空串，而 `shotsFor()` 依赖 camId，
+   * 不补一次的话抓拍视图会一直空着（直播位靠 computed 兜底反而是好的）。
+   */
+  watch(
+    cameras,
+    (list) => {
+      if (!list.length) {
+        if (camId.value) camId.value = ''
+        return
+      }
+      if (!list.some((c) => c.id === camId.value)) camId.value = list[0].id
+    },
+    { immediate: true },
+  )
+
+  // 会话一失效就把现场照片清掉（不在 auth.clear() 里反向 import cam，
+  // 否则 auth ↔ cam 会形成模块循环）
+  watch(
+    () => auth.token,
+    (t) => {
+      if (!t) clearPictures()
+    },
+  )
+
+  /** 登出时连图一起清，避免下一个账号看到上一个人的现场照片 */
+  function clearPictures(): void {
+    pictures.value = {}
+    pending.clear()
+    camId.value = ''
+    shotPopOpen.value = false
+  }
+
   function setCamLand(on: boolean): void {
     shell.isLandscape = on
     shell.isLand = on
   }
 
-  /** 原 js/app.js:1182-1194 applyCam(id, keepLive) 的状态部分 */
   function applyCam(id: string, keepLive = false): void {
-    const cam = cameras.value.find((c) => c.id === id) ?? cameras.value[0]
+    const cam = cameras.value.find((c) => c.id === id) ?? cameras.value[0] ?? EMPTY_CAM
     camId.value = cam.id
     camShotDate.value = startOfDay(new Date())
     camCalOpen.value = false
     if (!keepLive) isLive.value = false
   }
 
-  /**
-   * 原 js/app.js:1203-1212 openCam(id)
-   * 注意：会先关掉无人机与隐患上报（跨覆盖层互斥），并清掉横屏态。
-   * 惰性获取 airHazard store 以避免与 airHazard 的 openAir 形成循环 import。
-   */
   function openCam(id: string): void {
+    // 支付宝式登录守卫：抓拍接口要 Bearer，未登录别先摆一个空播放器
+    if (!auth.isLoggedIn) {
+      useSubpageStore().openLogin('登录后可查看现场监控抓拍')
+      return
+    }
     const air = useAirHazardStore()
     air.closeAir()
     air.closeHazard()
@@ -145,7 +285,6 @@ export const useCamStore = defineStore('cam', () => {
     camMode.value = 'live'
   }
 
-  /** 原 js/app.js:1214-1223 closeCam() */
   function closeCam(): void {
     setCamLand(false)
     isOpen.value = false
@@ -155,14 +294,16 @@ export const useCamStore = defineStore('cam', () => {
     camMode.value = 'live'
   }
 
-  /** 原 js/app.js:1144-1148 showCamMode(mode) */
   function showCamMode(mode: 'live' | 'shots'): void {
     camMode.value = mode
   }
 
+  /** 打开大图时补拉那一张（可能不在首屏预取的 6 张里） */
   function openShotPop(i: number): void {
     shotPopIdx.value = i
     shotPopOpen.value = true
+    const s = camShots.value[i]
+    if (s) void ensurePictures([s.remoteId])
   }
 
   function closeShotPop(): void {
@@ -181,9 +322,12 @@ export const useCamStore = defineStore('cam', () => {
     shotPopOpen,
     shotPopIdx,
     currentCam,
+    latestShot,
     camShots,
     grouped,
     shotsFor,
+    ensurePictures,
+    clearPictures,
     setCamLand,
     applyCam,
     openCam,

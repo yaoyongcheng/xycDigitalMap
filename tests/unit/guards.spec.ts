@@ -8,6 +8,7 @@ import { nextTick } from 'vue'
 
 import TabBar from '@/components/shell/TabBar.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
+import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useMsgStore } from '@/stores/msg'
@@ -16,6 +17,7 @@ import MsgPage from '@/views/MsgPage.vue'
 import MinePage from '@/views/MinePage.vue'
 import WorkPage from '@/views/WorkPage.vue'
 
+import { camAlarmFixtures } from '../fixtures/camAlarms'
 import { expectSvgNamespace } from '../helpers/dom'
 
 const ROOT = process.cwd()
@@ -170,16 +172,15 @@ describe('结构性守卫', () => {
       for (const f of owners) {
         expect(existsSync(join(ROOT, f))).toBe(true)
       }
-      // 引用点应在这些文件里：配置、两个 store、地图视图、样式、类型注释、
-      // 智控面板（2026-11 设计稿：设备立绘搬进 eq-ico）、hd 原图映射表、
-      // 视频报警 → Alarm 的分类配图（2026-11 接口迁移阶段 3）
+      // 引用点应在这些文件里：配置、地图视图、样式、智控面板、hd 原图映射表、
+      // 视频报警 → Alarm 的分类配图。
+      // 2026-11 阶段 5 移出两个：stores/cam.ts（改真实抓拍图）、
+      // types.ts（Camera 注释里的图片字面量随演示点位一起删掉）。
       expect([...owners].sort()).toEqual([
         'src/components/overlays/MapLand.vue',
         'src/components/ui/MapViewer.vue',
         'src/data/config.ts',
-        'src/stores/cam.ts',
         'src/styles/app.css',
-        'src/types.ts',
         'src/utils/photoHd.ts',
         'src/utils/videoAlarm.ts',
         'src/views/home/EquipPanel.vue',
@@ -285,13 +286,16 @@ describe('结构性守卫', () => {
       assertAllSvgReal(w)
     })
 
-    it('底部标签栏：未读角标读消息 store', async () => {
+    it('底部标签栏：未读角标读消息 store（真实报警条数）', async () => {
+      // 阶段 5：消息由真实报警派生，不再是 2 条写死数据
+      const feed = camAlarmFixtures().slice(0, 2)
+      useAlarmStore().liveAlarms = feed
       const w = mount(TabBar)
       expect(w.find('.badge').text()).toBe('2')
 
       const msg = useMsgStore()
-      msg.markRead('inspect')
-      msg.markRead('people')
+      msg.markRead(feed[0].id)
+      msg.markRead(feed[1].id)
       await nextTick()
       expect(w.find('.badge').exists()).toBe(false)
     })
@@ -315,6 +319,10 @@ describe('结构性守卫', () => {
       const w = mount(WorkPage)
       const cam = useCamStore()
       const air = useAirHazardStore()
+      // openCam 有登录守卫（抓拍接口要 Bearer），未登录会跳登录页而不是打开播放器
+      const auth = useAuthStore()
+      auth.token = 'test-token'
+      auth.expiresAt = Date.now() + 3_600_000
 
       await w.find('[data-work="cam"]').trigger('click')
       expect(cam.isOpen).toBe(true)
@@ -334,15 +342,14 @@ describe('结构性守卫', () => {
       expect(useShellStore().toast).toBe('功能待定')
     })
 
-    it('消息页：两类消息的图标形状正确', () => {
+    it('消息页：真实报警派生的视频消息图标正确', () => {
+      // 阶段 5：消息不再是写死的「人员预警 / 巡检预警」，一条报警一条消息
+      useAlarmStore().liveAlarms = camAlarmFixtures().slice(0, 2)
       const w = mount(MsgPage)
       const icons = w.findAll('.msg-ico')
       expect(icons).toHaveLength(2)
-      // people 1 circle + 1 path；inspect(drone) 4 circle + 1 path + 1 rect
-      expect(icons[0].element.querySelectorAll('circle').length).toBe(1)
-      expect(icons[1].element.querySelectorAll('circle').length).toBe(4)
-      expect(icons[1].element.querySelectorAll('rect').length).toBe(1)
-      expect(shapes(w)).toBe(8)
+      expect(icons.every((i) => i.classes().includes('video'))).toBe(true)
+      expect(shapes(w)).toBeGreaterThan(0)
       assertAllSvgReal(w)
     })
 

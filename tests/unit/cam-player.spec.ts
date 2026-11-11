@@ -4,8 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { nextTick } from 'vue'
 
 import CamPlayer from '@/components/overlays/CamPlayer.vue'
+import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
+import { camAlarmFixtures } from '../fixtures/camAlarms'
 
 /**
  * 监控播放器全屏层
@@ -44,7 +47,15 @@ describe('components/overlays/CamPlayer', () => {
     vi.useFakeTimers()
     vi.setSystemTime(T0)
     setActivePinia(createPinia())
+    // 阶段 5：点位与抓拍来自真实报警；openCam 有登录守卫，抓拍图按需走 fetch。
+    // 这里注入一份形状确定的报警夹具并把登录态补齐，避免测试碰网络。
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, text: async () => '' })))
+    const auth = useAuthStore()
+    auth.token = 'test-token'
+    auth.expiresAt = Date.now() + 3_600_000
+    useAlarmStore().liveAlarms = camAlarmFixtures()
     cam = useCamStore()
+    cam.camId = 'ch-2'
     shell = useShellStore()
     intervalSpy = vi.spyOn(window, 'setInterval')
     clearSpy = vi.spyOn(window, 'clearInterval')
@@ -54,6 +65,7 @@ describe('components/overlays/CamPlayer', () => {
     wrapper?.unmount()
     vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   /* ---------------- 定时器生命周期 ---------------- */
@@ -190,34 +202,28 @@ describe('components/overlays/CamPlayer', () => {
       expect(wrapper.find('#camShotsView').classes()).not.toContain('hide')
     })
 
-    it('18 个点位按 3 个分组渲染芯片', async () => {
+    it('真实通道按 1 个分组渲染芯片（不再是 18 个写死点位）', async () => {
       await mountPlayer()
       await setOpen(true)
       const groups = wrapper.findAll('.cam-chip-group')
-      expect(groups).toHaveLength(3)
-      expect(wrapper.findAll('.cam-chip')).toHaveLength(18)
-      expect(groups.map((g) => g.find('h5').text())).toEqual([
-        '出入口9', '场内7', '塔吊2',
-      ])
+      expect(groups).toHaveLength(1)
+      expect(wrapper.findAll('.cam-chip')).toHaveLength(2)
+      expect(groups.map((g) => g.find('h5').text())).toEqual(['视频监控2'])
+      expect(wrapper.findAll('.cam-chip').map((c) => c.text())).toEqual(['2号通道', '3号通道'])
     })
 
     it('当前点位芯片带 on 高亮', async () => {
       await mountPlayer()
       await setOpen(true)
-      expect(wrapper.find('.cam-chip.on').text()).toBe('1#门监控')
+      expect(wrapper.find('.cam-chip.on').text()).toBe('2号通道')
     })
 
-    it('播放大图取当前点位的 img 与 pos', async () => {
+    it('没有实时流时不挂示意图，显示明确空态', async () => {
       await mountPlayer()
       await setOpen(true)
-      const frame = () => wrapper.find('#camPlayerFrame')
-      expect(frame().attributes('src')).toBe(cam.currentCam.img)
-      expect(frame().attributes('class') ?? '').toBe(cam.currentCam.pos)
-
-      // 换点位后跟随（18 个点位共用同一张演示图，见 stores 用例）
-      cam.camId = 'crane4'
-      await nextTick()
-      expect(frame().attributes('src')).toBe(cam.currentCam.img)
+      // 抓拍图要异步从 :8085 取；没到手之前是一块等高说明，不是假的直播画面
+      expect(wrapper.find('#camPlayerFrame').exists()).toBe(false)
+      expect(wrapper.find('[data-empty="cam-live"]').text()).toContain('该通道暂无可用抓拍图')
     })
   })
 
@@ -241,9 +247,9 @@ describe('components/overlays/CamPlayer', () => {
       // 直播态下切换：保持直播
       cam.isLive = true
       await nextTick()
-      await wrapper.findAll('.cam-chip')[10].trigger('click')
+      await wrapper.findAll('.cam-chip')[1].trigger('click')
       expect(cam.isLive).toBe(true)
-      expect(cam.camId).toBe(cam.cameras[10].id)
+      expect(cam.camId).toBe(cam.cameras[1].id)
 
       // 非直播态下切换：清掉直播
       cam.isLive = false
@@ -333,7 +339,7 @@ describe('components/overlays/CamPlayer', () => {
       cam.showCamMode('shots')
       cam.openShotPop(0)
       await nextTick()
-      expect(wrapper.find('#camShotMeta').text()).toBe('1#门监控  今天  08:12')
+      expect(wrapper.find('#camShotMeta').text()).toBe('2号通道  今天  08:12:00')
     })
   })
 

@@ -21,17 +21,23 @@ export type TabId = 'home' | 'work' | 'msg' | 'mine'
  */
 export type HomeMod = 'safety' | 'patrol' | 'equip'
 
-/** 监控分组 */
-export type CamGroup = '出入口' | '场内' | '塔吊'
+/** 监控分组（2026-11 阶段 5：真实点位只有「视频监控」一组） */
+export type CamGroup = '出入口' | '场内' | '塔吊' | '视频监控'
 
-/** 监控点位（对应原 cameras 数组，18 条） */
+/**
+ * 监控点位。
+ *
+ * 2026-11 阶段 5 起由 `:8085` 视频报警里的 `channelNo` 去重派生，
+ * 不再是 18 条写死的点位名。`img` 是「该通道最近一次报警抓拍」，
+ * 需要异步从截图接口取，取不到就是空串 —— 不再用同一张示意图顶替。
+ */
 export interface Camera {
   id: string
   name: string
   group: CamGroup
-  /** 原始数据中被 .map() 统一覆盖为 'img/cam-crane2.webp' */
+  /** 服务端通道号；派生点位时带在 id 里也解析得出来，这里留结构化值 */
+  channelNo?: number
   img: string
-  /** 原始数据中被 .map() 统一覆盖为 '' */
   pos: string
 }
 
@@ -70,15 +76,26 @@ export interface Alarm {
   at: string
   /** 经纬度，'lng,lat' */
   geo: string
+  /**
+   * 视频报警的服务端通道号（阶段 5：监控点位按它分组）。
+   * 只有 `:8085` 的真实数据带；测试夹具可以不填，消费方要能容忍缺失。
+   */
+  channelNo?: number
   /** 三维地图上的标注（无则不在三维图上撒点） */
   pin?: AlarmSpot
   /** 二维地图上的标注 */
   flat?: AlarmSpot
 }
 
-/** 消息列表项（对应原 messages 数组） */
+/**
+ * 消息列表项。
+ *
+ * 2026-11 阶段 5 起由真实报警派生，一条报警一条消息，`id` 用来做已读与
+ * 跳详情（原按 `kind` 标记已读，同类消息会被一次性全清）。
+ */
 export interface Message {
-  kind: 'people' | 'inspect'
+  id: string
+  kind: 'people' | 'inspect' | 'video'
   title: string
   desc: string
   time: string
@@ -165,7 +182,8 @@ export interface Equip {
 export interface PeopleNode {
   id: string
   name: string
-  count: number
+  /** 人数；`null` = 没有定位数据源（不许拿 0 冒充「没人」） */
+  count: number | null
   children?: PeopleNode[]
 }
 

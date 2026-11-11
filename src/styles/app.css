@@ -3569,6 +3569,41 @@ button, input, textarea { font-family: inherit; color: inherit; }
   display: block;
 }
 
+/*
+ * 直播位空态（2026-11 阶段 5）。
+ * 实时流接口没开放，只有报警抓拍；没点位 / 没登录 / 图没到手时用一块
+ * 与画面等高的说明替代，不再挂示意图假装直播。z-index 要压在底图上、
+ * 但低于画面角标与播放按钮（它们靠 DOM 顺序在后面，不用额外叠层）。
+ */
+.cam-stage-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 24px;
+  text-align: center;
+  color: var(--ink-4-dark);
+}
+
+.cam-stage-empty strong {
+  color: var(--ink-1-dark);
+  font-size: var(--fs-15);
+  font-weight: 650;
+}
+
+.cam-stage-empty span {
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+/* 抓拍网格是三列，空态提示要横跨整行 */
+.cam-shot-grid > .chart-empty {
+  grid-column: 1 / -1;
+}
+
 .cam-player-stage .cam-play {
   width: 68px;
   height: 68px;
@@ -4748,6 +4783,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .msg-ico.people { background: var(--warn); }
 .msg-ico.inspect { background: var(--online); }
+.msg-ico.video { background: var(--blue); }
 
 .msg-item h4 {
   font-size: 15px;

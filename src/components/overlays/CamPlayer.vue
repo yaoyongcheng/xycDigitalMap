@@ -5,8 +5,11 @@ import BackBar from '@/components/ui/BackBar.vue'
 import DayPickChips from '@/components/ui/DayPickChips.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
+import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
+import { useSubpageStore } from '@/stores/subpage'
 import { addDays, camStampBrief, formatCamDate, startOfDay } from '@/utils/date'
 import { useSlideOverlay } from '@/utils/slideOverlay'
 
@@ -25,6 +28,11 @@ import { useSlideOverlay } from '@/utils/slideOverlay'
  */
 const cam = useCamStore()
 const shell = useShellStore()
+const auth = useAuthStore()
+const alarm = useAlarmStore()
+
+/** 报警还没同步回来时不能断言「暂无点位 / 该日暂无抓拍」 */
+const syncing = computed(() => !alarm.hasLive && alarm.liveState === 'loading')
 
 /** 全屏层转场（进入左滑入 / 返回右滑出），见 utils/slideOverlay.ts */
 const playerEl = ref<HTMLElement | null>(null)
@@ -84,10 +92,16 @@ watch(
 
 onUnmounted(stopTick)
 
-/** 原 js/app.js:1225-1228 —— 点播放按钮进入 .live 并刷新时间戳 */
+/**
+ * 原 js/app.js:1225-1228 —— 点播放按钮进入 .live 并刷新时间戳。
+ *
+ * 阶段 5：没有实时流接口，播放态只是原版交互的视觉状态，必须说清楚
+ * 画面是「最近一次报警抓拍」，否则等于拿一张静态图假装直播。
+ */
 function onPlay(): void {
   cam.isLive = true
   refreshStamp()
+  shell.showToast('实时视频流未开放，当前展示最近一次报警抓拍', 'info')
 }
 
 /**
@@ -202,7 +216,35 @@ const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
 const stageTag = computed(() => `${cam.currentCam.group} · ${cam.currentCam.name}`)
 
 /** 顶部标题随视图变化：抓拍视图下不再显示「视频监控」 */
-const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视频监控'))
+const barTitle = computed(() => (cam.camMode === 'shots' ? '报警抓拍' : '视频监控'))
+
+/**
+ * 直播位的空态（2026-11 阶段 5）。
+ *
+ * 萤石云实时流未接，`:8085` 只有报警抓拍；没有点位 / 没登录 / 图没到手
+ * 时都要说清楚原因，而不是挂一张示意图继续演直播。
+ */
+const stageEmpty = computed(() => {
+  if (!auth.isLoggedIn) {
+    return { title: '登录后可查看现场监控', sub: '点位与抓拍图需要登录后获取', login: true }
+  }
+  if (syncing.value) {
+    return { title: '正在同步现场点位…', sub: '点位与抓拍图来自现场视频报警', login: false }
+  }
+  if (!cam.cameras.length) {
+    return { title: '暂无监控点位', sub: '现场报警数据里还没有标注通道号', login: false }
+  }
+  return {
+    title: '该通道暂无可用抓拍图',
+    sub: '实时视频流接口未开放，此处展示真实报警抓拍',
+    login: false,
+  }
+})
+
+function goLogin(): void {
+  cam.closeCam()
+  useSubpageStore().openLogin('登录后可查看现场监控抓拍')
+}
 </script>
 
 <template>
@@ -216,18 +258,30 @@ const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视
   >
     <BackBar :title="barTitle" back-id="btnCamBack" title-id="camPlayerName" @back="onBack">
       <template #right>
-        <span class="cam-live" id="camLive">直播中</span>
+        <span class="cam-live" id="camLive">{{ cam.currentCam.img ? '最近抓拍' : '无实时流' }}</span>
       </template>
     </BackBar>
 
     <div class="cam-live-view" id="camLiveView" :class="{ hide: cam.camMode !== 'live' }">
       <div class="cam-player-stage" id="camPlayerStage">
-        <img id="camPlayerFrame" :src="cam.currentCam.img" :class="cam.currentCam.pos" alt="" loading="lazy" />
+        <img
+          v-if="cam.currentCam.img"
+          id="camPlayerFrame"
+          :src="cam.currentCam.img"
+          :class="cam.currentCam.pos"
+          alt=""
+          loading="lazy"
+        />
+        <div v-else class="cam-stage-empty" data-empty="cam-live">
+          <strong>{{ stageEmpty.title }}</strong>
+          <span>{{ stageEmpty.sub }}</span>
+          <button v-if="stageEmpty.login" class="data-empty-btn" type="button" @click="goLogin">去登录</button>
+        </div>
         <span class="cam-pos-tag" id="camPosTag">{{ stageTag }}</span>
         <span class="cam-time" id="camPlayerTime"><em>{{ stampParts.date }}</em> {{ stampParts.clock }}</span>
         <button class="cam-play" id="btnCamPlay" type="button" aria-label="播放" @click="onPlay"></button>
         <div class="cam-stage-acts">
-          <button class="cam-stage-btn" id="btnCamShots" type="button" @click="onShots">历史抓拍</button>
+          <button class="cam-stage-btn" id="btnCamShots" type="button" @click="onShots">报警抓拍</button>
           <button class="home-full" id="btnCamLand" type="button" @click="onLandToggle">
             <svg class="cam-land-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 5H5v3M16 5h3v3M8 19H5v-3M16 19h3v-3"/></svg>
             <svg class="cam-land-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 5v4H5M15 5v4h4M9 19v-4H5M15 19v-4h4"/></svg>
@@ -238,6 +292,9 @@ const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视
       <div class="cam-player-switch">
         <p>切换点位</p>
         <div class="cam-player-chips" id="camPlayerChips">
+          <div v-if="!cam.cameras.length" class="chart-empty" data-empty="cam-points">
+            {{ syncing ? '正在同步现场点位…' : '暂无真实点位数据' }}
+          </div>
           <div v-for="g in cam.grouped" :key="g.name" class="cam-chip-group">
             <h5>{{ g.name }}<em>{{ g.items.length }}</em></h5>
             <div class="cam-chip-grid">
@@ -261,8 +318,8 @@ const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视
     <div class="cam-shots-view" id="camShotsView" :class="{ hide: cam.camMode !== 'shots' }">
       <div class="cam-shots">
         <div class="cam-shots-hd">
-          <strong>历史抓拍 · {{ cam.currentCam.name }}</strong>
-          <span>每天 3 张，点开查看照片</span>
+          <strong>报警抓拍 · {{ cam.currentCam.name }}</strong>
+          <span>按现场真实报警记录，点开查看抓拍图</span>
           <!--
             返回直播的显式出口（2026-10 交互优化新增）。
             原先从直播进抓拍后，唯一的回去方式是顶部返回键 —— 而返回键
@@ -280,6 +337,9 @@ const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视
           />
         </div>
         <div class="cam-shot-grid" id="camShotGrid">
+          <div v-if="!cam.camShots.length" class="chart-empty" data-empty="cam-shots">
+            {{ syncing ? '正在同步报警抓拍…' : '该日该通道暂无报警抓拍' }}
+          </div>
           <button
             v-for="(s, i) in cam.camShots"
             :key="i"
@@ -312,6 +372,7 @@ const barTitle = computed(() => (cam.camMode === 'shots' ? '历史抓拍' : '视
       <button class="cam-shot-close" id="btnShotClose" type="button" @click="onShotClose">关闭</button>
       <SmartImg id="camShotImg" :pos="currentShot?.pos" :src="currentShot?.img ?? ''" alt="" />
       <p id="camShotMeta">{{ shotMeta }}</p>
+      <p v-if="currentShot && !currentShot.img" class="data-empty-sub">抓拍图加载中或暂不可用</p>
     </div>
   </div>
 </template>

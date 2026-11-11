@@ -44,7 +44,7 @@ B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分�
 | POST | `/api/user/auth/login` | 登录（body 为 RSA 密文） | 登录页 | ✅ 已接 |
 | GET | `/api/user/auth/me` | 当前用户 | 我的页 | ✅ 已接 |
 | GET | `/api/user/auth/me/unity-permission` | 权限菜单 | 我的页菜单项 | ✅ **可用**（返回项目→权限位映射，形如 `{"P000000076":"1",…}`；暂无消费点） |
-| GET | `/api/data/areas?page=1&page_size=100&project_id=` | 总平区域标签 | 地图撒点 | ✅ **客户端已备**（**在 8084**，见下；暂无消费点） |
+| GET | `/api/data/areas?page=1&page_size=100&project_id=` | 总平区域标签 | 首页·人员分布（区域清单） | ✅ **已接**（**在 8084**，阶段 5；本项目 9 条，无人数字段） |
 | GET | `/api/data/buildings` | 楼栋清单 | 进度/楼栋分布 | ✅ **客户端已备**（**在 8084**；设计稿改版后无消费点） |
 | GET | `/api/data/deviceinfos?page=1&page_size=100&project_id=` | 设备台账 | 智控设备列表/详情 | ✅ **已接**（**在 8084**，阶段 4） |
 | POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据（查询语义） | 设备实时状态页 | ⚠️ **全部端口 404**（见下） |
@@ -117,6 +117,12 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | `/device/beacon/page` | 信标（实测 78 条） | 设备管理 | ⬜ 阶段 5 |
 | `/device/danger/page` | 危险源 | 隐患卡 | ⚠️ 实测 `total=0`（现场未录危险源） |
 
+> **CloudWAF 拦截（2026-11-11 下午新增）**：`https://dw.yzw.cn/open/*` 目前被
+> CloudWAF 整体拦成 **HTTP 418 HTML 拦截页**，连此前已接通、实测有数据的
+> `personOverall` / `todayTeamsAtteStat` 也一样返回 418（不是签名错、不是 57007）。
+> 这是外部网关策略，代码侧无法绕过；页面按「接口失败 → 明确空态」处理，
+> 不要因此把演示数据加回来。恢复后签名客户端无需改动即可继续用。
+>
 > **权限缺口说明**：`/person/page`、`/report/attendance/attendanceDay`、
 > `/location/*` 用当前 accessKey 全部返回 `57007 接口权限未获取` —— 不是我们调错，
 > 是项目没开通这几个接口的授权。需要现场平台给 accessKey 加权限，代码侧已留好调用点。
@@ -166,16 +172,17 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 3 | 首页·今日分时人数（原「今日出勤工种」） | `utils/chart.ts` 演示曲线 | B `todayPersonHourStat` | ✅ 阶段 2（工种无接口，已换卡） |
 | 4 | 首页·报警预警 + 轮播 | 8085 真数据；未登录 → 登录引导（不再用常量） | 8085 `/api/video/alarms` | ✅ 阶段 3 + 数据收口 |
 | 5 | 报警历史（按日） | 全部真实，翻到更早日期按需回补 | 8085 `/api/video/alarms`（分页累积） | ✅ 阶段 3 + 数据收口 |
-| 6 | 首页·人员分布 | `stores/home.ts: peopleTree` | B `location/*`（**57007 无权限**）+ `organ/list` | 5（受阻） |
+| 6 | 首页·人员分布 | **真实区域台账**（`:8084` `areas`，本项目 9 条）；人数位「—」 | B `location/*`（**57007 无权限 + CloudWAF 418**）+ `organ/list` | ✅ 阶段 5（区域已接；人数仍无源） |
 | 7 | 智控·设备列表/四卡 | **真实台账**（`:8084` `deviceinfos`，8 台） | A `deviceinfos` + C `queryRealTimeData` | ✅ 阶段 4（实时数据无源） |
 | 8 | 设备详情·实时状态 | 台账字段（高度/司机/安检/质检报告） | C `queryRealTimeDataV2` + `queryEvent`（**全端口 404**） | ✅ 阶段 4（作业指标空态） |
 | 9 | 塔机·吊次/工作循环 | 空态 | A/C `getWorkCycleInfoHis`（**全端口 404**） | ⚠️ 无源，等网关开放 |
-| 10 | 智眸·现场快照（监控九宫格） | 静态图 | 8085 `/api/video/alarms` + D 萤石云直播 | 6 |
+| 10 | 智眸·现场快照（监控点位/抓拍） | **真实报警派生**（通道 + 日期 + `picture` base64） | 8085 `/api/video/alarms` + D 萤石云直播 | ✅ 阶段 5（抓拍已接；实时流仍无源） |
 | 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page`（实测 0 条） | 5（无数据） |
 | 12 | 巡检任务清单 | `views/sub/InspectList.vue` 常量 | D `/task/list`、`/task/exec/list/record` | 6 |
 | 13 | 首页天气 | 无（设计稿无天气位） | E `:8088` amap/weather（**可用**） | ✅ 客户端待接，无消费点 |
 | 14 | 无人机·航线与任务 | `stores` 常量 + 静态图 | D `/dashboard/*`、`/live/stream/list` | 6 |
 | 15 | 智能爬架·机位读数 | **空态**（原 36 条手写读数已删） | 无任何后端接口 | ⚠️ 无源 |
+| 16 | 消息中心 + tabbar 角标 | **真实报警派生**（一条报警一条消息、按 id 记已读） | 无独立消息接口，源为 8085 `/api/video/alarms` | ✅ 阶段 5 |
 
 ---
 
@@ -424,6 +431,83 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 > ① 截图截在 280ms 阈值之前，`.skel-fade` 还是 `opacity: 0`（等 `.is-on` 再截）；
 > ② 首页设备卡要台账到手才可点，所以「台账没回来就钻进设备页」这条路径不存在 ——
 >    设备页 / 报表页骨架只在**子页已打开时台账重新拉取**（换账号、重试）才可见。
+
+---
+
+## 四点八、阶段 5：现场影像 / 消息中心 / 人员区域台账（2026-11-11 第五轮）
+
+> 这里说的「阶段 5」是**第五轮实现**，不是第四节计划表里编号 5 的「人员定位」
+> （那一组仍卡在 `57007` / CloudWAF）。本轮的取舍是：不做没有数据源的模块，
+> 把「假得最明显、且已有真实数据源」的三块全部换成真数据。
+
+### 1. 先把边界探清楚（避免再对着空气写适配）
+
+| 探测 | 结论 |
+|---|---|
+| `:8084 /swagger/doc.json` | 服务名「万方项目服务API」，**20 个路由全是 CRUD**（areas / buildings / deviceinfos / floors / rooms / decoratematerials / floorqualities / materialpoints / presets），**没有任何人员定位、人数、报警、实时量测接口** |
+| `:8084 /api/data/areas/person` 等 | 一律 `400 ID无效` 或 404；试过 `id / area_id / areaId / area` 四种传参都不通，是 `/areas/{id}` 路由在兜底，不是人数接口 |
+| B 组 `dw.yzw.cn/open` | `personOverall` / `organ/list` / `location/person` / `todayTeamsAtteStat` **全部 HTTP 418 CloudWAF 拦截页**，连已接通的接口也一样 |
+| C / D 组 | 萤石云实时流未接；因此监控画面只能是「最近一次真实报警抓拍」，不能演直播 |
+
+**一个容易误判的参数**：报警列表的项目过滤参数必须叫 **`sceneCode`**。
+早期探测脚本写成 `scene_code`，服务端忽略过滤，返回的是**全部项目** 9672 条 /
+5 个通道（2/3/4/5/6，含 `P000000096`、`P000000073`）；改成 `sceneCode=P000000076`
+后是本项目 1825 条 / **2 个通道**（2、3）。所以监控页只有「2号通道 / 3号通道」
+是对的，不是漏了点位。
+
+### 2. 演示数据清零清单（本轮）
+
+| 区块 | 原演示内容 | 现在 |
+|---|---|---|
+| 监控点位 | 18 个写死点位名，`.map()` 把 img 全刷成同一张 `cam-crane2.webp` | `:8085` 报警 `channelNo` 去重 → `N号通道`，服务端不给名称就不编 |
+| 直播位 | 上面那张静态图（切点位画面不变） | 该通道最近一条报警的真实抓拍 base64；点播放明确 toast「实时视频流未开放」 |
+| 抓拍视图 | `camShotPool` / `camShotTimes` 按「点位序号 + 日期」轮转，恒定 3 张 08:12/12:36/16:50 | 按「通道 + 真实日期」过滤报警，有几条显示几条；无记录的日期给明确空态 |
+| 抓拍图 | 同一张 webp | `/api/video/alarms/{id}/picture` 的 `data.pictureData`，按需加载 + 缓存（首屏最多 6 张，单张约 1MB），登出清缓存 |
+| 消息中心 | 2 条写死消息 + tabbar 硬编码角标 2 | 一条真实报警一条消息（最多列 20 条，角标按全部未读算），点开跳对应报警详情、按 `id` 记已读 |
+| 人员分布 | 5 个手写区域 + 三栋楼各 5 层人数（`b*Occupied` 稀疏表） | `:8084 areas` 本项目 **9 条**真实区域；**人数没有任何数据源**，数字位一律「—」并注明原因 |
+| `data/config.ts` | `camShotPool` / `camShotTimes` / `b1~b3Occupied` / `b2FloorCount` / `tradeRows` | 全部删除（后两者零消费点，留着只会被当成兜底） |
+
+### 3. 接口 → 页面
+
+- `src/api/data.ts` 的 `fetchAreas(projectId)` 从「客户端已备」变成真消费点，
+  `stores/deviceLedger.ts` 里 `areas / areasState / areasError / loadAreas()` **独立成一块状态**：
+  区域接口挂了不把设备台账一起判失败，也不参与台账的 60s 失败冷却。
+- **`views/home/parts/PeopleDist.vue` 自己触发 `loadAreas()`**（挂载 + `auth.token` 变化）。
+  首版漏了这一步，区域只在打开智控/设备页时才顺带拉，导致首页人员分布永远显示
+  「暂无项目区域数据」—— 真机验收抓到后补上。
+- `stores/cam.ts`：`channelCounts` / `latestByChannel` / `shotsFor()` 全部从
+  `alarm.liveAlarms` 派生；`cameras` 由 ref 改 computed；新增 `watch(cameras)` 在报警
+  晚到时自动选中首个通道（否则 `openCam('')` 之后 `camId` 一直是空串，抓拍视图永远空）。
+- `stores/msg.ts`：`messages` / `unreadTotal` 改 computed，`readIds` 只存本次会话已读，
+  换账号由 `auth.token` 的 watch 清掉。
+- **登录守卫**：`openCam()` 未登录直接 `openLogin('登录后可查看现场监控抓拍')`，
+  不先摆一个空播放器；直播位给「登录后可查看现场监控 / 暂无监控点位 /
+  该通道暂无可用抓拍图」三种明确空态。全轮**未调用任何写接口**。
+
+### 4. 加载态沿用「四点七」的支付宝式骨架
+
+- `PeopleDist` 与 `MsgPage` 新增同构灰条层（`.skel-fade` + `280ms` 阈值），
+  数据到达原位替换；**同步中不先说「暂无项目区域数据 / 暂无消息」**。
+- `CamPlayer` 在 `alarm.liveState === 'loading'` 时写「正在同步现场点位… /
+  正在同步报警抓拍…」，不把加载中误报成「暂无」。
+- 区域失败给错误原因 + 重试按钮；人数位永远不写 0（0 是结论，不是空值）。
+
+### 5. 验收（现场账号 · headless Chrome 390×844 · 真实接口）
+
+```
+登录成功（有效期内不跳登录页）          今日预警 26
+监控点位 ["2号通道","3号通道"]           直播位真实抓拍 base64 长度 1,170,083
+报警抓拍 11 条（今天 14:45:59 起）       图片首张 1,170,083 字符
+消息 20 条，首条「防护报警反光衣检测 · 2号通道抓拍」，角标 99+
+人员分布 9 条：智能电梯2 / 机器人展示区 / 5G塔机控制室 / 智能电梯1 /
+             智能塔机4 / 酒店 / 智能塔机2 / 传统塔机5 / 智能塔机3
+诊断 areas=9 areasState=ok ledgerState=idle alarmCount=400 liveState=ok
+```
+
+- 单测 **617 条全过**（25 文件；新增 `stage5.spec.ts` 13 条 + 夹具 `camAlarms.ts`），
+  `vue-tsc --noEmit` 无错，`npm run build` 通过。
+- 三处回归护栏：点位只能来自 `channelNo`、抓拍按通道+日期过滤且不留假图、
+  人数位不许出现 `0人`、加载中不提前下结论。
 
 ---
 

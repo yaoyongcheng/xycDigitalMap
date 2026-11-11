@@ -174,41 +174,47 @@ describe('stores · alarm / home / subpage', () => {
       expect(useHomeStore().homeMod).toBe('safety')
     })
 
-    it('人员树五区域结构，楼栋楼层数与稀疏表对齐', () => {
+    it('阶段 5：人员树来自真实区域台账，人数一律为 null（不拿 0 冒充没人）', () => {
       const home = useHomeStore()
-      expect(home.peopleTree.map((n) => n.id)).toEqual(['yard', 'b1', 'b2', 'b3', 'base'])
+      // 台账未加载时是空列表，不再是 5 个写死区域
+      expect(home.peopleTree).toEqual([])
 
-      const b2 = home.peopleTree.find((n) => n.id === 'b2')!
-      expect(b2.children).toHaveLength(5)
-      expect(b2.children!.map((c) => c.name)).toEqual(['1F', '2F', '3F', '4F', '5F'])
-      // 稀疏表只填了 1F=5、4F=1，其余补 0
-      expect(b2.children!.map((c) => c.count)).toEqual([5, 0, 0, 1, 0])
-      // 楼层之和应等于该楼栋统计数
-      const sum = b2.children!.reduce((s, c) => s + c.count, 0)
-      expect(sum).toBe(b2.count)
-    })
-
-    it('人员总数 = 各区之和', () => {
-      const home = useHomeStore()
-      const total = home.peopleTree.reduce((s, n) => s + n.count, 0)
-      expect(total).toBe(38 + 4 + 6 + 3 + 2)
+      useDeviceLedgerStore().applyAreas([
+        { id: 175, project_id: 'P000000076', area_name: '智能电梯2', principal: '未设置' },
+        { id: 132, project_id: 'P000000076', area_name: '酒店', principal: '未设置' },
+      ])
+      expect(home.peopleTree.map((n) => n.id)).toEqual(['area-175', 'area-132'])
+      expect(home.peopleTree.map((n) => n.name)).toEqual(['智能电梯2', '酒店'])
+      expect(home.peopleTree.every((n) => n.count === null)).toBe(true)
+      expect(home.peopleTree.every((n) => !n.children)).toBe(true)
     })
 
     describe('peopleChildren', () => {
-      it('未下钻时返回区域列表', () => {
+      it('未下钻时返回真实区域列表', () => {
         const home = useHomeStore()
-        expect(home.peopleChildren()).toBe(home.peopleTree)
+        useDeviceLedgerStore().applyAreas([
+          { id: 175, project_id: 'P000000076', area_name: '智能电梯2', principal: '' },
+        ])
+        expect(home.peopleChildren().map((n) => n.name)).toEqual(['智能电梯2'])
       })
 
-      it('下钻到有子节点的区域时返回其楼层', () => {
+      it('下钻到有子节点的节点时返回其子节点（楼层接口开放后的形态）', () => {
         const home = useHomeStore()
-        home.peopleNode = home.peopleTree.find((n) => n.id === 'b2')!
-        expect(home.peopleChildren().map((c) => c.name)).toEqual(['1F', '2F', '3F', '4F', '5F'])
+        home.peopleNode = {
+          id: 'b2',
+          name: '2#楼',
+          count: null,
+          children: [{ id: 'b2-1', name: '1F', count: null }],
+        }
+        expect(home.peopleChildren().map((c) => c.name)).toEqual(['1F'])
       })
 
-      it('下钻到无子节点的区域返回空数组', () => {
+      it('下钻到无子节点的真实区域返回空数组', () => {
         const home = useHomeStore()
-        home.peopleNode = home.peopleTree.find((n) => n.id === 'yard')!
+        useDeviceLedgerStore().applyAreas([
+          { id: 175, project_id: 'P000000076', area_name: '智能电梯2', principal: '' },
+        ])
+        home.peopleNode = home.peopleTree[0]
         expect(home.peopleChildren()).toEqual([])
       })
     })

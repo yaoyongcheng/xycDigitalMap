@@ -165,6 +165,8 @@ export function toAlarm(v: VideoAlarm, now: Date = new Date()): Alarm | null {
     at,
     // 服务端不下发坐标，宁可不撒点
     geo: '',
+    // 阶段 5：监控点位按真实通道号分组；0 视为「没标通道」
+    channelNo: v.channelNo > 0 ? v.channelNo : undefined,
   }
 }
 
