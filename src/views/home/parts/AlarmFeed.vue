@@ -25,9 +25,9 @@ const alarm = useAlarmStore()
 
 const emit = defineEmits<{ open: [id: string] }>()
 
-/** 原 alarmFeedPages()（app.js:342-347）：latest 按 ALARM_FEED_SHOW 切页 */
+/** 原 alarmFeedPages()（app.js:342-347）：feed 按 ALARM_FEED_SHOW 切页 */
 const pages = computed(() => {
-  const list = alarm.latest
+  const list = alarm.feed
   const n = Math.max(1, Math.ceil(list.length / ALARM_FEED_SHOW))
   return Array.from({ length: n }, (_, p) => list.slice(p * ALARM_FEED_SHOW, (p + 1) * ALARM_FEED_SHOW))
 })

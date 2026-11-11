@@ -21,7 +21,7 @@
 |---|---|---|---|
 | **A. 业务接口** | `http://115.159.67.12:8081` | 用户登录 → `Authorization: Bearer {token}`（RSA 加密登录） | 用户、设备台账、时序数据、天气 |
 | **A′. 工作流服务** | 同一台机器的 **`:8085`** | 同上的 `Bearer {token}` | 视频报警列表 / 报警截图 |
-| **A″. 认证旁路** | `http(s)://{host}`（**无端口**） | 同上的 `Bearer {token}` | 登出 `/v1/auth/logout`、续期 `/v1/auth/refresh` |
+| **A″. 认证旁路** | `http(s)://{host}`（**无端口**） | 同上的 `Bearer {token}` | ⚠️ 反编译里登出/续期用这个基址，但现场实测 404 —— 见下方「登出」一条 |
 | **B. 大屏 open** | `https://dw.yzw.cn/open` | 项目级 `accessKey` + RSA-SHA256 签名（**无需登录**） | 人员/考勤/组织/网关标签/报警记录 |
 | **C. 物联网网关** | `https://iot.cscec3b-iti.com` | `appKey/appSecret` 换 token（`X-Access-Token`） | 设备实时数据、告警事件、电梯/塔机 |
 | **D. 第三方** | `https://open.ys7.com`（萤石云）、`https://account.keehang.com:23443`（无人机） | 各自 appKey / CAS 账号 | 监控视频流、无人机任务 |
@@ -50,8 +50,8 @@ B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分�
 | POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 塔机详情「吊次」 | ⬜ 阶段 3 |
 | POST | `/api/webgateway/v1/access/token` | IOT 网关换令牌 | C 组全部请求的前置 | ⬜ 阶段 3 |
 | GET | `/api/video/alarms?page=1&page_size=50&sceneCode=` | 视频报警列表 | 智眸/报警预警 | ✅ **已接**（阶段 3，**在 8085**） |
-| GET | `/api/video/alarms/{id}/picture` | 报警截图（返回 base64） | 预警详情大图 | ✅ **已接**（阶段 3，**在 8085**） |
-| POST | `/v1/auth/logout` | 登出 | 我的·退出登录 | ✅ **已接**（基址 `ServerUrl`，**无端口**） |
+| GET | `/api/video/alarms/{id}/picture` | 报警截图 | 预警详情大图 | ✅ **已接**（阶段 3，**在 8085**；base64 在 `data.pictureData`） |
+| POST | `/api/user/auth/logout` | 登出 | 我的·退出登录 | ✅ **已接**（`:8081` 登录域下；`/v1/auth/logout` 与裸源站实测全 404） |
 | POST | `/v1/auth/refresh` | 令牌续期（到期前 5 分钟） | 会话保活 | ⬜ 待接（同一基址） |
 | GET | `/api/map/amap/weather/live?city=` | 实时天气 | 首页天气角标 | ⬜ 阶段 4 |
 | GET | `/api/map/amap/weather/forecast?city=` | 天气预报 | 同上 | ⬜ 阶段 4 |
@@ -180,34 +180,48 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 - 单测覆盖字段收敛（`hours` 是小时数不是人数）、脏行丢弃、并集对齐补 0、空数组回落、
   单接口失败不影响其他块。
 
-### 阶段 3 落地记录（报警 + 登出）
+### 阶段 3 落地记录（报警 + 登出）· 2026-11-11 已用现场账号联调
 
-现场服务器在 2026-11-11 上午整体不可达（8081/8085/80 全端口 connect timeout、
-ICMP 全丢、traceroute 无响应），所以这一轮用**本地 mock 服务**把链路跑通验证，
-真机联调仍需等主机恢复。已验证的部分：
+服务器恢复后（上午 09:00 左右起 8081/8085/80 均可访问）用 `xiangyangcun` 完整跑通，
+**反编译里的若干推断被现场推翻**，以下以实测为准：
 
-- `src/api/video.ts` → `src/utils/videoAlarm.ts` → `stores/alarm.ts`：
-  登录后拉真实报警，映射成项目内的 `Alarm`（首页轮播/巡检列表/预警详情/地图撒点
-  四处无需改动）；退出登录即 `clearLive()` 回落演示数据；
-- 详情页按服务端 `Id` 异步拉抓拍图（`data:image/jpeg;base64,…`），拉不到保留占位图；
-- **登出**对齐 `LoginRequestHelper.LoginOut`：`POST {ServerUrl}/v1/auth/logout`，
-  基址是 `ServerConfig.BaseUrl`（`http(s)://host`，**不带端口**），带 Bearer、空 body。
-  本地会话**先清再请求**，服务端失败一律吞掉 —— 网络一抖就退不出去是更糟的体验。
-- 顺带发现同组还有一个 `POST /v1/auth/refresh`（Unity 在 token 到期前 5 分钟调用），
-  比「过期即踢」体验好，留给下一轮。
+| 项 | 反编译推断 | 现场实测 |
+|---|---|---|
+| 登出 | `POST {ServerUrl}/v1/auth/logout`（裸源站、无端口） | ❌ 全 404；正确是 **`POST :8081/api/user/auth/logout`** → `{"code":200,"message":"登出成功"}` |
+| 列表行字段 | Pascal（`Id` / `AlertName` …） | 实际是 **camelCase**（`id` / `alertName` / `alertType` …），数字有的还是字符串 |
+| `alertName` | 视为必有 | **全部为空串**（200 条里 200 条空），唯一可靠的是 `alertType` |
+| 截图 | 返回 base64 纯文本 | 返回 **JSON**：`{code,message,data:{id,pictureData}}`，base64 在 **`data.pictureData`** |
 
-### 阶段 3 的接口契约（报警）
+- **名称必须靠类型码还原**：`ALERT_TYPE_NAME` 表来自 `AlarmCatalog` 的静态构造
+  （11 安全帽 / 12 反光衣 / 18 车辆拥堵 / 20 打电话 / 22 玩手机 / 25 吸烟 / 30 摔倒 /
+  32 越界 / 56 区域入侵 / 75 工服 / 382 手套 …）。「没有名字就丢行」的写法会把
+  整页报警丢干净 —— 实测就是如此。
+- **报警量级**：`total = 1807`，最新一条 08:37，本项目只有 11（安全帽）与 12（反光衣）
+  两类在跑。首页「今日预警数」= 拉到的 50 条里当天的那部分（实测 8 条）。
+- **抓拍图约 1MB/张**（1014720 字符 base64）。详情页按需拉 + 6 条 LRU 内存缓存，
+  登出即清（`clearPictureCache()`），避免换人后看到上一个人的现场。
+- 轮播卡的配图仍是四张分类示意图（`img/alarm-*.webp`）：50 条报警各拉 1MB 缩略图
+  在手机流量下不可接受，而列表接口**没有**缩略图字段（`extInfo` 为空对象）。
+- 已知遗留：**「近 7 日预警趋势」仍是演示曲线**（`alarmTrendModel` 只喂今日条数）。
+  接口支持按时间过滤，要真数据得再拉 200+ 条按日聚合，留下一轮。
+
+### 阶段 3 的接口契约（报警 · 实测）
 
 `/bigScreen/bigAlarm/*` 在这个项目里恒为空，唯一的真实报警源是 **8085**
-`/api/video/alarms`，它要求 `Authorization: Bearer {token}` —— 必须有现场账号才能
-联调。已从 `AIAlarmListRequester` 的状态机里挖出全部要素，拿到账号即可一次接完：
+`/api/video/alarms`（要求 `Authorization: Bearer {token}`，与登录同一个 token）：
 
 - 请求：`GET {WF_BASE}:8085/api/video/alarms?page=1&page_size=50&sceneCode=P000000076`
-  （`sceneCode` 就是 Unity 端 `StaticParameter.ProjectId`，值 `P000000076`）；
-- 响应：`{ code, data: { list: [...] } }`（注意是 `data.list`，不是 `data.rows`）；
-- 行字段：`Id`(int) / `CaptureTime` / `AlertName` / `AlertType` / `HandleStatus` / `ChannelNo`；
-- 截图：`GET /api/video/alarms/{Id}/picture` 返回 **base64 字符串**（客户端
-  `Base64ToSprite`），转 `data:image/jpeg;base64,…` 直接用。
+  （`sceneCode` 就是 Unity 端 `StaticParameter.ProjectId`，值 `P000000076`；
+  `page_size` 实测上限 200）；
+- 响应：`{ code:200, message:"success", data:{ list:[...], total:1807 } }`
+  （是 `data.list`，不是 `data.rows`）；
+- 行字段（camelCase）：`id`(int) / `captureTime` / `alertName`(常空) / `alertType`(int，
+  可能是字符串) / `handleStatus` / `channelNo` / `deviceNo` / `extInfo`；
+- 截图：`GET /api/video/alarms/{id}/picture` →
+  `{code:200,message:"success",data:{id, pictureData:"/9j/..."}}`，
+  `data.pictureData` 去掉前缀后拼 `data:image/jpeg;base64,`。
+- 写接口（**一律接但不调用**）：`DELETE /api/video/alarms/{id}`、
+  `PATCH /api/video/alarms/{id}/status`。
 
 ---
 

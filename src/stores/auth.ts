@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { fetchProfile, login as loginRequest, logout as logoutRequest } from '@/api/auth'
+import { clearPictureCache } from '@/api/video'
 import { ApiError, bindSession } from '@/api/http'
 import { useAlarmStore } from './alarm'
 import { useShellStore } from './shell'
@@ -113,6 +114,9 @@ export const useAuthStore = defineStore('auth', () => {
     // 真实报警是「谁的现场」相关的数据，会话一清就一起清 ——
     // 否则换个人登录前，首页还挂着上一个人拉到的报警
     useAlarmStore().clearLive()
+    // 抓拍图缓存在模块级 Map 里，不跟着 store 走；不清的话下一个人
+    // 点开同一条报警会看到上一个人的现场照片
+    clearPictureCache()
   }
 
   /** 启动时从本地恢复；已过期则直接丢掉 */

@@ -2,7 +2,6 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchProfile, login } from '@/api/auth'
-import { SERVER_ORIGIN } from '@/api/config'
 import { encryptLoginPayload, MAX_PLAIN_BYTES } from '@/api/crypto'
 import { ApiError, bindSession, request } from '@/api/http'
 import { ACCOUNT_KEY, STORAGE_KEY, useAuthStore } from '@/stores/auth'
@@ -238,11 +237,12 @@ describe('会话 store', () => {
 })
 
 /**
- * 登出（2026-11 接口迁移 · 对齐 Unity 端 LoginRequestHelper.LoginOut）
+ * 登出（2026-11 接口迁移）
  *
- * 三条契约都来自反编译，且都容易写错：
- *   · 路径是 `/v1/auth/logout`，不在 `/api/user/auth` 之下；
- *   · 基址是 `ServerUrl`（`http(s)://host`，**无端口**），不是登录用的 8081；
+ * 路径以**现场实测**为准，不是反编译结论：
+ *   · `POST /api/user/auth/logout`（:8081，与登录同前缀）→ `{"code":200,"message":"登出成功"}`；
+ *   · 反编译里的 `ServerUrl + /v1/auth/logout`（裸源站、无端口）实测全 404，
+ *     `:8081` / `:8085` 上同一路径也是 404 —— 已废弃，别再改回去；
  *   · 本地必须先清再请求 —— 服务端失败也照样退出。
  */
 describe('登出', () => {
@@ -261,11 +261,7 @@ describe('登出', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ token: 'tok-9', expiresAt: 0, username: 'u' }))
   }
 
-  it('ServerUrl 不带端口（Unity 端 BaseUrl 就是这么拼的）', () => {
-    expect(SERVER_ORIGIN).toBe('http://115.159.67.12')
-  })
-
-  it('POST 到 /v1/auth/logout，空 body，带 Bearer', async () => {
+  it('登出走登录域前缀（实测 /v1/auth/logout 与裸源站都是 404）', async () => {
     const f = vi.fn(async () => envelope({ code: 200, message: 'ok' }))
     vi.stubGlobal('fetch', f)
     signIn()
@@ -273,7 +269,7 @@ describe('登出', () => {
     await auth.logout()
 
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toBe('http://115.159.67.12/v1/auth/logout')
+    expect(url).toBe('http://115.159.67.12:8081/api/user/auth/logout')
     expect(init.method).toBe('POST')
     expect(init.body).toBeUndefined()
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-9')

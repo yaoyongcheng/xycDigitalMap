@@ -79,6 +79,9 @@ export const useAlarmStore = defineStore('alarm', () => {
   /** 上限 50 条：够撑首页轮播与近几日历史，又不至于把基64截图一起拖慢 */
   const LIVE_PAGE_SIZE = 50
 
+  /** 今日 0 条时轮播退到最近几条（2 页 × 3 条） */
+  const FEED_FALLBACK_N = 6
+
   /** 失败冷却（与首页人员块同一个口径：60s 内不重复打） */
   const LIVE_RETRY_MS = 60_000
   let liveTriedAt = 0
@@ -134,6 +137,21 @@ export const useAlarmStore = defineStore('alarm', () => {
       ? liveAlarms.value.filter((a) => a.day === 'today')
       : alarms.value.filter((a) => a.day === 'today'),
   )
+
+  /**
+   * 轮播专用数据源。
+   *
+   * 与 `latest` 的唯一区别：**今日为空时不要空壳**。
+   * `latest` 严格是「今日」，被「今日预警数」「近 7 日趋势」「地图撒点」共用，
+   * 不能掺非今日数据，否则数字就错了。但轮播只负责「让你看到现场在发生什么」，
+   * 凌晨 / 周末 / 停工日今日报警为 0 时，让它退到最近几条真实报警比留一个
+   * 空白卡片有用得多 —— 卡片自己带日期与相对时间（「昨天 21:41」），不会误导。
+   */
+  const feed = computed<Alarm[]>(() => {
+    if (!hasLive.value) return alarms.value.filter((a) => a.day === 'today')
+    const today = liveAlarms.value.filter((a) => a.day === 'today')
+    return today.length ? today : liveAlarms.value.slice(0, FEED_FALLBACK_N)
+  })
 
   /**
    * 历史记录模板池（原 app.js:2778-2787 ALARM_POOL）。
@@ -261,6 +279,7 @@ export const useAlarmStore = defineStore('alarm', () => {
   return {
     alarms,
     latest,
+    feed,
     liveAlarms,
     liveState,
     liveError,

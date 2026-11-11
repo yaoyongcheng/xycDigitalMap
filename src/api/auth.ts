@@ -1,5 +1,5 @@
 import { request } from './http'
-import { AUTH_PREFIX, SERVER_ORIGIN } from './config'
+import { AUTH_PREFIX } from './config'
 import { encryptLoginPayload } from './crypto'
 
 /**
@@ -70,20 +70,19 @@ export async function login(username: string, password: string): Promise<Session
 }
 
 /**
- * 登出（对齐 Unity 端 `LoginRequestHelper.LoginOut`）。
+ * 登出。
  *
- * 三个容易踩错的点，全部照原样实现：
- *   ① 路径是 `/v1/auth/logout`，**不在** `/api/user/auth` 之下；
- *   ② 基址用 `ServerUrl`（= `http(s)://host`，**不带端口**），而不是登录用的
- *      `GetUrl(8081, …)`。Unity 端这两条路径刻意用了不同的拼法，跟着它走；
- *      要改成同端口 8081，用 `VITE_SERVER_ORIGIN` 覆盖即可；
- *   ③ 方法是 POST、body 为空、只带 `Authorization: Bearer {token}`。
+ * 路径与鉴权都以**现场实测**为准，不是反编译结论：
+ *   · `POST /api/user/auth/logout`（`:8081`，与登录同前缀）→ `{"code":200,"message":"登出成功"}`；
+ *   · 反编译里 `LoginRequestHelper.LoginOut` 拼的 `/v1/auth/logout` +
+ *     不带端口的 `ServerUrl` 实测全 404（nginx 与本服务的 404 都不是同一层），
+ *     详见 config.ts 的说明。以实测为准。
+ *   · body 为空，只带 `Authorization: Bearer {token}`。
  *
- * 成功判定在调用方做（Unity 端判 `code == 200` 才认为服务端已注销）。
  * 这里不吞异常：由 store 决定「服务端失败也要本地退出」。
  */
 export async function logout(token: string): Promise<void> {
-  await request<null>(`${SERVER_ORIGIN}/v1/auth/logout`, { method: 'POST', token })
+  await request<null>(`${AUTH_PREFIX}/logout`, { method: 'POST', token })
 }
 
 interface MeData {

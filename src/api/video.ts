@@ -23,9 +23,15 @@ import { ApiError } from './http'
 export interface VideoAlarm {
   /** 服务端主键，同时也是截图接口的 {id} */
   id: string
-  /** 报警名称，如「未戴安全帽」 */
+  /**
+   * 报警名称。
+   *
+   * **现场实测经常是空串**（`alertName: ""`，2026-11-11 拉到的 1807 条里首行就是），
+   * 真正有值的是 `alertType` 类型码。所以这里允许空串，由上层用类型码查名兜底 ——
+   * 早先「没名字就丢行」的写法会把整页报警全部丢掉。
+   */
   alertName: string
-  /** 报警类型码（服务端枚举，展示时按 alertName 即可） */
+  /** 报警类型码（服务端枚举，见 utils/videoAlarm.ts 的 ALERT_TYPE_NAME） */
   alertType: number
   /** 抓拍时间，'YYYY-MM-DD HH:mm:ss' */
   captureTime: string
@@ -64,7 +70,8 @@ function str(v: unknown): string {
  * 从信封里把列表挖出来。
  *
  * 三种形状都实测/反编译见过：`data.list`、`data.rows`、`data` 直接是数组。
- * 缺 Id 或名称的行丢掉 —— 没有 Id 点不进详情、拉不到截图，留着只会变成死卡片。
+ * 只按 Id 判有效 —— 没有 Id 点不进详情、拉不到截图，留着只会变成死卡片；
+ * 但没有名称**不能**丢（现场 `alertName` 常为空串，名称可由 `alertType` 还原）。
  */
 export function parseVideoAlarms(payload: unknown): VideoAlarmPage {
   const env = (payload ?? {}) as Record<string, unknown>
@@ -82,11 +89,10 @@ export function parseVideoAlarms(payload: unknown): VideoAlarmPage {
     if (!raw || typeof raw !== 'object') continue
     const r = raw as Record<string, unknown>
     const id = str(pick(r, 'Id', 'id', 'alarmId'))
-    const alertName = str(pick(r, 'AlertName', 'alertName', 'name'))
-    if (!id || !alertName) continue
+    if (!id) continue
     rows.push({
       id,
-      alertName,
+      alertName: str(pick(r, 'AlertName', 'alertName', 'name')),
       alertType: num(pick(r, 'AlertType', 'alertType')),
       captureTime: str(pick(r, 'CaptureTime', 'captureTime', 'createTime')),
       handleStatus: num(pick(r, 'HandleStatus', 'handleStatus')),
@@ -163,16 +169,51 @@ export async function fetchVideoAlarms(
 }
 
 /**
+ * 抓拍图内存缓存。
+ *
+ * 单张 base64 约 1MB（实测 1014720 字符），现场网络下每次进详情重拉要好几秒。
+ * 只留最近 6 张 —— 用户来回看的是最近这几条，全部缓存会吃掉几十 MB 内存
+ * （50 条 × 1MB），在低端安卓机上会明显卡顿。
+ *
+ * 登出 / 会话失效时由 auth store 调 clearPictureCache() 清空，
+ * 避免下一个人看到上一个人的现场照片。
+ */
+const PIC_CACHE = new Map<string, string>()
+const PIC_CACHE_MAX = 6
+
+export function clearPictureCache(): void {
+  PIC_CACHE.clear()
+}
+
+function cachePut(id: string, url: string): void {
+  PIC_CACHE.delete(id)
+  PIC_CACHE.set(id, url)
+  while (PIC_CACHE.size > PIC_CACHE_MAX) {
+    const oldest = PIC_CACHE.keys().next().value
+    if (oldest === undefined) break
+    PIC_CACHE.delete(oldest)
+  }
+}
+
+/**
  * 拉一条报警的抓拍图，返回可直接塞进 img.src 的 data URL。
  *
- * 服务端返回的是 base64 纯文本（不是 image/jpeg 响应），个别版本会带
- * `data:image` 前缀或 JSON 包一层，三种都兜住。
+ * 现场实测（2026-11-11）：`HTTP 200` + `Content-Type: application/json`，
+ * 结构是 **`{code:200, message:"success", data:{id, pictureData:"/9j/..."}}`**
+ * —— base64 在 `data.pictureData` 里，不是 `data` 本身。
+ * 最初按「data 就是 base64」取值，`String(对象)` 得到 `[object Object]`，
+ * 拼出来的 data URL 必然加载失败，而请求其实是成功的（没有任何报错）。
+ *
+ * 顺便兜住另外两种形状：`data` 直接是 base64 串、或裸 base64 文本。
  */
 export async function fetchAlarmPicture(
   token: string,
   id: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  const cached = PIC_CACHE.get(id)
+  if (cached) return cached
+
   const { ok, status, text } = await wfText(
     `/api/video/alarms/${encodeURIComponent(id)}/picture`,
     token,
@@ -181,17 +222,30 @@ export async function fetchAlarmPicture(
   if (status === 401) throw new ApiError(401, '登录已过期，请重新登录')
   if (!ok) throw new ApiError(status, `抓拍图获取失败（HTTP ${status}）`)
 
-  // 正常是裸 base64；个别部署会包一层 JSON 或带 data URL 前缀，一并兜住
   let raw = text.trim()
   if (raw.startsWith('{')) {
     try {
       const env = JSON.parse(raw) as Record<string, unknown>
-      raw = str(env.data ?? env.picture ?? '')
+      const d = env.data
+      if (typeof d === 'string') {
+        raw = d
+      } else if (d && typeof d === 'object') {
+        const o = d as Record<string, unknown>
+        raw = str(o.pictureData ?? o.picture ?? o.base64 ?? env.picture)
+      } else {
+        raw = str(env.picture ?? env.base64)
+      }
     } catch {
       /* 不是 JSON，按原样当 base64 */
     }
   }
   const b64 = raw.replace(/^data:image\/\w+;base64,/, '').trim()
-  if (!b64) throw new ApiError(0, '该报警没有抓拍图')
-  return `data:image/jpeg;base64,${b64}`
+  // 长度兜底：base64 之外的值（如解析失败留下的 [object Object]）直接判失败，
+  // 否则会拼出一个必然加载失败的 src，页面上只是「图裂了」，查起来很费劲
+  if (!b64 || b64.length < 64 || b64.includes('[object')) {
+    throw new ApiError(0, '该报警没有可用的抓拍图')
+  }
+  const url = `data:image/jpeg;base64,${b64}`
+  cachePut(id, url)
+  return url
 }

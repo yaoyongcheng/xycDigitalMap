@@ -1,18 +1,20 @@
 /**
  * 视频报警（A′ 组 :8085）+ 报警 store 换源。
  *
- * 这一组的契约全部来自 Unity 端反编译，没有一份接口文档，所以最该被测试钉住的
- * 是「形状假设」：列表在 `data.list`、行字段是 Pascal 命名、成功码是 200、
- * 截图是 base64 纯文本。任何一条猜错都会让首页变成「今日预警 0」，
- * 而现场只会说「报警没了」，不会有人想到是字段名。
+ * 契约最初来自 Unity 端反编译，2026-11-11 已用现场账号逐条实测校准
+ * （列表在 `data.list`、字段 camelCase、成功码 200、`alertName` 常为空串、
+ * 截图返回**裸 base64 文本**、登出在 `/api/user/auth/logout`）。
+ * 这些形状假设一旦猜错，首页会静默变成「今日预警 0」，而现场只会说
+ * 「报警没了」，不会有人想到是字段名。
  *
  * 另一个重点是**回落**：接口不可达时必须是演示数据照常显示，而不是空白。
  */
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchAlarmPicture, fetchVideoAlarms, parseVideoAlarms } from '@/api/video'
+import { clearPictureCache, fetchAlarmPicture, fetchVideoAlarms, parseVideoAlarms } from '@/api/video'
 import { useAlarmStore } from '@/stores/alarm'
+import { alarmTone } from '@/utils/alarmTone'
 import { normalizeTime, relTime, remoteIdOf, toAlarms } from '@/utils/videoAlarm'
 
 /** video.ts 走 text() 而不是 json()，mock 也要对上 */
@@ -24,6 +26,14 @@ function body(body: unknown, status = 200): Response {
 function rawText(text: string, status = 200): Response {
   return { ok: status < 300, status, text: async () => text } as unknown as Response
 }
+
+/** 一段足够长、以 JPEG 魔数开头的 base64（代码里有 64 字符的下限防呆） */
+const B64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUf' +
+  'GhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgo' +
+  'KCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFAABAAAAAAAAAAAA' +
+  'AAAAAAAK/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/' +
+  'AKAAAAM/AP/Z'
 
 const ROW = {
   Id: 1024,
@@ -55,11 +65,13 @@ describe('parseVideoAlarms', () => {
     expect(parseVideoAlarms([ROW]).rows).toHaveLength(1)
   })
 
-  it('缺 Id 或缺报警名的行丢掉（点不进详情也拉不到截图）', () => {
+  it('缺 Id 的行丢掉（点不进详情也拉不到截图），但空报警名必须保留', () => {
     const p = parseVideoAlarms({
       data: { list: [{ ...ROW, Id: undefined }, { ...ROW, AlertName: '' }, ROW] },
     })
-    expect(p.rows).toHaveLength(1)
+    // 现场 alertName 常为空串，名字由 alertType 还原 —— 早先「没名就丢」会丢掉整页
+    expect(p.rows).toHaveLength(2)
+    expect(p.rows[0].alertName).toBe('')
   })
 
   it('接口返回异常形状时给空结果，不抛错', () => {
@@ -70,6 +82,36 @@ describe('parseVideoAlarms', () => {
 
   it('total 缺省时按本页条数', () => {
     expect(parseVideoAlarms({ data: { list: [ROW, ROW] } }).total).toBe(2)
+  })
+
+  it('现场原始行（camelCase + 字符串数字 + 空名）能原样收敛', () => {
+    // 2026-11-11 实测首行的精简版：字段全小写驼峰，数字是字符串，名称是空串
+    const raw = {
+      type: 'alert',
+      id: 85994,
+      deviceNo: '06d0680610086',
+      channelNo: '3',
+      boxNo: '1',
+      alertType: '12',
+      alertName: '',
+      captureTime: '2026-11-11 08:37:00',
+      sceneCode: 'P000000076',
+      plateNo: '',
+      createTime: '2026-11-11T08:37:00.849494473+08:00',
+      timestamp: 1794357420,
+      extInfo: {},
+      handleStatus: 0,
+    }
+    const p = parseVideoAlarms({ code: 200, message: 'success', data: { list: [raw], total: 1807 } })
+    expect(p.total).toBe(1807)
+    expect(p.rows[0]).toEqual({
+      id: '85994',
+      alertName: '',
+      alertType: 12,
+      captureTime: '2026-11-11 08:37:00',
+      handleStatus: 0,
+      channelNo: 3,
+    })
   })
 })
 
@@ -145,6 +187,38 @@ describe('toAlarms', () => {
     expect(a.src).toBe('cam')
   })
 
+  it('alertName 为空串时用 alertType 还原（现场最常见的形状）', () => {
+    const [a] = toAlarms([
+      { ...mk(1, '', '2026-11-11 08:37:00'), alertType: 12, channelNo: 3 },
+    ])
+    expect(a.type).toBe('反光衣检测')
+    // 反光衣 → 防护类配图与风险色
+    expect(a.title).toBe('防护报警')
+    expect(a.img).toBe('img/alarm-net.webp')
+    expect(a.desc).toBe('反光衣检测 · 3号通道抓拍')
+  })
+
+  it('名与类型码都取不到时给中性名，不丢行也不留空', () => {
+    const rows = toAlarms([{ ...mk(1, '', '2026-11-11 09:00:00'), alertType: 9999 }])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].type).toBe('AI 识别报警')
+    expect(rows[0].img).toBe('img/alarm-net.webp')
+  })
+
+  it('多个常见类型码都能还原成可读名称', () => {
+    const cases: [number, string][] = [
+      [11, '安全帽检测'],
+      [18, '车辆拥堵检测'],
+      [30, '摔倒检测'],
+      [56, '区域入侵检测'],
+      [75, '工服检测'],
+    ]
+    for (const [code, name] of cases) {
+      const [a] = toAlarms([{ ...mk(1, '', '2026-11-11 09:00:00'), alertType: code }])
+      expect(a.type).toBe(name)
+    }
+  })
+
   it('按关键词配图，归不进去也必须有图（详情页直接拿它当 src）', () => {
     const imgs = toAlarms([
       mk(1, '道路垃圾', '2026-11-11 09:00:00'),
@@ -183,6 +257,8 @@ describe('toAlarms', () => {
 })
 
 describe('fetchVideoAlarms / fetchAlarmPicture', () => {
+  // 抓拍图缓存是模块级 Map，用例之间必须清，否则「第二次命中缓存」会跨用例串味
+  beforeEach(() => clearPictureCache())
   afterEach(() => vi.unstubAllGlobals())
 
   it('打到 8085 的 /api/video/alarms，带齐 page / page_size / sceneCode 与 Bearer', async () => {
@@ -209,22 +285,51 @@ describe('fetchVideoAlarms / fetchAlarmPicture', () => {
     await expect(fetchVideoAlarms('t')).rejects.toThrow('视频报警服务不可达')
   })
 
-  it('截图接口返回 base64 纯文本（不是 JSON），拼成 data URL', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => rawText('/9j/4AAQSkZJRg==')))
-    await expect(fetchAlarmPicture('t', '1024')).resolves.toBe('data:image/jpeg;base64,/9j/4AAQSkZJRg==')
+  it('截图走现场真实形状：base64 在 data.pictureData 里', async () => {
+    // 2026-11-11 实测：200 + application/json，base64 藏在 data.pictureData
+    const payload = { code: 200, message: 'success', data: { id: 85994, pictureData: B64 } }
+    vi.stubGlobal('fetch', vi.fn(async () => rawText(JSON.stringify(payload))))
+    await expect(fetchAlarmPicture('t', '85994')).resolves.toBe(`data:image/jpeg;base64,${B64}`)
   })
 
-  it('已带 data 前缀的不重复拼；空图明确报错', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => rawText('data:image/png;base64,AAA')))
-    await expect(fetchAlarmPicture('t', '1')).resolves.toBe('data:image/jpeg;base64,AAA')
+  it('data 直接是 base64 串的部署也认', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => rawText(JSON.stringify({ code: 200, data: B64 }))))
+    await expect(fetchAlarmPicture('t', 'p1')).resolves.toBe(`data:image/jpeg;base64,${B64}`)
+  })
 
+  it('裸 base64 文本也认（早期按「纯文本」实现的形状）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => rawText(B64)))
+    await expect(fetchAlarmPicture('t', 'p2')).resolves.toBe(`data:image/jpeg;base64,${B64}`)
+  })
+
+  it('已带 data 前缀的不重复拼', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => rawText(`data:image/png;base64,${B64}`)))
+    await expect(fetchAlarmPicture('t', 'p3')).resolves.toBe(`data:image/jpeg;base64,${B64}`)
+  })
+
+  it('取不到可用图时明确报错，不拼出必然加载失败的 src', async () => {
+    // 空响应
     vi.stubGlobal('fetch', vi.fn(async () => rawText('')))
-    await expect(fetchAlarmPicture('t', '1')).rejects.toThrow('没有抓拍图')
+    await expect(fetchAlarmPicture('t', 'e1')).rejects.toThrow('没有可用的抓拍图')
+
+    // 最典型的坑：把 data 对象当字符串，得到 [object Object]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => rawText(JSON.stringify({ code: 200, data: {}, picture: '' }))),
+    )
+    await expect(fetchAlarmPicture('t', 'e2')).rejects.toThrow('没有可用的抓拍图')
+
+    // 过短的值（不是真图）
+    vi.stubGlobal('fetch', vi.fn(async () => rawText('QUJD')))
+    await expect(fetchAlarmPicture('t', 'e3')).rejects.toThrow('没有可用的抓拍图')
   })
 
-  it('JSON 包一层的部署也认', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => rawText(JSON.stringify({ code: 200, data: 'QUJD' }))))
-    await expect(fetchAlarmPicture('t', '1')).resolves.toBe('data:image/jpeg;base64,QUJD')
+  it('同一张图第二次直接命中缓存，不再打接口', async () => {
+    const f = vi.fn(async () => rawText(JSON.stringify({ code: 200, data: { pictureData: B64 } })))
+    vi.stubGlobal('fetch', f)
+    await fetchAlarmPicture('t', 'cached-1')
+    await fetchAlarmPicture('t', 'cached-1')
+    expect(f).toHaveBeenCalledTimes(1)
   })
 
   it('截图 404 时给出可读错误，不吐 JSON 解析异常', async () => {
@@ -323,5 +428,44 @@ describe('alarm store 换源', () => {
     expect(s.liveState).toBe('idle')
     // 回到演示数据而不是空白
     expect(s.latest.length).toBeGreaterThan(0)
+  })
+})
+
+/**
+ * 真实报警名的风险分档（alarmTone）
+ *
+ * 原先只有演示数据那 4 个名字走精确匹配，接口下发的「反光衣检测」这类名字
+ * 全部落到最低档蓝色 —— 管理员扫一眼分不出哪条该先处理。
+ */
+describe('alarmTone 覆盖真实报警名', () => {
+  it('演示数据四个名字不变档（精确表优先）', () => {
+    expect(alarmTone('安全网缺失')).toBe('guard')
+    expect(alarmTone('电缆拖地')).toBe('power')
+    expect(alarmTone('裸土未覆盖')).toBe('dust')
+    expect(alarmTone('道路垃圾')).toBe('env')
+  })
+
+  it('人身防护 / 暴力 / 火灾 → guard', () => {
+    for (const n of ['安全帽检测', '反光衣检测', '工服检测', '人员打架', '区域入侵检测', '摔倒检测', '烟火检测']) {
+      expect(alarmTone(n)).toBe('guard')
+    }
+  })
+
+  it('用电 / 消防设施 / 岗位失守 → power', () => {
+    for (const n of ['消防车通道占用', '监控电缆破损', '离岗检测', '睡岗检测', '摄像头遮挡检测']) {
+      expect(alarmTone(n)).toBe('power')
+    }
+  })
+
+  it('环境扬尘 / 排污 → dust；统计与交通 → env', () => {
+    expect(alarmTone('道路抛洒物检测')).toBe('dust')
+    expect(alarmTone('排污口水质检测')).toBe('dust')
+    expect(alarmTone('客流统计')).toBe('env')
+    expect(alarmTone('车辆拥堵检测')).toBe('env')
+  })
+
+  it('真的不认识的，仍然按最低档，不误报成最高警报色', () => {
+    expect(alarmTone('某种全新算法')).toBe('env')
+    expect(alarmTone('')).toBe('env')
   })
 })

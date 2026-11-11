@@ -19,28 +19,18 @@ export const API_BASE = (
 export const AUTH_PREFIX = '/api/user/auth'
 
 /**
- * 服务器「裸」源站（**不带端口**）。
+ * 关于「裸源站」的一点实测记要（2026-11-11）。
  *
- * 登出与 token 刷新不在 `AUTH_PREFIX` 下，而是 Unity 端 `LoginRequestHelper`
- * 直接拼的 `ServerUrl + "/v1/auth/logout"`，其中 `ServerUrl` = `ServerConfig.BaseUrl`
- * = `"http://" + LoginUrl.txt 里的 host`（**没有端口**）。
- * 登录用的是 `GetUrl(8081, path)`（带端口），这两者刻意不同，照原样实现。
+ * 反编译里 `LoginRequestHelper.LoginOut` 拼的是 `ServerUrl + "/v1/auth/logout"`，
+ * 而 `ServerUrl` = `ServerConfig.BaseUrl` = `"http://" + host`（**不带端口**）。
+ * 照这个实现后现场实测全是 404：`http://115.159.67.12/v1/auth/logout` 被
+ * nginx 直接 404，`:8081` 与 `:8085` 上的同一路径也是 `404 page not found`。
  *
- * 若要改成同端口 8081，构建时给 `VITE_SERVER_ORIGIN` 即可，不必改代码。
+ * 逐个路径试下来，真正可用的是登录域下的 **`POST /api/user/auth/logout`**
+ * （`:8081`，返回 `{"code":200,"message":"登出成功"}`）。也就是说 Unity 端那段
+ * 拼法要么指向了另一个部署，要么是已经失效的旧逻辑 —— 以实测为准。
+ * 因此这里不再导出 `SERVER_ORIGIN`，登出与登录共用 `AUTH_PREFIX`。
  */
-export const SERVER_ORIGIN = (
-  (import.meta.env.VITE_SERVER_ORIGIN as string | undefined)?.trim() || stripPort(API_BASE)
-).replace(/\/+$/, '')
-
-/** 去掉 URL 的端口（解析失败时按字符串砍） */
-function stripPort(base: string): string {
-  try {
-    const u = new URL(base)
-    return `${u.protocol}//${u.hostname}`
-  } catch {
-    return base.replace(/:(\d+)$/, '')
-  }
-}
 
 /**
  * 工作流服务基址（**视频报警只有它在提供**）。
