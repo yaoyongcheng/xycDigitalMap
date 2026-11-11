@@ -4,7 +4,7 @@
  * 重点覆盖几件容易出错的事：
  *   ① 签名串拼接顺序与 URL 参数名必须与现场一致（错了就是 403，看不出原因）；
  *   ② 信封里 `success` / `successful` 两种拼写都有，不能被判成失败；
- *   ③ 取不到数时要回落到演示数据，而不是把首页变成 0；
+ *   ③ 取不到数时给 null / 空数组（页面显示空态），**不再回落演示数据**；
  *   ④ 班组 / 分时两个接口的字段收敛（`hours` 是小时数不是人数，最容易看反）。
  */
 import { createPinia, setActivePinia } from 'pinia'
@@ -13,8 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toPersonHour, toTeams, toWeekEnterprise } from '@/api/home'
 import { openGet, signedUrl } from '@/api/open'
 import { fetchPersonOverall } from '@/api/overview'
-import { crewKpis, squadRows } from '@/data/config'
-import { useOverviewStore } from '@/stores/overview'
+import { KPI_META, useOverviewStore } from '@/stores/overview'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return {
@@ -112,28 +111,29 @@ describe('overview store', () => {
 
     expect(s.hasLive).toBe(true)
     expect(s.kpis.map(([n]) => n)).toEqual([352, 24, 48, 30])
-    expect(s.kpis.map(([, , name]) => name)).toEqual(crewKpis.map(([, , name]) => name))
+    expect(s.kpis.map(([, , name]) => name)).toEqual(KPI_META.map(([, name]) => name))
     expect(s.updatedAt).toBe('09:30')
   })
 
-  it('取数失败：整组回落到演示数据，并记下错误', async () => {
+  it('取数失败：指标留空（不回落演示值）并记下错误', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, 500)))
     const s = useOverviewStore()
     await s.load()
 
     expect(s.hasLive).toBe(false)
     expect(s.error).toContain('HTTP 500')
-    expect(s.kpis.map(([n]) => n)).toEqual(crewKpis.map(([n]) => n))
+    // 四个指标全部为 null —— 页面渲染成「—」，绝不拿写死的数字顶上去
+    expect(s.kpis.map(([n]) => n)).toEqual([null, null, null, null])
     expect(s.updatedAt).toBe('')
   })
 
-  it('只缺某一项时逐项回落，不整组丢真值', async () => {
+  it('只缺某一项时该项留空，不整组丢真值', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ statusCode: 20000, data: { managedNum: 352 } })))
     const s = useOverviewStore()
     await s.load()
 
     expect(s.kpis[0][0]).toBe(352)
-    expect(s.kpis[1][0]).toBe(crewKpis[1][0])
+    expect(s.kpis[1][0]).toBeNull()
   })
 
   it('失败后冷却期内不再重复请求，force 可绕过', async () => {
@@ -280,7 +280,7 @@ describe('首页人员块 store 换源', () => {
     expect(s.hourLive).toEqual({ hours: [8, 9, 10], workers: [0, 18, 17], managers: [5, 12, 0] })
   })
 
-  it('班组接口返回空数组时回落演示数据（空卡片会被误读成没人上班）', async () => {
+  it('班组接口返回空数组时给空列表（页面显示「暂无班组出勤数据」）', async () => {
     route({
       personOverall: { managedNum: 160 },
       todayTeamsAtteStat: [],
@@ -289,7 +289,8 @@ describe('首页人员块 store 换源', () => {
     const s = useOverviewStore()
     await s.load()
 
-    expect(s.teamRows).toEqual(squadRows)
+    expect(s.teamRows).toEqual([])
+    expect(s.teamsState).toBe('ok')
     expect(s.hourLive).toBeUndefined()
   })
 
@@ -320,7 +321,9 @@ describe('首页人员块 store 换源', () => {
 
     expect(s.kpis[0][0]).toBe(160)
     expect(s.error).toBe('')
-    expect(s.teamRows).toEqual(squadRows)
+    // 班组 / 分时两个接口挂了：给空，不拿演示数据补
+    expect(s.teamRows).toEqual([])
+    expect(s.teamsState).toBe('error')
     expect(s.hourLive).toBeUndefined()
   })
 })

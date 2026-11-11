@@ -50,6 +50,17 @@ export function bindSession(hooks: {
   unauthorizedHandler = hooks.unauthorized
 }
 
+/**
+ * 通知会话层「令牌已失效」。
+ *
+ * 给不走 `request()` 的独立服务用：视频报警（:8085）有自己的基址与响应包，
+ * 自己解析出 401，但它和业务接口共用同一个 Bearer —— 那边失效了，这里
+ * 也必须清会话并把用户带到登录页，否则首页会一直停在「报警同步失败」。
+ */
+export function notifyUnauthorized(): void {
+  unauthorizedHandler?.()
+}
+
 /* ---------- 请求 ---------- */
 
 export interface RequestOptions {

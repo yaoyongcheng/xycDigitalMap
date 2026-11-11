@@ -1,5 +1,5 @@
 import { SCENE_CODE, WF_BASE } from './config'
-import { ApiError } from './http'
+import { ApiError, notifyUnauthorized } from './http'
 
 /**
  * 视频报警（A′ 组，工作流服务 :8085）
@@ -145,7 +145,11 @@ async function wfGet(path: string, token: string, signal?: AbortSignal): Promise
 
   const code = num((body as Record<string, unknown>)?.code, ok ? 200 : status)
   // 该服务的成功码是 200（与 Go 业务接口的 200、大屏的 20000 都不同）
-  if (code === 401) throw new ApiError(401, '登录已过期，请重新登录')
+  if (code === 401) {
+    // 令牌失效要同步到会话层（清会话 + 引导登录），否则页面只会显示「同步失败」
+    notifyUnauthorized()
+    throw new ApiError(401, '登录已过期，请重新登录')
+  }
   if (!ok || code !== 200) {
     const msg = str((body as Record<string, unknown>)?.message) || `请求失败（HTTP ${status}）`
     throw new ApiError(code, msg)
@@ -219,7 +223,10 @@ export async function fetchAlarmPicture(
     token,
     signal,
   )
-  if (status === 401) throw new ApiError(401, '登录已过期，请重新登录')
+  if (status === 401) {
+    notifyUnauthorized()
+    throw new ApiError(401, '登录已过期，请重新登录')
+  }
   if (!ok) throw new ApiError(status, `抓拍图获取失败（HTTP ${status}）`)
 
   let raw = text.trim()

@@ -10,6 +10,7 @@ import BackBar from '@/components/ui/BackBar.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAlarmStore } from '@/stores/alarm'
+import { alarmFixtures } from '../fixtures/alarms'
 import { useAuthStore } from '@/stores/auth'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
@@ -29,6 +30,23 @@ import WorkPage from '@/views/WorkPage.vue'
  * 这些都是「改错了不报错、但用户会明显感到别扭」的类型，必须有回归。
  */
 
+/**
+ * 让首页面板以「已登录」渲染。
+ *
+ * 2026-11 起未登录时首页不拉报警、只显示「去登录」引导卡 —— 这是产品行为，
+ * 所以涉及报警轮播的用例必须先有会话。`fetch` 一并 stub 掉：syncFromVideo
+ * 在挂载时就会打请求，不能让用例真的发网络。
+ */
+function signIn(): void {
+  const auth = useAuthStore()
+  auth.token = 'test-token'
+  auth.expiresAt = Date.now() + 3_600_000
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: false, status: 500, text: async () => '' }) as unknown as Response),
+  )
+}
+
 /** 够真的 File 替身：happy-dom 的 File 够用，这里只要 type 可控 */
 function fakeFile(name: string, type: string): File {
   return new File(['x'], name, { type })
@@ -39,10 +57,13 @@ describe('交互优化回归', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(2026, 9, 16, 15, 30, 0))
     setActivePinia(createPinia())
+    // 报警只存接口数据，用例注入夹具（生产代码里没有演示种子）
+    useAlarmStore().liveAlarms = alarmFixtures()
   })
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.unstubAllGlobals()
     // 转场用例用 attachTo 挂到 body 上（SubPage 靠 #subpage 定位当前层）。
     // 不清会残留多个 #subpage，getElementById 取到上一个用例的旧节点。
     document.body.innerHTML = ''
@@ -81,7 +102,9 @@ describe('交互优化回归', () => {
 
   describe('预警轮播直达详情', () => {
     it('点击轮播条目直接打开对应预警详情，而不是落到列表', async () => {
+      signIn()
       const w = mount(SafetyPanel)
+      await nextTick()
       const sub = useSubpageStore()
       const alarm = useAlarmStore()
 
@@ -173,6 +196,8 @@ describe('交互优化回归', () => {
     })
 
     it('点返回先播滑出动画，动画结束才切回上一级', async () => {
+      // 报警页要求登录（未登录会先跳登录页），转场用例需要在会话下跑
+      signIn()
       const sub = useSubpageStore()
       const alarm = useAlarmStore()
       sub.openInspectList('today')
@@ -195,6 +220,7 @@ describe('交互优化回归', () => {
     })
 
     it('巡检日历展开时，返回只收日历、页面不滑出', async () => {
+      signIn()
       const sub = useSubpageStore()
       const alarm = useAlarmStore()
       sub.openInspectList('hist')
@@ -401,7 +427,9 @@ describe('交互优化回归', () => {
       await w.find('.tool-card').trigger('keydown', { key: 'Enter' })
       expect(shell.toast).toContain('接入中')
 
+      signIn()
       const panel = mount(SafetyPanel)
+      await nextTick()
       const sub = useSubpageStore()
       const alarm = useAlarmStore()
       await panel.find('.alarm-feed-item').trigger('keydown', { key: 'Enter' })

@@ -252,7 +252,9 @@ onUnmounted(() => {
 
 <template>
   <div class="home-chart-card alarm-feed">
+    <div v-if="!alarm.feed.length" class="chart-empty">暂无报警记录</div>
     <div
+      v-else
       class="alarm-feed-win"
       @pointerdown="onDown"
       @pointermove="onMove"

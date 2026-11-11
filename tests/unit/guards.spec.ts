@@ -177,7 +177,6 @@ describe('结构性守卫', () => {
         'src/components/overlays/MapLand.vue',
         'src/components/ui/MapViewer.vue',
         'src/data/config.ts',
-        'src/stores/alarm.ts',
         'src/stores/cam.ts',
         'src/styles/app.css',
         'src/types.ts',

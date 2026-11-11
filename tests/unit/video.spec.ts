@@ -382,13 +382,12 @@ describe('alarm store 换源', () => {
     expect(s.liveError).toBe('')
   })
 
-  it('失败时保留演示数据，首页不会变成 0', async () => {
+  it('失败时保持空数据并记录错误（不再退回演示数据）', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
     const s = useAlarmStore()
-    const before = s.latest.length
     expect(await s.syncFromVideo('tok')).toBe(false)
     expect(s.hasLive).toBe(false)
-    expect(s.latest).toHaveLength(before)
+    expect(s.latest).toHaveLength(0)
     expect(s.liveError).toBe('视频报警服务不可达')
     expect(s.liveState).toBe('error')
   })
@@ -397,23 +396,28 @@ describe('alarm store 换源', () => {
     const f = vi.fn(async () => { throw new TypeError('fetch failed') })
     vi.stubGlobal('fetch', f)
     const s = useAlarmStore()
+    // 首屏并发拉两页（400 条 ≈ 一个月的历史）
     await s.syncFromVideo('tok')
     await s.syncFromVideo('tok')
-    expect(f).toHaveBeenCalledTimes(1)
+    expect(f).toHaveBeenCalledTimes(2)
 
     await s.syncFromVideo('tok', true)
-    expect(f).toHaveBeenCalledTimes(2)
+    expect(f).toHaveBeenCalledTimes(4)
   })
 
   it('接口成功但空列表：不覆盖已有真数据，状态标成 ok 而不是 error', async () => {
+    const withRow = listOf('未戴安全帽')
+    const empty = body({ code: 200, data: { list: [], total: 0 } })
     const f = vi
       .fn()
-      .mockResolvedValueOnce(listOf('未戴安全帽'))
-      .mockResolvedValueOnce(body({ code: 200, data: { list: [], total: 0 } }))
+      .mockResolvedValueOnce(withRow)
+      .mockResolvedValueOnce(withRow)
+      .mockResolvedValue(empty)
     vi.stubGlobal('fetch', f)
     const s = useAlarmStore()
     await s.syncFromVideo('tok')
-    expect(await s.syncFromVideo('tok', true)).toBe(false)
+    // 返回值是「同步后有没有数据」：空结果不清空已有数据，所以仍是 true
+    expect(await s.syncFromVideo('tok', true)).toBe(true)
     expect(s.hasLive).toBe(true)
     expect(s.latest).toHaveLength(1)
     expect(s.liveState).toBe('ok')
@@ -426,8 +430,9 @@ describe('alarm store 换源', () => {
     s.clearLive()
     expect(s.hasLive).toBe(false)
     expect(s.liveState).toBe('idle')
-    // 回到演示数据而不是空白
-    expect(s.latest.length).toBeGreaterThan(0)
+    // 清空就是真的空，不再退回演示数据
+    expect(s.latest).toHaveLength(0)
+    expect(s.pagesLoaded).toBe(0)
   })
 })
 

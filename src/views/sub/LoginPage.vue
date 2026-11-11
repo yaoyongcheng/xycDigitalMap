@@ -23,6 +23,12 @@ const password = ref('')
 const error = ref('')
 const pwdVisible = ref(false)
 
+/**
+ * 打开登录页的原因（未登录 / 登录已过期），由 `subpage.openLogin(notice)` 带进来。
+ * 没有原因时（从「我的」主动进入）不显示提示条。
+ */
+const notice = computed(() => subpage.loginNotice)
+
 /** HTTPS 页面调 HTTP 接口会被拦，提前说清楚，省得把环境问题当成账号问题 */
 const mixed = isMixedContent()
 
@@ -35,7 +41,9 @@ async function onSubmit(): Promise<void> {
     await auth.login(account.value, password.value)
     shell.showToast('登录成功', 'success')
     password.value = ''
-    subpage.close()
+    // 支付宝式：登录前想看的页面（被守卫拦下来的那个）在这里恢复，
+    // 没有目标就关掉登录页回到原 tab。
+    subpage.resumeAfterLogin()
   } catch (err) {
     // 服务端文案本身可读（账号密码错误 / 必须加密 / 参数错误），直接展示
     error.value = authErrorMessage(err)
@@ -50,6 +58,8 @@ async function onSubmit(): Promise<void> {
       <h2>欢迎回来</h2>
       <p>向阳村项目智能建造管理平台</p>
     </div>
+
+    <p v-if="notice" class="login-notice" role="status">{{ notice }}</p>
 
     <label class="login-field">
       <span>账号</span>

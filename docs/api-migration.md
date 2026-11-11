@@ -140,8 +140,8 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 1 | 首页·人员总览 | `data/config.ts: crewKpis` | B `personOverall` | ✅ 阶段 1 |
 | 2 | 首页·今日班组出勤 | `data/config.ts: squadRows` | B `todayTeamsAtteStat` | ✅ 阶段 2 |
 | 3 | 首页·今日分时人数（原「今日出勤工种」） | `utils/chart.ts` 演示曲线 | B `todayPersonHourStat` | ✅ 阶段 2（工种无接口，已换卡） |
-| 4 | 首页·报警预警 + 轮播 | 已登录 → 8085 真数据；未登录 → 常量 | 8085 `/api/video/alarms` | ✅ 阶段 3（登录后生效） |
-| 5 | 报警历史（按日） | 真数据覆盖到的日期用真值，其余沿用演示 | 8085 `/api/video/alarms`（按日过滤） | ✅ 阶段 3 |
+| 4 | 首页·报警预警 + 轮播 | 8085 真数据；未登录 → 登录引导（不再用常量） | 8085 `/api/video/alarms` | ✅ 阶段 3 + 数据收口 |
+| 5 | 报警历史（按日） | 全部真实，翻到更早日期按需回补 | 8085 `/api/video/alarms`（分页累积） | ✅ 阶段 3 + 数据收口 |
 | 6 | 首页·人员分布 | `stores/home.ts: peopleTree` | B `location/*`（**57007 无权限**）+ `organ/list` | 5（受阻） |
 | 7 | 智控·设备列表/四卡 | `stores/home.ts: siteEquip` | A `deviceinfos` + C `queryRealTimeData` | 3 |
 | 8 | 设备详情·实时状态 | `data/device.ts` 常量 | C `queryRealTimeDataV2` + `queryEvent` | 3 |
@@ -175,7 +175,7 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
   班组（管理人员 12/19 63.16%、劳务班组 31/103 30.10%、产业工人班组 6/38 15.79%）；
 - 「今日分时人数」来自 `GET /open/bigScreen/BigsHome/todayPersonHourStat`，实测
   0..17 整点两条曲线（工人峰值 18、管理峰值 13）；
-- 两个接口各自独立成败（`Promise.allSettled`）：任一失败只影响它那块，回落演示数据；
+- 两个接口各自独立成败（`Promise.allSettled`）：任一失败只影响它那块，该块显示空态；
 - 曲线会掐掉「当前整点」那个还没结算的 0，避免右端垂直跳水成「人都走光了」；
 - 单测覆盖字段收敛（`hours` 是小时数不是人数）、脏行丢弃、并集对齐补 0、空数组回落、
   单接口失败不影响其他块。
@@ -202,8 +202,7 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
   登出即清（`clearPictureCache()`），避免换人后看到上一个人的现场。
 - 轮播卡的配图仍是四张分类示意图（`img/alarm-*.webp`）：50 条报警各拉 1MB 缩略图
   在手机流量下不可接受，而列表接口**没有**缩略图字段（`extInfo` 为空对象）。
-- 已知遗留：**「近 7 日预警趋势」仍是演示曲线**（`alarmTrendModel` 只喂今日条数）。
-  接口支持按时间过滤，要真数据得再拉 200+ 条按日聚合，留下一轮。
+- 2026-11-11 已解决：「近 7 日预警趋势」改用真实按日聚合（见下节数据收口）。
 
 ### 阶段 3 的接口契约（报警 · 实测）
 
@@ -222,6 +221,53 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
   `data.pictureData` 去掉前缀后拼 `data:image/jpeg;base64,`。
 - 写接口（**一律接但不调用**）：`DELETE /api/video/alarms/{id}`、
   `PATCH /api/video/alarms/{id}/status`。
+
+---
+
+## 四点五、数据口径收口 + 登录守卫（2026-11-11 第二轮）
+
+### 1. 一律真数据，不再「回落演示值」
+
+上一轮的口径是「接口失败就退回 `data/config.ts` 的演示数字，页面不空不转圈」。
+现场用下来这个兜底反而危险：**界面上分不清哪个数是接口来的**，拿着「项目人数 160」
+去对账、服务端其实是 352。本轮改成：
+
+| 数据块 | 取不到时的表现 | 演示常量 |
+|---|---|---|
+| 人员总览四指标 | 显示「—」+「暂无人员数据 / 重试」 | `crewKpis` **已删除** |
+| 今日班组出勤 | 「暂无班组出勤数据」 | `squadRows` **已删除** |
+| 今日分时人数 | 「暂无分时人数数据」（不画演示曲线） | 演示曲线仅留在 `chart.spec` 基线 |
+| 报警（轮播/计数/列表/历史/详情） | 「今日暂无报警 / 同步中 / 失败 + 重试」 | 8 条种子 → 搬到 `tests/fixtures/alarms.ts` |
+| 近 7 日预警趋势 | 「近 7 日暂无报警」 | 真实按日聚合 |
+
+- 报警数据：首屏并发拉 2 页（`page_size=200`，共 400 条 ≈ 一个月），按 id 去重排序；
+  历史页翻到更早日期时 `ensureDate()` 逐页回补，最多 8 页。
+- 日历按日条数、历史列表全部由已加载数据实时聚合，不再有「已知分布 + 模板池」编造。
+- 详情页抓拍图取不到时明确显示「该报警暂无抓拍图」，**不再退到分类示意图** ——
+  示意图长得像现场抓拍，会被当成证据看。
+- `overview` store 增加 `overallState / teamsState / hoursState`，页面据此区分
+  「加载中」与「暂无数据」。
+
+> 仍未接真实数据的区块（无接口 / 无权限）：人员分布（`location/*` 57007）、
+> 智巡照片墙、智控设备卡与设备页、无人机。它们仍是设计稿常量。
+
+### 2. 登录守卫（支付宝式）
+
+报警是唯一需要 Bearer 的数据源。未登录进去只会看到「暂无」，用户会以为现场真没数据。
+所以把「需要登录」显式化：
+
+| 时机 | 行为 |
+|---|---|
+| 打开应用且无有效会话 | 自动打开登录页，顶部提示「当前未登录，请先登录后查看现场数据」 |
+| 会话仍在有效期 | **不跳登录页**，直接进首页（token 从 localStorage 恢复） |
+| 未登录点「历史 / 去登录」 | 打开登录页，并记住目标页；登录成功**直接落到该页**，不用再点一遍 |
+| 未登录直接进巡检列表 / 报警历史 | 页面内守卫把人带到登录页，`loginNext` 记下目标 |
+| 会话中途失效（401 / 到期） | 清会话 + toast + 回登录页；原在详情页的恢复到巡检列表（数据已清，回详情是空白） |
+| 用户主动取消登录 | 清掉记住的目标，下次登录不会莫名跳页 |
+
+实现：`stores/subpage.ts` 的 `loginNotice / loginNext / openLogin(notice, next) /
+resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
+不走 `request()` 的服务也能把 401 同步给会话层。
 
 ---
 

@@ -75,33 +75,27 @@ export function smoothPath(pts: Pt[]): string {
   return d
 }
 
+/** 趋势图的一个数据点（近 7 日预警） */
+export interface TrendPoint {
+  /** 横轴标签，如 '11/11' */
+  label: string
+  /** 该日条数 */
+  value: number
+}
+
 /**
- * 原 js/app.js:132-181 alarmTrendSvg(fillId) 的模型版。
- * 近 7 日预警趋势折线。历史值取自原版硬编码的 hist 字典，
- * 最后一天（i === 0）用当日预警条数，即原版的 latestAlarms.length。
+ * 趋势折线的几何绘制。
+ *
+ * 演示基线（`alarmTrendModel`）与真实数据（`alarmTrendLive`）共用这一份，
+ * 两者只差「刻度值 / 纵轴上限 / 网格」三样，观感才不会一份粗一份细。
  */
-export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): LineModel {
-  /**
-   * 近 6 日条数按「距今天数」索引（原 app.js:133-145 alarmDayCount 的 known 表，
-   * 与 store 的 dayCount 同源口径）：日期整体漂移时曲线不再跟着失效 ——
-   * 旧版按 '10/2' 这类日期标签查表，真实日期一走远就全部落进兜底值 3。
-   */
-  const histByOffset = [8, 13, 16, 6, 3, 2] // 按偏移 1..6 索引
-  const end = startOfDay(new Date())
-  const days: string[] = []
-  const vals: number[] = []
-  for (let i = 6; i >= 0; i--) {
-    const d = addDays(end, -i)
-    days.push(d.getMonth() + 1 + '/' + d.getDate())
-    vals.push(i === 0 ? latestCount : histByOffset[i - 1])
-  }
+function trendChart(days: string[], vals: number[], maxY: number, gridVals: number[], fillId: string): LineModel {
   const w = 260
   const h = 78
   const pl = 24
   const pr = 16
   const pt = 10
   const pb = 20
-  const maxY = 20
   const n = days.length
   const xAt = (i: number): number => pl + (i / (n - 1)) * (w - pl - pr)
   const yAt = (v: number): number => pt + (1 - v / maxY) * (h - pt - pb)
@@ -109,7 +103,7 @@ export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): Line
   const line = lineThrough(pts, 0.7)
   const base = yAt(0).toFixed(1)
   const area = `${line} L${xAt(n - 1).toFixed(1)},${base} L${xAt(0).toFixed(1)},${base} Z`
-  const grids = [0, 10, 20]
+  const grids = gridVals
     .map((t) => {
       const y = yAt(t).toFixed(1)
       return `<line x1="${pl}" x2="${w - pr}" y1="${y}" y2="${y}"/><text x="${pl - 4}" y="${(+y + 3).toFixed(1)}" text-anchor="end">${t}</text>`
@@ -172,6 +166,52 @@ export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): Line
     series: [{ name: '预警', color: '#4C9FFF', values: vals }],
     ys: [pts.map((p) => p[1])],
   }
+}
+
+/**
+ * 原 js/app.js:132-181 alarmTrendSvg(fillId) 的模型版（**演示基线**）。
+ *
+ * 2026-11 起首页/列表/历史页都不再调用它 —— 趋势图改成 `alarmTrendLive`
+ * 喂真实按日条数。保留实现是因为它被单测当作「原版几何基线」锁住，
+ * 而且真实数据为空时页面显示空态而不是退回到这条曲线。
+ */
+export function alarmTrendModel(latestCount: number, fillId = 'alarmFill'): LineModel {
+  /**
+   * 近 6 日条数按「距今天数」索引（原 app.js:133-145 alarmDayCount 的 known 表）。
+   * 旧版按 '10/2' 这类日期标签查表，真实日期一走远就全部落进兜底值 3。
+   */
+  const histByOffset = [8, 13, 16, 6, 3, 2] // 按偏移 1..6 索引
+  const end = startOfDay(new Date())
+  const days: string[] = []
+  const vals: number[] = []
+  for (let i = 6; i >= 0; i--) {
+    const d = addDays(end, -i)
+    days.push(d.getMonth() + 1 + '/' + d.getDate())
+    vals.push(i === 0 ? latestCount : histByOffset[i - 1])
+  }
+  return trendChart(days, vals, 20, [0, 10, 20], fillId)
+}
+
+/**
+ * 近 7 日预警趋势（**真实数据**）。
+ *
+ * 入参由 `stores/alarm.ts` 的 `trend` 按日聚合得到，没有数据的日子就是 0。
+ * 纵轴上限跟着峰值走（向上取整到 4 的倍数，保证网格刻度是整数）——
+ * 现场一天 40 条时若沿用演示的 20，曲线会整条顶出画布。
+ */
+export function alarmTrendLive(points: TrendPoint[], fillId = 'alarmFill'): LineModel {
+  const n = points.length
+  if (!n) return trendChart(['', ''], [0, 0], 4, [0, 2, 4], fillId)
+  const vals = points.map((p) => Math.max(0, p.value))
+  const peak = Math.max(...vals, 1)
+  const maxY = Math.max(4, Math.ceil(peak / 4) * 4)
+  return trendChart(
+    points.map((p) => p.label),
+    vals,
+    maxY,
+    [0, maxY / 2, maxY],
+    fillId,
+  )
 }
 
 /** 兼容旧签名：只取 SVG 字符串（v-html 渲染路径） */

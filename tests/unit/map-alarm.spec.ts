@@ -6,6 +6,7 @@ import { nextTick } from 'vue'
 import MapLand from '@/components/overlays/MapLand.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { alarmFixtures } from '../fixtures/alarms'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 
@@ -23,6 +24,8 @@ import { useSubpageStore } from '@/stores/subpage'
 describe('报警撒点', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    // 报警只存接口数据，用例注入夹具（生产代码里没有演示种子）
+    useAlarmStore().liveAlarms = alarmFixtures()
   })
 
   it('只撒当日预警，两套坐标各自独立', () => {
@@ -73,6 +76,7 @@ describe('报警撒点', () => {
 describe('二维 / 三维地图', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    useAlarmStore().liveAlarms = alarmFixtures()
   })
 
   async function openMap() {

@@ -1,10 +1,13 @@
 /**
  * 首页实时数据（大屏 open 只读接口）。
  *
- * 设计意图：**接口拿不到就退回演示数据**，不让首页出现空数字。
- * 现场网络、接口权限（实测有接口返回 57007「接口权限未获取」）、accessKey 失效
- * 都会导致取数失败，而这些都不该让首页变成一片 0 或转圈 —— 所以这里保存的是
- * 「可选的成功结果」，展示层用计算属性统一做回落。
+ * 设计口径（2026-11 调整）：**只展示真实数据，不再回落演示值**。
+ *
+ * 早先的做法是「接口失败就退回 data/config.ts 的演示数字」，理由是不让首页
+ * 出现空数字。但现场实际上分不清哪个数是接口来的、哪个是写死的 —— 拿着
+ * 「项目人数 160」去对账，服务端其实是 352，比空着更容易出事。现在：
+ *   · 取不到就 `null`，页面上显示「—」并给出「暂无数据」提示；
+ *   · 每个数据块各自记录状态（idle / ok / error），互不牵连。
  *
  * 三个接口各自独立成败：人员总览挂了不影响班组出勤，反之亦然。所以取数用
  * `Promise.allSettled`，绝不用 `Promise.all` —— 后者一个失败就整组丢结果。
@@ -15,24 +18,43 @@ import { defineStore } from 'pinia'
 
 import { fetchPersonHour, fetchTeamsAtte, type PersonHour, type TeamAtte } from '@/api/home'
 import { fetchPersonOverall, type PersonOverall } from '@/api/overview'
-import { crewKpis, squadRows } from '@/data/config'
-import type { HourLiveData } from '@/utils/chart'
+import type { HourLiveData, TrendPoint } from '@/utils/chart'
 
 /** 一次取数到失败后的冷却时间：避免每次进首页都打一遍失败请求 */
 const RETRY_GAP = 60_000
+
+/** 数据块状态：idle 还没请求过 / ok 取到了 / error 取失败 */
+export type BlockState = 'idle' | 'ok' | 'error'
+
+/**
+ * 人员总览四指标的标签与单位（顺序固定）。
+ *
+ * 只保留「标签」，不再持有演示数值 —— 数值一律来自接口，取不到就是 null。
+ */
+export const KPI_META: readonly (readonly [string, string])[] = [
+  ['人', '项目人数'],
+  ['人', '正在上班'],
+  ['人', '今日出勤'],
+  ['%', '出勤率'],
+]
 
 export const useOverviewStore = defineStore('overview', () => {
   /** 最近一次成功的人员总览；null = 尚未成功过 */
   const overall = ref<Partial<PersonOverall> | null>(null)
 
-  /** 今日班组出勤（空数组 = 还没取到 / 取到空，展示层回落演示数据） */
+  /** 今日班组出勤（空数组 = 没取到或确实没有班组） */
   const teams = ref<TeamAtte[]>([])
 
-  /** 今日分时人数；null = 还没取到 */
+  /** 今日分时人数；null = 没取到 */
   const hours = ref<PersonHour | null>(null)
 
   const loading = ref(false)
   const error = ref('')
+
+  /** 各数据块的独立状态（页面据此区分「加载中」与「暂无数据」） */
+  const overallState = ref<BlockState>('idle')
+  const teamsState = ref<BlockState>('idle')
+  const hoursState = ref<BlockState>('idle')
 
   /** 成功取数的时刻（HH:mm），用于「更新于」 */
   const updatedAt = ref('')
@@ -45,40 +67,39 @@ export const useOverviewStore = defineStore('overview', () => {
   /**
    * 人员总览四指标。
    *
-   * 与 `data/config.ts` 的 `crewKpis` 顺序、单位、标签完全一致，
-   * 只是数值优先取接口。任一项缺失就逐项回落，不会出现「三个真数一个假数
-   * 但整体错位」的情况。
+   * 数值取不到就是 `null`（页面渲染成「—」），**不再用演示数值填充** ——
+   * 四项各自独立，缺哪项就空哪项，不会出现「三个真数一个假数」但整体看不出
+   * 哪个是假的。
    */
-  const kpis = computed<[number, string, string][]>(() => {
+  const kpis = computed<[number | null, string, string][]>(() => {
     const o = overall.value
-    const pick = (v: number | undefined, fallback: number): number =>
-      typeof v === 'number' && Number.isFinite(v) ? v : fallback
+    const pick = (v: number | undefined): number | null =>
+      typeof v === 'number' && Number.isFinite(v) ? v : null
 
     return [
-      [pick(o?.managedNum, crewKpis[0][0]), crewKpis[0][1], crewKpis[0][2]],
-      [pick(o?.workingNum, crewKpis[1][0]), crewKpis[1][1], crewKpis[1][2]],
-      [pick(o?.atteNum, crewKpis[2][0]), crewKpis[2][1], crewKpis[2][2]],
-      [Number(pick(o?.atteRate, crewKpis[3][0]).toFixed(1)), crewKpis[3][1], crewKpis[3][2]],
+      [pick(o?.managedNum), KPI_META[0][0], KPI_META[0][1]],
+      [pick(o?.workingNum), KPI_META[1][0], KPI_META[1][1]],
+      [pick(o?.atteNum), KPI_META[2][0], KPI_META[2][1]],
+      [pick(o?.atteRate), KPI_META[3][0], KPI_META[3][1]],
     ]
   })
 
   /**
-   * 今日班组出勤：`[班组名, 出勤人数, 出勤率文案]`，与 `squadRows` 同构。
+   * 今日班组出勤：`[班组名, 出勤人数, 出勤率文案]`。
    *
-   * 接口是空的（现场还没建班组）时也回落演示数据 —— 一个空的「今日班组出勤」
-   * 卡片比演示数据更容易被误读成「今天没人上班」。
+   * 接口没数据就是空数组 —— 页面显示「暂无班组出勤数据」，不再拿演示的
+   * 9 个班组顶上去。
    */
-  const teamRows = computed<[string, number, string][]>(() => {
-    if (!teams.value.length) return squadRows
-    return teams.value.map((t) => [t.organName, t.atteNum, `${t.atteRate.toFixed(2)}%`])
-  })
+  const teamRows = computed<[string, number, string][]>(() =>
+    teams.value.map((t) => [t.organName, t.atteNum, `${t.atteRate.toFixed(2)}%`]),
+  )
 
   /**
-   * 分时人数曲线的入参；数据不足两个整点时为 undefined（图表回落演示曲线）。
+   * 分时人数曲线的入参；数据不足两个整点时为 undefined（页面显示空态）。
    *
    * 两条系列的小时集合可能不一致（接口里管理/工人各自的整点不完全相同），
    * 这里取并集做横轴，缺的一侧补 0 —— 补 0 而不是 null，因为「该整点这条线
-   * 没人」和「该整点没数据」在现场口径上是一回事，画成断线反而像接口缺数据。
+   * 没人」和「该整点没数据」在现场口径上是一回事。
    */
   const hourLive = computed<HourLiveData | undefined>(() => {
     const h = hours.value
@@ -90,6 +111,9 @@ export const useOverviewStore = defineStore('overview', () => {
     }
     return { hours: hs, workers: align(h.worker), managers: align(h.manager) }
   })
+
+  /** 近 7 日企业出勤暂未上屏，保留空占位以免调用方误判 */
+  const weekTrend = ref<TrendPoint[]>([])
 
   function stamp(): string {
     const d = new Date()
@@ -114,14 +138,27 @@ export const useOverviewStore = defineStore('overview', () => {
 
       if (o.status === 'fulfilled') {
         overall.value = o.value
+        overallState.value = 'ok'
+        // 只要人员总览通了，就认为整组网络/签名是通的
         error.value = ''
         updatedAt.value = stamp()
       } else {
+        overallState.value = 'error'
         error.value = o.reason instanceof Error ? o.reason.message : '取数失败'
         lastFailAt = Date.now()
       }
-      if (t.status === 'fulfilled') teams.value = t.value
-      if (h.status === 'fulfilled') hours.value = h.value
+      if (t.status === 'fulfilled') {
+        teams.value = t.value
+        teamsState.value = 'ok'
+      } else {
+        teamsState.value = 'error'
+      }
+      if (h.status === 'fulfilled') {
+        hours.value = h.value
+        hoursState.value = 'ok'
+      } else {
+        hoursState.value = 'error'
+      }
 
       loading.value = false
       inflight = null
@@ -129,5 +166,35 @@ export const useOverviewStore = defineStore('overview', () => {
     return inflight
   }
 
-  return { overall, teams, hours, loading, error, updatedAt, hasLive, kpis, teamRows, hourLive, load }
+  /** 退出登录 / 换账号时清空，避免展示上一个人的现场 */
+  function reset(): void {
+    overall.value = null
+    teams.value = []
+    hours.value = null
+    overallState.value = 'idle'
+    teamsState.value = 'idle'
+    hoursState.value = 'idle'
+    error.value = ''
+    updatedAt.value = ''
+    lastFailAt = 0
+  }
+
+  return {
+    overall,
+    teams,
+    hours,
+    loading,
+    error,
+    overallState,
+    teamsState,
+    hoursState,
+    updatedAt,
+    hasLive,
+    kpis,
+    teamRows,
+    hourLive,
+    weekTrend,
+    load,
+    reset,
+  }
 })

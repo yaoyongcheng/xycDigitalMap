@@ -5,6 +5,7 @@ import { useAlarmStore } from '@/stores/alarm'
 import { useHomeStore } from '@/stores/home'
 import { useSubpageStore } from '@/stores/subpage'
 import type { Equip } from '@/types'
+import { alarmFixtures } from '../fixtures/alarms'
 import { addDays, dateKey, formatMD, inspCalMaxDay, monthStart, protoToday } from '@/utils/date'
 
 /** 构造一台仅用于 equipCount 分支覆盖的设备 */
@@ -23,7 +24,8 @@ function equipWith(...onFlags: boolean[]): Equip {
  * 巡检预警 / 首页 / 子页栈
  *
  * 这三个 store 是「同一份数据被多处消费」的关键环节：
- *   - alarm  的 8 条记录被首页趋势图、巡检列表、详情页、预警轮播四处读取
+ *   - alarm  的实时数据被首页趋势图、巡检列表、详情页、预警轮播四处读取
+ *     （store 只存接口数据，用例通过夹具注入一份确定的数据）
  *   - home   的楼栋 / 人员 / 设备数据带派生计算（楼层人数、设备在线状态）
  *   - subpage 的三级返回优先级 + is-alarm 由视图派生（原版在这里有过 bug）
  */
@@ -32,6 +34,8 @@ describe('stores · alarm / home / subpage', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(2026, 9, 16, 15, 30, 0))
     setActivePinia(createPinia())
+    // 报警数据只来自接口，用例靠夹具注入（生产代码里没有任何演示种子）
+    useAlarmStore().liveAlarms = alarmFixtures()
   })
 
   afterEach(() => {
@@ -41,11 +45,11 @@ describe('stores · alarm / home / subpage', () => {
   /* ============================================================ */
 
   describe('alarm', () => {
-    it('8 条预警，当日 4 条 + 历史 4 条', () => {
+    it('注入 8 条数据后：当日 4 条 + 历史 4 条', () => {
       const alarm = useAlarmStore()
-      expect(alarm.alarms).toHaveLength(8)
-      expect(alarm.alarms.filter((a) => a.day === 'today')).toHaveLength(4)
-      expect(alarm.alarms.filter((a) => a.day === 'hist')).toHaveLength(4)
+      expect(alarm.liveAlarms).toHaveLength(8)
+      expect(alarm.latest).toHaveLength(4)
+      expect(alarm.liveAlarms.filter((a) => a.day === 'hist')).toHaveLength(4)
     })
 
     it('latest 只含当日，且保持原始顺序', () => {
@@ -56,7 +60,7 @@ describe('stores · alarm / home / subpage', () => {
 
     it('每条都有完整的展示字段', () => {
       const alarm = useAlarmStore()
-      for (const a of alarm.alarms) {
+      for (const a of alarm.liveAlarms) {
         expect(a.id).toBeTruthy()
         expect(a.type).toBeTruthy()
         expect(a.title).toBeTruthy()
@@ -71,13 +75,13 @@ describe('stores · alarm / home / subpage', () => {
 
     it('id 唯一（详情页与轮播都靠它定位）', () => {
       const alarm = useAlarmStore()
-      const ids = alarm.alarms.map((a) => a.id)
+      const ids = alarm.liveAlarms.map((a) => a.id)
       expect(new Set(ids).size).toBe(ids.length)
     })
 
     it('图源只用了 4 张预警图', () => {
       const alarm = useAlarmStore()
-      const imgs = [...new Set(alarm.alarms.map((a) => a.img))].sort()
+      const imgs = [...new Set(alarm.liveAlarms.map((a) => a.img))].sort()
       expect(imgs).toEqual([
         'img/alarm-cable.webp',
         'img/alarm-net.webp',
@@ -104,10 +108,9 @@ describe('stores · alarm / home / subpage', () => {
         expect(alarm.alarmsOnDate(addDays(protoToday(), -9))).toEqual([])
       })
 
-      it('当日记录不会出现在历史筛选里', () => {
+      it('当日也能按日期取到（与 latest 同源，不再区分 day 字段）', () => {
         const alarm = useAlarmStore()
-        // today 组的 at 就是今天，但 day === 'today'
-        expect(alarm.alarmsOnDate(protoToday())).toEqual([])
+        expect(alarm.alarmsOnDate(protoToday()).map((a) => a.id)).toEqual(['trash', 'cable', 'net', 'soil'])
       })
 
       it('传入日期的时间部分不影响结果', () => {
@@ -153,6 +156,7 @@ describe('stores · alarm / home / subpage', () => {
       setActivePinia(createPinia())
       vi.setSystemTime(new Date(2027, 3, 1))
       const alarm = useAlarmStore()
+      alarm.liveAlarms = alarmFixtures()
       // 系统日期 2027-04-01（月份 0-based）→ 昨天是 2027-03-31
       expect(alarm.inspHistDate.getFullYear()).toBe(2027)
       expect(alarm.inspHistDate.getMonth()).toBe(2)

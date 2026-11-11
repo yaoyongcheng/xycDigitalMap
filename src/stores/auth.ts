@@ -6,6 +6,7 @@ import { clearPictureCache } from '@/api/video'
 import { ApiError, bindSession } from '@/api/http'
 import { useAlarmStore } from './alarm'
 import { useShellStore } from './shell'
+import { useSubpageStore } from './subpage'
 
 /**
  * 登录会话
@@ -82,9 +83,26 @@ export const useAuthStore = defineStore('auth', () => {
     if (delay <= 0) return
     // setTimeout 的上限约 24.8 天，超了就分段（这里够用，仍按上限截断）
     expiryTimer = window.setTimeout(() => {
-      clear()
-      shell.showToast('登录已过期，请重新登录', 'warn')
+      expire('登录已过期，请重新登录')
     }, Math.min(delay, 2 ** 31 - 1))
+  }
+
+  /**
+   * 会话失效的统一出口：清本地会话 + 提示 + 把用户带到登录页。
+   *
+   * 2026-11 新增「带到登录页」：只弹一条 toast 的话，用户留在首页看到的
+   * 全是空态，不知道该去哪；而且过期常常发生在后台切回来的一瞬间，toast
+   * 一闪就没了。这里直接打开登录页，页顶写着原因。
+   */
+  function expire(notice: string): void {
+    const sub = useSubpageStore()
+    // 先取当前视图，再清会话 —— 清完数据后详情页就找不到这条报警了
+    const cur = sub.view
+    clear()
+    shell.showToast(notice, 'warn')
+    // 详情页登录后回到巡检列表：报警数据已随会话清空，回详情会是一页空白
+    const next = cur.kind === 'alarm-detail' ? ({ kind: 'inspect-list' } as const) : cur
+    sub.openLogin(notice, next)
   }
 
   function persist(): void {
@@ -202,13 +220,12 @@ export const useAuthStore = defineStore('auth', () => {
     return readStorage(ACCOUNT_KEY) ?? ''
   }
 
-  /** 401 时由 http 层回调：清会话并提示重新登录 */
+  /** 401 时由 http 层回调：清会话并引导重新登录 */
   bindSession({
     token: () => token.value,
     unauthorized: () => {
       if (!token.value) return
-      clear()
-      shell.showToast('登录已过期，请重新登录', 'warn')
+      expire('登录已过期，请重新登录')
     },
   })
 

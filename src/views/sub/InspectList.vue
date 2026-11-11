@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 
 import InspectItem from '@/components/ui/InspectItem.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { useSubpageStore } from '@/stores/subpage'
-import { alarmTrendModel } from '@/utils/chart'
+import { alarmTrendLive } from '@/utils/chart'
 import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/utils/date'
 
 /**
@@ -18,11 +19,33 @@ import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/u
  * 两个页签：
  *   今日预警  当日预警统计 + 近 7 日趋势图 + 列表
  *   历史预警  日期选择芯片 + 日历 + 当日列表（空态提示）
+ *
+ * 2026-11 数据收口：今日列表直接用 `alarm.latest`（真实今日报警），
+ * 趋势图用 `alarm.trend` 的按日聚合值；两者都没有演示兜底。
+ * 早先这里读的是 store 里的演示种子 `alarm.alarms`，接口接通后一直没改回来 ——
+ * 表现是「首页已经是真数据，点进巡检列表还是那 4 条假报警」。
  */
+const props = defineProps<{
+  /** 垫底层（右滑返回时露出的只读副本）不参与登录守卫 */
+  decorative?: boolean
+}>()
+
 const alarm = useAlarmStore()
+const auth = useAuthStore()
 const subpage = useSubpageStore()
 
-const todayList = computed(() => alarm.alarms.filter((a) => a.day === 'today'))
+/**
+ * 登录守卫（2026-11，支付宝式）。
+ *
+ * 报警数据要求 Bearer：未登录进来只会看到「暂无」的空壳，用户会以为现场
+ * 真没报警。所以一进这页就把他带到登录页，并在登录后回到本页。
+ */
+onMounted(() => {
+  if (props.decorative) return
+  if (!auth.isLoggedIn) subpage.openLogin('登录后查看巡检预警', { kind: 'inspect-list' })
+})
+
+const todayList = computed(() => alarm.latest)
 const histList = computed(() => alarm.alarmsOnDate(alarm.inspHistDate))
 
 const onHist = computed(() => alarm.inspTab === 'hist')
@@ -38,7 +61,16 @@ const pickLabel = computed(() => (isLatestHist.value ? '昨天' : formatMD(alarm
  * fillId 沿用 'inspAlarmFill' —— 子页与首页可能同时在 DOM 里，
  * 渐变 id 必须错开，否则后挂载的会引用到先挂载的渐变定义。
  */
-const trendModel = computed(() => alarmTrendModel(alarm.latest.length, 'inspAlarmFill'))
+const trendModel = computed(() => alarmTrendLive(alarm.trend, 'inspAlarmFill'))
+const hasTrend = computed(() => alarm.trend.some((p) => p.value > 0))
+
+/** 空态文案：未登录 / 接口异常 / 确实没有 */
+const emptyText = computed(() => {
+  if (!auth.isLoggedIn) return '登录后查看现场实时报警'
+  if (alarm.liveState === 'loading') return '正在同步现场报警…'
+  if (alarm.liveState === 'error') return alarm.liveError || '报警同步失败'
+  return '今日暂无巡检预警'
+})
 
 function onTab(tab: 'today' | 'hist'): void {
   alarm.inspCalOpen = false
@@ -58,10 +90,16 @@ function onCalToggle(): void {
 function onCalSelect(d: Date): void {
   alarm.inspHistDate = startOfDay(d)
   subpage.openInspectList('hist')
+  // 选中的日期早于已加载范围时按需回补（真实历史，最多到 8 页）
+  void alarm.ensureDate(auth.token, d)
 }
 
 function onItemOpen(id: string): void {
   subpage.openAlarmDetail(id, true)
+}
+
+function goLogin(): void {
+  subpage.openLogin('登录后查看现场实时报警', { kind: 'inspect-list' })
 }
 </script>
 
@@ -93,11 +131,16 @@ function onItemOpen(id: string): void {
         <div class="home-stat alert"><b>{{ todayList.length }}</b><span>今日预警数</span></div>
         <div class="home-chart-card alarm-mini">
           <span class="alarm-mini-lab">近7日预警趋势</span>
-          <TouchChart :model="trendModel" />
+          <TouchChart v-if="hasTrend" :model="trendModel" />
+          <div v-else class="chart-empty">近 7 日暂无报警</div>
         </div>
       </div>
-      <div class="insp-list">
+      <div v-if="todayList.length" class="insp-list">
         <InspectItem v-for="a in todayList" :key="a.id" :alarm="a" @open="onItemOpen(a.id)" />
+      </div>
+      <div v-else class="insp-empty">
+        <span>{{ emptyText }}</span>
+        <button v-if="!auth.isLoggedIn" class="data-empty-btn" type="button" @click="goLogin">去登录</button>
       </div>
     </div>
 

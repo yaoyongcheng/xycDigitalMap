@@ -188,7 +188,7 @@ onUnmounted(() => {
       <div class="nav-side right"></div>
     </nav>
     <div class="subpage-body">
-      <InspectList v-if="underKind === 'inspect-list'" />
+      <InspectList v-if="underKind === 'inspect-list'" decorative />
     </div>
   </section>
 

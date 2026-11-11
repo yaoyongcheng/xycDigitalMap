@@ -8,6 +8,7 @@ import { nextTick } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
+import { useAlarmStore } from '@/stores/alarm'
 import { useShellStore } from '@/stores/shell'
 import EquipPanel from '@/views/home/EquipPanel.vue'
 import HomeSheet from '@/views/home/HomeSheet.vue'
@@ -17,6 +18,7 @@ import InspectItem from '@/components/ui/InspectItem.vue'
 import { alarmTone } from '@/utils/alarmTone'
 import { mountDiag, unmountDiag } from '@/utils/diag'
 
+import { alarmFixtures } from '../fixtures/alarms'
 import { ResizeObserverMock } from '../helpers/browser'
 
 /**
@@ -435,6 +437,8 @@ describe('第二轮体验优化回归', () => {
     })
 
     it('首页预警流与子页列表都带上了 data-tone', () => {
+      // 预警流只渲染接口数据，用例注入夹具
+      useAlarmStore().liveAlarms = alarmFixtures()
       const feed = mount(AlarmFeed)
       const feedItem = feed.find('.alarm-feed-item')
       expect(feedItem.exists()).toBe(true)

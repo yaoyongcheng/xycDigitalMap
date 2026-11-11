@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 
 import InspectItem from '@/components/ui/InspectItem.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { useSubpageStore } from '@/stores/subpage'
-import { alarmTrendModel } from '@/utils/chart'
+import { alarmTrendLive } from '@/utils/chart'
 import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/utils/date'
 
 /**
@@ -17,15 +18,21 @@ import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/u
  *   - 今日预警：今日预警数 + 近 7 日趋势 + 今日列表；
  *   - 历史预警：日期选择器（默认「昨天」）+ 可展开月历 + 所选日期的列表。
  *
- * 历史数据不是种子那几条，而是 alarm.dayRecords(d) 按日生成
- * （已知分布 + 模板池补齐，见 store 注释），空日显示「该日暂无预警记录」。
- *
- * 注意：设计稿里另有一个 renderAlarmHistDay（「X月X日预警」按日 drill-in 页）
- * 与 alarmHistRow（按日行），但它们的入口（data-hist-day 委托）依赖从未渲染的
- * 死代码，整条链不可达 —— 这里不实现，历史页就是「选日期 → 看当天列表」。
+ * 2026-11 数据收口：历史记录只来自接口（`/api/video/alarms` 分页），
+ * 不再按「已知分布 + 模板池轮转」编造每天的数据。已加载约一个月，翻到更早
+ * 的日期时 `ensureDate` 会按需回补；确实没有记录的日子显示「该日暂无预警记录」。
  */
 const alarm = useAlarmStore()
+const auth = useAuthStore()
 const subpage = useSubpageStore()
+
+/**
+ * 登录守卫（2026-11，支付宝式）：报警历史同样要求 Bearer。
+ * 未登录进页面 → 直接去登录，登录成功后回到历史页。
+ */
+onMounted(() => {
+  if (!auth.isLoggedIn) subpage.openLogin('登录后可查看报警预警历史', { kind: 'alarm-hist' })
+})
 
 const onHist = computed(() => alarm.histTab === 'hist')
 
@@ -36,7 +43,16 @@ const isYesterday = computed(() => sameDay(alarm.histDate, inspCalMaxDay()))
 const pickLabel = computed(() => (isYesterday.value ? '昨天' : formatMD(alarm.histDate)))
 
 /** 近 7 日趋势与首页/巡检列表同款（fillId 错开，见 InspectList 同名注释） */
-const trendModel = computed(() => alarmTrendModel(alarm.latest.length, 'alarmHistFill'))
+const trendModel = computed(() => alarmTrendLive(alarm.trend, 'alarmHistFill'))
+const hasTrend = computed(() => alarm.trend.some((p) => p.value > 0))
+
+/** 今日空态文案：未登录 / 同步中 / 失败 / 今日无报警 */
+const emptyText = computed(() => {
+  if (!auth.isLoggedIn) return '登录后查看现场实时报警'
+  if (alarm.liveState === 'loading') return '正在同步现场报警…'
+  if (alarm.liveState === 'error') return alarm.liveError || '报警同步失败'
+  return '今日暂无预警记录'
+})
 
 function onTab(tab: 'today' | 'hist'): void {
   subpage.openAlarmHist(tab)
@@ -55,11 +71,18 @@ function onCalToggle(): void {
 function onCalSelect(d: Date): void {
   alarm.histDate = startOfDay(d)
   alarm.histCalOpen = false
+  // 早于已加载范围时按需回补真实历史
+  void alarm.ensureDate(auth.token, d)
 }
 
 function onItemOpen(id: string): void {
   subpage.openAlarmDetail(id, { kind: 'alarm-hist' })
 }
+
+function goLogin(): void {
+  subpage.openLogin('登录后查看现场实时报警', { kind: 'alarm-hist' })
+}
+
 </script>
 
 <template>
@@ -74,11 +97,16 @@ function onItemOpen(id: string): void {
         <div class="home-stat alert"><b>{{ todayList.length }}</b><span>今日预警数</span></div>
         <div class="home-chart-card alarm-mini">
           <span class="alarm-mini-lab">近7日预警趋势</span>
-          <TouchChart :model="trendModel" />
+          <TouchChart v-if="hasTrend" :model="trendModel" />
+          <div v-else class="chart-empty">近 7 日暂无报警</div>
         </div>
       </div>
-      <div class="insp-list">
+      <div v-if="todayList.length" class="insp-list">
         <InspectItem v-for="a in todayList" :key="a.id" :alarm="a" use-title @open="onItemOpen(a.id)" />
+      </div>
+      <div v-else class="insp-empty">
+        <span>{{ emptyText }}</span>
+        <button v-if="!auth.isLoggedIn" class="data-empty-btn" type="button" @click="goLogin">去登录</button>
       </div>
     </div>
 

@@ -34,36 +34,50 @@ watch(() => props.alarm.img, reset)
 /**
  * 真实抓拍图（2026-11 接口迁移 · 阶段 3）。
  *
- * `img` 字段是演示配图占位：视频报警的抓拍要按服务端 Id 单独拉一次
- * （`/api/video/alarms/{id}/picture` 返回 base64 纯文本）。拉不到就保持占位图 ——
- * 详情页的核心是这张图，宁可显示一张「示意」，也不能留白或者一直转圈。
+ * 服务端按报警 Id 单独下发 base64（`/api/video/alarms/{id}/picture`）。
+ * 2026-11 收口：拉不到就**明确显示「暂无抓拍图」**，不再退到 `img/alarm-*.webp`
+ * 那张分类示意图 —— 示意图长得像真实现场，会被当成当次抓拍看。
  */
 const auth = useAuthStore()
 const remoteShot = ref('')
+const shotError = ref('')
+const shotLoading = ref(false)
+
+/** 占位文案：分「未登录 / 加载中 / 真的没有」三种，避免让人一直等 */
+const shotTip = computed(() => {
+  if (shotLoading.value) return '抓拍图加载中…'
+  if (!auth.isLoggedIn) return '登录后查看抓拍图'
+  return shotError.value || '该报警暂无抓拍图'
+})
 
 watch(
   () => props.alarm.id,
   async (id) => {
     remoteShot.value = ''
+    shotError.value = ''
     const rid = remoteIdOf(props.alarm)
     if (!rid || !auth.token) return
+    shotLoading.value = true
     // 切走之后再回来的旧请求就别写回去了
     try {
       const url = await fetchAlarmPicture(auth.token, rid)
       if (props.alarm.id === id) remoteShot.value = url
-    } catch {
-      /* 抓拍图缺失 / 已过期 / 网络不可达：保留占位图 */
+    } catch (err) {
+      if (props.alarm.id === id) shotError.value = err instanceof Error ? err.message : ''
+    } finally {
+      if (props.alarm.id === id) shotLoading.value = false
     }
   },
   { immediate: true },
 )
 
-const heroSrc = computed(() => remoteShot.value || props.alarm.img)
+const heroSrc = computed(() => remoteShot.value)
 </script>
 
 <template>
-  <div class="alarm-hero">
+  <div class="alarm-hero" :class="{ 'is-empty': !heroSrc }">
     <img
+      v-if="heroSrc"
       :src="heroSrc"
       :alt="alarm.type"
       class="zoomable"
@@ -71,6 +85,7 @@ const heroSrc = computed(() => remoteShot.value || props.alarm.img)
       :style="imgStyle"
       v-on="handlers"
     />
+    <div v-else class="alarm-hero-empty">{{ shotTip }}</div>
     <span v-if="zoomed" class="zoom-badge">{{ label }}</span>
     <div class="alarm-hero-tag">
       <strong>{{ src.name }}</strong>

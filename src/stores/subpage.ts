@@ -52,6 +52,24 @@ export const useSubpageStore = defineStore('subpage', () => {
   const leaving = ref(false)
 
   /**
+   * 打开登录页的原因文案（2026-11 新增）。
+   *
+   * 之前登录页只能从「我的」手动进入，未登录 / 会话过期时首页只剩一片空数字，
+   * 用户不知道要去哪。现在空态里的「去登录」与 401 回调都会带一句原因进来，
+   * 登录页顶部据此显示提示条（例如「登录已过期，请重新登录」）。
+   */
+  const loginNotice = ref('')
+
+  /**
+   * 登录成功后要恢复到的页面（支付宝式「登录后继续原操作」）。
+   *
+   * 用户点「历史」/「巡检列表」而没登录时，不是简单弹个登录页把他留在这里，
+   * 而是记住目标视图：登录成功后就落到他本来想看的页面，不用再点一遍。
+   * 用户主动取消登录时清空（不会在下次登录时莫名其妙跳页）。
+   */
+  const loginNext = ref<SubView | null>(null)
+
+  /**
    * .subpage.is-alarm —— 控制深色导航栏与通栏 hero（CSS app.css:2357-2369）。
    *
    * 原版把 is-alarm 当作独立状态在 openAlarmDetail 加、在 openInspectList/
@@ -159,11 +177,32 @@ export const useSubpageStore = defineStore('subpage', () => {
 
   /**
    * 打开账号登录页（2026-11 新增）。
-   * 从「我的」进入，登录成功后由页面自己 close() 回上一页。
+   *
+   * `notice` 是「为什么打开登录页」的一句话（未登录 / 登录已过期），
+   * `next` 是登录成功后要恢复到的视图（例如用户点「历史」时被拦下来）。
+   * 登录成功后由 `resumeAfterLogin()` 落到目标页，用户不用再点一遍。
    */
-  function openLogin(): void {
+  function openLogin(notice = '', next: SubView | null = null): void {
+    loginNotice.value = notice
+    // 登录页本身、空视图都不作为「登录后恢复」的目标
+    loginNext.value = next && next.kind !== 'none' && next.kind !== 'login' ? next : null
     back.value = null
     view.value = { kind: 'login' }
+  }
+
+  /**
+   * 登录成功：恢复到被拦截的那个页面（没有目标就关掉登录页回到原 tab）。
+   *
+   * 由登录页在 `auth.login()` 成功后调用。刻意不在这里判断登录态 ——
+   * 调用方（登录页）已经拿到了成功结果，多判断一次只会掩盖时序问题。
+   */
+  function resumeAfterLogin(): void {
+    const next = loginNext.value
+    loginNotice.value = ''
+    loginNext.value = null
+    // 恢复目标时保留 back=null：它是「用户想去的地方」，不是一次下钻
+    back.value = null
+    view.value = next ?? { kind: 'none' }
   }
 
   /**
@@ -188,6 +227,8 @@ export const useSubpageStore = defineStore('subpage', () => {
     }
     back.value = null
     view.value = { kind: 'none' }
+    loginNotice.value = ''
+    loginNext.value = null
   }
 
   /**
@@ -206,12 +247,17 @@ export const useSubpageStore = defineStore('subpage', () => {
     alarm.histCalOpen = false
     back.value = null
     view.value = { kind: 'none' }
+    loginNotice.value = ''
+    loginNext.value = null
   }
 
   return {
     view,
     back,
     leaving,
+    loginNotice,
+    loginNext,
+    resumeAfterLogin,
     isAlarm,
     isDark,
     isOpen,

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { watchEffect } from 'vue'
+import { onMounted, watchEffect } from 'vue'
 
 import { useAirHazardStore } from '@/stores/airHazard'
+import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
@@ -46,9 +47,24 @@ const shell = useShellStore()
 const cam = useCamStore()
 const air = useAirHazardStore()
 const sub = useSubpageStore()
+const auth = useAuthStore()
 
 /** 全局右滑返回手势（微信式）：见 utils/swipeBack.ts 的约束说明 */
 useSwipeBack()
+
+/**
+ * 启动时检查登录态（2026-11 新增）。
+ *
+ * 全站数据都来自需要鉴权的接口：未登录时首页只有空态，用户看不出「为什么
+ * 什么都没有」。所以启动即把登录页摆出来并写明原因，而不是等他自己翻到
+ * 「我的」去找入口。会话已过期的情况在 `restore()` 里就被丢掉了，同样落到
+ * 这里；请求过程中才失效的 401 由 auth store 的 `expire()` 处理。
+ *
+ * 用户仍可关掉登录页浏览界面（登录页与其它子页一样有返回）。
+ */
+onMounted(() => {
+  if (!auth.isLoggedIn) sub.openLogin('当前未登录，请先登录后查看现场数据')
+})
 
 /**
  * 系统状态栏区域的底色

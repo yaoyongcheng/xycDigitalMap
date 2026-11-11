@@ -1,125 +1,174 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { addDays, dateKey, formatMD, monthStart, protoToday, sameDay, startOfDay } from '@/utils/date'
 import { fetchVideoAlarms } from '@/api/video'
-import { toAlarms } from '@/utils/videoAlarm'
+import { addDays, dateKey, dayOffsetOf, startOfDay } from '@/utils/date'
+import { relTime, toAlarms } from '@/utils/videoAlarm'
+import type { TrendPoint } from '@/utils/chart'
 import type { Alarm, MapAlarm } from '@/types'
-
-/**
- * 相对锚点生成绝对时间 'YYYY-MM-DD HH:mm:ss'。
- *
- * 原版把历史记录的日期硬编码成 2026-09-30 / 10-05~10-07（app.js:246-255），
- * 锚点却是固定的 protoToday()=2026-10-08，于是：
- *   - 真实日期一走远，日历可选上界（10-07）和数据就整体脱节；
- *   - h-net 的 at=2026-09-30 与 rel=「昨天 09:30」自相矛盾。
- * 这里改为「天偏移 + 时刻」派生，at 与 rel 同源，永远对得上。
- */
-function atOf(dayOffset: number, hm: string): string {
-  return `${dateKey(addDays(protoToday(), dayOffset))} ${hm}:00`
-}
-
-/** 相对时间文案：昨天显示「昨天 HH:mm」，更早显示「MM/DD HH:mm」 */
-function relOf(dayOffset: number, hm: string): string {
-  if (dayOffset === 0) return `今天 ${hm}`
-  if (dayOffset === -1) return `昨天 ${hm}`
-  return `${formatMD(addDays(protoToday(), dayOffset))} ${hm}`
-}
 
 /**
  * 巡检预警
  *
- * inspectAlarms 是全项目唯一被 4 个功能域消费的数据源：
- *   首页-安全面板趋势图 / 巡检列表 / 预警详情 / 预警轮播
- * 接入接口后，一次数据返回要触发这四处同步 —— 这正是本次迁移的核心动机。
+ * **只存真实数据**（2026-11 接口迁移收口）。
+ *
+ * 此前这里内置 8 条演示种子，接口失败/未登录时首页照样「有内容」。问题是
+ * 演示数字与现场完全对不上，而且没有任何视觉标识说明它是假的 —— 现场拿着
+ * 「今日 4 条预警」去对账，服务端实际 8 条，比空着更糟。现在改为：
+ *   · 没有任何真实数据时就是空，页面显示「暂无数据 / 登录后查看」；
+ *   · 接口失败保留已拉到的数据 + 错误态，不用假数据顶替；
+ *   · 会话清空时一并清掉（`clearLive`，由 auth store 调用）。
+ *
+ * 数据源：A′ 组 `:8085 /api/video/alarms`（唯一有真实报警的接口，需 Bearer）。
+ * 一次拉 2 页共 400 条（`page_size` 上限 200），覆盖约一个月 —— 近 7 日趋势与
+ * 历史页按日查看都在范围内；用户翻到更早的日期时按需回补（`ensureDate`）。
  */
+
+/** 单页上限（服务端实测上限 200） */
+const PAGE_SIZE = 200
+
+/** 首屏并发拉的页数：400 条 ≈ 一个月，够趋势图与历史页默认视图 */
+const FIRST_PAGES = 2
+
+/** 按需回补的总页数上限：1807 条全量在手机上没必要，8 页 ≈ 4 个月 */
+const MAX_PAGES = 8
+
+/** 今日 0 条时轮播退到最近几条（2 页 × 3 条） */
+const FEED_FALLBACK_N = 6
+
+/** 近 7 日趋势的天数 */
+const TREND_DAYS = 7
+
+/** 失败冷却：60s 内不重复打，避免用户在首页反复切面板时打爆接口 */
+const RETRY_MS = 60_000
+
+/** 相对时间在「筛选时」重算：`toAlarms` 只在拉取那一刻算过一次，挂久了会停在「3分钟前」 */
+function withRel(a: Alarm): Alarm {
+  return { ...a, rel: relTime(a.at) || a.rel }
+}
+
 export const useAlarmStore = defineStore('alarm', () => {
-  /**
-   * 原 js/app.js:246-255
-   * 8 条记录：4 条 today + 4 条 hist。
-   * day / at / rel 三个字段共同决定列表分组与日历筛选。
-   *
-   * 日期一律由「距今天多少天」派生（见 atOf / relOf），不再写死年月日。
-   * 只在 store 创建时求值一次 —— 跨天常驻不刷新属原型可接受范围，
-   * 真接入接口后数据由服务端下发，无需此处处理。
-   */
-  const alarms = ref<Alarm[]>([
-    { id: 'trash', day: 'today', src: 'drone', type: '道路垃圾', title: '环境报警', desc: '场区道路发现垃圾堆放未清理！', img: 'img/alarm-trash.webp', rel: '1分钟前', at: atOf(0, '15:21'), geo: '114.24751233100210,30.53310211883421', pin: [32, 78], flat: [34, 86] },
-    { id: 'cable', day: 'today', src: 'cam', type: '电缆拖地', title: '用电报警', desc: '作业面电缆拖地未架空，存在触电隐患！', img: 'img/alarm-cable.webp', rel: '3分钟前', at: atOf(0, '15:19'), geo: '114.24738810244102,30.53290155210933', pin: [48, 56], flat: [46, 40] },
-    { id: 'net', day: 'today', src: 'snap', type: '安全网缺失', title: '防护报警', desc: '楼层临边安全网缺失，请立即整改！', img: 'img/alarm-net.webp', rel: '12分钟前', at: atOf(0, '15:10'), geo: '114.24742027911455,30.53296304904549', pin: [22, 48, 'left'], flat: [20, 34, 'left'] },
-    { id: 'soil', day: 'today', src: 'drone', type: '裸土未覆盖', title: '扬尘报警', desc: '场区裸土未覆盖，扬尘风险较高！', img: 'img/alarm-soil.webp', rel: '1小时前', at: atOf(0, '14:22'), geo: '114.24760188412003,30.53322190771208', pin: [66, 62], flat: [60, 26] },
-    { id: 'h-net', day: 'hist', src: 'snap', type: '安全网缺失', title: '防护报警', desc: '3#楼作业面临边安全网破损缺失。', img: 'img/alarm-net.webp', rel: relOf(-1, '09:30'), at: atOf(-1, '09:30'), geo: '114.24742027911455,30.53296304904549' },
-    { id: 'h-trash', day: 'hist', src: 'drone', type: '道路垃圾', title: '环境报警', desc: '场区北侧道路垃圾堆放未及时清运。', img: 'img/alarm-trash.webp', rel: relOf(-2, '16:20'), at: atOf(-2, '16:20'), geo: '114.24749822001145,30.53308044122890' },
-    { id: 'h-cable', day: 'hist', src: 'cam', type: '电缆拖地', title: '用电报警', desc: '钢筋加工区电缆拖地，存在漏电风险。', img: 'img/alarm-cable.webp', rel: relOf(-3, '11:08'), at: atOf(-3, '11:08'), geo: '114.24735501988210,30.53284411902341' },
-    { id: 'h-soil', day: 'hist', src: 'drone', type: '裸土未覆盖', title: '扬尘报警', desc: '基坑周边裸土未覆盖，扬尘超标。', img: 'img/alarm-soil.webp', rel: relOf(-4, '08:46'), at: atOf(-4, '08:46'), geo: '114.24757700124480,30.53319822009112' },
-  ])
+  /* ---------- 真实报警 ---------- */
 
-  /* ---------- 真实报警（A′ 组 :8085 视频报警） ---------- */
-
-  /**
-   * 接口拉回来的真实报警。
-   *
-   * 与种子 `alarms` 并存而不是替换它，三个原因：
-   *   ① 演示数据里 hist 那 4 条撑着「按日补齐」的模板池，替换掉历史页就没内容了；
-   *   ② 接口只在**已登录**时才拉，未登录/离线时要保持可看的演示界面；
-   *   ③ 接口失败时不能把已经拉到的真实数据也清空（刷新失败比没有数据更常见）。
-   * 因此这里只做「有真数据就用真数据」的覆盖语义：latest 优先取这里。
-   */
+  /** 接口拉回来的真实报警（时间倒序，累积多页） */
   const liveAlarms = ref<Alarm[]>([])
 
-  /** 拉取状态：页面据此决定要不要显示「同步中」角标 */
+  /** 拉取状态：页面据此决定显示「加载中 / 暂无数据 / 加载失败」 */
   const liveState = ref<'idle' | 'loading' | 'ok' | 'error'>('idle')
 
   /** 最近一次失败原因（成功时清空） */
   const liveError = ref('')
 
-  /** 有没有拿到过真实报警 —— 用于区分「接口空结果」与「还没拉过」 */
-  const hasLive = computed(() => liveAlarms.value.length > 0)
+  /** 服务端报告的总条数（分页用；0 = 还不知道） */
+  const total = ref(0)
 
-  /** 上限 50 条：够撑首页轮播与近几日历史，又不至于把基64截图一起拖慢 */
-  const LIVE_PAGE_SIZE = 50
+  /** 已成功加载的页数（`ensureDate` 的游标） */
+  const pagesLoaded = ref(0)
 
-  /** 今日 0 条时轮播退到最近几条（2 页 × 3 条） */
-  const FEED_FALLBACK_N = 6
-
-  /** 失败冷却（与首页人员块同一个口径：60s 内不重复打） */
-  const LIVE_RETRY_MS = 60_000
   let liveTriedAt = 0
 
+  /** 有没有拿到过真实报警 */
+  const hasLive = computed(() => liveAlarms.value.length > 0)
+
+  /** 已加载数据里最早的一天（YYYY-MM-DD），空数据时为 '' */
+  const earliestDay = computed(() =>
+    liveAlarms.value.length ? liveAlarms.value[liveAlarms.value.length - 1].at.slice(0, 10) : '',
+  )
+
   /**
-   * 从视频报警接口同步真实报警。
+   * 把一批数据并进现有集合。
    *
-   * 只在**已登录**时调用 —— 该接口要求 Bearer，未登录必然 401，没必要打一趟。
-   * 成功后按 `alarms` 的语义整理（时间倒序、按日归类），失败保留现有数据并记下原因；
-   * 一次失败后 60s 内不再重试，避免用户在首页反复切换面板时打爆接口。
+   * 用 id 去重：回补更早的页时难免与上一批重叠（服务端没有稳定游标，
+   * 拉取期间新报警会把整页往后挤），重复项留在列表里会变成两条一样的卡片。
+   */
+  function merge(incoming: Alarm[]): void {
+    if (!incoming.length) return
+    const map = new Map<string, Alarm>()
+    for (const a of liveAlarms.value) map.set(a.id, a)
+    for (const a of incoming) map.set(a.id, a)
+    liveAlarms.value = [...map.values()].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+  }
+
+  /**
+   * 拉指定的一段页码，并发发出。
    *
-   * 返回是否真正取到了数据，便于调用方决定是否提示。
+   * 用 `allSettled`：中间某一页 500 不该把已拿到的几页一起丢掉，那正是
+   * 「翻历史翻到一半突然空了」的由来。整段全失败才抛错。
+   */
+  async function fetchPages(token: string, from: number, count: number): Promise<number> {
+    const reqs = Array.from({ length: count }, (_, i) =>
+      fetchVideoAlarms(token, { page: from + i, pageSize: PAGE_SIZE }),
+    )
+    const settled = await Promise.allSettled(reqs)
+    const got: Alarm[] = []
+    let okPages = 0
+    for (const r of settled) {
+      if (r.status !== 'fulfilled') continue
+      okPages += 1
+      total.value = Math.max(total.value, r.value.total)
+      got.push(...toAlarms(r.value.rows))
+    }
+    if (!okPages) {
+      const first = settled.find((r) => r.status === 'rejected')
+      throw first && first.status === 'rejected' ? first.reason : new Error('报警同步失败')
+    }
+    merge(got)
+    return okPages
+  }
+
+  /**
+   * 从视频报警接口同步真实报警（登录后 / 进首页时调用）。
+   *
+   * 失败保留现有数据并记录原因；一次失败后 `RETRY_MS` 内不重试。
+   * 返回是否取到了数据，便于调用方决定要不要提示。
    */
   async function syncFromVideo(token: string, force = false): Promise<boolean> {
     if (!token) return false
     if (liveState.value === 'loading') return false
-    if (!force && liveState.value === 'error' && Date.now() - liveTriedAt < LIVE_RETRY_MS) return false
+    if (!force && liveState.value === 'error' && Date.now() - liveTriedAt < RETRY_MS) return false
 
     liveState.value = 'loading'
     liveTriedAt = Date.now()
     try {
-      const page = await fetchVideoAlarms(token, { pageSize: LIVE_PAGE_SIZE })
-      const rows = toAlarms(page.rows)
-      if (rows.length) {
-        liveAlarms.value = rows
-        liveState.value = 'ok'
-        liveError.value = ''
-        return true
-      }
-      // 接口成功但一条都没有：不动已有数据（可能是真没报警，也可能是这个项目的
-      // 通道还没配），只把状态标成 ok，让人知道「不是请求失败」
+      pagesLoaded.value = await fetchPages(token, 1, FIRST_PAGES)
       liveState.value = 'ok'
       liveError.value = ''
-      return false
+      return liveAlarms.value.length > 0
     } catch (err) {
       liveState.value = 'error'
       liveError.value = err instanceof Error ? err.message : '报警同步失败'
       return false
+    }
+  }
+
+  /**
+   * 按需回补更早的历史（历史页翻月历时用）。
+   *
+   * 目标日期已在已加载范围内就直接返回 —— 绝大多数点击都是这种情况，
+   * 不该为此再打一趟网络。真需要更早的数据才逐页往回拉，最多 `MAX_PAGES`。
+   */
+  async function ensureDate(token: string, d: Date): Promise<void> {
+    if (!token || liveState.value === 'loading') return
+    const need = dateKey(d)
+    if (earliestDay.value && need >= earliestDay.value) return
+    if (total.value && pagesLoaded.value * PAGE_SIZE >= total.value) return
+    if (pagesLoaded.value >= MAX_PAGES) return
+
+    liveState.value = 'loading'
+    try {
+      while (pagesLoaded.value < MAX_PAGES) {
+        const from = pagesLoaded.value + 1
+        const ok = await fetchPages(token, from, 1)
+        pagesLoaded.value = from
+        const earliest = earliestDay.value
+        // 该页没数据（到底了）/ 已覆盖目标日 / 已追上 total，三种情况都可停
+        if (!ok || (earliest && earliest <= need) || (total.value && pagesLoaded.value * PAGE_SIZE >= total.value)) break
+      }
+      liveState.value = 'ok'
+      liveError.value = ''
+    } catch (err) {
+      liveState.value = 'error'
+      liveError.value = err instanceof Error ? err.message : '报警同步失败'
     }
   }
 
@@ -128,143 +177,79 @@ export const useAlarmStore = defineStore('alarm', () => {
     liveAlarms.value = []
     liveState.value = 'idle'
     liveError.value = ''
+    total.value = 0
+    pagesLoaded.value = 0
     liveTriedAt = 0
   }
 
-  /** 原 js/app.js:257 —— 首页安全面板与轮播只看当日 */
-  const latest = computed(() =>
-    hasLive.value
-      ? liveAlarms.value.filter((a) => a.day === 'today')
-      : alarms.value.filter((a) => a.day === 'today'),
-  )
+  /* ---------- 派生数据（全部只来自 liveAlarms） ---------- */
+
+  /** 某日（YYYY-MM-DD）的全部报警，时间倒序 */
+  function recordsOn(d: Date): Alarm[] {
+    const key = dateKey(d)
+    return liveAlarms.value.filter((a) => a.at.slice(0, 10) === key).map(withRel)
+  }
+
+  /** 今日报警 —— 首页计数 / 趋势 / 撒点共用，严格「今日」 */
+  const latest = computed(() => recordsOn(new Date()))
 
   /**
-   * 轮播专用数据源。
+   * 轮播专用数据源：今日为空时退到最近 6 条。
    *
-   * 与 `latest` 的唯一区别：**今日为空时不要空壳**。
-   * `latest` 严格是「今日」，被「今日预警数」「近 7 日趋势」「地图撒点」共用，
-   * 不能掺非今日数据，否则数字就错了。但轮播只负责「让你看到现场在发生什么」，
-   * 凌晨 / 周末 / 停工日今日报警为 0 时，让它退到最近几条真实报警比留一个
-   * 空白卡片有用得多 —— 卡片自己带日期与相对时间（「昨天 21:41」），不会误导。
+   * 凌晨 / 停工日今日报警为 0 时，让轮播显示最近几条真实报警比留一张空卡片
+   * 有用 —— 卡片自带「昨天 21:41」这样的时间，不会误导成今天的。
    */
   const feed = computed<Alarm[]>(() => {
-    if (!hasLive.value) return alarms.value.filter((a) => a.day === 'today')
-    const today = liveAlarms.value.filter((a) => a.day === 'today')
-    return today.length ? today : liveAlarms.value.slice(0, FEED_FALLBACK_N)
+    if (!latest.value.length) return liveAlarms.value.slice(0, FEED_FALLBACK_N).map(withRel)
+    return latest.value
   })
 
   /**
-   * 历史记录模板池（原 app.js:2778-2787 ALARM_POOL）。
+   * 近 7 日预警趋势（真实按日聚合）。
    *
-   * 8 条模板与 alarms 的 8 条种子记录内容完全一致（同 src/type/title/desc/
-   * img/geo），直接从种子派生而不是再抄一份 —— 单一数据源，改文案只改一处。
+   * 没有数据的日子就是 0 —— 不再用固定的演示曲线描一条好看的上升线。
+   * 横轴标签取 `M/D`，与接口无关，纯按本地日期生成。
    */
-  const pool = alarms.value.map((a) => ({
-    src: a.src,
-    type: a.type,
-    title: a.title,
-    desc: a.desc,
-    img: a.img,
-    geo: a.geo,
-  }))
-
-  /** 按日生成的补充记录缓存（原 app.js:2789 alarmExtra），保证同一天两次取相同 */
-  const extraCache = new Map<string, Alarm>()
-
-  /**
-   * 某日预警条数（原 app.js:133-145 alarmDayCount）。
-   * 已知分布 [8,13,16,6,3,2] 覆盖近 6 天，更早进入 24 元循环表；
-   * 未来日期返回 null（日历上不可选）。
-   */
-  function dayCount(d: Date): number | null {
-    const off = Math.round((startOfDay(protoToday()).getTime() - startOfDay(d).getTime()) / 86400000)
-    if (off < 0) return null
-    if (off === 0) return latest.value.length
-    // 真实数据覆盖到的那几天按真实条数算，否则日历上的圆点会与点进去的列表不符
-    const key = dateKey(d)
-    const live = liveAlarms.value.filter((a) => a.at.slice(0, 10) === key).length
-    if (live) return live
-    const known = [8, 13, 16, 6, 3, 2]
-    if (off <= known.length) return known[off - 1]
-    const older = [5, 1, 4, 7, 2, 9, 3, 6, 0, 4, 8, 2, 5, 1, 3, 6, 2, 0, 4, 7, 3, 1, 5, 2]
-    return older[(off - known.length - 1) % older.length]
-  }
-
-  /**
-   * 某日预警记录（原 app.js:2796-2822 alarmDayRecords）。
-   *
-   * 当日直接返回 latest；其余日期先取种子记录，不足 dayCount 的部分从
-   * 模板池按 (offset+i) 轮转补齐、时刻从 16:40 起每条提前 22 分钟，
-   * 结果按时间倒序。补齐的记录进 extraCache，同一天反复进出页面数据不漂移。
-   */
-  function dayRecords(d: Date): Alarm[] {
-    if (sameDay(d, protoToday())) return latest.value.slice()
-    const key = dateKey(d)
-    const n = dayCount(d) ?? 0
-    const out = [...liveAlarms.value, ...alarms.value]
-      .filter((a) => a.day === 'hist' && a.at.slice(0, 10) === key)
-      .slice(0, n)
-    const off = Math.round((startOfDay(protoToday()).getTime() - startOfDay(d).getTime()) / 86400000)
-    for (let i = out.length; i < n; i++) {
-      const id = `day-${key}-${i}`
-      let rec = extraCache.get(id)
-      if (!rec) {
-        const tpl = pool[(off + i) % pool.length]
-        const mins = 16 * 60 + 40 - i * 22
-        const hh = String(Math.floor(mins / 60)).padStart(2, '0')
-        const mm = String(mins % 60).padStart(2, '0')
-        rec = { id, day: 'hist', src: tpl.src, type: tpl.type, title: tpl.title, desc: tpl.desc, img: tpl.img, geo: tpl.geo, at: `${key} ${hh}:${mm}:00`, rel: `${hh}:${mm}` }
-        extraCache.set(id, rec)
-      }
-      out.push(rec)
+  const trend = computed<TrendPoint[]>(() => {
+    const base = startOfDay(new Date())
+    const out: TrendPoint[] = []
+    for (let i = TREND_DAYS - 1; i >= 0; i--) {
+      const d = addDays(base, -i)
+      const key = dateKey(d)
+      const value = liveAlarms.value.filter((a) => a.at.slice(0, 10) === key).length
+      out.push({ label: `${d.getMonth() + 1}/${d.getDate()}`, value })
     }
-    return out.sort((a, b) => (a.at < b.at ? 1 : -1))
-  }
+    return out
+  })
 
-  /** 原 js/app.js:677 —— 巡检列表当前页签 */
-  const inspTab = ref<'today' | 'hist'>('today')
-
-  /** 原 js/app.js:681 —— 历史页当前选中日，锚点为 protoToday() */
-  const inspHistDate = ref<Date>(addDays(protoToday(), -1))
-
-  /** 原 js/app.js:682 —— 日历当前显示月份 */
-  const inspCalMonth = ref<Date>(monthStart(inspHistDate.value))
-
-  /** 巡检日历是否展开（原为 #inspCal 的 .hide 类，closeSub 需读取，故提到 store） */
-  const inspCalOpen = ref(false)
-
-  /* ---------- 报警预警历史页（2026-11 设计稿 gx2 版，原 app.js:2634-2636） ---------- */
-
-  /** 历史页当前页签 —— 设计稿默认落在「历史预警」 */
-  const histTab = ref<'today' | 'hist'>('hist')
-
-  /** 历史页当前选中日（原 alarmHistDate），锚点为 protoToday() */
-  const histDate = ref<Date>(addDays(protoToday(), -1))
-
-  /** 历史页日历当前显示月份（原 alarmHistCalMonth） */
-  const histCalMonth = ref<Date>(monthStart(histDate.value))
-
-  /** 历史页日历是否展开 */
-  const histCalOpen = ref(false)
-
-  /** 原 js/app.js:684-696 的 alarmsOnDate(d) —— 历史页按日筛选 */
-  function alarmsOnDate(d: Date): Alarm[] {
+  /** 某日预警条数；未来日期返回 null（日历上不可选） */
+  function dayCount(d: Date): number | null {
+    if (dayOffsetOf(d) < 0) return null
     const key = dateKey(d)
-    return [...liveAlarms.value, ...alarms.value].filter(
-      (a) => a.day === 'hist' && a.at.slice(0, 10) === key,
-    )
+    return liveAlarms.value.filter((a) => a.at.slice(0, 10) === key).length
   }
 
-  /** 原多处以 inspectAlarms.find(...) 内联实现；真实报警也要能点进详情 */
+  /** 某日预警记录（历史页 / 巡检历史页） */
+  function dayRecords(d: Date): Alarm[] {
+    return recordsOn(d)
+  }
+
+  /** 历史按日筛选（原名保留：调用方在巡检列表与历史页两处） */
+  function alarmsOnDate(d: Date): Alarm[] {
+    return recordsOn(d)
+  }
+
+  /** 详情页按 id 找数据 */
   function byId(id: string): Alarm | undefined {
-    return liveAlarms.value.find((a) => a.id === id) ?? alarms.value.find((a) => a.id === id)
+    return liveAlarms.value.find((a) => a.id === id)
   }
 
   /**
-   * 当日预警 → 地图撒点（2026-10 版本同步 · 第二批）
+   * 当日预警 → 地图撒点。
    *
-   * 三维图与二维图各有一套坐标（AlarmSpot），由调用方声明要哪一套。
-   * 只撒当日预警 —— 历史记录已经整改关闭，标在地图上会误导现场。
+   * 视频报警只有通道号、没有经纬度（服务端不下发），所以真实数据在图上
+   * **不会产生任何撒点**。这里保留实现是给以后接入带坐标的报警源留口子，
+   * 绝不为「地图上要有东西」编造坐标。
    */
   function mapAlarms(space: 'pin' | 'flat' = 'pin'): MapAlarm[] {
     const out: MapAlarm[] = []
@@ -276,15 +261,45 @@ export const useAlarmStore = defineStore('alarm', () => {
     return out
   }
 
+  /* ---------- 页签与日历状态（原 app.js:677-696，1:1 保留） ---------- */
+
+  /** 原 js/app.js:677 —— 巡检列表当前页签 */
+  const inspTab = ref<'today' | 'hist'>('today')
+
+  /** 原 js/app.js:681 —— 历史页当前选中日 */
+  const inspHistDate = ref<Date>(addDays(startOfDay(new Date()), -1))
+
+  /** 原 js/app.js:682 —— 日历当前显示月份 */
+  const inspCalMonth = ref<Date>(new Date(inspHistDate.value.getFullYear(), inspHistDate.value.getMonth(), 1))
+
+  /** 巡检日历是否展开 */
+  const inspCalOpen = ref(false)
+
+  /** 历史页当前页签 —— 设计稿默认落在「历史预警」 */
+  const histTab = ref<'today' | 'hist'>('hist')
+
+  /** 历史页当前选中日 */
+  const histDate = ref<Date>(addDays(startOfDay(new Date()), -1))
+
+  /** 历史页日历当前显示月份 */
+  const histCalMonth = ref<Date>(new Date(histDate.value.getFullYear(), histDate.value.getMonth(), 1))
+
+  /** 历史页日历是否展开 */
+  const histCalOpen = ref(false)
+
   return {
-    alarms,
-    latest,
-    feed,
     liveAlarms,
     liveState,
     liveError,
+    total,
+    pagesLoaded,
     hasLive,
+    earliestDay,
+    latest,
+    feed,
+    trend,
     syncFromVideo,
+    ensureDate,
     clearLive,
     inspTab,
     inspHistDate,
