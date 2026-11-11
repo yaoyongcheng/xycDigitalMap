@@ -2,12 +2,14 @@
 import { computed, onMounted, watch } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
+import Skel from '@/components/ui/Skel.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
 import { useOverviewStore } from '@/stores/overview'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendLive, peopleHourModel } from '@/utils/chart'
+import { useSlowLoading } from '@/utils/slowLoading'
 import AlarmFeed from './parts/AlarmFeed.vue'
 import PeopleDist from './parts/PeopleDist.vue'
 
@@ -50,6 +52,18 @@ const crewNums = computed(() =>
 const hourModel = computed(() => peopleHourModel(new Date().getHours(), overview.hourLive))
 
 const updTime = computed(() => overview.updatedAt)
+
+/**
+ * 四个数据块各有一条「慢请求」判据。
+ *
+ * 骨架不是「一请求就上屏」，而是等过了 SKEL_DELAY 才淡入（utils/slowLoading.ts）：
+ * 现场的读接口通常一两百毫秒就回来了，那种情况骨架连一帧都不该出现。分开判
+ * 是因为四块各自独立成败 —— 人员总览回来了不代表班组出勤也回来了。
+ */
+const showAlarmSkel = useSlowLoading(() => !alarm.hasLive && alarm.liveState === 'loading')
+const showCrewSkel = useSlowLoading(() => !overview.hasLive && overview.loading)
+const showHourSkel = useSlowLoading(() => !overview.hourLive && overview.loading)
+const showTeamSkel = useSlowLoading(() => !overview.teamRows.length && overview.loading)
 
 /** 面板挂载即取一次；store 内部有并发去重与失败冷却 */
 onMounted(() => {
@@ -138,9 +152,30 @@ function onAlarmOpen(id: string): void {
 
     <!-- 已登录但一条都没拉到：区分「同步中 / 失败 / 今日无报警」 -->
     <template v-else-if="!alarm.hasLive">
-      <div v-if="alarm.liveState === 'loading'" class="data-empty" data-empty="alarm">
-        <p>正在同步现场报警…</p>
-      </div>
+      <!--
+        同步中：灰条铺在计数卡、趋势图、轮播条将要出现的位置，报警到手后原位回填。
+        慢请求才可见（showAlarmSkel 之外整层 opacity: 0，但仍占位，版式不跳）。
+      -->
+      <template v-if="alarm.liveState === 'loading'">
+        <span class="sr-only" role="status">正在同步现场报警</span>
+        <div class="home-stats alarm-row skel-fade" :class="{ 'is-on': showAlarmSkel }" aria-hidden="true">
+          <div class="home-stat alert">
+            <Skel w="54px" h="31px" r="var(--r-6)" />
+            <Skel class="skel-mt" w="62px" h="14px" />
+          </div>
+          <div class="home-chart-card alarm-mini">
+            <Skel w="72px" h="12px" />
+            <Skel class="skel-mt" w="100%" h="48px" r="var(--r-6)" />
+          </div>
+        </div>
+        <div class="home-chart-card alarm-feed skel-fade" :class="{ 'is-on': showAlarmSkel }" aria-hidden="true">
+          <div class="skel-feed-row">
+            <div v-for="i in 3" :key="i" class="skel-feed-item">
+              <Skel w="100%" h="54px" r="var(--r-8)" />
+            </div>
+          </div>
+        </div>
+      </template>
       <div v-else-if="alarm.liveState === 'error'" class="data-empty" data-empty="alarm">
         <p>{{ alarm.liveError || '报警同步失败' }}</p>
         <button class="data-empty-btn" type="button" @click="retry">重试</button>
@@ -173,16 +208,16 @@ function onAlarmOpen(id: string): void {
             <b v-if="crewNums[i].value !== null">
               <CountUp :value="crewNums[i].value as number" :decimals="crewNums[i].decimals" sticky /><em>{{ unit }}</em>
             </b>
+            <!-- 慢请求：数字位换成灰条（高度与 .crew-kpi b 的 21px 行盒一致），不回填「—」 -->
+            <Skel v-else-if="showCrewSkel" w="44px" h="21px" r="var(--r-6)" />
             <b v-else class="kpi-none">—<em>{{ unit }}</em></b>
             <span>{{ name }}</span>
           </div>
         </div>
-        <div v-if="!overview.hasLive" class="data-note">
-          <template v-if="overview.loading">正在获取人员数据…</template>
-          <template v-else>
-            暂无人员数据
-            <button class="data-empty-btn is-inline" type="button" @click="retry">重试</button>
-          </template>
+        <!-- 同步中不写字（灰条已经在说了），只在真拿不到时给原因与重试 -->
+        <div v-if="!overview.hasLive && !overview.loading" class="data-note">
+          暂无人员数据
+          <button class="data-empty-btn is-inline" type="button" @click="retry">重试</button>
         </div>
       </div>
 
@@ -202,6 +237,10 @@ function onAlarmOpen(id: string): void {
           </div>
         </div>
         <TouchChart v-if="overview.hourLive" :model="hourModel" />
+        <!-- 慢请求：整块图表位（148px，与 .people-hour .chart-empty 同高）铺一条灰块 -->
+        <div v-else-if="showHourSkel" aria-hidden="true">
+          <Skel w="100%" h="148px" r="var(--r-8)" />
+        </div>
         <div v-else class="chart-empty">暂无分时人数数据</div>
       </div>
 
@@ -217,6 +256,15 @@ function onAlarmOpen(id: string): void {
           <div v-for="[name, n, rate] in overview.teamRows" :key="name" class="squad-row">
             <div class="squad-hd"><b>{{ name }}</b><em>{{ n }}人</em><span>{{ rate }}</span></div>
             <div class="squad-bar"><i :style="{ width: rate }"></i></div>
+          </div>
+        </div>
+        <!-- 慢请求：3 行班组灰条（行结构 = 名字行 + 4px 进度条） -->
+        <div v-else-if="showTeamSkel" class="squad-list" aria-hidden="true">
+          <div v-for="i in 3" :key="i">
+            <div class="squad-hd">
+              <Skel class="skel-flex" w="60px" h="12px" /><Skel w="24px" h="12px" /><Skel w="36px" h="12px" />
+            </div>
+            <Skel class="skel-mt-sm" w="100%" h="4px" r="var(--r-pill)" />
           </div>
         </div>
         <div v-else class="chart-empty">暂无班组出勤数据</div>

@@ -2,12 +2,14 @@
 import { computed, onMounted, ref, watch } from 'vue'
 
 import SvgIcon from '@/components/ui/SvgIcon.vue'
+import Skel from '@/components/ui/Skel.vue'
 import DeviceReport from '@/views/sub/DeviceReport.vue'
 import { deviceSet } from '@/data/device'
 import { useAuthStore } from '@/stores/auth'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useSubpageStore } from '@/stores/subpage'
+import { useSlowLoading } from '@/utils/slowLoading'
 import type { DeviceKind, DeviceUnit } from '@/types'
 
 /**
@@ -34,6 +36,9 @@ const subpage = useSubpageStore()
 const set = computed(() => deviceSet(props.kind))
 
 const pageTab = ref<'live' | 'report'>('live')
+
+/** 慢请求才显示骨架：台账通常一两百毫秒就回来了，快请求不该闪灰条 */
+const showSkel = useSlowLoading(() => !set.value.units.length && ledger.state === 'loading')
 
 /** 切塔机 ↔ 电梯时回到实时页，避免停在电梯报表看塔机的空报表 */
 watch(
@@ -88,17 +93,44 @@ function goLogin(): void {
     </div>
 
     <template v-else-if="pageTab === 'live'">
-      <!-- 同步中 / 失败 / 该类设备确实为 0 -->
-      <div v-if="!set.units.length" class="data-empty" data-empty="device">
-        <template v-if="ledger.state === 'loading'"><p>正在加载设备台账…</p></template>
-        <template v-else-if="ledger.state === 'error'">
+      <!-- 同步中：灰条铺在机组卡片的位置（卡头 + 台账四格），台账到手后原位回填 -->
+      <section
+        v-if="!set.units.length && ledger.state === 'loading'"
+        class="dev-block skel-fade"
+        :class="{ 'is-on': showSkel }"
+        aria-busy="true"
+      >
+        <span class="sr-only" role="status">正在加载{{ set.title }}台账</span>
+        <div class="dev-board" aria-hidden="true">
+          <article v-for="i in 2" :key="i" class="dev-card">
+            <div class="dev-card-hd">
+              <strong>
+                <Skel w="22px" h="22px" r="var(--r-6)" />
+                <Skel w="66px" h="13px" />
+                <Skel w="40px" h="18px" r="var(--r-pill)" />
+              </strong>
+              <Skel w="48px" h="12px" />
+            </div>
+            <div class="dev-card-grid">
+              <div v-for="j in 4" :key="j">
+                <Skel w="42px" h="10px" />
+                <Skel class="skel-mt-sm" w="58px" h="13px" />
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- 失败 / 该类设备确实为 0 -->
+      <div v-else-if="!set.units.length" class="data-empty" data-empty="device">
+        <template v-if="ledger.state === 'error'">
           <p>{{ ledger.error || '设备台账加载失败' }}</p>
           <button class="data-empty-btn" type="button" @click="retry">重试</button>
         </template>
         <template v-else><p>台账中暂无{{ set.noun }}</p></template>
       </div>
 
-      <section v-else class="dev-block">
+      <section v-else class="dev-block fill-in">
         <div class="dev-board">
           <article v-for="u in set.units" :key="u.id" class="dev-card">
             <div class="dev-card-hd">

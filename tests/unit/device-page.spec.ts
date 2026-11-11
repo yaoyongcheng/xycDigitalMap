@@ -11,6 +11,7 @@ import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useSubpageStore } from '@/stores/subpage'
 import EquipPanel from '@/views/home/EquipPanel.vue'
+import { SKEL_DELAY } from '@/utils/slowLoading'
 import { deviceRows, ledgerEnvelope } from '../fixtures/ledger'
 
 /**
@@ -55,6 +56,36 @@ describe('智控面板（真实台账）', () => {
     expect(w.findAll('.eq-card')).toHaveLength(0)
     expect(w.find('.eq-count').exists()).toBe(false)
     w.unmount()
+  })
+
+  it('已登录 + 台账还没回来：在数据位置铺灰条，不再整块弹「正在加载…」', async () => {
+    const auth = useAuthStore()
+    auth.token = 'test-token'
+    auth.expiresAt = Date.now() + 3_600_000
+    // 永不 resolve：请求停在「同步中」，模拟现场接口慢
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+
+    vi.useFakeTimers()
+    const w = mount(EquipPanel)
+    await nextTick()
+
+    // 骨架已占位（撑住版式），但阈值未到 → 不给用户看灰条
+    expect(w.findAll('.skel').length).toBeGreaterThan(0)
+    expect(w.find('.skel-fade.is-on').exists()).toBe(false)
+    // 关键回归：加载态不再是一整块「正在加载设备台账…」的空态卡；
+    // 这句话只保留给读屏（.sr-only），视觉上是一排灰条
+    expect(w.find('[data-empty="equip"]').exists()).toBe(false)
+    expect(w.find('.data-empty').exists()).toBe(false)
+    expect(w.find('.sr-only[role="status"]').exists()).toBe(true)
+
+    vi.advanceTimersByTime(SKEL_DELAY + 20)
+    await nextTick()
+    // 统计卡 + 四卡两段骨架同时淡入
+    expect(w.findAll('.skel-fade.is-on').length).toBe(2)
+    expect(w.findAll('.skel').length).toBeGreaterThan(6)
+
+    w.unmount()
+    vi.useRealTimers()
   })
 
   it('已登录：四卡按台账渲染，台数与在线数是真的', async () => {

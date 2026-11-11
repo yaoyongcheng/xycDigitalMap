@@ -3,6 +3,7 @@ import { computed, onMounted } from 'vue'
 
 import InspectItem from '@/components/ui/InspectItem.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
+import Skel from '@/components/ui/Skel.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
@@ -10,6 +11,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendLive } from '@/utils/chart'
 import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/utils/date'
+import { useSlowLoading } from '@/utils/slowLoading'
 
 /**
  * 报警预警历史（2026-11 设计稿 gx2 版，原 app.js:2913-2965 renderAlarmHist）
@@ -46,13 +48,28 @@ const pickLabel = computed(() => (isYesterday.value ? '昨天' : formatMD(alarm.
 const trendModel = computed(() => alarmTrendLive(alarm.trend, 'alarmHistFill'))
 const hasTrend = computed(() => alarm.trend.some((p) => p.value > 0))
 
-/** 今日空态文案：未登录 / 同步中 / 失败 / 今日无报警 */
+/** 今日空态文案：未登录 / 失败 / 今日无报警（同步中走骨架） */
 const emptyText = computed(() => {
   if (!auth.isLoggedIn) return '登录后查看现场实时报警'
-  if (alarm.liveState === 'loading') return '正在同步现场报警…'
   if (alarm.liveState === 'error') return alarm.liveError || '报警同步失败'
   return '今日暂无预警记录'
 })
+
+/** 首屏同步中（还没有任何报警数据） */
+const syncing = computed(() => !alarm.hasLive && alarm.liveState === 'loading')
+
+/** 慢请求才显示骨架 */
+const showSkel = useSlowLoading(() => syncing.value)
+
+/**
+ * 历史窗格的同步态。
+ *
+ * 与今日窗格不同：翻到还没拉过的日期时 `ensureDate` 也会把 liveState 置成
+ * loading（按需回补）——此时「该日暂无预警记录 / 0条」就是提前下的结论，
+ * 也要换成骨架。已有数据时的回补不影响今日窗格（那边有 `!hasLive` 门槛）。
+ */
+const histSyncing = computed(() => alarm.liveState === 'loading')
+const showHistSkel = useSlowLoading(() => histSyncing.value)
 
 function onTab(tab: 'today' | 'hist'): void {
   subpage.openAlarmHist(tab)
@@ -94,15 +111,30 @@ function goLogin(): void {
 
     <div class="insp-pane" :class="{ hide: onHist }">
       <div class="home-stats alarm-row">
-        <div class="home-stat alert"><b>{{ todayList.length }}</b><span>今日预警数</span></div>
+        <div class="home-stat alert">
+          <b v-if="!syncing">{{ todayList.length }}</b>
+          <Skel v-else w="54px" h="31px" r="var(--r-6)" />
+          <span>今日预警数</span>
+        </div>
         <div class="home-chart-card alarm-mini">
           <span class="alarm-mini-lab">近7日预警趋势</span>
           <TouchChart v-if="hasTrend" :model="trendModel" />
+          <Skel v-else-if="syncing" class="skel-mt" w="100%" h="48px" r="var(--r-6)" />
           <div v-else class="chart-empty">近 7 日暂无报警</div>
         </div>
       </div>
       <div v-if="todayList.length" class="insp-list">
         <InspectItem v-for="a in todayList" :key="a.id" :alarm="a" use-title @open="onItemOpen(a.id)" />
+      </div>
+      <!-- 同步中：结构同 .insp-item（48px 图 + 两行文字），报警到手后原位回填 -->
+      <div v-else-if="syncing" class="insp-list skel-fade" :class="{ 'is-on': showSkel }" aria-hidden="true">
+        <div v-for="i in 4" :key="i" class="insp-item is-skel">
+          <Skel w="48px" h="48px" r="var(--r-8)" />
+          <div class="insp-meta">
+            <Skel w="52%" h="14px" />
+            <Skel class="skel-mt" w="78%" h="11px" />
+          </div>
+        </div>
       </div>
       <div v-else class="insp-empty">
         <span>{{ emptyText }}</span>
@@ -114,7 +146,7 @@ function goLogin(): void {
       <div class="insp-hist-hd">
         <div>
           <strong>{{ isYesterday ? '昨天' : formatCamDate(alarm.histDate) }}</strong>
-          <span>{{ histList.length }}条</span>
+          <span>{{ histSyncing ? '…' : `${histList.length}条` }}</span>
         </div>
         <button class="cam-day cam-day-pick on" type="button" @click="onCalToggle">
           {{ pickLabel }}
@@ -132,6 +164,16 @@ function goLogin(): void {
 
       <div v-if="histList.length" class="insp-list">
         <InspectItem v-for="a in histList" :key="a.id" :alarm="a" use-title @open="onItemOpen(a.id)" />
+      </div>
+      <!-- 按需回补中：结构同列表项，数据到了原位回填，不提前下「暂无」的结论 -->
+      <div v-else-if="histSyncing" class="insp-list skel-fade" :class="{ 'is-on': showHistSkel }" aria-hidden="true">
+        <div v-for="i in 4" :key="i" class="insp-item is-skel">
+          <Skel w="48px" h="48px" r="var(--r-8)" />
+          <div class="insp-meta">
+            <Skel w="52%" h="14px" />
+            <Skel class="skel-mt" w="78%" h="11px" />
+          </div>
+        </div>
       </div>
       <div v-else class="insp-empty">该日暂无预警记录</div>
     </div>

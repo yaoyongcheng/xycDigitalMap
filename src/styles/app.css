@@ -21,6 +21,20 @@
   /* 卡片描边：比 --line 更淡，只用来收住白卡的边缘，主要层次交给 --sh-1 */
   --line-soft: rgba(16, 24, 40, 0.05);
   /*
+   * 骨架屏灰条（2026-11 慢加载改造）
+   *
+   * 数据还没有到位时占住它将来要出现的位置。比 --line 更淡：它不是分隔线，
+   * 而是「一块还不知道内容的东西」，只该被看见、不该被读。深色页面（设备
+   * 详情 / 爬架）用 *-dark 那组，浅灰在深底上会成一块块白斑。
+   * shine 是扫光的高光色，fade 是它两端（必须与 shine 同色相的 0 透明，
+   * 写 transparent 会在 chroma 插值时发灰）。
+   */
+  --skel: rgba(16, 24, 40, 0.07);
+  --skel-shine: rgba(255, 255, 255, 0.65);
+  --skel-fade: rgba(255, 255, 255, 0);
+  --skel-dark: rgba(255, 255, 255, 0.08);
+  --skel-shine-dark: rgba(255, 255, 255, 0.13);
+  /*
    * 高程（2026-10 视觉改造·第四批）
    *
    * 改造前全站 13 种阴影写法，卡片靠 1px 边框而非阴影分层，结果是「有线框图
@@ -2540,6 +2554,159 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .insp-empty .data-empty-btn { margin-top: 12px; }
 
 /*
+ * 慢加载骨架（2026-11，对齐支付宝的加载观感）
+ *
+ * 此前接口慢时的做法是整块换成「正在加载设备台账…」的空态卡：白底圆角、
+ * 居中一行字，读起来像一个弹窗，把整块内容全盖住，还比内容本身矮一截 ——
+ * 数据到了页面要重排一次。现在的做法是**在数据将要出现的位置铺灰条**：
+ * 骨架复用真实内容的布局（调用方传真实尺寸），数据到达原位回填，高度不变。
+ *
+ * 只有慢请求才看得到它（utils/slowLoading.ts 延迟 SKEL_DELAY 上屏），
+ * 快请求直接出内容、不闪。
+ *
+ * 底色两套：浅底 7% 墨、深底 8% 白。都在对比度门槛之下，只该被「看见有
+ * 东西还没到」，不该被当成内容去读。扫光沿用 .simg 的同一条 keyframes。
+ */
+.skel {
+  display: block;
+  flex: none;
+  background-color: var(--skel);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skel {
+    background-image: linear-gradient(
+      100deg,
+      var(--skel-fade) 26%,
+      var(--skel-shine) 48%,
+      var(--skel-fade) 70%
+    );
+    background-size: 240% 100%;
+    background-repeat: no-repeat;
+    animation: simgShimmer 1.3s linear infinite;
+  }
+}
+
+/* 深色页面（设备详情 / 爬架 / 首页深色抽屉）里的灰条要反过来 */
+.subpage.is-dark .skel,
+#page-home .skel {
+  background-color: var(--skel-dark);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .subpage.is-dark .skel,
+  #page-home .skel {
+    background-image: linear-gradient(
+      100deg,
+      var(--skel-fade) 26%,
+      var(--skel-shine-dark) 48%,
+      var(--skel-fade) 70%
+    );
+  }
+}
+
+/*
+ * 骨架里的微量间距。
+ *
+ * 只用来还原真实元素之间的 margin（例如 .home-stat span 的 margin-top: 6px）：
+ * 灰条本身没有文字盒，不补这段间距，骨架就会比内容矮一行、数据到达时跳一下。
+ */
+.skel-mt { margin-top: 6px; }
+.skel-mt-sm { margin-top: 4px; }
+
+/* 骨架里的「撑满剩余宽度」（班组名字那种 flex: 1 的位置） */
+.skel-flex {
+  flex: 1;
+  min-width: 0;
+}
+
+/*
+ * 骨架图例行的行高。
+ *
+ * 真实图例行是「圆点 + 文字 + 数字」，数字的行盒把行撑到 20px；灰条没有
+ * 文字盒，不补这条 min-height 骨架就比内容矮一截、回填时环形图会往下跳。
+ */
+.eq-status-leg .skel-leg-row {
+  min-height: 20px;
+}
+
+/* 骨架行的光标：它长得像列表项，但点不动 */
+.insp-item.is-skel {
+  cursor: default;
+  pointer-events: none;
+}
+
+/* 预警轮播的骨架：一页 3 条并排，与 .alarm-feed-page 的排布一致 */
+.skel-feed-row {
+  display: flex;
+  gap: 8px;
+}
+
+.skel-feed-item {
+  flex: 1;
+  min-width: 0;
+}
+
+/*
+ * 数据回填时淡入。
+ *
+ * 骨架与内容同构，直接切换不会跳位，但会「啪」一下换掉整块画面。这一层
+ * 200ms 的透明度过渡让替换读起来是「内容浮上来」。刻意只用 opacity：
+ * transform 会与一批靠 translate 居中的元素打架（见下方统一按压反馈的说明）。
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .fill-in {
+    animation: fillIn 0.2s ease both;
+  }
+}
+
+@keyframes fillIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/*
+ * 骨架层的延迟淡入（配合 utils/slowLoading.ts）。
+ *
+ * 骨架元素从第一帧就占住位置（版式不跳），但整体 opacity: 0 —— 只有慢请求
+ * 越过阈值后加上 .is-on 才淡入。快请求时用户全程看不到灰条，也不会因为
+ * 「先空着再长出来」而看到面板高度变化。
+ */
+.skel-fade {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.skel-fade.is-on {
+  opacity: 1;
+}
+
+/* 减弱动效时不做淡入，避免「看不见 / 看不见 / 突然出现」 */
+@media (prefers-reduced-motion: reduce) {
+  .skel-fade {
+    transition: none;
+  }
+}
+
+/*
+ * 只给读屏看的文案。
+ *
+ * 骨架把「正在加载…」从视觉上拿掉了，但这句话对读屏用户仍然有意义 ——
+ * 否则他们只会听到一片空。视觉隐藏、可访问树保留。
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/*
  * 数据空态（2026-11 接口迁移收口）
  *
  * 全站数字与列表只来自接口，取不到时用这组样式给出「为什么这里是空的」与
@@ -2672,6 +2839,15 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-size: var(--fs-13);
   text-align: center;
 }
+
+/*
+ * 抓拍图未到位时的灰条（2026-11 慢加载改造）。
+ *
+ * 与 .alarm-hero-empty 同高：这两块会在「加载中 → 暂无抓拍图」之间互相切换
+ * （接口 401/404 时），高度不一致就会跳一下。颜色走 .subpage.is-dark 那套，
+ * 详情页本身是深色页，不用单独覆盖。
+ */
+.alarm-hero-skel { height: 280px; }
 
 .alarm-hero-tag {
   position: absolute;
@@ -4986,6 +5162,23 @@ button, input, textarea { font-family: inherit; color: inherit; }
     0 -6px 20px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(180, 210, 255, 0.12);
 }
+
+/*
+ * 首页深色抽屉里的数据空态。
+ *
+ * 空态卡是按浅色页面写的（白底 + 深灰字），直接搬进深色抽屉会变成一块白板
+ * 压在深蓝底上，和面板里其它卡片完全不是一套 —— 观感像一个弹窗把内容盖住了。
+ * 这里跟 .home-stat 同底色同描边，文字换深色页的阶梯。
+ */
+#page-home .data-empty {
+  background: var(--bg-3);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--ink-3-dark);
+}
+
+#page-home .data-empty-sub,
+#page-home .chart-empty,
+#page-home .data-note { color: var(--ink-4-dark); }
 
 #page-home .home-mod { color: var(--ink-4-dark); }
 #page-home .home-mod.on { color: var(--blue-dark); font-weight: 600; }

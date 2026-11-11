@@ -3,11 +3,13 @@ import { computed, onMounted, ref, watch } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import DonutTouch from '@/components/ui/DonutTouch.vue'
+import Skel from '@/components/ui/Skel.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useHomeStore } from '@/stores/home'
 import { useSubpageStore } from '@/stores/subpage'
+import { useSlowLoading } from '@/utils/slowLoading'
 import type { Equip } from '@/types'
 
 /**
@@ -46,6 +48,15 @@ watch(
 function pageOf(d: Equip): string {
   return d.page ?? ''
 }
+
+/**
+ * 慢请求才显示骨架（对齐支付宝的加载观感）。
+ *
+ * 台账是本页唯一的取数点，接口在局域网里通常 100~200ms 就回来了 —— 那种情况
+ * 骨架连一帧都不该出现，否则就是「闪一下灰条又变内容」。超过 SKEL_DELAY 才
+ * 把灰条淡入，数据一到立刻撤。
+ */
+const showSkel = useSlowLoading(() => !ledger.hasData && ledger.state === 'loading')
 
 function onCard(d: Equip): void {
   if (d.page === 'uav') subpage.openUav()
@@ -134,9 +145,45 @@ function goLogin(): void {
 
   <!-- 已登录但台账没到手：区分同步中 / 失败 / 确实没有 -->
   <template v-else-if="!ledger.hasData">
-    <div v-if="ledger.state === 'loading'" class="data-empty" data-empty="equip">
-      <p>正在加载设备台账…</p>
-    </div>
+    <!--
+      慢请求：在数据将要出现的位置铺灰条（统计卡 + 4 张设备卡），
+      结构与下面真实内容一一对应，台账到手后原位回填、高度不变。
+      `is-on` 之前整层是 opacity: 0 —— 占位先撑住版式，但灰条要等
+      SKEL_DELAY 之后才淡入，快请求就完全看不到这一层。
+    -->
+    <template v-if="ledger.state === 'loading'">
+      <span class="sr-only" role="status">正在加载设备台账</span>
+      <div class="home-stats alarm-row skel-fade" :class="{ 'is-on': showSkel }" aria-hidden="true">
+        <div class="home-chart-card eq-count">
+          <!-- 尺寸照真实元素量的（b 22px / span 11px），回填时高度一像素不跳 -->
+          <div class="eq-count-item"><Skel w="56px" h="22px" r="var(--r-6)" /><Skel w="44px" h="11px" /></div>
+          <div class="eq-count-item"><Skel w="56px" h="22px" r="var(--r-6)" /><Skel w="44px" h="11px" /></div>
+        </div>
+        <div class="home-chart-card eq-status">
+          <Skel w="46px" h="14px" />
+          <div class="eq-status-body">
+            <Skel w="40px" h="40px" circle />
+            <div class="eq-status-leg">
+              <div class="skel-leg-row"><Skel w="8px" h="8px" circle /><Skel w="24px" h="10px" /><Skel w="14px" h="12px" /></div>
+              <div class="skel-leg-row"><Skel w="8px" h="8px" circle /><Skel w="24px" h="10px" /><Skel w="14px" h="12px" /></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="eq-grid skel-fade" :class="{ 'is-on': showSkel }" aria-hidden="true">
+        <div v-for="i in 4" :key="i" class="eq-card">
+          <span class="eq-ico"><Skel w="36px" h="36px" r="var(--r-8)" /></span>
+          <span class="eq-main">
+            <span class="eq-hd"><Skel w="78px" h="17px" /></span>
+            <!-- 两列数值格与真实卡同构（数字 28 + 间距 4 + 标签 16 = 48px） -->
+            <span class="eq-vals">
+              <span class="eq-val"><Skel w="46px" h="28px" r="var(--r-6)" /><Skel class="skel-mt-sm" w="40px" h="16px" /></span>
+              <span class="eq-val"><Skel w="46px" h="28px" r="var(--r-6)" /><Skel class="skel-mt-sm" w="40px" h="16px" /></span>
+            </span>
+          </span>
+        </div>
+      </div>
+    </template>
     <div v-else-if="ledger.state === 'error'" class="data-empty" data-empty="equip">
       <p>{{ ledger.error || '设备台账加载失败' }}</p>
       <button class="data-empty-btn" type="button" @click="retry">重试</button>
@@ -147,7 +194,7 @@ function goLogin(): void {
   </template>
 
   <template v-else>
-    <div class="home-stats alarm-row">
+    <div class="home-stats alarm-row fill-in">
       <div class="home-chart-card eq-count">
         <!-- sticky：面板是 v-if 切换的，不加则每次切回都从 0 重滚同样的数字 -->
         <div class="eq-count-item"><b><CountUp :value="kinds" sticky /><em>种</em></b><span>设备种类</span></div>
@@ -193,7 +240,7 @@ function goLogin(): void {
       </div>
     </div>
 
-    <div class="eq-grid">
+    <div class="eq-grid fill-in">
       <button
         v-for="d in home.siteEquip"
         :key="d.id"

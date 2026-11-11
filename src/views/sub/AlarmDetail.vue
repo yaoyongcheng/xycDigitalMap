@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { fetchAlarmPicture } from '@/api/video'
+import Skel from '@/components/ui/Skel.vue'
 import type { Alarm } from '@/types'
 import { alarmSrcOf } from '@/data/config'
 import { useAuthStore } from '@/stores/auth'
@@ -43,9 +44,13 @@ const remoteShot = ref('')
 const shotError = ref('')
 const shotLoading = ref(false)
 
-/** 占位文案：分「未登录 / 加载中 / 真的没有」三种，避免让人一直等 */
+/**
+ * 占位文案：分「未登录 / 真的没有」两种。
+ *
+ * 加载中不再出文案 —— 抓拍图单张约 1MB，等待是常态，这里铺一条与图片等宽
+ * 的灰条（.alarm-hero-skel），让「正在来一张照片」比「一句加载中」更直观。
+ */
 const shotTip = computed(() => {
-  if (shotLoading.value) return '抓拍图加载中…'
   if (!auth.isLoggedIn) return '登录后查看抓拍图'
   return shotError.value || '该报警暂无抓拍图'
 })
@@ -85,6 +90,14 @@ const heroSrc = computed(() => remoteShot.value)
       :style="imgStyle"
       v-on="handlers"
     />
+    <!--
+      抓拍图还没到：铺一条与图片同宽的灰条。单张约 1MB，这一层几乎一定会
+      被看到，比「抓拍图加载中…」更像「照片正在来」。
+    -->
+    <div v-else-if="shotLoading" class="alarm-hero-skel">
+      <Skel w="100%" h="100%" r="0" />
+      <span class="sr-only" role="status">抓拍图加载中</span>
+    </div>
     <div v-else class="alarm-hero-empty">{{ shotTip }}</div>
     <span v-if="zoomed" class="zoom-badge">{{ label }}</span>
     <div class="alarm-hero-tag">

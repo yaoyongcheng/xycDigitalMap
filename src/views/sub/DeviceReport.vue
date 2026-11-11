@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+import Skel from '@/components/ui/Skel.vue'
 import { deviceSet } from '@/data/device'
+import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useShellStore } from '@/stores/shell'
 import { addDays, dateKey, protoToday } from '@/utils/date'
 import { deviceMonthRows } from '@/utils/deviceChart'
 import { shareText } from '@/utils/share'
+import { useSlowLoading } from '@/utils/slowLoading'
 import type { DeviceKind, DeviceUnit } from '@/types'
 
 /**
@@ -24,6 +27,7 @@ import type { DeviceKind, DeviceUnit } from '@/types'
 const props = defineProps<{ kind: DeviceKind }>()
 
 const shell = useShellStore()
+const ledger = useDeviceLedgerStore()
 const set = computed(() => deviceSet(props.kind))
 
 /**
@@ -35,6 +39,16 @@ const set = computed(() => deviceSet(props.kind))
  * 结构仍在，只是不再拿编造的 7 天曲线去填。
  */
 const hasData = computed(() => set.value.units.some((u) => (u.history?.length ?? 0) > 0))
+
+/**
+ * 台账还没到时的同步态。
+ *
+ * 页签在加载中就能点（用户可能在灰条还没走完时切到「作业报表」），此前这里
+ * 会立刻显示「暂无作业报表数据」—— 但那是**结论**，此刻还没资格下。改成先铺
+ * 报表骨架：KPI 三格 + 机队表的行，台账到手后再决定是出报表还是出空态。
+ */
+const syncing = computed(() => !set.value.units.length && ledger.state === 'loading')
+const showSkel = useSlowLoading(() => syncing.value)
 
 type Span = 'day' | 'week' | 'month'
 const span = ref<Span>('day')
@@ -214,15 +228,45 @@ async function onShare(): Promise<void> {
 </script>
 
 <template>
+  <!--
+    台账同步中：按报表的真实结构铺灰条（三格 KPI + 机队表行），
+    数据到手后再决定出报表还是出下面的空态。
+  -->
+  <section
+    v-if="!hasData && syncing"
+    class="dev-block skel-fade"
+    :class="{ 'is-on': showSkel }"
+    aria-busy="true"
+  >
+    <span class="sr-only" role="status">正在加载{{ set.noun }}作业报表</span>
+    <div aria-hidden="true">
+      <div class="report-kpis">
+        <div v-for="i in 3" :key="i" class="report-kpi">
+          <Skel w="44px" h="10px" />
+          <Skel w="52px" h="18px" r="var(--r-4)" />
+        </div>
+      </div>
+      <div class="report-fleet">
+        <div v-for="i in 5" :key="i" class="report-line">
+          <Skel w="46px" h="13px" />
+          <Skel w="30px" h="13px" />
+          <Skel w="30px" h="13px" />
+          <Skel w="30px" h="13px" />
+          <Skel w="30px" h="13px" />
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- 没有历史作业数据（tsdb 未开放）→ 明确空态，不渲染任何编号 -->
-  <section v-if="!hasData" class="dev-block">
+  <section v-else-if="!hasData" class="dev-block">
     <div class="data-empty" data-empty="device-report">
       <p>暂无作业报表数据</p>
       <p class="data-empty-sub">报表依赖设备实时作业数据，当前接口未开放；设备台账只能提供静态信息。</p>
     </div>
   </section>
 
-  <section v-else class="dev-block">
+  <section v-else class="dev-block fill-in">
     <div class="uav-tabs report-span">
       <button type="button" :class="{ on: span === 'day' }" :aria-pressed="span === 'day'" @click="span = 'day'">日报</button>
       <button type="button" :class="{ on: span === 'week' }" :aria-pressed="span === 'week'" @click="span = 'week'">周报</button>
