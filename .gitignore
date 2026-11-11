@@ -56,3 +56,7 @@ shell-step*.png
 # 根目录下的临时截图：验证时若把截图落在仓库根目录，容易随 git add -A 误入提交
 /*.png
 
+
+# 临时提交信息草稿
+.git-msg.txt
+.tmp-*
