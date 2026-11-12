@@ -79,6 +79,22 @@ export interface RealtimePoint {
   value: number | null
 }
 
+/**
+ * 事件查询项（2026-11 第三轮：按 V2 端 IL 修正）。
+ *
+ * 老代码往 `eventItems` 里塞的是实时数据那套 `{productCode, sn, field, code}` ——
+ * 与 `CraneWorkCycleRequester` 还原出来的 `{productCode, sn, eventCode}` 不符。
+ * 事件是按**事件码**查的（如 `EVENT_WORKDATA`），没有 field/code 这两个键。
+ */
+export interface EventQueryItem {
+  /** 项目码，缺省用 SCENE_CODE */
+  productCode?: string
+  /** 设备序列号 */
+  sn: string
+  /** 事件码，如 `EVENT_WORKDATA` */
+  eventCode: string
+}
+
 /* ---------- 内部工具 ---------- */
 
 function num(v: unknown): number | null {
@@ -254,15 +270,18 @@ export async function fetchRealtimeData(items: RealtimeQueryItem[]): Promise<Rea
 }
 
 /**
- * 查询设备事件（告警事件时间线）。
+ * 查询设备事件（告警 / 工作循环这类按事件码上报的数据）。
  *
- * 请求体 `{startTime, endTime, eventItems:[...]}` —— 与实时数据同一族接口，
- * 时间格式是服务端自己的字符串，原厂传的是 `'yyyy-MM-dd HH:mm:ss'`。
+ * 请求体 `{startTime, endTime, eventItems:[{productCode, sn, eventCode}]}` ——
+ * 时间用 **Unix ms**（V2 端传的是 `date.Date` 与 `date.Date+1day-1ms` 的毫秒），
+ * 兼容传 `'yyyy-MM-dd HH:mm:ss'` 字符串：本函数只负责透传，格式由调用方定。
+ *
+ * 每个查询项只发 `eventCode` —— 事件没有 field/code 两个维度（见 EventQueryItem）。
  */
 export async function fetchEvents(
-  items: RealtimeQueryItem[],
-  startTime: string,
-  endTime: string,
+  items: EventQueryItem[],
+  startTime: number | string,
+  endTime: number | string,
 ): Promise<RealtimePoint[]> {
   if (!items.length) return []
   const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryEvent', {
@@ -271,8 +290,7 @@ export async function fetchEvents(
     eventItems: items.map((i) => ({
       productCode: i.productCode || SCENE_CODE,
       sn: i.sn,
-      field: i.field,
-      code: i.code,
+      eventCode: i.eventCode,
     })),
   })
   return toPoints(raw)

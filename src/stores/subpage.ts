@@ -92,7 +92,7 @@ export const useSubpageStore = defineStore('subpage', () => {
       case 'placeholder':
         return view.value.name
       case 'device':
-        return view.value.device === 'crane' ? '智能塔机' : '智能电梯'
+        return view.value.device === 'crane' ? '5G塔机' : '智能电梯'
       case 'uav':
         return '无人机'
       case 'climb':

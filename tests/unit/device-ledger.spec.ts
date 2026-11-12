@@ -71,8 +71,19 @@ describe('deviceLedger 映射', () => {
       ['安检有效期', '2026-12-10'],
       ['质检报告状态', '正常'],
     ])
-    // info = 全部台账字段 + 责任人 + 更新时间（顺序照接口给的顺序）
-    expect(unit.info.map(([k]) => k)).toEqual(['高度', '安检有效期', '质检报告状态', '塔吊司机', '责任人', '更新时间'])
+    // info = 全部台账字段 + 责任人 + 更新时间（顺序照接口给的顺序）。
+    // 「是否隐藏」「更新时间」这类后台字段在这里**照样保留**，
+    // 是否展示由弹层决定（DeviceInfoSheet 有 TECH_FIELDS 过滤），util 层不裁数据。
+    expect(unit.info.map(([k]) => k)).toEqual([
+      '高度',
+      '是否隐藏',
+      '安检有效期',
+      '质检报告状态',
+      '塔吊司机',
+      '功效',
+      '责任人',
+      '更新时间',
+    ])
     expect(unit.info[0]).toEqual(['高度', '70m'])
     // 作业指标没有数据源 → 恒为空对象 / 空数组（页面据此给空态）
     expect(unit.today).toEqual({})
@@ -137,7 +148,14 @@ describe('deviceLedger store', () => {
 
     // deviceSet 是同步消费方（弹层宿主 / 报表），必须立刻看到同一批机组
     expect(deviceSet('crane').units).toHaveLength(4)
-    expect(deviceSet('lift').units.map((u) => u.name)).toEqual(['智能电梯2', '智能电梯1'])
+    // 机组按台号升序（服务端按 id 倒序返回，见 utils/deviceLedger.ts: byUnitNo）
+    expect(deviceSet('lift').units.map((u) => u.name)).toEqual(['智能电梯1', '智能电梯2'])
+    expect(deviceSet('crane').units.map((u) => u.name)).toEqual([
+      '智能塔机2',
+      '智能塔机3',
+      '智能塔机4',
+      '传统塔机5',
+    ])
   })
 
   it('load 成功：state=ok 且有更新时间', async () => {

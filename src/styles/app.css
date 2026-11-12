@@ -48,6 +48,13 @@
   --warn: #F77234;
   --danger: #F53F3F;
   /*
+   * 强调色的浅底（用于状态胶囊、告警说明条的背景）。
+   * 2026-11 第四轮新增：爬架超限说明行与「在线」胶囊需要一层 wash，
+   * 此前是就地写字面色值，按约定先立令牌再用。
+   */
+  --ok-wash: #E8F8F1;
+  --danger-wash: #FDECEE;
+  /*
    * 底部安全区。
    *
    * 原为硬编码 8px。Face ID 机型（iPhone X 及以后，含灵动岛）屏幕最底部
@@ -1578,7 +1585,12 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .eq-card.drill { cursor: pointer; }
 
-.eq-card.is-crane .eq-vals { gap: var(--fs-16); }
+/*
+ * 塔机卡是三格（在线 / 今日吊重 / 今日吊次），间距比两格的卡收一档。
+ * 原值 16px 是给 24px 数字留的呼吸位，字号降到 14px 后同宽间距会显得散，
+ * 与爬架三格的 12px 对齐 —— 两张三格卡看起来才是一个体系。
+ */
+.eq-card.is-crane .eq-vals { gap: var(--fs-12); }
 
 .eq-ico {
   display: flex;
@@ -1673,65 +1685,200 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 原来的 .eq-back / .eq-units / .eq-unit / .eq-kv 四组规则一并移除。
  */
 
+/*
+ * 数值行：几格并排，**永远一行**。
+ *
+ * flex 默认就不换行，但「不换行」和「一行看得清」是两件事 —— 格子会被
+ * `flex-shrink` 压窄，压到装不下时数字/标签各自折行，行高就从中抖高，
+ * 一排卡片的高度跟着参差。所以这里三件事一起定：
+ *   · `.eq-vals` 不换行（显式写出来，防后来人加 wrap）
+ *   · `.eq-val` 不压缩（`flex: none`），每格按自己内容定宽
+ *   · 格内数字与标签都 `nowrap`，宁可整格占宽也不折行
+ * 14px 下三格总宽约 168px（含 12px 间距），375 屏可用约 239px、320 屏约 184px，
+ * 都还有余量；真到了装不下的机型，溢出一格也比折行好看。
+ */
 .eq-vals {
   display: flex;
+  flex-wrap: nowrap;
   align-items: flex-end;
   gap: 22px;
 }
 
-.eq-val { min-width: 0; }
+.eq-val {
+  flex: none;
+  min-width: 0;
+}
 
+/*
+ * 卡片数值的字号 —— 四类设备卡与 5 张机器人卡共用这一档。
+ *
+ * 曾经这里是 18px、再被文件末尾的 `--num-lg`(24px) 覆盖，实际是 24px。
+ * 24px 只适合「一格一个数」的卡；智控卡普遍是**两到三格并排**
+ * （塔机 今日吊重 / 今日吊次 / 在线 x/y，爬架 三个传感器指标），
+ * 24px 下每格宽过自己的标签（12px 的文字），窄屏上三组数字直接连成一片。
+ *
+ * 统一到 14px：与爬架三格同档（那一档在真机上验过），
+ * 数值 14 加粗 + 标签 12 + 标题 13，层级靠字重与颜色拉，不靠字号硬撑。
+ * 需要数字更抢眼的地方（首屏 hero、KPI 主值）走 `.home-stat b`，与本类无关。
+ */
 .eq-card b {
   display: block;
-  font-size: var(--fs-18);
+  font-size: var(--fs-14);
   font-weight: 700;
   line-height: 1.15;
   color: var(--text);
+  /* 数字永不折行：「9.95t」断成两行会被读成两个数 */
+  white-space: nowrap;
 }
 
-.eq-val span {
+/*
+ * 格子下面那行标签（在线设备 / 今日吊重 / 左右倾斜 …）
+ *
+ * **必须用 `>`**，不能写 `.eq-val span`。
+ *
+ * 「在线 x/y」格的分子也是 span：`<b><span class="eq-on">4</span>…</b>`，
+ * 它藏在 `<b>` 里、是 `.eq-val` 的孙子。后代选择器会连它一起命中，
+ * 后果是分子被套上 `display: block`（独占一行，「4」与「/4」一刀两断）、
+ * 字号掉到 12px（比旁边的数小一号）、字色被 --muted 抢走（加上深色段的
+ * `#page-home .eq-val span` 带 ID，连 `.eq-online .eq-on` 的绿都压不住）。
+ * 症状就是截图里那个「4」换行 + 变灰 + 变小 —— 一条规则三个锅。
+ * 标签是直接子级，分子是孙子，`>` 一刀切开，双方各归各位。
+ */
+.eq-val > span {
   display: block;
   margin-top: 4px;
   font-size: var(--fs-12);
   color: var(--muted);
+  /* 标签同理：「在线设备」折成「在线设」/「备」会撑高整行，一排卡片高低不齐 */
+  white-space: nowrap;
 }
 
-/* 「在线 x/y」格：总数小字随数值，离线整组变灰 */
-.eq-card .eq-online em {
+/*
+ * 「在线 x/y」格：分子在线数（绿）与分母设备总数（同为一级字号），
+ * 必须都能看清 —— 早先分母照抄设计稿深色底配色用了 --ink-1-dark（#F2F6FB），
+ * 白底卡上「/4」几乎不可见，那一格就被读成「一共只有 4 台」。
+ *
+ * 字号不再单独声明：它一度写死 18px，比旁边的「今日吊重」还大一档，
+ * 同一行里两种字号会让人以为在线数才是主值。跟随 `.eq-card b` 的 14px。
+ *
+ * `white-space: nowrap` 不是可选项：格子在窄屏上会被压，
+ * 一旦「4」与「/4」折成两行，分母会掉到标签行上、被标签压住。
+ */
+.eq-card .eq-online b {
+  white-space: nowrap;
+}
+
+.eq-card .eq-online .eq-on { color: var(--online); }
+
+.eq-card .eq-online .eq-total {
   font-style: normal;
   font-weight: 700;
-  font-size: var(--fs-18);
-  color: var(--online);
+  color: var(--ink-1);
 }
 
-.eq-card .eq-online em i {
-  font-style: normal;
-  font-weight: 700;
-  color: var(--ink-1-dark);
-}
+/* 一台都没在线时，分子分母一起变灰（此时「0/4」是结论，不该还是绿色） */
+.eq-card .eq-online.is-off .eq-on { color: var(--ink-3); }
 
-.eq-card .eq-online.is-off em { color: var(--ink-3-dark); }
-
-/* 数值里的单位小字（1.87t 的 t、179.70mm 的 mm） */
-.eq-card .eq-stat-unit {
-  font-style: normal;
-  font-weight: 650;
-  font-size: var(--fs-14);
-}
-
-.eq-card.is-climb .eq-stat-unit,
+/*
+ * 数值里的单位小字（1.87t 的 t、26次 的 次）
+ *
+ * 用 `0.85em` 而不是定值：单位要跟着数值一起缩，写死 14px 时数值缩到 14
+ * 单位就跟数字一样大，「9.95t」会被读成一串等重的字符。
+ *
+ * 与数字之间留 2px：设计稿里是一个空格（app.js:1013 的 ` ${parts[2]}`），
+ * 但模板里的行内空格会被编译器按空白规则吃掉，写成 margin 才稳定。
+ */
+.eq-card .eq-stat-unit,
 .climb-page .eq-stat-unit {
   font-style: normal;
   font-weight: 650;
   font-size: 0.85em;
+  margin-left: 2px;
 }
 
 /*
- * 爬架专属卡（.eq-card.is-climb 的纵向两段 + 三格正常数 + 异常行）已于
- * 2026-11 第二轮删除：那三格「35/36 正常」来自 data/climb.ts 里 36 条手写
- * 机位读数，四套后端都没有爬架传感器接口 —— 编造的正常率比空着更容易被当真。
- * 现在爬架卡与其它三类同构，只显示台账里的在线数与爬升高度。
+ * 爬架专属卡（设计稿 app.css:1722-1766 的 .eq-card.is-climb 一段）
+ *
+ * 这是唯一一张「纵向两段」的卡：上段与其它卡同构（图标 + 数值行 + 箭头），
+ * 下段留给超限警示 / 空态说明。三格传感器是并列的小格子，gap 从 22 收到 12。
+ *
+ * 2026-11 第四轮：三格传感器的读数**已经接上真实数据源**（CDN 静态 JSON
+ * `ScaffoldData.json`，38 个机位），阈值按 V2 客户端硬编码的
+ * 倾斜 60mm / 载荷 5.0 吨、按绝对值判定。所以 is-bad 现在有资格出现了：
+ * 它表示「这个指标的最不利机位真的越了阈值」，不是示意红。
+ * 取不到数据时三格仍是「—」且**不带任何态**（不知道 ≠ 正常，也 ≠ 超限）。
  */
+.eq-card.is-climb {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+/*
+ * 上段。非爬架卡里它也是唯一的一段 —— 全站复用同一个容器，省掉「图标 +
+ * 数值行 + 箭头」重复三次的模板。
+ *
+ * 用 `flex: auto`（1 1 auto）而不是 `flex: 1`：卡片是 flex 行，只有一个
+ * 子节点时必须 grow 才撑满整行（否则整卡缩成内容宽度、右侧箭头贴不到边）；
+ * 而 basis 必须留 auto —— 爬架卡是 flex 列，basis 归零会让这一段的
+ * 高度基准变成 0，图标与数值行会被压扁。
+ */
+.eq-climb-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: auto;
+}
+
+.eq-card.is-climb .eq-vals {
+  align-items: flex-start;
+  gap: var(--fs-12);
+}
+
+/*
+ * 三格是「正常机位数 / 有读数的机位数」，形状照设计稿（35/36 那种）。
+ *
+ * 分子恒绿：它数的是**正常**的台数，越限与否不改变「有几台是好的」这个事实；
+ * 分母走中性深灰（与「在线 x/y」格同口径）。哪一格有超限由下方说明行报红，
+ * 格子本身不再染色 —— 把「正常 37 台」涂红会让读的人以为 37 有问题。
+ *
+ * `nowrap` 与在线格同理：一旦「37」与「/38」折行，分母会掉到标签行上被压住。
+ * 字号不再单独降档：`.eq-card b` 已统一到 14px（爬架当初就是按这个观感定的，
+ * 后来其余三类卡也照此收齐），这里只保留折行约束。
+ */
+.eq-card.is-climb .eq-val b {
+  white-space: nowrap;
+}
+
+.eq-card.is-climb .eq-val b em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--online);
+}
+
+.eq-card.is-climb .eq-val b i {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.eq-card.is-climb .eq-climb-note {
+  display: block;
+  padding: 6px 10px;
+  border-radius: var(--r-8);
+  background: var(--surface-2);
+  font-size: var(--fs-12);
+  font-weight: 650;
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+
+/* 超限说明行（对应的最不利机位真的越了阈值）：同一个容器，换红底红字 */
+.eq-card.is-climb .eq-climb-note.is-bad {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
 
 .pg-list {
   display: flex;
@@ -5264,12 +5411,52 @@ button, input, textarea { font-family: inherit; color: inherit; }
 #page-home .home-stat span,
 #page-home .crew-kpi span,
 #page-home .crew-item span,
-#page-home .eq-val span,
+/*
+ * 同样必须是 `>`：写 `.eq-val span` 会把「在线 x/y」的分子（`<b>` 里的
+ * `.eq-on`）一起染成浅灰 —— 它带 ID 前缀，特异性压过基础段的
+ * `.eq-online .eq-on` 绿色，于是分子看上去是灰的、还比数字小一号。
+ */
+#page-home .eq-val > span,
 #page-home .qa-kpi span,
 #page-home .donut-label span,
 #page-home .qa-legend-item,
 #page-home .qa-legend-item span,
 #page-home .eq-hd em {
+  color: var(--ink-3-dark);
+}
+
+/*
+ * 「分子/分母」里分母走白色（设计稿 app.css:6239 的同名规则
+ * `#page-home .eq-card.is-climb .eq-val b i { color: #F2F6FB }`）。
+ *
+ * 基础段的分母是 --ink-2 / --ink-1 这类浅色底的中性深灰，落在 #132033 的
+ * 深色卡上等于看不清 —— 读的人只看到分子，会把「37/38」读成「37 台」。
+ * 分子（正常台数）继续由 `.eq-val b em` 的 --online 保持绿色，
+ * 绿色 + 白色两个都是结论，没有灰色。
+ */
+#page-home .eq-card .eq-val b i,
+#page-home .eq-card .eq-online .eq-total {
+  color: var(--ink-1-dark);
+}
+
+/*
+ * 「在线 x/y」的分子恒绿 —— 显式写在这里，不依赖基础段那条 `.eq-on`。
+ *
+ * 基础段那条（`.eq-card .eq-online .eq-on`）本来是生效的，但深色浮层里
+ * `#page-home .eq-card b` 用 ID 选择器把 `<b>` 整个染成白色，只差一点就会
+ * 把同一行里的分子一起带走（它现在的幸免，靠的是「span 有自己的 color 就
+ * 不继承父级」这条细节，太脆）。这里用同级别的 ID 前缀把它钉死：
+ * 绿色是在线数，白色是总数，两者在同一条 14px 基线上读作「1/1」而不是「1 1」。
+ *
+ * `is-off` 必须一起处理：一类设备一台都没在线时，分子要退回中性色 ——
+ * 那时「0」是个坏消息，涂成绿色等于报告「一切正常」。下面那条特异性更高
+ * （多一个类），因此它的例外不会被上面盖掉。
+ */
+#page-home .eq-card .eq-online .eq-on {
+  color: var(--online);
+}
+
+#page-home .eq-card .eq-online.is-off .eq-on {
   color: var(--ink-3-dark);
 }
 
@@ -6816,8 +7003,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /* lg：卡片内的核心值 */
-.qa-kpi b,
-.eq-card b {
+.qa-kpi b {
   font-size: var(--num-lg);
   letter-spacing: -0.015em;
 }
@@ -7524,6 +7710,44 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   cursor: pointer;
 }
 
+/*
+ * 缩略图占位（96px）
+ *
+ * 真实 DJI 原图单张 5~8MB，列表里**不自动加载**（见 PatrolPanel 注释），但
+ * 版面必须保住 96px —— 否则骨架（`Skel h="96px"`）回填时整卡会从 ~120px 塌到
+ * ~40px，正是本项目一直在防的版式跳动。这里用一块深色底 + 一行提示，说明
+ * 「点开才加载原图」，比放一张占位图诚实。
+ */
+.patrol-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 96px;
+  border-bottom: 1px solid var(--line-dark);
+  background: var(--bg-2);
+}
+
+/* 左上角「航拍原图」角标：与 .patrol-tag 同款胶囊，只是定位在图内 */
+.patrol-thumb-tag {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-4);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink-2-dark);
+  font-size: var(--fs-10);
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.patrol-thumb-hint {
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+}
+
 .patrol-card img {
   display: block;
   width: 100%;
@@ -7919,6 +8143,12 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .dev-card-grid b.is-alarm { color: var(--danger-dark); }
+
+/* 「—」用弱化色：它表示「没有这个数」，不该和真读数一样亮 */
+.dev-card-grid b.is-dash {
+  font-weight: 600;
+  color: var(--ink-3-dark);
+}
 
 .dev-load { margin-top: 10px; }
 
@@ -8410,6 +8640,16 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   overflow: hidden;
 }
 
+/* 设备信息弹层的分段（塔机：基本信息 / 实时工况信息，照 V2 塔机弹窗的两块） */
+.dev-info-block + .dev-info-block { margin-top: 16px; }
+
+.dev-info-hd {
+  margin: 0 0 8px;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  color: var(--ink-1-dark);
+}
+
 .dev-info-row {
   display: flex;
   align-items: center;
@@ -8430,6 +8670,12 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   font-weight: 650;
   color: var(--ink-1-dark);
   text-align: right;
+}
+
+/* 「—」= 没有这个字段 / 没有数据源，比正常值弱一档，免得看成有效读数 */
+.dev-info-row b.is-dash {
+  font-weight: 600;
+  color: var(--ink-3-dark);
 }
 
 .dev-dates {
@@ -8476,15 +8722,17 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px;
+  padding: 10px 6px;
   border-radius: var(--r-10);
   background: var(--bg-3);
+  /* 设计稿 gx2：标签与数字都居中（原先左对齐，三格看起来像三行表单） */
+  text-align: center;
 }
 
-.report-kpi span { font-size: var(--fs-10); color: var(--ink-3-dark); }
+.report-kpi span { font-size: var(--fs-13); color: var(--ink-3-dark); }
 
 .report-kpi b {
-  font-size: var(--fs-18);
+  font-size: var(--fs-16);
   font-weight: 700;
   color: var(--ink-1-dark);
 }
@@ -8497,66 +8745,12 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   color: var(--ink-3-dark);
 }
 
-.report-note {
-  margin: 0 0 8px;
-  font-size: var(--fs-12);
-  line-height: 1.75;
-  color: var(--ink-2-dark);
-}
-
-.report-card {
-  margin-bottom: 8px;
-  padding: 10px 12px;
-  border-radius: var(--r-10);
-  background: var(--bg-3);
-}
-
-.report-card-hd {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.report-card-hd strong { font-size: var(--fs-13); color: var(--ink-1-dark); }
-
-.report-card-hd em {
-  margin-left: auto;
-  font-style: normal;
-  font-size: var(--fs-10);
+/* 「—」= 这个指标没取到数（无编号 / 接口不通），比真读数弱一档 */
+.report-kpi b.is-dash,
+.report-line .is-dash {
+  font-weight: 600;
   color: var(--ink-3-dark);
 }
-
-.report-card-hd em.is-alarm { color: var(--danger-dark); }
-
-.report-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.report-rows > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: var(--fs-12);
-  color: var(--ink-3-dark);
-}
-
-.report-rows b { font-size: var(--fs-13); color: var(--ink-1-dark); }
-
-.report-rows i {
-  margin-left: 6px;
-  font-style: normal;
-  font-size: var(--fs-10);
-}
-
-.report-rows i.is-over { color: var(--warn-dark); }
-.report-rows i.is-under { color: var(--ok-dark); }
-.report-rows i.is-flat { color: var(--ink-4-dark); }
-
-.report-actions { padding-bottom: calc(12px + var(--safe-bot)); }
 
 .report-share {
   width: 100%;
@@ -8620,10 +8814,13 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /* 页签与无人机页共用 .dev-tabs，这里只放宽间距 */
-.dev-tabs.climb-view { gap: 18px; }
+.dev-tabs.climb-view {
+  gap: 18px;
+  margin-top: 14px;
+}
 
 .climb-board {
-  margin-top: 14px;
+  margin-top: 12px;
   padding: 12px 12px 4px;
   border-radius: var(--r-12);
   background: var(--bg-3);
@@ -8650,7 +8847,15 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .climb-board header b i { color: var(--ink-1-dark); }
-.climb-board header b.is-bad { color: var(--danger-dark); }
+/* 分子（正常台数）恒绿：b 自身就是 --ok-dark，不再有「超限就整组变红」这一支 ——
+   具体哪台越限由下方 .climb-issue 与行内红字报，主数字只回答「多少台是好的」。 */
+
+/* 表头右侧说明（「正常机位 · 14:02 更新」），与左侧大号数字基线对齐 */
+.climb-board header span {
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+  white-space: nowrap;
+}
 
 .climb-issue {
   margin: 8px 0 0;
@@ -8661,9 +8866,17 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .climb-lines { margin-top: 4px; }
 
+/*
+ * 机位行：名称列宽改成 auto，不再写死 42px。
+ *
+ * 38 个机位里「38#机位」这种名字在 13px 字号下约 52px，写死 42px 会被折成
+ * 「1#机」/「位」两行（现场截图里就是这么断的）。改成 auto 后列宽取该列
+ * 最宽的一项，各行仍然对齐，也不需要 `nowrap` 兜底 —— 保底再加一层 nowrap，
+ * 避免字体回退时又被挤断。
+ */
 .climb-line {
   display: grid;
-  grid-template-columns: 42px 1fr auto;
+  grid-template-columns: auto 1fr auto;
   align-items: baseline;
   gap: 8px;
   padding: 8px 0;
@@ -8674,6 +8887,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   font-size: var(--fs-13);
   font-weight: 650;
   color: var(--ink-2-dark);
+  white-space: nowrap;
 }
 
 .climb-line span {

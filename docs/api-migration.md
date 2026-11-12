@@ -49,7 +49,7 @@ B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分�
 | GET | `/api/data/deviceinfos?page=1&page_size=100&project_id=` | 设备台账 | 智控设备列表/详情 | ✅ **已接**（**在 8084**，阶段 4） |
 | POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据（查询语义） | 设备实时状态页 | ⚠️ **全部端口 404**（见下） |
 | POST | `/api/data/v1/tsdb/queryEvent` | 事件查询 | 报警/事件时间线 | ⚠️ 同上 |
-| POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 塔机详情「吊次」 | ⚠️ 同上 |
+| POST | `/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环（查询） | 首页塔机卡「吊重/吊次」+ 塔机详情 | ⚠️ **路由存活但缺编号**（2026-11 三轮实测：**tciccs:30400 上有 handler**，任意请求体回 `{code:400,success:false,msg:"塔机编号不存在"}`；台账给不出编号，见下节 12） |
 | POST | `/api/webgateway/v1/access/token` | IOT 网关换令牌 | C 组全部请求的前置 | ⬜ 阶段 6 |
 | GET | `/api/video/alarms?page=1&page_size=50&sceneCode=` | 视频报警列表 | 智眸/报警预警 | ✅ **已接**（阶段 3，**在 8085**） |
 | GET | `/api/video/alarms/{id}/picture` | 报警截图 | 预警详情大图 | ✅ **已接**（阶段 3，**在 8085**；base64 在 `data.pictureData`） |
@@ -175,7 +175,7 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 6 | 首页·人员分布 | **真实区域台账**（`:8084` `areas`，本项目 9 条）；人数位「—」 | B `location/*`（**57007 无权限 + CloudWAF 418**）+ `organ/list` | ✅ 阶段 5（区域已接；人数仍无源） |
 | 7 | 智控·设备列表/四卡 | **真实台账**（`:8084` `deviceinfos`，8 台） | A `deviceinfos` + C `queryRealTimeData` | ✅ 阶段 4（实时数据无源） |
 | 8 | 设备详情·实时状态 | 台账字段（高度/司机/安检/质检报告） | C `queryRealTimeDataV2` + `queryEvent`（**阶段 8 确认在 C 组存活，但台账没有 sn**） | ✅ 阶段 4（作业指标空态） |
-| 9 | 塔机·吊次/工作循环 | 空态 | A/C `getWorkCycleInfoHis`（**全端口 404**） | ⚠️ 无源，等网关开放 |
+| 9 | 塔机·吊次/工作循环 | 首页塔机卡「吊重/吊次」= 台账高度；详情页空态 | A/C `getWorkCycleInfoHis`（**路由存活，缺设备编号**） | ⚠️ 客户端已接（`api/towerCrane.ts`），无 sn → 整块跳过 |
 | 10 | 智眸·现场快照（监控点位/抓拍） | **真实报警派生**（通道 + 日期 + `picture` base64） | 8085 `/api/video/alarms` + D 萤石云直播 | ✅ 阶段 5（抓拍已接；实时流仍无源） |
 | 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page`（实测 0 条） | 5（无数据，隐患上报是写接口） |
 | 12 | 巡检任务清单 | **真实航拍照片**（keehang 媒体，按拍摄时间倒序） | D `/task/exec/list/record` + `/media/task/job/{id}` | ✅ 阶段 8 |
@@ -332,6 +332,10 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 | 爬架 ×1 | 2#智能爬架 | 爬升高度 |
 | 无人机 ×1 | 无人机 | （空） |
 
+**机组顺序按台号升序**（`utils/deviceLedger.ts: byUnitNo`）：服务端按 id 倒序返回
+（传统塔机5 在最前），现场读数习惯是 智能塔机2 → 3 → 4 → 传统塔机5。
+排序键是名称里第一段数字，取不到数字的排最后；`2#智能爬架`、`智能电梯1` 同规则。
+
 ### 3. 接口 → 页面
 
 - `src/api/data.ts`：`fetchDeviceInfos / fetchBuildings / fetchAreas`（后者两个已备、暂无消费点）
@@ -351,15 +355,17 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 
 | 区块 | 原演示内容 | 现在 |
 |---|---|---|
+| 首页卡片数量 | 4 类（塔机/电梯/无人机/爬架） | **9 类**：前 4 类台账驱动，后 5 类机器人是静态入口卡（`div`，不可点），作业次数取 V2 预制体预置值，标题带绿点（现场常驻在线） |
+| 顶部统计两格 | 写死「9 种 / 9 台」「在线 5 / 离线 4」 | **9 种**（页面上的设备类别数：4 台账类 + 5 机器人）、**13 台**（台账 8 台 + 5 类机器人各 1 台）。环形图在线 = 台账在线数 + 5（机器人按在线计），离线 = 台账里 `online_status=0` 的台数。口径与 V2 装备管理页一致（那边两个数都是预制体占位 9，不随数据变） |
 | 首页四卡台数/在线数 | 写死 塔机3 / 电梯4 / 无人机1 / 爬架1 | 台账真实台数（本项目 4/2/1/1），在线数按 `online_status` |
-| 首页卡数值位 | 今日吊重 1.87t、累计运行时间 2min、作业任务 1/3 | 台账真有的字段（最大高度 / 爬升高度），无人机留空 |
-| 爬架卡三格 + 异常行 | 36 条手写机位读数（30# 179.70mm） | 删除 `data/climb.ts`；卡片与其它三类同构 |
+| 首页卡数值位 | 今日吊重 1.87t、累计运行时间 2min、作业任务 1/3 | 塔机：工作循环汇总的吊重/吊次（编号见表 `src/data/craneSn.ts`，见第 13 节）；电梯：高度；无人机：作业任务 x/y（取自 `stores/uav.ts`，没取过数就整格不渲染）；机器人：5/4/7/9/3 次，取自 V2 预制体 `UIView 装备管理一张图 / 底部栏 / 施工机器人栏` 的 `Value` 预置文本（见 `src/data/robotStats.ts`） |
+| 爬架卡三格 + 异常行 | 36 条手写机位读数（30# 179.70mm） | 三格 = 全场最不利机位的真实读数（CDN `ScaffoldData.json`，见第 13 节）；超限报「30#机位 左右倾斜 179.5mm，超过 60mm」，未取到才退回「—」+「传感器数据未取到」 |
 | 设备详情机组 | 3 台塔机 / 4 台电梯（备案号、型号、出厂时间） | 台账 4 台塔机 / 2 台电梯，字段即 `extra_fields` |
-| 详情卡今日吊次/吊重 + 负荷条 | 10 次 / 10.00t / 32% | **删除**（tsdb 无源） |
-| 作业报表（日/周/月） | 7 天历史 + 21 天派生序列 | **空态**「暂无作业报表数据」，说明缺的是实时数据接口 |
-| 设备信息弹层 | 产权备案号等 5 行 | 台账全字段 + 责任人 + 更新时间 |
+| 详情卡今日吊次/吊重 + 负荷条 | 10 次 / 10.00t / 32% | **已接真实源**，四格 = 今日吊次 / 今日吊重 / 当前吊重 / 当前负荷（+ 负荷条）。前两项逐台来自 `getWorkCycleInfoHis`，后两项来自 MQTT 实时报文 `weight` / `weightRate`；无帧/无编号的车给「—」，见第 13 节 (13) |
+| 作业报表（日/周/月） | 7 天历史 + 21 天派生序列 | **已接真实源**：三格 KPI（合计吊次/合计吊重/作业时长）+ 结论 + 机队表 + 导出分享，逐台区间汇总 `getWorkCycleInfoHis`（自然周/自然月，照 V2 `UICraneHistoryPop`）；设计稿的「平均利用率/负荷」没有源，换成作业时长/峰值吊重，见第 13 节 (15) |
+| 设备信息弹层 | 产权备案号等 5 行 | 塔机严格 7 + 4 行（照 V2 塔机弹窗）：**基本信息** 当前状态/塔机编号/塔机高度/安检有效期/质检报告状态/司机/功效（编号来自 `craneSnOf` 台号映射，高度只认实时 `bodyHeight`，其余来自台账 `extra_fields`，缺的写「—」）+ **实时工况信息** 实时回转/实时幅度/实时高度/实时时间（MQTT `pushRealTimeInfo`）；台账的「是否隐藏」「更新时间」不进弹层；电梯只有一段平铺台账字段 |
 | 历史数据弹层 | 7 天读数 + 利用率仪表 | **空态** |
-| 爬架详情 | 36 行机位 + 3 页签 | 台账属性（在线/爬升高度）+ 机位空态 |
+| 爬架详情 | 36 行机位 + 3 页签 | 台账属性（在线/爬升高度）+ 真实 38 机位读数，三个读数页签（左右倾斜/前后倾斜/载荷）按绝对值倒序，超限行标红 |
 | 首页楼栋进度 `siteBuildings` | 6 栋楼（已无任何消费点） | 删除；`fetchBuildings()` 客户端已备 |
 
 ### 5. 登录守卫（设备侧）
@@ -379,7 +385,7 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
   爬架 `1/1 · 21m 爬升高度`；
 - 塔机详情：4 台机组，四格为 `高度 10.3m/70m/32.5m/64m`、`塔吊司机 机师`、
   `安检有效期 2026-12-10`、`质检报告状态 正常`；
-- 作业报表：空态文案正确，无任何合计数字；
+- 作业报表：三格合计 + 结论 + 机队表全部来自工作循环接口（当时尚未接，见第 13 节 (15) 已补齐）；
 - 单测 596 条全过（新增 `device-ledger.spec` 11 条 + 重写 `device-page.spec`），
   `vue-tsc --noEmit` 无错，`npm run build` 通过。
 
@@ -399,7 +405,7 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 | 首页·报警 | 计数卡数字 + 近 7 日趋势块 + 轮播卡 | `!alarm.hasLive && alarm.liveState==='loading'` |
 | 首页·人员 | 4 个 KPI 数字、分时曲线、班组出勤行 | `overview` 对应区块 `loading` 且无数据 |
 | 设备详情·实时状态 | 机组卡卡头 + 台账四格 | `!set.units.length && ledger.state==='loading'` |
-| 设备详情·作业报表 | 三格 KPI + 5 行机队表 | 同上（台账重载时） |
+| 设备详情·作业报表 | 三格 KPI + 5 行机队表 | 台账重载时，或工作循环三台车都在飞（`stores/craneReport.ts` 的 `state==='loading'` 且无任何结果） |
 | 爬架页 | 汇总数字 + 信息行 | 同上 |
 | 报警预警 / 巡检列表（今日 + 历史） | 计数数字、趋势块、列表项（48px 图 + 两行文字） | 首屏同步 or `ensureDate()` 按需回补 |
 | 报警详情大图 | 整块等高灰底 | `shotLoading` |
@@ -726,6 +732,67 @@ press,tamperProof`）。区域信息只在网关的 `areaName` 上，两边**无
 所以这一层只能拿到「接口可用」这个结论，设备详情页的作业指标（吊次 / 吊重 /
 利用率）**保持空态**。客户端先建好，等台账补上 `sn` 即可直接用。
 
+### 12. 塔机工作循环：路由在哪、卡在哪（2026-11 第三轮实测）
+
+V2（Unity）端 `CraneWorkCycleRequester.QueryWorkCycleHistoryAsync` 的 IL 指向
+`POST https://tciccs.cscec3bxjy.cn:30400/api/data/v1/tsdb/queryEvent`
+（body `{startTime, endTime, eventItems:[{productCode, sn, eventCode:"EVENT_WORKDATA"}]}`）。
+现场直连复测结论：
+
+| 探测 | 结果 |
+|---|---|
+| `POST /api/data/v1/tsdb/queryEvent`（`/queryRealTimeDataV2` 同） | **404** `No handler found for POST /data/v1/tsdb/queryEvent` —— 该主机没有 tsdb 路由 |
+| `POST /api/towercranedataservice/getWorkCycleInfoHis` | **400** `{"code":400,"success":false,"msg":"塔机编号不存在"}` —— **handler 存在**，缺的是设备编号 |
+| `GET` 同一路径 | 405（只收 POST） |
+| `GET /api/swagger-ui.html`、`/api/v3/api-docs` | 返回一页「saved from **attack.jinxibei.com**」的 HTML —— 该主机上疑似被挂过马/被 WAF 替换，**不要再抓这两个路径**，也不要把它当接口文档 |
+
+因此客户端落在 `src/api/towerCrane.ts`：按 `getWorkCycleInfoHis` 发
+`{sn, startTime, endTime}`（**字段名仍未验证**：服务端对任何 body 都回同一句
+「塔机编号不存在」，无法区分「字段没取到」与「编号不存在」），解析层
+`toWorkCycles()` 对信封与字段别名尽量宽容；拿不到编号 / 请求失败**一律返回
+`null`、不抛错**，页面显示「—」。
+
+sn 的来源只做了一件事：从 `extra_fields` 的 label 里按「序列号 / SN / 设备编号 /
+塔机编号」取值（`utils/deviceLedger.ts: serialOf`）。**现场 8 台设备的
+`extra_fields` 里没有这些键**，所以塔机卡当前退回台账里的「最大高度」一格；
+等现场补上编号，`stores/deviceLedger.ts` 的 `craneDay` 有值后卡片自动换成
+「今日吊重 + 今日吊次」两格（模板已经按 `stats` 渲染，不需要再改 UI）。
+
+电梯「累计运行时间」需要同一族的工作循环能力（V2 端在 `ElevatorRequester`
+里），本轮**未接**，卡片缺省不渲染该格。
+
+### 12.1 为什么 Postman 能调、浏览器里调不通：CORS（2026-11 第四轮实测）
+
+先补一句上表的过期结论：字段名与时间格式**已经验证** —— `deviceSN`（大写 SN）+
+`'yyyy-MM-dd HH:mm:ss'` 字符串；写 `sn` 或传毫秒时间戳都会被回
+`400 塔机编号不存在`（用真实 sn 复测，`siteName: 武汉向阳村项目`）。
+
+而那台主机**没有放行任何跨域来源**，这是浏览器里调不通的唯一原因：
+
+| 请求 | 结果 |
+|---|---|
+| `POST`（Postman / curl，不带 `Origin`） | 200 + 真实数据 |
+| `POST` 带任意 `Origin`（**包括它自己的域名**） | 200，但响应里**没有** `Access-Control-Allow-Origin` → 浏览器不把 body 交给 JS |
+| `OPTIONS` 预检（带 `Origin` + `Access-Control-Request-Method: POST`） | **403 `Invalid CORS request`** |
+| `OPTIONS` 不带 `Origin` | 200，`Allow: POST,OPTIONS` |
+
+我们的 fetch 带 `Content-Type: application/json`，属非简单请求，**必然先发预检**；
+预检 403 → 请求直接失败 → `catch` 里 `return null` → 卡片显示「—」。
+Postman / curl 不执行同源策略，所以看上去「接口是好的」。
+
+**绕过方式：同源反代**（不改服务端，也不需要对方配合）
+
+- 开发期：`vite.config.ts` 的 `craneProxy()` 把 `/crane-api/*` 用 Node `fetch`
+  转发到上游。**不要用 `server.proxy`** —— Vite 8（rolldown）的代理是原生实现，
+  对本机这个非常规端口直接 `ECONNREFUSED`，实测走不通。
+- 自托管 HTTP 部署：`server/serve.mjs` 的同名路由，逻辑一致（只放行该前缀、
+  只收 POST、body ≤ 64KB；反代必须排在「只接受 GET/HEAD」的守卫之前）。
+- 纯静态托管（GitHub Pages）：没有反代，该路径 404 → 仍是「—」（与之前被 CORS
+  拦掉的结果一致，不引入假数据）。要在这里出数，只能请塔机平台把站点 origin
+  加进白名单，再用 `VITE_CRANE_BASE` 指向那个放行跨域的地址。
+
+前端侧只改了一处：`src/api/towerCrane.ts` 的 `CRANE_BASE` 默认 `/crane-api`。
+
 ### 10. 本轮改动清单
 
 | 文件 | 改动 |
@@ -768,6 +835,516 @@ press,tamperProof`）。区域信息只在网关的 `areaName` 上，两边**无
 > 最后 `vi.unstubAllGlobals()`。
 
 - 全量 **689 条全过**（28 文件）、`vue-tsc --noEmit` 无错、`npm run build` 通过。
+
+### 13. 阶段 9（2026-11-12）：塔机 sn、爬架传感器、5G塔机
+
+> **口径变更**：用户明确「页面展示的数据跟 V2 桌面端一致即可」，不要求与 `:8084`
+> 台账的台号一一对应。以下结论**推翻上面第 9、12 节**里「拿不到 sn → 保持空态」。
+
+**（1）塔机编号找到了**
+
+`getWorkCycleInfoHis` 要的编号不在台账里，在 **V2 的 Unity 场景包**里。用 UnityPy
+读 `MonoBehaviour` 的 typetree，抽到 3 个 `deviceSn`：
+
+```
+91320506MAE18ATB9XTC202606181EW2   → 向阳村2#塔机
+91320506MAE18ATB9XTC202606181EW3   → 向阳村3#塔机
+91320506MAE18ATB9XTC202606181EW4   → 向阳村4#塔机
+```
+
+反查接口确认 `siteName: 武汉向阳村项目`，是**本项目自己的**塔机。早先 MQTT 里抓到的
+「光谷元箸项目N号塔机」是别的项目噪音，不能作为数据源。
+
+登记表落 `src/data/craneSn.ts`。`stores/deviceLedger.ts` 的 `loadCraneDay()` 取编号分两级：
+台账 `serialOf` 优先，否则用这张表按 3 台查（结果是**全场合计**，不做逐台映射 ——
+台账台号与 sn 顺序没有可信对应关系）。
+
+**（2）契约修正（原来的实现是错的）**
+
+| 项 | 错误写法 | 正确写法 |
+|---|---|---|
+| 字段名 | `sn` | **`deviceSN`** |
+| 时间 | `startTime: <ms>` | `startTime: "yyyy-MM-dd 00:00:00"` |
+| 结束 | `endTime: <ms>` | `endTime: "yyyy-MM-dd 24:00:00"` |
+
+写错时服务端不会说「字段错了」，只说 `{"code":400,"success":false,"msg":"塔机编号不存在"}`
+—— 这也是第 12 节当年无法区分「字段没取到」和「编号不存在」的原因。
+
+实测当日：2# = 12 次 / 6.74t，3# = 0 次，4# = 2 次 / 1.23t，合计 **14 次 / 7.97t**。
+
+**（3）爬架传感器（CDN 静态 JSON，免登录）**
+
+```
+http://120.26.34.95:9689/CDN/PC/ScaffoldData.json
+```
+
+来自 V2 `ScaffoldDataRequester::InitRequest` 的硬编码地址（`CdnConfig.txt` 给根）。
+38 个机位，字段 `itemName / fbTilt / lrTilt / load / updateTime`，**带单位字符串**
+（`"3.13mm"` / `"0.00吨"`），解析走 `utils/scaffold.ts` 的 `toNumber()` 抓数字前缀。
+
+阈值照 V2 `ScaffoldDataRequester.Evaluate(v, threshold, unit)` → `Math.Abs(v) > threshold`：
+左右倾斜 60mm、前后倾斜 60mm、载荷 5 吨。实测 `30#机位 左右倾斜 179.5mm` 超限
+（与设计稿上那个 `179.70mm` 同源，但这是现场真值）。
+
+**（4）线上为什么需要内置快照**
+
+`ScaffoldData.json` 是**纯 HTTP**，站点是 GitHub Pages（**强制 HTTPS**），浏览器会按
+mixed content 直接拦掉。所以 `api/scaffold.ts` 做成三段：
+
+1. CDN（6s 超时）→ `source = 'live'`
+2. 失败 → 项目内置 `public/data/scaffold.json`（同一份文件的真实快照，38 机位，
+   `updateTime` 最新 `2026-11-07 14:02:49`，随仓库发布）→ `source = 'snapshot'`
+3. 都失败 → `null`，页面走空态
+
+三条路径**都不抛错**。`source` 只做内部诊断，**页面不展示来源**（用户要求去掉
+「离线快照」字样），只报读数时间戳。
+
+**（5）其它**
+
+- 卡片名「智能塔机」→ **「5G塔机」**（`utils/deviceLedger.ts` 的 `CARD_DEFS`、
+  `stores/subpage.ts` 子页标题、`data/device.ts` 的 `deviceSet().title` 三处同改）。
+  台账 `device_name` 里的「智能塔机2/3/4」是服务端原名，**不改**。
+- 「全部设备运行状态」逐台列表**已按用户要求移除**（设计稿智控页只有
+  「统计两卡 + 9 张设备卡」，没有逐台清单）。原 `ledger.allUnits` 一并删除，
+  逐台状态改由各设备详情页承载 —— 首页不再重复一遍台账。
+- 在线格 `/总数` 被吞的 bug：分子分母原写在两个兄弟节点里，CSS 只订到分子。
+  改为两者同处 `.eq-online b` 内 + `white-space: nowrap`。
+- **爬架卡三格改「正常台数/有读数的台数」**（用户要求，形状同设计稿 `35/36`）：
+  `ScaffoldCell` 增加 `normal` / `total` 两个计数，卡片只放计数、不放读数，
+  分子恒绿（`--online`）、分母中性；`total === 0` 时整格「—」**不写 0/0**。
+  具体哪台越了多少由说明行（`firstOverLabel`）报，两处不重复。
+  `total` 只数「有该指标读数」的机位 —— 没上报的机位留在分母里会被读成「异常」。
+- **爬架子页机位列表改按机位号升序**（原按读数绝对值倒序，像排行榜，
+  核对某一台时要倒着数）。比较器用 `localeCompare(..., {numeric: true})`，
+  否则 `19#` 会排到 `2#` 前面；异常行仍靠红字 + 表头超限台数 + 上方告警句定位。
+
+**（6）仍然无解**
+
+- 电梯今日升降次数：接口/算法/字段全齐（`EVENT_WORKDATA`，`count = Data.Count`），
+  但 C 组 IOT 账号权限不足（`status:11 权限不足`），换三组密钥均报 `status:2`
+  → **服务端账号问题，客户端无法解决**。
+- 5 类机器人「今日作业次数」：V2 **没有任何机器人接口** —— `HotUpdateScripts.dll` 里
+  只有 `BuildingGrindingRobot` / `BuildingTrowelingRobot` / `BuildingMeasuringRobot`
+  三个类，每个类仅一个 `followTarget` 字段（点模型时 UI 跟随的位置）；`:8084` 台账
+  全项目 22 台设备里也没有机器人。但 V2 的**装备管理页预制体里预置了值**：
+  `UIView 装备管理一张图 / 底部栏 / 施工机器人栏` 下每张卡的 `Value` 就是写死的
+  `5次 / 9次 / 7次 / 4次 / 3次`（同栏在线数统一写死 `4/4`、爬架高度写死 `0m`）。
+  2026-11-12 按用户要求「V2 从哪取你就从哪取」，照同一组值落地
+  （`src/data/robotStats.ts`），卡片仍是静态卡：不可点、不出在线格 ——
+  台账里没有这些设备，任何 `x/y` 都是编的。这是本项目**唯一一处经用户授权**的模拟值例外。
+- `120.26.34.95:7117/test/query`（V2 的 AI 查询入口）：502，后端拒连。
+- CDN `/CDN/PC/` 只有 4 个文件：`ScaffoldData.json`（已接）、`monitorData.json`、
+  `versionDescAll.json`、`LinkSetting.json`。
+
+**（7）验证**
+
+`npm run test` **764 条 / 30 文件全过**，`npm run build`（含 `vue-tsc --noEmit`）通过。
+新增 `tests/unit/scaffold.spec.ts`（23 条）+ `tests/unit/tower-crane.spec.ts` 契约用例。
+
+**（8）塔机「设备信息」弹层：照 V2 塔机弹窗做两段（2026-11-12 第四轮）**
+
+取证对象是场景包 `_Data/yoo/DefaultPackage/BundleFiles/cb/cb4440f68c48489259d528982c1d7320/__data`
+（同一份包里既有塔机模型，也有 2D UI）。`GameObject` 树里能找到：
+
+```
+2D UI / UIView 塔机 / Level2 / 塔机弹窗
+```
+
+节点结构与文本（`MonoBehaviour.m_text`）+ 脚本 `UIPanelCrane` 的序列化字段一一对应：
+
+| V2 段 | 行 | 绑定字段 |
+|---|---|---|
+| Title1 **基本信息** | 当前状态 / 塔机编号 / 塔机高度 / 安检有效期 / 质检报告状态 / 司机 / 功效 | `txtStatus` `txtID` `txtHeight` `txtSafetyInspectionValidity` `txtQualityInspectionStatus` `txtTowerCraneDriver` `txtEfficiency` |
+| Title2 **实时工况信息** | 实时回转 / 实时幅度 / 实时高度 / 实时时间 | `txtRotate` `txtRange` `txtRopeHeight` `txtTime` |
+| Title3 告警信息 | 当前无报警 / 查看详情 | `AlarmStatus` |
+
+**两段的数据源不同，别混成一个**：
+
+- **基本信息 = 设备台账**。V2 `DigitalMap.DeviceInfosRequester` 请求
+  `GET :8084/api/data/deviceinfos?page=1&page_size=100&project_id=P000000076`，
+  再解析 `device_info.extra_fields`（dll 里 `deviceinfos` / `device_info` /
+  `extra_fields` 三个常量都在）。本项目早就走这条路，且值与 V2 完全一致
+  （高度 `10.3m/70m/32.5m/64m`、安检有效期 `2026-12-10`、质检报告状态 `正常`、
+  塔吊司机 `机师`）。台账里没有「塔机编号」与「功效」→ 写「—」，
+  **不拿台号或主键 id 去凑**。
+- **实时工况 = 塔机实时数据**。V2 侧是 `DigitalMap.Crane.Requester.CraneRealtimeRequester`
+  （`FetchRealtimeDataAsync` / `PollRealtimeDataAsync`，字段 `RealtimeDataIntervalMs`），
+  两条通道的地址都硬编码在 dll 里：
+  1. `https://iot.cscec3b-iti.com/api/data/v1/tsdb/queryRealTimeDataV2`（查询式）
+  2. MQTT `120.26.34.95:1883`（admin / `Test@wf.101025`），主题
+     **`/{projectId}/towercranedataservice/pushRealTimeInfo`**（推送式）
+
+**本项目当前两条都拿不到 —— 是源端没数据 / 没权限，不是客户端没实现**：
+
+| 通道 | 2026-11-12 实测 |
+|---|---|
+| MQTT 推送 | 订阅 `#` 跑 20s，共 21 个活跃主题，**没有一条 `P000000076`**；塔机主题只有 `P000000096`（光谷元箸项目）在推 —— **这一行后来被推翻：当时连的是 `120.26.34.95`，本项目要连 `115.159.67.12`，见下方 (10)** |
+| tsdb 查询 | `{"status":10,"msg":"部分产品数据您无权查看，非法的产品列表为：P000000076"}`（去掉 productCode 同样报非法，只有空 `queryList` 才回「查询条件为空」）—— 与电梯 `EVENT_WORKDATA` 的 `status:11 权限不足` 同属账号白名单问题 |
+
+同平台塔机实时报文长这样（P000000096 抓到的真实 payload，字段正好对应 V2 的
+`txtRotate / txtRange / txtRopeHeight / txtTime`）：
+
+```json
+{"angle":293.66,"range":7.98,"height":36.1,
+ "monitorDateTime":"2026-11-12 15:56:46.970",
+ "deviceSn":"…","deviceName":"光谷元箸项目1号塔机","siteName":"武汉光谷元箸项目",
+ "weight":0.0,"weightRate":0.0,"moment":0.0,"windSpeed":0.0,
+ "frontArmLength":44.6,"backArmLength":17.6,"bodyHeight":37.85,
+ "topHeight":71.15,"safeWeight":18.0,"craneType":1,"hasLoadInfo":0}
+```
+
+所以四行按 V2 顺序占位「—」，弹层下方给一行说明，**不编数字，也不拿台账的
+塔机高度冒充实时高度**。等向阳村塔机开始上报（或账号放开 tsdb），接
+`api/iot.ts: fetchRealtimeData` / MQTT-over-WS 即可原位回填（模板已固定四行）。
+
+> **V2 桌面端为什么"看起来有数"**：dll 里还有一个
+> `DigitalMap.Crane.Development.TowerCraneSimulator`（`PlayCoroutine`、
+> `[TowerCraneSimulator] JSON` 日志）。它在 **Development** 命名空间下，是本地造数
+> 的调试模拟器，真实推送没来时由它驱动 3D 模型。也就是说 V2 界面上的实时回转 / 幅度
+> 很可能不是现场设备上报的。本项目不启用它（会误导读数）。
+
+#### (9) 「V2 的实时工况是不是取自 P000000096」—— 不是，已逐条否定
+
+怀疑点：broker 上唯一在推塔机数据的主题是 `P000000096`，那 V2 界面上的
+实时回转 / 幅度 / 高度 / 时间会不会就是它？**结论：不是**，三条独立证据：
+
+1. **主题是硬编码的，且写的是本项目项目号**。`HotUpdateScripts.dll` 的 UTF-16LE
+   常量里只有一条塔机主题：`/P000000076/towercranedataservice/pushRealTimeInfo`
+   （连斜杠开头），同段还有 `P000000076` 与
+   `/api/data/deviceinfos?page=1&page_size=100&project_id=`。V2 根本没订阅 096。
+2. **P000000096 是另一个项目的 4 台车**。25s 抓包，该主题下 4 个 `deviceSn`
+   全是 `91320506MAE18ATB9XTC20260818 11/13/16/18`，`deviceName`
+   「光谷元箸项目1号/3号/6号/8号塔机」，`siteName` 一致的**武汉光谷元箸项目**。
+   而向阳村塔机 sn 是 `…XTC2026**06**181EW2/EW3/EW4`（`data/craneSn.ts`，
+   用 `getWorkCycleInfoHis` 查回来 `siteName=武汉向阳村项目`）。两批设备无关。
+3. **V2 无数据时的默认文本就是 `--`**。`UIView 塔机/Level2/塔机弹窗` 的
+   `DataContent1/2` 下，`Value状态 / Height Value / Safe Value / Quality Value /
+   Driver Value / Efficiency Value / Value回转 / Value幅度 / Value高度`
+   预制体默认值**全部是 `'--'`**。也就是说 076 没推送时 V2 显示的是 `--`，
+   与本项目现在的「—」一致，而不是 096 的数字。
+
+**另一条硬约束**：`120.26.34.95` 只开了 1883（TCP MQTT），8083/8084/9001/15675
+全关，`http://120.26.34.95:8083/mqtt` 直接 502 —— broker 没有 WebSocket 监听。
+浏览器拿不到 1883，要用只能自建 WS 桥（dev 中间件 / `server/serve.mjs` 可做，
+GitHub Pages 静态托管做不了）。这也是「即使想用 096，线上也上不了」的原因。
+
+**顺带补一条**：V2 弹窗还有第三段 **Title3 告警信息**（`AlarmStatus` 默认
+「当前无报警」+「查看详情」按钮）。本项目弹层目前只有前两段，未实现第三段。
+
+#### (10) 塔机实时工况：已接通（broker 之前找错了）
+
+上一小节把 tsdb 与 MQTT 都判成「源端无数据」，**结论错在 broker 地址**。
+V2 客户端界面确实有实时读数，用户反复质疑后重挖，四个证据一次对齐：
+
+1. **场景对象上的序列化字段是真值**。`场景 / 塔机2 / 实时数据` 挂着
+   `CraneRealtimeRequester`，UnityPy 读出来的字段是：
+
+   ```
+   host = 115.159.67.12    port = 1883    userName = admin    password = Test@wf.101025
+   topic = /P000000076/towercranedataservice/pushRealTimeInfo
+   offlineTimeout = 25.0   checkInterval = 3.0
+   ```
+
+   而之前所有抓包都打在 `120.26.34.95:1883` —— **那是另一台 broker**，
+   上面只有「光谷元箸」4 台车（`…XTC2026**08**1811/13/16/18`）在推。
+   V2 启动时 `StreamingAssets` 里给的是 `http://120.26.34.95:9689`（资源 CDN），
+   塔机推送却是 `115.159.67.12`（登录/数据服务那台），两台机器，别混。
+
+2. **连对 broker 后本项目三台塔机一直在推真数据**（10s 左右一帧）：
+
+   ```json
+   {"angle":223.79,"range":17.67,"height":6.10,"monitorDateTime":"2026-11-12 16:30:46.951",
+    "bodyHeight":42.0,"topHeight":56.0,"weight":0.0,"weightRate":0.0,"windSpeed":0.0,
+    "deviceSn":"…EW2","deviceName":"向阳村2#塔机","siteName":"武汉向阳村项目"}
+   ```
+
+3. **「塔机高度」的口径也对上了**：V2 弹层显示智能塔机2 = `42.00m`，
+   而台账 `extra_fields` 里 2 号的「高度」是 `10.3m`；`bodyHeight` 正好 42.0。
+   所以 V2 的塔机高度取**实时报文的塔身高度**，不是台账值。
+   （截图佐证：16:19 回转 `220.72°`，16:30 抓到 `223.79°`，同一台车在慢慢转。）
+
+4. **浏览器侧只有 WebSocket 这一条路**：`115.159.67.12` 只开
+   `ws://115.159.67.12:8084/mqtt`（MQTT over WebSocket，与数据服务同端口不同路径）；
+   443 的 `/mqtt` 不升级、8083 handshake 失败，`wss` 不存在。
+
+**实现（2026-11-12 落地）**
+
+| 文件 | 职责 |
+|---|---|
+| `src/api/mqttWs.ts` | 自写极简 MQTT 3.1.1 over WebSocket（CONNECT/SUBSCRIBE/PUBLISH/PINGREQ，仅 QoS 0，约 200 行，不引 `mqtt` 包） |
+| `src/api/craneRealtime.ts` | 主题拼法、报文解析（脏帧丢、不抛）、地址推导与断线重试（2→4→8→15s 封顶） |
+| `src/stores/craneRealtime.ts` | 引用计数开关（弹层开才连）、`sn → 最新帧`、25s 无帧即视为离线（对齐 V2 `offlineTimeout`） |
+| `vite.config.ts` / `server/serve.mjs` | 同源 `/mqtt` 的 WebSocket 裸字节反代（`node:net` pipe，不用 Vite 原生 proxy） |
+| `components/sheets/DeviceInfoSheet.vue` | 四行填真值；「塔机编号」用 `craneSnOf(unitNo)` 补上；「塔机高度」优先 `bodyHeight` |
+| `data/craneSn.ts` | 新增 `craneSnOf()`：按台号映射（V2 场景里 `塔机2` 的 `deviceSn` 就是 EW2，与它同口径） |
+
+**部署边界（必须知道）**：`ws://` 在 HTTPS 页面下会被当混合内容拦掉，所以
+
+- `npm run dev` / `npm run preview` / `npm run deploy:http` —— 有同源反代，**实时工况可用**；
+- GitHub Pages（HTTPS 静态托管、没有服务端）—— 连不上，四行回落「—」。
+  要给线上也开，只有两条路：给 broker 配 `wss` + 可信证书，或用 `VITE_CRANE_WS`
+  指一个自己的 wss 端点。
+
+「传统塔机5」在场景里 `deviceSn` 是空的 → 没有编号也没有实时工况，与 V2 一致。
+具体到弹层怎么渲染，见下面的 (11)。
+
+**取证方法（下次挖 V2 照这个走）**：V2 的业务代码**不在 `GameAssembly.dll`**
+（那里连 `tsdb` 都搜不到），而在 YooAsset 包里的热更程序集 ——
+`_Data/yoo/DefaultPackage/BundleFiles/d9/d96081d47e6b8fc1d2a0bc70c6c0a2c6/__data`
+是个 bundle，其 `TextAsset` 里有 `HotUpdateScripts.dll`（893KB，`MZ` 头）。
+UnityPy 读 `m_Script` 存成 .dll 再搜字符串即可。**字符串常量在 UTF-16LE 的 `#US` 堆里，
+按 UTF-8 搜会全部落空** —— 这正是之前误判「V2 没有这些接口」的原因。
+
+**机组顺序**：`utils/deviceLedger.ts: byUnitNo` 按名称里第一段数字升序，
+塔机页从「传统塔机5 → 智能塔机4 → 3 → 2」（服务端 id 倒序）变成
+**智能塔机2 → 3 → 4 → 传统塔机5**；电梯/爬架同一规则。
+
+#### (11) 弹层行数与「传统塔机5」：V2 到底渲染几行
+
+**V2 塔机弹窗的完整节点树**（`BundleFiles/cb4440f6…` 里 `UnityPy` dump，
+带默认值）：
+
+```
+Title1 基本信息      DataContent1  7 行，值节点默认全是 '--'
+  当前状态 / 塔机编号 / 塔机高度 / 安检有效期 / 质检报告状态 / 司机 / 功效
+Title2 实时工况信息  DataContent2  4 行
+  实时回转 / 实时幅度 / 实时高度 / 实时时间
+Title3 告警信息      DataContent3  AlarmStatus='当前无报警' + Btn='查看详情'
+```
+
+**没有说明行，也没有「是否隐藏」「更新时间」「责任人」** —— 那几项是台账
+`extra_fields` / `device_info` 的后台字段，V2 界面从不展示。
+
+**「传统塔机5」在 V2 里怎么处理**：场景里它是一台正常的 `BuildingCrane`
+（`friendlyName = 传统塔机5`、`buildingType = 31`，对照智能塔机是 `21`），
+能点开**同一个**塔机弹窗；但 `TowerCraneController.deviceSn` 是**空字符串**。于是：
+
+| 行 | V2 显示（逻辑上） |
+|---|---|
+| 安检有效期 / 质检报告状态 / 司机 | 照台账正常显示（`DeviceDic` 用 `building.GetUniqueID()` 查，不靠 sn） |
+| 功效 | **`--`** —— 功效是按平台设备编号统计的台班效率，没有 sn 无从统计（台账里的「功效统计信息 60 吊次/台班」没有任何界面在用） |
+| 当前状态 | **`离线`** —— 走 `GetTowerState("")`，不是台账的 `online_status` |
+| 塔机编号 | `--`（`GetData("")` 为 null） |
+| 塔机高度 | `--` |
+| 实时工况四行 | `--` |
+
+即 **照常弹出、缺的留 `--`**，不隐藏这台车、不隐藏第二段、不加任何说明文案。
+本项目照此实现，不对它做特殊分支。
+
+> ⚠️ **但这台车在实际运行的 V2 里会「看起来有数」**：`UpdateRealtimeInfo`
+> 在 `GetData` 为 null 时**直接 return，不清空四个文本**，于是面板留着
+> 上一次打开的那台车的编号 / 高度 / 四行读数。详见下面的 (12) ——
+> 那是显示残留，不是传统塔机5 的真实数据。
+
+#### (12) 为什么 V2 截图里「传统塔机5」有 EW4 的编号和实时值（显示残留，不是它的数据）
+
+2026-11-12 用 `dnfile` 把热更程序集 `HotUpdateScripts.dll` 的 IL 逐条读出来
+（`UIPanelCrane` / `CraneModel` / `UIViewCraneLevel2` / `UIBottomCardCraneLv2`）：
+
+```csharp
+// UIViewCraneLevel2.OnSelected(card)
+panel.ShowPanel(new UIPanelCraneData { no = card.no, building = cranes.Find(c => c.GetCraneNo() == card.no) });
+
+// UIBottomCardCraneLv2.InitCard(BuildingCrane crane, Action cb)
+no = crane != null ? crane.DeviceSn : string.Empty;     // ← 传统塔机5 这里是 ""
+
+// UIPanelCrane.ShowPanel(data)
+txtName.text = data.building != null ? GetDisplayName(building) : GetCraneName(data.no);  // ← 标题：传统塔机5
+UpdateRealtimeInfo(); UpdateOnlineState(); UpdateDeviceInfo();
+
+// UIPanelCrane.UpdateRealtimeInfo()
+var d = CraneModel.GetData(curData.no);   // GetData("") → null
+if (d == null) return;                    // ★ 早退，四个文本一个都不清
+txtID.text = d.deviceSn; txtHeight.text = d.bodyHeight.ToString("F2") + "m"; …
+
+// UIPanelCrane.UpdateOnlineState()
+txtStatus.text = CraneModel.GetTowerState(curData.no);   // GetData("") null → "离线"
+
+// CraneModel.GetTowerState(key)
+if (deviceStateMap.TryGetValue(key, out var s)) return s;  // "待机"/"工作中"/"正在吊装"
+var d = GetData(key); if (d == null) return "离线";
+
+// CraneModel.UpdateState(sn)   ← 每帧到达后调用，状态就是这么来的
+var d = GetData(sn); if (d == null) return;
+moving = |Δangle| > 0.1f || |Δrange| > 0.1f || |Δheight| > 0.1f;
+deviceStateMap[sn] = d.HasLoad && d.weight > 0 ? "正在吊装" : (moving ? "工作中" : "待机");
+```
+
+三个结论：
+
+1. **V2 的塔机「当前状态」不是台账的在线状态**，而是实时四态
+   `离线 / 待机 / 工作中 / 正在吊装`（`GetTowerState`）。`SetOffline(sn)` 会把
+   `deviceStateMap[sn]` 与 `DataMap[sn]` 一起删掉，之后 `GetTowerState` 兜到「离线」。
+2. **传统塔机5 的编号/高度/四行是上一台车的残留**。因为它 `no == ""`，
+   `GetData("")` 为 null，代码直接 `return`，没有把文本恢复成 `--`。
+   截图里那组 `EW4 / 67.50m / 111.43° / 42.26m / 11.00m` 正是
+   **智能塔机4（EW4，`bodyHeight = 67.5`）** 的数字。
+   验证方法：重启 V2，**第一次**就点「传统塔机5」，那几行会显示 `--`。
+3. 这个残留是 **V2 的显示 bug**（同一份 `CraneData` 被两台车的面板先后使用）。
+   本项目每个弹层一个实例、每次打开重新计算，没有「上一台」可残留，
+   所以按逻辑口径给「—」，不复制这个 bug。
+
+**本轮对齐的改动**：`stores/craneRealtime.ts` 新增 `stateOf()`，照 `GetTowerState`
+的四态与 `0.1` 位移阈值实现（首帧与 0 比，同 V2）；`api/craneRealtime.ts` 解析
+`hasLoadInfo`；`DeviceInfoSheet.vue` 的「当前状态」改成 `stateOf(sn)`，只在
+**通道完全没通**（HTTPS 无 WS 反代，`stateOf` 返回 null）时才回落台账
+`status_text` —— 免得把「我们看不到」写成「设备离线」。
+
+
+**「塔机高度」不回落台账**：dll 里 `UIPanelCrane.txtHeight` 与 `bodyHeight`
+相邻（同一个类的取值链），V2 弹层智能塔机2 显示 `42.00m` 而台账写 `64` ——
+42.00 正是报文的 `bodyHeight`。台账那个「高度」在 V2 弹层里**没有对应控件**。
+所以本项目改成「只认实时 `bodyHeight`，没有帧一律 `—`」，不再拿台账值顶替。
+（早前版本是「优先 bodyHeight、回落台账」，会让人把台账高度当成实时高度读。）
+
+**「功效」台账里其实有值，但只有接平台的车才显示**（2026-11-12 实测 `:8084` 原样）：
+
+| 设备 | key | value | 界面 |
+|---|---|---|---|
+| 智能塔机2 | `功效` | `55 吊次/台班` | 显示 |
+| 智能塔机3 | `功效` | `70 吊次/台班` | 显示 |
+| 智能塔机4 | `功效` | `55 吊次/台班` | 显示 |
+| 传统塔机5 | **`功效统计信息`** | `60 吊次/台班` | **「—」** |
+
+两种键名都认（`功效` / `功效统计信息`），但**有没有 sn 是前提**：这台车的功效在
+V2 弹层里是 `--`（见 (11) 表格）。2026-11-12 用户实测 V2 客户端确认这一点 ——
+所以本项目也只在 `craneSnOf(台号)` 有值时显示，传统塔机5 恒「—」。
+`pick()` 顺手把服务端返回的**空串**也当「没有」（`??` 挡不住 `''`）。
+
+#### (13) 5G塔机页卡片四格 + 列表状态与弹层「当前状态」统一
+
+**卡片四格**（照 V2 `UIBottomCardCraneLv2`：「今日吊次 9次 / 今日吊重 5.05t /
+当前吊重 1.26t / 当前负荷 36%」+ 一条负荷进度条）：
+
+| 格 | 源 | 无数据时 |
+|---|---|---|
+| 今日吊次 | `getWorkCycleInfoHis` 当天循环条数（逐台按 sn） | 「—」 |
+| 今日吊重 | 当天循环 `weight` 累加（t，两位小数） | 「—」（一条都没重量时也是「—」，不写 0.00t） |
+| 当前吊重 | MQTT 报文 `weight` | 「—」（25s 无帧即过期） |
+| 当前负荷 | MQTT 报文 `weightRate` → `utils/craneLoad.ts: loadPct` | 「—」，且**不画进度条** |
+
+逐台数字**不是全场合计**：`stores/deviceLedger.ts` 一次请求两个口径，
+`craneDay`（合计，首页智控卡用）与 `craneDayBySn`（逐台，设备页用）。
+某台查询失败只丢这台的指标，不会把别台已经拿到的数一起抹掉；
+但合计口径仍从严 —— 少一台的合计比「—」更容易被当真。
+
+**`weightRate` 的单位是个已知的不确定项**：协议没写，现场报文一直是 `0.0`
+（2026-11-12 17:24 抓包，三台车 `weight=0 / weightRate=0 / hasLoad=0`，只有
+`range` 在动，空钩状态），没法用真实数据反推。`loadPct` 按「≤1 当比值、
+>1 当百分数」处理，超 100 截到 100。若现场出现「负荷显示比实际大 100 倍」，
+改这一处即可。
+
+**列表状态**：卡片右上角的胶囊以前是台账 `status_text`（只有「在线/离线」），
+而弹层「当前状态」是实时四态 —— 同一台车卡片写「在线」、点开写「待机」。
+现在两边都走 `crane.stateOf(sn)`：**工作中 / 正在吊装 → 绿，待机 → 灰环，
+离线 → 灰字**；只有整条通道没通（HTTPS 无 WS 反代）才回落台账，
+且弹层与列表回落的是同一个值。设备页在「塔机 + 已登录」时订阅实时通道，
+离开页面即断开（引用计数，与弹层共用一条连接）。
+
+**传统塔机5**：没有 sn → 四格全「—」，状态恒「离线」，不画负荷条。
+
+#### (14) 实时推送不再经厂商 WS 网关（`server/mqttBridge.mjs`）
+
+浏览器碰不到原始 TCP 1883，历史上的链路是「页面 → 同源 `/mqtt` → 厂商网关
+`ws://115.159.67.12:8084/mqtt` → broker」。2026-11-12 傍晚这条网关路由开始
+**间歇 404 / 502**，而同一时刻 `115.159.67.12:1883` 完全正常 —— 直连订阅立刻
+收到三台车推送。**坏的是那层 WS 包装，不是数据。**
+
+现在改为我们自己当 WS 服务端、直连 1883：
+
+```
+浏览器 ──WS(/mqtt)──▶ server/mqttBridge.mjs ──TCP(1883)──▶ 115.159.67.12
+          MQTT 字节流                           MQTT 字节流（原样）
+```
+
+- 实现是一段**零依赖**的 WS 服务端（`101` 握手 + 帧解包/封包 + 双向转发），
+  只接管 `/mqtt` 一条路径，其它 upgrade（Vite HMR）原样放过；
+- 回 `Sec-WebSocket-Protocol: mqtt` —— 浏览器请求了子协议却不收到回执会**直接
+  判握手失败**（Node 客户端不会，这也是「脚本能连、页面连不上」的常见成因）；
+- dev / preview（`vite.config.ts`）与 HTTP 部署（`server/serve.mjs`）共用这一份，
+  改完后重启 dev server 生效；`VITE_CRANE_WS` 仍可覆盖成任意 wss 地址。
+
+**实测口径（2026-11-12 17:4x）**：三台车每 12s 一帧，浏览器端四格渲染为
+`0.00t / 0%`（`weight=0 / weightRate=0 / hasLoadInfo=0`，空钩），状态「工作中」。
+**「—」只在 25s 收不到该车的帧时出现**（该车停推/网关抖动），与「值是 0」不是
+一回事 —— V2 桌面端拿的是同一份报文，空钩时同样显示 0.00t / 0%。
+
+**电梯（升降机）弹层 V2 也是两段**，本项目尚未对齐（实时源未接）：
+
+```
+Title1 基本信息  ：当前状态 / 升降机编号
+Title2 实时工况  ：当前楼层 / 当前高度 / 当前人数 / 当前载重
+                  今日累计总人数 / 今日累计载重 / 今日累计运行时间 / 今日累计升降次数
+```
+
+实时那八项的源是 IOT `EVENT_WORKDATA`（本项目 `status:11 权限不足`）。
+当前电梯弹层仍按台账平铺，只过滤掉 `是否隐藏` / `更新时间`（`TECH_FIELDS`），
+等权限放开再换成两段结构。
+
+#### (15) 塔机「作业报表」的数据在哪里（2026-11-12 第五轮）
+
+**结论：和塔机卡片的「今日吊次/吊重」是同一条链路**，不是 tsdb、也不是新接口。
+
+V2 的报表界面是 `UICraneHistoryPop`（37 个方法），IL 逐条读下来只有三个入口：
+
+| 方法 | 内容 |
+|---|---|
+| `ShowPanel` | 取 `picker.SelectedDateTime`（默认今天），保证 `tog_Count` 至少勾一个 |
+| `RefreshByMode` → `Get(GetStartDate(), GetEndDate())` | 取数 |
+| `Get` | `GetRequester()` 拿 `CraneWorkCycleRequester` → `QueryAllWorkCycleHistoryAsync(startDate, endDate)` → 遍历 `WorkCycleRecordDic` 摊平 → `Sort` → `RefreshList` + `RefreshChart` |
+
+`<QueryWorkCycleHistoryAsync>d__10.MoveNext` 里的字符串常量就是那条 URL：
+
+```
+https://tciccs.cscec3bxjy.cn:30400/api/towercranedataservice/getWorkCycleInfoHis
+（失败日志 '[CraneWorkCycle] 塔机 [ … ] 工作循环获取失败或数据为空'）
+```
+
+时间窗由 `CraneWorkCycleRequester.FormatStartTime/FormatEndTime` 拼：
+`"{0:yyyy-MM-dd} 00:00:00"` / `"{0:yyyy-MM-dd} 24:00:00"`。**区间口径**
+（`UICraneHistoryPop.GetStartDate/GetEndDate`）：
+
+- `mode=0` 日报：`curSelectDate` 当天（起止相同）
+- `mode=1` 周报：`curSelectDate.AddDays(-(DayOfWeek-1))` → 起 +6 天（自然周，周一起）
+- `mode=2` 月报：当月 1 号 → `DaysInMonth` 月末（自然月）
+
+界面上它只有**图表 + 明细列表**：`RefreshChart` 加两条序列（`ldstr '吊次'` /
+`ldstr '吊重'`，带 `tog_Count` / `tog_Weight` 切换）；`ItemCraneHistory.InitInfo`
+每行六项 —— `时间 HH:mm` / `时长 {0:F1} min` / `{0:F2}t` / `{0:F1}m-{1:F1}m` /
+`{0:F1}°-{1:F1}°` / 力矩 `{0:F1}`。**V2 报表里没有「利用率」也没有「负荷率」**。
+
+**本项目落地（照设计稿排版 + 照 V2 取数）**：
+
+- 接口层 `api/towerCrane.ts` 新增 `fetchCraneWorkCycles(sn, start, end)`（`dayRange`
+  只是它的单日特例），`toWorkCycles` 补 `duration`（秒，缺字段用 `end-start` 兜底）
+  与 `type`（上料/下料）。**跨月区间已实测可用**：2026-10-14~11-12 一次回 474 条 / 235KB。
+- 数据层 `stores/craneReport.ts`：按 sn 并发取数、45s 环形缓存（同一区间在页签
+  来回切时不重复打接口）、请求序号丢弃过期结果、登出 `reset()`。
+- 口径层 `utils/craneReport.ts`：区间（自然周/自然月，照 V2）、逐台汇总、全场合计。
+- 页面 `views/sub/DeviceReport.vue`：设计稿的「粒度切换 → 区间 → 三格 KPI →
+  结论 → 机队表 → 导出分享」。**两处刻意偏差**：
+  1. 设计稿的「平均利用率 / 负荷」两格换成**作业时长 / 峰值吊重** —— 那两个指标
+     现场没有任何接口能算（利用率要排班台班，负荷率只有实时报文的 `weightRate`），
+     留一个永远写「—」的格子不如换两个能逐条核验的量；
+  2. 机队表列 `塔机 / 吊次 / 吊重 / 峰值 / 时长`，结论条 `关注 / 主力 / 产出 /
+     峰值 / 缺数`。
+
+**实测（2026-11-12 18:0x，真机 Chrome + 现场账号）**：
+
+```
+日报 2026-11-12   22次 / 9.95t / 5.4h
+  智能塔机2 20次 8.72t 峰值2.38t 5.3h ｜ 智能塔机3 0次 — — — ｜ 智能塔机4 2次 1.23t 0.67t 4分
+  传统塔机5 全「—」（无平台编号，结论里单列一条「未纳入统计」）
+周报 2026-11-09 至 11-15   131次 / 92.62t / 33.9h
+月报 2026-11-01 至 11-30   413次 / 324.16t / 83.1h
+```
+
+电梯的报表仍不接入：升降次数/载重在 IOT `EVENT_WORKDATA`（`status:11 权限不足`），
+页签给的是明确空态 + 原因说明，不摆空指标。
+
+**遗留观察**：服务端偶发单条循环 `duration` 异常大（近 30 天里出现过 33014s ≈ 9h
+的一条），会直接抬高「作业时长」合计。这是平台原始数据，未做截断 —— 现场确认是
+记录未闭合还是真连班后，再决定要不要过滤。
 
 ---
 

@@ -166,11 +166,15 @@ export interface EquipUnit {
 }
 
 /**
- * 设备（对应原 siteEquip 数组。2026-11 设计稿收成 4 条：塔机/电梯/无人机/爬架）
+ * 设备（对应原 siteEquip 数组。2026-11 设计稿 gx2 版是 9 条：
+ * 塔机/电梯/无人机/爬架 + 5 类机器人）
  *
  * 2026-11 第二轮：value/metric 改为可选 —— 首页四卡改由设备台账接口派生，
  * 塔机与电梯除了「在线 x/y」还有一个真实字段（高度）可放，无人机没有数值，
  * 这时不该硬塞一个占位符号进设计稿的数值位。
+ *
+ * 2026-11 第三轮（对齐 gx2 第九卡）：新增 `linked` 与 `stats` 的真正落地 ——
+ * 5 类机器人没有任何台账记录与接口，卡片只能渲染成静态入口（不可点）。
  */
 export interface Equip {
   id: string
@@ -180,11 +184,72 @@ export interface Equip {
   ico: string
   /** 有独立详情页的设备（2026-11 设计稿：四类全部可下钻） */
   page?: 'crane' | 'lift' | 'uav' | 'climb'
-  /** 塔机专属：卡片上的双指标（今日吊重 + 今日吊次） */
+  /**
+   * 卡片是否有真实数据源（台账 / 接口）。
+   *
+   * `false` = 静态入口卡（见 utils/deviceLedger.ts: ROBOT_CARDS）：
+   * 没有台账、也没有任何接口能给出台数与作业次数，所以整卡不可点
+   * （用 div 而不是 button，避免误导键盘用户）、不出右侧箭头、
+   * 数值位只放「—」。**绝不写 0 次顶替「没有数据」。**
+   */
+  linked?: boolean
+  /**
+   * 卡片标题右侧状态点的**显式**取值，优先于由 `units` 派生的
+   * `equipCount().st`。
+   *
+   * 只有静态卡用它：机器人没有台账，`units` 恒为空 → 派生出来是 'off'
+   * （灰点「离线」），而现场这几类机器人是常驻在线的。2026-11-12 用户要求
+   * 「机器人默认在线，名称旁边加小绿点」，故显式置 'on'。
+   */
+  dot?: 'on' | 'off' | 'warn'
+  /**
+   * 卡片数值位的多格指标（塔机：今日吊重 + 今日吊次；电梯：累计运行时间）。
+   * `value` 是「数字 + 单位」的合并文本（如 `1.87t`），模板拆出单位套
+   * `.eq-stat-unit` 单独排（设计稿 app.js:1013 的做法）。
+   */
   stats?: { value: string; metric: string }[]
-  /** 无人机专属：作业任务 x/y */
+  /** 无人机专属：作业任务 x/y（真实来源见 stores/uav.ts 的 doneCount / totalCount） */
   jobs?: { done: number; total: number }
   units: EquipUnit[]
+}
+
+/**
+ * 塔机一次工作循环（= 一次吊次）。
+ *
+ * 三个字段都可能为 `null`：现场报文里时间/重量存在空串与缺字段，
+ * 解析层不猜值 —— 调用方据此决定「合计里跳过」还是「整格显示 —」。
+ */
+export interface CraneWorkCycle {
+  /** 起吊开始时刻（ms）；解析不出来为 null */
+  start: number | null
+  /** 卸吊结束时刻（ms）；解析不出来为 null */
+  end: number | null
+  /** 本次循环最大吊重（t）；解析不出来为 null */
+  weight: number | null
+  /**
+   * 循环时长（秒）。
+   *
+   * 服务端直接给 `duration`（实测就是秒，如 655）；缺字段时用
+   * `end - start` 兜底。两样都没有为 null —— 不要让作业报表把
+   * 「没时长」算成「0 秒的活」。
+   */
+  duration: number | null
+  /** 作业类型（服务端 `type`：`上料` / `下料`）；空串 = 服务端没给 */
+  type: string
+}
+
+/**
+ * 塔机当日作业指标（由工作循环汇总而来）。
+ *
+ * `trips` 为 0 是**有效结论**（接口通了、当天确实没吊）；
+ * `weight` 为 null 表示「一次循环都没拿到重量」→ 卡片显示「—」，
+ * 不能用 0.00t 冒充。
+ */
+export interface CraneDayStats {
+  /** 今日吊次（工作循环条数） */
+  trips: number
+  /** 今日吊重合计（t）；没有任何有效重量时为 null */
+  weight: number | null
 }
 
 /** 人员分布节点（对应原 peopleTree） */
@@ -288,4 +353,76 @@ export interface MapAlarm {
   y: number
   /** 标签翻到点的左侧（靠近右边界时用） */
   left?: boolean
+}
+
+/* ========== 智能爬架传感器（2026-11 第四轮） ========== */
+
+/**
+ * 爬架传感器读数（一个机位一行）。
+ *
+ * 数据源是 CDN 静态 JSON（`{host}/CDN/PC/ScaffoldData.json`），三个读数是
+ * **带单位后缀的字符串**（`'3.13mm'` / `'0.00吨'`），解析在 utils/scaffold.ts。
+ */
+export interface ScaffoldSensor {
+  /** 机位名，服务端形如 '1#机位' */
+  item: string
+  /** 左右倾斜 mm；解析不出来为 null */
+  lrTilt: number | null
+  /** 前后倾斜 mm；解析不出来为 null */
+  fbTilt: number | null
+  /** 载荷 吨；解析不出来为 null */
+  load: number | null
+  /** 服务端更新时间原文 '2026-11-07 14:02:49' */
+  time: string
+}
+
+/** 爬架的三个读数指标 */
+export type ScaffoldMetric = 'lrTilt' | 'fbTilt' | 'load'
+
+/**
+ * 单个指标的汇总（全场最不利机位）。
+ *
+ * `value === null` 表示一个可用读数都没有 —— 此时 `over` 必须是 `false`：
+ * 「不知道」不能表达成「正常」，也不能表达成「超限」。
+ */
+export interface ScaffoldCell {
+  key: ScaffoldMetric
+  /** '左右倾斜' | '前后倾斜' | '载荷' */
+  label: string
+  /** 'mm' | '吨' */
+  unit: string
+  /** 阈值（mm 或 吨），来自 V2 客户端硬编码 */
+  limit: number
+  /** 最不利读数（绝对值最大）；没有可用读数时为 null */
+  value: number | null
+  /** 最不利读数落在哪个机位；value 为 null 时是空串 */
+  item: string
+  /** 是否超限（Math.abs(value) > limit）；value 为 null 时为 false */
+  over: boolean
+  /**
+   * 该指标**在阈值内**的机位数（卡片三格的分子，绿色）。
+   *
+   * 与 `total` 一起构成「正常 / 有读数」的计数口径，取代早先「只报最不利
+   * 读数」的写法 —— 现场看卡片第一眼要的是「有多少台正常」，具体哪台不对
+   * 由说明行（`firstOverLabel`）报。
+   */
+  normal: number
+  /**
+   * 该指标**有读数**的机位数（分母）。
+   *
+   * 不是机位总数：某台机位这一项没上报时，它既不算正常也不算异常，
+   * 让它留在分母里会把「没数据」读成「不正常」。
+   */
+  total: number
+}
+
+/** 爬架全场汇总 */
+export interface ScaffoldSummary {
+  /** 有效机位数 */
+  count: number
+  /** 最新更新时间原文；没有则为空串 */
+  updatedAt: string
+  cells: ScaffoldCell[]
+  /** 至少一个指标超限的机位数（按机位去重，不是指标数） */
+  overCount: number
 }

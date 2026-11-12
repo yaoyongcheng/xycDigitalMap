@@ -129,3 +129,47 @@ export const hazardKindList = ['安全防护', '文明施工', '用电隐患', '
  * 班组名和人数全都不对，比空着更容易被当真。
  */
 
+
+/* ---------------- 智眸 · 照片分类 ---------------- */
+
+/**
+ * 智眸「最新照片」的六个分类（设计稿 app.js:613-619 的 patrolCats）。
+ *
+ * ## 为什么分类回来了，但判定方式换了
+ *
+ * 原版的分类是**写在照片数据上**的（`patrolPhotos[i].cat`），服务端没有这个
+ * 字段 —— 2026-11 阶段 8 因此把分类整组删掉，改成按时间倒序平铺。
+ *
+ * 现在按设计稿把分类作为**展示维度**恢复，但归属不能凭空指定：真实照片只带
+ * `taskName`（所属航线/任务名），所以分类由任务名关键词推导（`catOfTask`）。
+ * 这条规则是透明可核对的 —— 现场看到照片归错类，改的是这张表，不是数据。
+ * 推导不出来的照片不会被丢掉，归到「未分类」，该分类只在真有照片时出现。
+ */
+export interface PatrolCat {
+  id: string
+  name: string
+  /** 任务名命中即归入本类（自上而下先命中先得） */
+  pattern: RegExp
+}
+
+export const PATROL_CATS: readonly PatrolCat[] = [
+  // `全场|场区` 曾被写进 pano 规则，但它们描述的是「范围」不是「拍的什么」：
+  // 「场区道路巡检」「场区材料堆场」「场区基坑支护」会全部被第一类吃掉，
+  // 后面五类的关键词永远轮不到。所以 pano 只认真正说明画面的词。
+  { id: 'pano', name: '项目全景', pattern: /全景|鸟瞰/ },
+  { id: 'pit', name: '基坑区域', pattern: /基坑|坑边|边坡|支护/ },
+  { id: 'face', name: '作业面', pattern: /作业面|主体|楼面|外架|悬挑|楼层/ },
+  { id: 'equip', name: '施工装备', pattern: /塔机|塔吊|电梯|装备|机械/ },
+  { id: 'yard', name: '材料堆场', pattern: /堆场|材料|钢筋|模板|加工棚/ },
+  { id: 'layout', name: '现场场布', pattern: /场布|道路|围挡|配电|大门|临建/ },
+]
+
+/** 推导不出来的照片归这里（不是六个分类之一，只在有照片时展示） */
+export const PATROL_CAT_UNKNOWN = { id: 'other', name: '未分类' } as const
+
+/** 任务名 → 分类 id；一个都不命中返回 `PATROL_CAT_UNKNOWN.id` */
+export function catOfTask(taskName: string): string {
+  const name = String(taskName ?? '')
+  for (const c of PATROL_CATS) if (c.pattern.test(name)) return c.id
+  return PATROL_CAT_UNKNOWN.id
+}

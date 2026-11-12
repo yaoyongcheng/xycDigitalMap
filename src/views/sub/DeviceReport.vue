@@ -1,226 +1,222 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, watch } from 'vue'
 
 import Skel from '@/components/ui/Skel.vue'
+import { craneSnOf } from '@/data/craneSn'
 import { deviceSet } from '@/data/device'
+import { useCraneReportStore } from '@/stores/craneReport'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useShellStore } from '@/stores/shell'
-import { addDays, dateKey, protoToday } from '@/utils/date'
-import { deviceMonthRows } from '@/utils/deviceChart'
+import { unitNo } from '@/utils/deviceLedger'
+import {
+  DASH,
+  formatTons,
+  formatWork,
+  share,
+  totals,
+  workText,
+  type ReportSpan,
+  type UnitStats,
+} from '@/utils/craneReport'
 import { shareText } from '@/utils/share'
 import { useSlowLoading } from '@/utils/slowLoading'
-import type { DeviceKind, DeviceUnit } from '@/types'
+import type { DeviceKind } from '@/types'
+import type { ReportUnit } from '@/stores/craneReport'
 
 /**
- * 作业报表（2026-11 设计稿 gx2 版，原 renderCraneReport 2307-2450 / renderLiftReport）
+ * 作业报表（设计稿 gx2 的「智能塔机 → 作业报表」页签）
  *
- * 设备详情页「作业报表」页签的内容：日报/周报/月报三粒度 +
- * 三个合计 KPI + 结论（按数据挑重点）+ 机队分台表 + 导出分享。
- * 与旧版「日报子页」的区别：报表不再是独立子页，而是详情页里的一个页签
- * （设计稿把 nav 的 #btnCraneReport 入口一并移除了）。
+ * 结构照设计稿：粒度切换 → 区间 → 三格合计 → 结论 → 机队分台表 → 导出分享。
+ * 数字全部来自**真实工作循环**（`api/towerCrane.ts` → `getWorkCycleInfoHis`），
+ * 也就是 V2 桌面端报表用的那条链路（`CraneWorkCycleRequester`，取证见
+ * docs/api-migration.md 第 13 节）。上一版这里靠 `DeviceUnit.history`（tsdb 实时
+ * 接口，现场 404）派生，所以长期是空态。
  *
- * 口径：
- *   日报   最新一天（= 昨天，历史数据不含今日）
- *   周报   history 7 天合计（原 craneSpanRows(craneHistoryRows)）
- *   月报   近 21 天（不含今日），7 天真数据 + 稳定派生值补齐
+ * ## 与设计稿的两处刻意偏差（都不能照抄）
+ *
+ * ① **「平均利用率」「负荷」两格换成「作业时长」「峰值吊重」。**
+ *    设计稿那两格是示意图占位；V2 报表界面也没有这两个指标 ——
+ *    `UICraneHistoryPop` 只读工作循环，图表是「吊次 / 吊重」，列表行是
+ *    「时间 · 时长 · 重量 · 幅度 · 角度 · 力矩」。现场没有任何接口能算出
+ *    利用率（要台班排班）与负荷率（只有实时报文的 weightRate）。与其留一个
+ *    永远写「—」的格子，不如换两个同样来自工作循环、且能逐条核验的量。
+ *
+ * ② **周报 / 月报按自然周、自然月，不是「近 7 天 / 近 21 天」。**
+ *    照 V2 `UICraneHistoryPop.GetStartDate/GetEndDate`：周报是周一起到周日，
+ *    月报是 1 号到月末。桌面端就是这么算的，报表要与它对得上就跟着它。
+ *
+ * 传统塔机5 没有平台编号（`data/craneSn.ts` 里明确为空），取不到工作循环 ——
+ * 它那几格写「—」，并在结论里单列一条「未纳入统计」，不拿台账的功效顶替。
  */
 const props = defineProps<{ kind: DeviceKind }>()
 
 const shell = useShellStore()
 const ledger = useDeviceLedgerStore()
+const report = useCraneReportStore()
+
 const set = computed(() => deviceSet(props.kind))
+const isCrane = computed(() => props.kind === 'crane')
 
-/**
- * 报表是否可用。
- *
- * 报表的所有数字（吊次、吊重、利用率、机队分台）都由 `history` 派生，而
- * `history` 来自 tsdb 实时数据接口 —— 该接口在当前部署上 404（台账接口只给
- * 静态属性）。没有历史数据时整块替换为空态：设计稿的日报/周报/月报表
- * 结构仍在，只是不再拿编造的 7 天曲线去填。
- */
-const hasData = computed(() => set.value.units.some((u) => (u.history?.length ?? 0) > 0))
-
-/**
- * 台账还没到时的同步态。
- *
- * 页签在加载中就能点（用户可能在灰条还没走完时切到「作业报表」），此前这里
- * 会立刻显示「暂无作业报表数据」—— 但那是**结论**，此刻还没资格下。改成先铺
- * 报表骨架：KPI 三格 + 机队表的行，台账到手后再决定是出报表还是出空态。
- */
+/** 台账还没到（或用例里直接给空）时的同步态：先铺骨架，别急着下「没数据」的结论 */
 const syncing = computed(() => !set.value.units.length && ledger.state === 'loading')
-const showSkel = useSlowLoading(() => syncing.value)
 
-type Span = 'day' | 'week' | 'month'
-const span = ref<Span>('day')
-watch(
-  () => props.kind,
-  () => {
-    span.value = 'day'
-  },
+/**
+ * 机组 → 查询参数。
+ *
+ * sn 不由台账给（`:8084` 没有这个字段），走 V2 场景里登记的编号表；
+ * 台号从设备名首段数字取（智能塔机2 → 2）。传统塔机5 查不到登记 → null。
+ */
+const units = computed<ReportUnit[]>(() =>
+  set.value.units.map((u) => ({
+    id: u.id,
+    sn: isCrane.value ? craneSnOf(unitNo(u.name)) : null,
+  })),
 )
 
-/** 年份前缀（历史/月度行存的是 'MM-DD'） */
-const year = protoToday().getFullYear()
+/**
+ * 台账可能比页签晚到（先点「作业报表」再等台账回来），所以盯住机组 id 集合：
+ * 一到齐就按当前粒度查一次。`immediate` 负责首次进入页面。
+ */
+watch(
+  () => units.value.map((u) => u.id).join(','),
+  (key) => {
+    if (key && isCrane.value) void report.load(units.value, report.span)
+  },
+  { immediate: true },
+)
 
-/** 两种设备各自的报表键：机队表与结论都只认这几个键 */
-const KEYS: Record<DeviceKind, string[]> = {
-  crane: ['trips', 'weight', 'util', 'rate'],
-  lift: ['trips', 'load', 'util', 'people'],
-}
-
+/** 机组 + 各自结果（报表状态与台账顺序对齐，缺数的机组也要占一行） */
 interface Row {
   id: string
   name: string
-  alarm: string
-  vals: Record<string, number>
+  stats: UnitStats | null
 }
 
-/** 汇总一组按日行：次数/载重求和，利用率与负荷取平均（原 craneSpan） */
-function spanOf(rows: Record<string, number>[]): Record<string, number> {
-  const n = rows.length || 1
-  const out: Record<string, number> = {}
-  for (const key of ['trips', 'weight', 'load', 'people']) {
-    if (rows[0]?.[key] != null) out[key] = rows.reduce((s, r) => s + (r[key] ?? 0), 0)
-  }
-  for (const key of ['util', 'rate']) {
-    if (rows[0]?.[key] != null) out[key] = Math.round(rows.reduce((s, r) => s + (r[key] ?? 0), 0) / n)
-  }
-  return out
-}
+const rows = computed<Row[]>(() =>
+  set.value.units.map((u) => ({
+    id: u.id,
+    name: u.name,
+    stats: report.rows.find((r) => r.id === u.id)?.stats ?? null,
+  })),
+)
 
-function extreme(rows: Row[], key: string, high: boolean): Row {
-  return [...rows].sort((a, b) => (high ? b.vals[key] - a.vals[key] : a.vals[key] - b.vals[key]))[0]
-}
+/** 有没有任何一台取到数（0 吊次算取到；null 才是没取到） */
+const hasData = computed(() => rows.value.some((r) => r.stats !== null))
 
-function share(part: number, total: number): number {
-  return total ? Math.round((part / total) * 100) : 0
-}
+/** 慢请求才显灰条：快请求闪一下反而更吵 */
+const showSkel = useSlowLoading(() => syncing.value || (isCrane.value && !hasData.value && report.state === 'loading'))
 
-/** 当前粒度下每台的行（含警报文案，day 才带） */
-const rows = computed<Row[]>(() => {
-  const units: DeviceUnit[] = set.value.units
-  if (span.value === 'day') {
-    return units.map((u) => ({ id: u.id, name: u.name, alarm: u.alarms ?? '', vals: { ...u.history[0].vals } }))
-  }
-  return units.map((u) => {
-    const src =
-      span.value === 'week'
-        ? u.history.map((d) => d.vals)
-        : deviceMonthRows(u, KEYS[props.kind]).map((r) => r.vals)
-    return { id: u.id, name: u.name, alarm: '', vals: spanOf(src) }
-  })
-})
+const total = computed(() => totals(rows.value.map((r) => r.stats)))
 
-/** 报表区间文案 */
-const rangeText = computed(() => {
-  if (span.value === 'day') return dateKey(addDays(protoToday(), -1))
-  if (span.value === 'week') {
-    const h = set.value.units[0].history
-    return `${year}-${h[h.length - 1].date} 至 ${year}-${h[0].date}`
-  }
-  const m = deviceMonthRows(set.value.units[0], KEYS[props.kind])
-  return `${year}-${m[0].date} 至 ${year}-${m[m.length - 1].date}`
-})
-
+/** 三格合计：值拆成「数字 + 单位」，与设计稿的 `<b>26<em>次</em></b>` 一致 */
 const kpis = computed(() => {
-  const isCrane = props.kind === 'crane'
-  const trips = rows.value.reduce((s, r) => s + r.vals.trips, 0)
-  const wKey = isCrane ? 'weight' : 'load'
-  const weight = Math.round(rows.value.reduce((s, r) => s + (r.vals[wKey] ?? 0), 0) * 100) / 100
-  const util = Math.round(rows.value.reduce((s, r) => s + r.vals.util, 0) / rows.value.length)
-  return { isCrane, trips, weight, util }
-})
-
-/** 结论条目（原 craneConclusions / liftConclusions，按数据挑重点） */
-const points = computed<{ tag: string; warn?: boolean; text: string }[]>(() => {
-  const rs = rows.value
-  const n = rs.length
-  if (props.kind === 'crane') {
-    const low = extreme(rs, 'util', false)
-    const busy = extreme(rs, 'trips', true)
-    const heavy = extreme(rs, 'weight', true)
-    const loaded = extreme(rs, 'rate', true)
-    const trips = rs.reduce((s, r) => s + r.vals.trips, 0)
-    const weight = rs.reduce((s, r) => s + r.vals.weight, 0)
-    let focus = `${low.name} 利用率 ${low.vals.util}%`
-    if (low.alarm && low.alarm !== '0次') focus += ` · 报警 ${low.alarm}`
-    const others = rs.filter((r) => r !== low && r.alarm && r.alarm !== '0次')
-    if (others.length) focus += ` · ${others.map((r) => `${r.name}报警 ${r.alarm}`).join('，')}`
-    if (!others.length && (!low.alarm || low.alarm === '0次')) focus += `，${n}台最低`
-    return [
-      { tag: '关注', warn: true, text: focus },
-      { tag: '主力', text: `${busy.name} 吊次 ${busy.vals.trips}次，占 ${share(busy.vals.trips, trips)}%` },
-      { tag: '产出', text: `${heavy.name} 吊重 ${heavy.vals.weight.toFixed(2)}t，占 ${share(heavy.vals.weight, weight)}%` },
-      { tag: '负荷', text: `${loaded.name} ${loaded.vals.rate}%，${n}台最高` },
-    ]
-  }
-  // 电梯（原 liftConclusions）
-  const low = extreme(rs, 'util', false)
-  const busy = extreme(rs, 'trips', true)
-  const riders = extreme(rs, 'people', true)
-  const heavy = extreme(rs, 'load', true)
-  const trips = rs.reduce((s, r) => s + r.vals.trips, 0)
-  const people = rs.reduce((s, r) => s + r.vals.people, 0)
-  const load = rs.reduce((s, r) => s + r.vals.load, 0)
-  const same = busy.id === riders.id && busy.id === heavy.id
-  const offline = set.value.units.filter((u) => u.status === '离线').map((u) => u.tab)
-  const items: { tag: string; warn?: boolean; text: string }[] = [
-    { tag: '关注', warn: true, text: `${low.name} 利用率 ${low.vals.util}%，${n}台最低` },
-    {
-      tag: '主力',
-      text: same
-        ? `${busy.name} 循环占 ${share(busy.vals.trips, trips)}% · 运送占 ${share(riders.vals.people, people)}% · 载重占 ${share(heavy.vals.load, load)}%`
-        : `${busy.name} 循环 ${busy.vals.trips}次，占 ${share(busy.vals.trips, trips)}%`,
-    },
-    { tag: '短板', warn: true, text: `${low.name} 循环 ${low.vals.trips}次，只占 ${share(low.vals.trips, trips)}%` },
+  const work = formatWork(total.value.workSec)
+  const weight = total.value.weight
+  return [
+    { label: '合计吊次', n: String(total.value.trips), u: '次' },
+    { label: '合计吊重', n: weight === null ? DASH : weight.toFixed(2), u: weight === null ? '' : 't' },
+    { label: '作业时长', n: work.n, u: work.u },
   ]
-  if (!same && riders.id !== busy.id) {
-    items.push({ tag: '运送', text: `${riders.name} ${riders.vals.people}人，占 ${share(riders.vals.people, people)}%` })
-  }
-  if (offline.length) items.push({ tag: '当前', warn: true, text: `${offline.join('、')} 离线` })
-  return items.slice(0, 4)
 })
 
-/** 机队表头与行（原 craneFleetLines / liftFleetLines） */
-const fleet = computed(() => {
-  const isCrane = props.kind === 'crane'
-  const head = isCrane ? ['塔机', '吊次', '吊重', '利用率', '负荷'] : ['电梯', '循环', '载重', '利用率', '运送']
-  const body = rows.value.map((r) => ({
+/** 机队表：列比设计稿少两个（利用率/负荷无源），换成峰值与时长 */
+const FLEET_HEAD = ['塔机', '吊次', '吊重', '峰值', '时长']
+
+const fleet = computed(() =>
+  rows.value.map((r) => ({
     id: r.id,
     name: r.name,
-    alarm: span.value === 'day' && r.alarm && r.alarm !== '0次' ? r.alarm : '',
-    cells: isCrane
-      ? [`${r.vals.trips}次`, `${r.vals.weight.toFixed(2)}t`, `${r.vals.util}%`, `${r.vals.rate}%`]
-      : [`${r.vals.trips}次`, `${r.vals.load.toFixed(2)}t`, `${r.vals.util}%`, `${Math.round(r.vals.people)}人`],
-  }))
-  return { head, body }
+    cells: r.stats
+      ? [
+          `${r.stats.trips}次`,
+          formatTons(r.stats.weight),
+          formatTons(r.stats.maxWeight),
+          workText(r.stats.workSec),
+        ]
+      : [DASH, DASH, DASH, DASH],
+  })),
+)
+
+/**
+ * 结论：按数据挑重点。
+ *
+ * 设计稿的四条是「关注（利用率最低）/ 主力 / 产出 / 负荷」；利用率与负荷都
+ * 没有源，这里换成同样可核验的「关注（吊次最少）/ 主力 / 产出 / 峰值」，
+ * 另外把没纳入统计的机组单列一条 —— 缺一台车的合计必须说明白，否则
+ * 「合计 72 次」会被读成全场的数。
+ */
+const points = computed<{ tag: string; warn?: boolean; text: string }[]>(() => {
+  const has = rows.value.filter((r): r is Row & { stats: UnitStats } => r.stats !== null)
+  const snOf = new Map(units.value.map((u) => [u.id, u.sn]))
+  // 缺数分两种，文案不能混：没有平台编号是「永远查不了」，查询失败是「这次没拿到」
+  const noSn = rows.value.filter((r) => r.stats === null && !snOf.get(r.id)).map((r) => r.name)
+  const failed = rows.value.filter((r) => r.stats === null && snOf.get(r.id)).map((r) => r.name)
+  const items: { tag: string; warn?: boolean; text: string }[] = []
+
+  if (has.length) {
+    const byTrips = [...has].sort((a, b) => b.stats.trips - a.stats.trips)
+    const byWeight = [...has].filter((r) => r.stats.weight !== null).sort((a, b) => (b.stats.weight ?? 0) - (a.stats.weight ?? 0))
+    const byPeak = [...has].filter((r) => r.stats.maxWeight !== null).sort((a, b) => (b.stats.maxWeight ?? 0) - (a.stats.maxWeight ?? 0))
+    const busy = byTrips[0]
+    const idle = byTrips[byTrips.length - 1]
+
+    // 只有一台车时「最少的」和「最多的」是同一台，这条会读起来像废话
+    if (has.length > 1) {
+      items.push({
+        tag: '关注',
+        warn: true,
+        text: `${idle.name} 吊次 ${idle.stats.trips}次，占 ${share(idle.stats.trips, total.value.trips)}%`,
+      })
+    }
+    items.push({ tag: '主力', text: `${busy.name} 吊次 ${busy.stats.trips}次，占 ${share(busy.stats.trips, total.value.trips)}%` })
+    if (byWeight.length) {
+      const heavy = byWeight[0]
+      items.push({
+        tag: '产出',
+        text: `${heavy.name} 吊重 ${formatTons(heavy.stats.weight)}，占 ${share(heavy.stats.weight ?? 0, total.value.weight ?? 0)}%`,
+      })
+    }
+    if (byPeak.length) {
+      items.push({ tag: '峰值', text: `${byPeak[0].name} 单次最重 ${formatTons(byPeak[0].stats.maxWeight)}，${has.length}台中最高` })
+    }
+  }
+
+  if (noSn.length) items.push({ tag: '缺数', warn: true, text: `${noSn.join('、')} 无平台编号，未纳入统计` })
+  if (failed.length) items.push({ tag: '缺数', warn: true, text: `${failed.join('、')} 数据查询失败，未纳入统计` })
+  return items
 })
 
-const kindName = computed(() => ({ day: '日报', week: '周报', month: '月报' })[span.value])
+const kindName = computed(() => ({ day: '日报', week: '周报', month: '月报' })[report.span])
 
-/** 纯文本版：分享与下载用（原 craneReportPlain/liftReportPlain 的结构） */
+function pick(next: ReportSpan): void {
+  if (next === report.span && report.state !== 'empty') return
+  if (!isCrane.value || !units.value.length) return
+  void report.load(units.value, next)
+}
+
+/** 纯文本版：分享与下载用 */
 const plainText = computed(() => {
   const lines = [
-    `${set.value.noun}${kindName.value} ${rangeText.value}`,
+    `塔机${kindName.value} ${report.range.text}`,
     '向阳村项目',
-    `${kpis.value.isCrane ? '合计吊次' : '合计循环'} ${kpis.value.trips}次，${kpis.value.isCrane ? '合计吊重' : '合计载重'} ${kpis.value.weight}t，平均利用率 ${kpis.value.util}%`,
+    `合计吊次 ${total.value.trips}次，合计吊重 ${formatTons(total.value.weight)}，作业时长 ${workText(total.value.workSec)}`,
     '结论',
     ...points.value.map((p) => `${p.tag}：${p.text}`),
     '',
   ]
-  for (const r of fleet.value.body) {
-    const labels = fleet.value.head.slice(1)
-    lines.push(`${r.name} ${r.cells.map((c, i) => `${labels[i]} ${c}`).join('，')}`)
+  for (const r of fleet.value) {
+    const [trips, weight, peak, work] = r.cells
+    lines.push(`${r.name} 吊次 ${trips}，吊重 ${weight}，峰值 ${peak}，时长 ${work}`)
   }
   return lines.join('\n')
 })
 
 async function onShare(): Promise<void> {
-  const title = `${set.value.noun}${kindName.value} ${rangeText.value}`
+  const title = `${set.value.noun}${kindName.value} ${report.range.text}`
   const result = await shareText({
     title,
     text: plainText.value,
-    fileName: `${set.value.noun}${kindName.value}-${rangeText.value}.txt`,
+    fileName: `${set.value.noun}${kindName.value}-${report.range.text}.txt`,
   })
   if (result === 'shared') shell.showToast(`${kindName.value}已分享`, 'success')
   else if (result === 'downloaded') shell.showToast(`${kindName.value}已导出，并复制到剪贴板`, 'success')
@@ -229,11 +225,11 @@ async function onShare(): Promise<void> {
 
 <template>
   <!--
-    台账同步中：按报表的真实结构铺灰条（三格 KPI + 机队表行），
-    数据到手后再决定出报表还是出下面的空态。
+    台账 / 工作循环同步中：按报表的真实结构铺灰条（三格 KPI + 机队表行），
+    结果到手后再决定出报表还是出下面的空态。
   -->
   <section
-    v-if="!hasData && syncing"
+    v-if="syncing || (isCrane && !hasData && report.state === 'loading')"
     class="dev-block skel-fade"
     :class="{ 'is-on': showSkel }"
     aria-busy="true"
@@ -258,26 +254,35 @@ async function onShare(): Promise<void> {
     </div>
   </section>
 
-  <!-- 没有历史作业数据（tsdb 未开放）→ 明确空态，不渲染任何编号 -->
+  <!-- 电梯：作业数据在 IOT 平台且当前账号无权限 → 说明白，不摆空指标 -->
+  <section v-else-if="!isCrane" class="dev-block">
+    <div class="data-empty" data-empty="device-report">
+      <p>电梯作业报表暂未接入</p>
+      <p class="data-empty-sub">电梯的升降次数与载重来自 IOT 平台的作业数据接口，当前账号没有该接口权限。</p>
+    </div>
+  </section>
+
+  <!-- 塔机一台车都没取到（接口不通 / 全部无编号）→ 明确空态 -->
   <section v-else-if="!hasData" class="dev-block">
     <div class="data-empty" data-empty="device-report">
       <p>暂无作业报表数据</p>
-      <p class="data-empty-sub">报表依赖设备实时作业数据，当前接口未开放；设备台账只能提供静态信息。</p>
+      <p class="data-empty-sub">未取到塔机工作循环数据：需要塔机平台接口可达，且设备有平台编号。</p>
     </div>
   </section>
 
   <section v-else class="dev-block fill-in">
     <div class="uav-tabs report-span">
-      <button type="button" :class="{ on: span === 'day' }" :aria-pressed="span === 'day'" @click="span = 'day'">日报</button>
-      <button type="button" :class="{ on: span === 'week' }" :aria-pressed="span === 'week'" @click="span = 'week'">周报</button>
-      <button type="button" :class="{ on: span === 'month' }" :aria-pressed="span === 'month'" @click="span = 'month'">月报</button>
+      <button type="button" :class="{ on: report.span === 'day' }" :aria-pressed="report.span === 'day'" @click="pick('day')">日报</button>
+      <button type="button" :class="{ on: report.span === 'week' }" :aria-pressed="report.span === 'week'" @click="pick('week')">周报</button>
+      <button type="button" :class="{ on: report.span === 'month' }" :aria-pressed="report.span === 'month'" @click="pick('month')">月报</button>
     </div>
 
-    <p class="report-date">{{ rangeText }}</p>
+    <p class="report-date">{{ report.range.text }}</p>
     <div class="report-kpis">
-      <div class="report-kpi"><span>{{ kpis.isCrane ? '合计吊次' : '合计循环' }}</span><b>{{ kpis.trips }}<em>次</em></b></div>
-      <div class="report-kpi"><span>{{ kpis.isCrane ? '合计吊重' : '合计载重' }}</span><b>{{ kpis.weight }}<em>t</em></b></div>
-      <div class="report-kpi"><span>平均利用率</span><b>{{ kpis.util }}<em>%</em></b></div>
+      <div v-for="k in kpis" :key="k.label" class="report-kpi">
+        <span>{{ k.label }}</span>
+        <b :class="{ 'is-dash': k.n === DASH }">{{ k.n }}<em v-if="k.u">{{ k.u }}</em></b>
+      </div>
     </div>
 
     <div class="report-judge">
@@ -291,11 +296,11 @@ async function onShare(): Promise<void> {
 
     <div class="report-fleet">
       <div class="report-line is-hd">
-        <b>{{ fleet.head[0] }}</b><span v-for="h in fleet.head.slice(1)" :key="h">{{ h }}</span>
+        <b>{{ FLEET_HEAD[0] }}</b><span v-for="h in FLEET_HEAD.slice(1)" :key="h">{{ h }}</span>
       </div>
-      <div v-for="r in fleet.body" :key="r.id" class="report-line">
-        <b>{{ r.name }}<em v-if="r.alarm">报警 {{ r.alarm }}</em></b>
-        <span v-for="(c, i) in r.cells" :key="i">{{ c }}</span>
+      <div v-for="r in fleet" :key="r.id" class="report-line">
+        <b>{{ r.name }}</b>
+        <span v-for="(c, i) in r.cells" :key="i" :class="{ 'is-dash': c === DASH }">{{ c }}</span>
       </div>
     </div>
 

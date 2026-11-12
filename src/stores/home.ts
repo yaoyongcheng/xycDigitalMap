@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
+import { ROBOT_CARDS } from '@/utils/deviceLedger'
 import type { Equip, HomeMod, PeopleNode } from '@/types'
 
 /**
@@ -13,10 +14,11 @@ import type { Equip, HomeMod, PeopleNode } from '@/types'
  * 「智眸 / 智巡 / 智控」——质量管理与进度管理整块删除，qaCats 随之移除；
  * 智巡的照片数据是常量，放在 data/config.ts 而不进 store。
  *
- * **2026-11 第二轮：智控四卡改由设备台账接口派生。**
+ * **2026-11 第二轮：智控前四卡改由设备台账接口派生。**（第三轮补入 5 类机器人静态卡）
  * 原先这里写着 4 条设备的字面量（塔机 3 台 / 电梯 4 台 / 无人机 1 架 / 爬架 1 台），
  * 台数与在线态全是设计稿示意值。现在改为 `useDeviceLedgerStore().equip`：
- *   · 四张卡恒定存在（入口不能消失），台数/在线数来自 `:8084` 台账；
+ *   · 前四张卡恒定存在（入口不能消失），台数/在线数来自 `:8084` 台账；
+ *     后五张是机器人静态卡（无数据源，见 utils/deviceLedger.ts: ROBOT_CARDS）；
  *   · 未登录、加载中、失败都只是「units 为空」，由面板给对应的空态，
  *     不再往卡片里塞假数字；
  *   · 数值位只放台账里真有的字段（高度），没有就不渲染 —— 见 utils/deviceLedger.ts。
@@ -50,13 +52,17 @@ export const useHomeStore = defineStore('home', () => {
   )
 
   /**
-   * 智控四卡（原 js/app.js:851-878）。
+   * 智控九卡（原 js/app.js:851-909）。
    *
-   * 结构与设计稿一致：塔机 / 电梯 / 无人机 / 爬架，四类都能下钻到详情页。
-   * 台数不再写死 —— `card.units` 就是台账里的真实设备，`equipCount()` 据此
+   * 结构与设计稿 gx2 一致：塔机 / 电梯 / 无人机 / 爬架 + 5 类机器人。
+   * 前四类能下钻到详情页、台数来自台账；后五类**没有任何数据源**，
+   * 是静态入口卡（见 utils/deviceLedger.ts: ROBOT_CARDS）——
+   * 卡片在、但不能点、数值位只放「—」。
+   *
+   * 台数不写死 —— `card.units` 就是台账里的真实设备，`equipCount()` 据此
    * 算在线 x/y 与状态色；某一类 0 台时卡片仍在（入口），显示 0/0。
    */
-  const siteEquip = computed<Equip[]>(() => ledger.equip)
+  const siteEquip = computed<Equip[]>(() => [...ledger.equip, ...ROBOT_CARDS])
 
   /** 原 js/app.js:336-338 peopleChildren() */
   function peopleChildren(): PeopleNode[] {

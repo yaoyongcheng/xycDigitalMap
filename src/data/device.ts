@@ -50,7 +50,7 @@ export function deviceSet(kind: DeviceKind): {
   noun: string
 } {
   return kind === 'crane'
-    ? { units: liveUnits.crane, title: '智能塔机', reportTitle: '塔机日报', noun: '塔机' }
+    ? { units: liveUnits.crane, title: '5G塔机', reportTitle: '塔机日报', noun: '塔机' }
     : { units: liveUnits.lift, title: '智能电梯', reportTitle: '电梯日报', noun: '电梯' }
 }
 

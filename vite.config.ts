@@ -1,7 +1,136 @@
 import { fileURLToPath, URL } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, type Connect, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
+
+// 塔机实时推送的 MQTT↔WebSocket 桥（dev / preview / serve.mjs 共用）
+import { attachMqttBridge } from './server/mqttBridge.mjs'
+
+/**
+ * 塔机数据服务反代（仅开发期）
+ *
+ * `tciccs:30400` **不放行任何跨域来源** —— 带 `Origin` 的预检 `OPTIONS` 一律
+ * `403 Invalid CORS request`，正常 POST 的响应里也没有 `Access-Control-Allow-Origin`。
+ * 浏览器因此读不到响应体，而 Postman / curl 不执行同源策略，看上去就成了
+ * 「Postman 能调、页面调不通」。开发期用这个中间件把它挂到同源的 `/crane-api` 下。
+ *
+ * 为什么不用 `server.proxy`：Vite 8（rolldown）的代理是原生实现，走自己的
+ * 网络栈，对这类非常规端口（:30400）在本机直接 ECONNREFUSED；
+ * 用 Node 的 `fetch` 手写一层更可控，也能在 `server/serve.mjs` 里复用同一套逻辑。
+ *
+ * 只转发这一个前缀、只接受 POST、请求体上限 64KB —— 它不是通用代理。
+ */
+const CRANE_PREFIX = '/crane-api'
+const CRANE_UPSTREAM = 'https://tciccs.cscec3bxjy.cn:30400'
+const PROXY_MAX_BODY = 64 * 1024
+
+/**
+ * 反代处理器：dev server 与 preview server 共用一份。
+ *
+ * connect 的挂载会把 `req.url` 截成前缀之后的部分（`/crane-api/x` → `/x`），
+ * 正好原样拼到上游主机名上，不用自己剥前缀。
+ */
+const craneHandler: Connect.NextHandleFunction = async (req, res) => {
+  if (req.method !== 'POST') {
+    res.statusCode = 405
+    res.setHeader('Allow', 'POST')
+    res.end('Method Not Allowed')
+    return
+  }
+
+  const chunks: Buffer[] = []
+  let size = 0
+  try {
+    await new Promise<void>((resolve, reject) => {
+      req.on('data', (c: Buffer) => {
+        size += c.length
+        if (size > PROXY_MAX_BODY) {
+          req.destroy()
+          reject(new Error('too large'))
+          return
+        }
+        chunks.push(c)
+      })
+      req.on('end', () => resolve())
+      req.on('error', reject)
+    })
+  } catch {
+    res.statusCode = 413
+    res.end('Payload Too Large')
+    return
+  }
+
+  try {
+    const up = await fetch(`${CRANE_UPSTREAM}${req.url ?? ''}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': req.headers['content-type'] ?? 'application/json; charset=UTF-8',
+        Accept: 'application/json',
+      },
+      body: Buffer.concat(chunks),
+      signal: AbortSignal.timeout(20_000),
+    })
+    const text = await up.text()
+    res.statusCode = up.status
+    res.setHeader('Content-Type', up.headers.get('content-type') ?? 'application/json; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-store')
+    res.end(text)
+  } catch (e) {
+    res.statusCode = 502
+    res.end(`Bad Gateway: ${(e as Error)?.message ?? e}`)
+  }
+}
+
+function craneProxy(): Plugin {
+  return {
+    name: 'xyc-crane-proxy',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use(CRANE_PREFIX, craneHandler)
+    },
+    /**
+     * `vite preview` 用的是 preview server，**不共享** `configureServer` 挂的中间件。
+     * 不挂这一份的话，用 `npm run preview` 验证 `dist` 产物时 `/crane-api` 会 404，
+     * 看着像「反代白写了」—— 其实只是挂错了服务器。
+     */
+    configurePreviewServer(server) {
+      server.middlewares.use(CRANE_PREFIX, craneHandler)
+    },
+  }
+}
+
+/**
+ * 塔机实时推送的同源桥（`/mqtt`）
+ *
+ * 浏览器碰不到原始 TCP 1883，所以历史上是转发到厂商的 WS 网关
+ * `ws://115.159.67.12:8084/mqtt`。但那条网关路由 2026-11-12 傍晚起持续
+ * 502/404（同一时刻 1883 完全正常、订阅立刻收到三台车推送）—— 坏的是 WS 包装，
+ * 不是数据。现在改为**本机直连 1883，自己对外提供 WebSocket**，
+ * 实现见 `server/mqttBridge.mjs`（dev / preview / serve.mjs 共用一份）。
+ *
+ * 前端零改动：照旧连同源 `/mqtt` 说 MQTT-over-WS。
+ */
+type UpgradeServer = { httpServer?: import('node:http').Server | null }
+
+function attachMqttUpgrade(server: UpgradeServer): void {
+  const httpServer = server.httpServer
+  if (!httpServer) return
+  attachMqttBridge(httpServer)
+}
+
+function mqttWsProxy(): Plugin {
+  return {
+    name: 'xyc-mqtt-ws-proxy',
+    apply: 'serve',
+    configureServer(server) {
+      attachMqttUpgrade(server)
+    },
+    // 同 craneProxy：preview server 不共享 configureServer 挂的东西
+    configurePreviewServer(server) {
+      attachMqttUpgrade(server)
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -11,6 +140,12 @@ export default defineConfig({
 
   plugins: [
     vue(),
+
+    // 开发期把塔机数据服务挂到同源下（CORS 白名单不含本站，直连必被拦）
+    craneProxy(),
+
+    // 塔机实时推送：broker 的 MQTT-over-WS 挂到同源 /mqtt
+    mqttWsProxy(),
 
     VitePWA({
       // 现场用户不会手动刷新，用 autoUpdate 让新版本静默生效

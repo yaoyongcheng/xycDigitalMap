@@ -398,6 +398,28 @@ describe('第二轮体验优化回归', () => {
       expect(css).toContain('.crew-overview > .crew-kpi:first-child b { font-size: var(--num-lg); }')
     })
 
+    /*
+     * 真实事故：「在线 x/y」的分子一度被折成两行、还比旁边的数小一号。
+     *
+     * 模板是 `<b><span class="eq-on">4</span><i>/4</i></b>`，而标签规则当时
+     * 写成后代选择器 `.eq-val span` —— 它把 `<b>` 里那个孙子 span 也当标签，
+     * 套上 `display: block`（分子独占一行，`/4` 被挤到下一行）、`font-size: 12px`、
+     * `color: var(--muted)`。深色段那条 `#page-home .eq-val span` 更狠：带 ID
+     * 前缀，特异性压过 `.eq-online .eq-on` 的绿色，分子看起来就是灰的。
+     *
+     * 所以标签必须用子选择器 `>`：标签是直接子级、分子是孙子，一刀切开。
+     * 这条守卫不许再退回后代写法 —— 症状（换行 + 变小 + 变灰）会同时复发。
+     */
+    it('设备卡标签用子选择器，不去误伤 <b> 里的分子', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      expect(css).toContain('.eq-val > span')
+      expect(css).toContain('#page-home .eq-val > span')
+      // 先剥注释：上面那段说明里就写着反例 `.eq-val span`，不剥会自己咬自己
+      const decls = css.replace(/\/\*[\s\S]*?\*\//g, '')
+      // 只允许 `>` 形式：任何不带 `>` 的 `.eq-val span` 都会命中分子
+      expect(decls).not.toMatch(/\.eq-val\s+span\b/)
+    })
+
     it(':focus-visible 存在，且深色底用更亮的蓝', () => {
       const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
       expect(css).toContain(':focus-visible {')

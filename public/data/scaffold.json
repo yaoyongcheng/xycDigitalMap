@@ -1,0 +1,270 @@
+{
+ "sensors": [
+  {
+   "itemName": "1#机位",
+   "fbTilt": "3.13mm",
+   "lrTilt": "0.25mm",
+   "load": "0.00吨",
+   "updateTime": "2026-11-07 14:02:49"
+  },
+  {
+   "itemName": "2#机位",
+   "fbTilt": "3.43mm",
+   "lrTilt": "1.90mm",
+   "load": "0.28吨",
+   "updateTime": "2026-11-07 13:58:53"
+  },
+  {
+   "itemName": "3#机位",
+   "fbTilt": "4.24mm",
+   "lrTilt": "0.42mm",
+   "load": "0.26吨",
+   "updateTime": "2026-11-07 13:58:53"
+  },
+  {
+   "itemName": "4#机位",
+   "fbTilt": "3.13mm",
+   "lrTilt": "1.24mm",
+   "load": "0.24吨",
+   "updateTime": "2026-11-07 13:58:53"
+  },
+  {
+   "itemName": "5#机位",
+   "fbTilt": "3.67mm",
+   "lrTilt": "0.38mm",
+   "load": "0.20吨",
+   "updateTime": "2026-11-07 13:58:53"
+  },
+  {
+   "itemName": "6#机位",
+   "fbTilt": "4.21mm",
+   "lrTilt": "0.41mm",
+   "load": "0.61吨",
+   "updateTime": "2026-11-07 13:58:53"
+  },
+  {
+   "itemName": "7#机位",
+   "fbTilt": "4.03mm",
+   "lrTilt": "1.14mm",
+   "load": "0.02吨",
+   "updateTime": "2026-11-07 13:58:53"
+  },
+  {
+   "itemName": "8#机位",
+   "fbTilt": "4.80mm",
+   "lrTilt": "0.56mm",
+   "load": "0.28吨",
+   "updateTime": "2026-11-07 13:58:53"
+  },
+  {
+   "itemName": "9#机位",
+   "fbTilt": "5.25mm",
+   "lrTilt": "0.70mm",
+   "load": "0.00吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "10#机位",
+   "fbTilt": "4.82mm",
+   "lrTilt": "1.44mm",
+   "load": "0.15吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "11#机位",
+   "fbTilt": "4.61mm",
+   "lrTilt": "0.53mm",
+   "load": "0.20吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "12#机位",
+   "fbTilt": "4.65mm",
+   "lrTilt": "1.51mm",
+   "load": "0.15吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "13#机位",
+   "fbTilt": "5.31mm",
+   "lrTilt": "0.12mm",
+   "load": "0.12吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "14#机位",
+   "fbTilt": "4.12mm",
+   "lrTilt": "0.90mm",
+   "load": "0.20吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "15#机位",
+   "fbTilt": "5.02mm",
+   "lrTilt": "0.43mm",
+   "load": "0.22吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "16#机位",
+   "fbTilt": "5.46mm",
+   "lrTilt": "4.12mm",
+   "load": "0.43吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "17#机位",
+   "fbTilt": "4.86mm",
+   "lrTilt": "2.61mm",
+   "load": "0.36吨",
+   "updateTime": "2026-11-07 13:58:54"
+  },
+  {
+   "itemName": "18#机位",
+   "fbTilt": "2.35mm",
+   "lrTilt": "0.82mm",
+   "load": "0.24吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "19#机位",
+   "fbTilt": "6.36mm",
+   "lrTilt": "1.23mm",
+   "load": "0.14吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "20#机位",
+   "fbTilt": "4.80mm",
+   "lrTilt": "16.60mm",
+   "load": "0.50吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "21#机位",
+   "fbTilt": "3.29mm",
+   "lrTilt": "0.93mm",
+   "load": "0.24吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "22#机位",
+   "fbTilt": "3.91mm",
+   "lrTilt": "1.87mm",
+   "load": "0.22吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "23#机位",
+   "fbTilt": "6.11mm",
+   "lrTilt": "1.00mm",
+   "load": "0.19吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "24#机位",
+   "fbTilt": "5.01mm",
+   "lrTilt": "2.13mm",
+   "load": "0.06吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "25#机位",
+   "fbTilt": "5.03mm",
+   "lrTilt": "0.08mm",
+   "load": "0.37吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "26#机位",
+   "fbTilt": "4.03mm",
+   "lrTilt": "0.85mm",
+   "load": "0.08吨",
+   "updateTime": "2026-11-07 13:58:55"
+  },
+  {
+   "itemName": "27#机位",
+   "fbTilt": "3.56mm",
+   "lrTilt": "0.43mm",
+   "load": "0.32吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "28#机位",
+   "fbTilt": "4.20mm",
+   "lrTilt": "0.48mm",
+   "load": "0.15吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "29#机位",
+   "fbTilt": "3.22mm",
+   "lrTilt": "2.17mm",
+   "load": "0.15吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "30#机位",
+   "fbTilt": "3.48mm",
+   "lrTilt": "179.50mm",
+   "load": "0.11吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "31#机位",
+   "fbTilt": "4.77mm",
+   "lrTilt": "0.23mm",
+   "load": "0.05吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "32#机位",
+   "fbTilt": "4.58mm",
+   "lrTilt": "0.33mm",
+   "load": "0.15吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "33#机位",
+   "fbTilt": "2.98mm",
+   "lrTilt": "0.10mm",
+   "load": "0.24吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "34#机位",
+   "fbTilt": "3.80mm",
+   "lrTilt": "1.04mm",
+   "load": "0.23吨",
+   "updateTime": "2026-11-07 13:58:56"
+  },
+  {
+   "itemName": "35#机位",
+   "fbTilt": "3.10mm",
+   "lrTilt": "0.37mm",
+   "load": "0.32吨",
+   "updateTime": "2026-11-07 13:58:57"
+  },
+  {
+   "itemName": "36#机位",
+   "fbTilt": "3.66mm",
+   "lrTilt": "0.06mm",
+   "load": "0.24吨",
+   "updateTime": "2026-11-07 13:58:57"
+  },
+  {
+   "itemName": "37#机位",
+   "fbTilt": "6.21mm",
+   "lrTilt": "2.82mm",
+   "load": "0.45吨",
+   "updateTime": "2026-11-07 13:58:57"
+  },
+  {
+   "itemName": "38#机位",
+   "fbTilt": "3.21mm",
+   "lrTilt": "1.25mm",
+   "load": "0.08吨",
+   "updateTime": "2026-11-07 13:58:57"
+  }
+ ]
+}

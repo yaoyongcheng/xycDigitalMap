@@ -188,6 +188,25 @@ const ICON_MAP = {
     ],
   },
 
+  /**
+   * 机器人类设备的通用图标（2026-11 设计稿 gx2 版，原 equipIco.robot）。
+   *
+   * 设计稿给 5 类机器人各配了一张 jpg 立绘，本地没有这些素材，而且
+   * 图片引用是清单管制的（tests/unit/guards.spec.ts 会因新增未登记图片失败）。
+   * 5 类机器人在页面上是「无数据的静态入口卡」，用这一枚通用剪影已足够
+   * 表达「这是一台机器人」，也为将来补素材留了位置（补图只需改 ICO_IMG）。
+   */
+  robot: {
+    viewBox: '0 0 24 24',
+    attrs: MOD_STROKE,
+    shapes: [
+      { tag: 'rect', x: 6, y: 8, width: 12, height: 10, rx: 2 },
+      { tag: 'circle', cx: 9.5, cy: 12.2, r: 1 },
+      { tag: 'circle', cx: 14.5, cy: 12.2, r: 1 },
+      { tag: 'path', d: 'M12 8V5.5M9 18.2v1.8M15 18.2v1.8' },
+    ],
+  },
+
   /* ---------------- 「我的」菜单（原 app.js:17-21，配色由 .menu-ico svg 提供） ---------------- */
 
   'menu-sites': {

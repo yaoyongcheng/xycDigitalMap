@@ -34,6 +34,8 @@ import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { attachMqttBridge, MQTT_BRIDGE_DEFAULT } from './mqttBridge.mjs'
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 命令行参数：--port / --dir / --base / --host */
@@ -125,17 +127,121 @@ function serveFile(req, res, file, rel) {
     .pipe(res)
 }
 
-const server = createServer((req, res) => {
+/**
+ * 塔机数据服务反代（`/crane-api/*` → `tciccs:30400`）
+ *
+ * 为什么非反代不可：那台主机**没有放行任何跨域来源** —— 带 `Origin` 的预检
+ * `OPTIONS` 一律 `403 Invalid CORS request`，正常 POST 的响应里也没有
+ * `Access-Control-Allow-Origin`。浏览器因此读不到响应体，而 Postman / curl
+ * 不执行同源策略，看上去就成了「Postman 能调、页面调不通」。
+ *
+ * 边界收得很紧：只转发这一个前缀、只接受 POST、请求体上限 64KB ——
+ * 它不是一个通用开放代理。前端侧对应 `src/api/towerCrane.ts` 的 `CRANE_BASE`；
+ * 开发期由 vite.config.ts 的 `server.proxy` 承担同一件事。
+ */
+const CRANE_PREFIX = '/crane-api'
+const CRANE_UPSTREAM = 'https://tciccs.cscec3bxjy.cn:30400'
+const PROXY_MAX_BODY = 64 * 1024
+
+/** 读请求体（带大小上限，超了直接掐掉连接） */
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (c) => {
+      size += c.length
+      if (size > PROXY_MAX_BODY) {
+        req.destroy()
+        reject(new Error('body too large'))
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+async function proxyCrane(req, res, url) {
+  const method = req.method ?? 'POST'
+  if (method !== 'POST') {
+    send(res, 405, 'Method Not Allowed', { Allow: 'POST' }, method)
+    return
+  }
+
+  let body
+  try {
+    body = await readBody(req)
+  } catch {
+    send(res, 413, 'Payload Too Large', {}, method)
+    return
+  }
+
+  const target = CRANE_UPSTREAM + url.pathname.slice(CRANE_PREFIX.length) + url.search
+  try {
+    const up = await fetch(target, {
+      method: 'POST',
+      headers: {
+        'Content-Type': req.headers['content-type'] ?? 'application/json; charset=UTF-8',
+        Accept: 'application/json',
+      },
+      body,
+      // 上游是公网 + 网关，给宽一点；超时按 502 回报，页面按「没数据」处理
+      signal: AbortSignal.timeout(20_000),
+    })
+    const text = await up.text()
+    res.writeHead(up.status, {
+      'Content-Type': up.headers.get('content-type') ?? 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(text),
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    res.end(text)
+  } catch (e) {
+    send(res, 502, `Bad Gateway: ${e?.message ?? e}`, {}, method)
+  }
+}
+
+/**
+ * 塔机实时推送的同源桥（`/mqtt`）
+ *
+ * 页面的基址是另一台主机，直连 `115.159.67.12:8084/mqtt` 就是跨源 + 混合内容，
+ * 统一挂到同源 `/mqtt`。桥本身见 `server/mqttBridge.mjs`：
+ * **本机直连 broker 的 TCP 1883，对外提供 WebSocket**，不再经厂商的 WS 网关
+ * （那条路由 2026-11-12 傍晚起持续 502/404，而 1883 一直正常）。
+ *
+ * 只接管 `/mqtt` 一条路径，别的 upgrade 请求直接放过。
+ */
+const MQTT_PATH = '/mqtt'
+const MQTT_HOST = MQTT_BRIDGE_DEFAULT.host
+const MQTT_PORT = MQTT_BRIDGE_DEFAULT.port
+
+const server = createServer(async (req, res) => {
   const method = req.method ?? 'GET'
+
+  // 用固定 base 解析，避免 req.url 里的绝对形式（代理场景）被当成外部地址
+  let url
+  try {
+    url = new URL(req.url ?? '/', 'http://localhost')
+  } catch {
+    send(res, 400, 'Bad Request', {}, method)
+    return
+  }
+
+  // 反代要排在「只接受 GET/HEAD」之前 —— 它本身就是 POST
+  if (url.pathname === CRANE_PREFIX || url.pathname.startsWith(`${CRANE_PREFIX}/`)) {
+    await proxyCrane(req, res, url)
+    return
+  }
+
   if (method !== 'GET' && method !== 'HEAD') {
     send(res, 405, 'Method Not Allowed', { Allow: 'GET, HEAD' }, method)
     return
   }
 
-  // 用固定 base 解析，避免 req.url 里的绝对形式（代理场景）被当成外部地址
   let pathname
   try {
-    pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
+    pathname = decodeURIComponent(url.pathname)
   } catch {
     send(res, 400, 'Bad Request', {}, method)
     return
@@ -198,6 +304,9 @@ if (!existsSync(path.join(DIR, 'index.html'))) {
   process.exit(1)
 }
 
+// 塔机实时推送走 WebSocket upgrade，必须在 listen 之前挂上
+attachMqttBridge(server)
+
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`\n端口 ${PORT} 已被占用，换一个：node server/serve.mjs --port 8081\n`)
@@ -217,6 +326,8 @@ server.listen(PORT, HOST, () => {
   })
   console.log(`\n  静态目录 ${DIR}`)
   console.log(`  接口地址 ${process.env.VITE_API_BASE || 'http://115.159.67.12:8081'}（构建时写入）`)
+  console.log(`  同源反代 ${CRANE_PREFIX}/* → ${CRANE_UPSTREAM}（塔机工作循环，那边不放行跨域）`)
+  console.log(`  同源桥   ${MQTT_PATH} → mqtt://${MQTT_HOST}:${MQTT_PORT}（塔机实时工况推送，本机直连 broker）`)
   console.log('\n  提示：HTTP 属非安全上下文，Service Worker 不注册（无离线/PWA 安装）、')
   console.log('        navigator.share 不可用（「存相册」回退为下载文件）。\n')
 })

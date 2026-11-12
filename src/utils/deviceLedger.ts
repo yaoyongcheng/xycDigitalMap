@@ -1,15 +1,17 @@
 import type { DeviceInfoRow } from '@/api/data'
-import type { DeviceUnit, Equip, EquipUnit } from '@/types'
+import type { CraneDayStats, DeviceUnit, Equip, EquipUnit } from '@/types'
+import { robotDemoTrips } from '@/data/robotStats'
 
 /**
  * 设备台账映射（接口行 → 页面结构）
  *
  * 数据源只有「静态台账」：设备名、在线状态、以及一个 `extra_fields` 字符串
  * （`[{"label":"高度","value":"64"},…]`）。页面需要的东西比这多，但**不能编**：
- *   · 首页四卡：台数与在线数直接数行；数值位只放台账里真有的字段（高度）
+ *   · 首页前四卡：台数与在线数直接数行；数值位只放台账里真有的字段（高度）
  *   · 设备详情卡：名称 / 状态 / 四格全部来自 extra_fields
- *   · 今日吊次、吊重、利用率这些作业指标来自 tsdb 接口，当前部署上 404，
- *     所以 DeviceUnit 的 today / history 留空，页面显示空态
+ *   · 今日吊次、吊重来自塔机工作循环接口（api/towerCrane.ts），但它按 **sn** 查，
+ *     而台账里连序列号字段都没有（只能从 extra_fields 的 label 里猜，见 serialOf）
+ *   · 5 类机器人没有接口与台账，作业次数取 V2 预制体的默认值（见 ROBOT_CARDS）
  *
  * 归类靠设备名关键词而不是 id 或类型码：服务端没有「设备类型」字段，
  * 名字是唯一可靠的分类依据（`智能塔机2` / `传统塔机5` / `2#智能爬架` …）。
@@ -34,6 +36,20 @@ export function categoryOf(name: string): DeviceCategory | null {
   const text = String(name ?? '')
   for (const [cat, re] of CATEGORY_RULES) if (re.test(text)) return cat
   return null
+}
+
+/**
+ * 设备种类数（保留给需要「台账里到底有几种设备」口径的调用方）。
+ *
+ * 首页统计卡**不用**它：那边按「页面上列出几类设备」报（含 5 类机器人，
+ * 与 V2 装备管理页同口径），见 `views/home/EquipPanel.vue` 的 `kinds`。
+ * 两者的差别只在「归类不出来的设备」算不算 —— 它们没有卡片承载，
+ * 算进首页种类会出现「种类比卡片多」的自相矛盾。
+ */
+export function kindsOf(rows: readonly { device_name?: string }[]): number {
+  const seen = new Set<string>()
+  for (const r of rows) seen.add(categoryOf(r?.device_name ?? '') ?? 'other')
+  return seen.size
 }
 
 /**
@@ -87,6 +103,32 @@ export function heightOf(row: DeviceInfoRow): number | null {
     if (!isHeightLabel(label)) continue
     const n = Number.parseFloat(value)
     if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+/**
+ * 序列号类字段的键名（2026-11 第三轮）。
+ *
+ * tsdb / 塔机工作循环两个接口都按 **sn** 查（见 api/towerCrane.ts 的实测记录），
+ * 而 `:8084` 台账没有独立的序列号字段，只能从 `extra_fields` 的 label 里猜。
+ * 这里只认这些「明确是编号」的键 —— 不做子串模糊匹配，否则「设备名称」里
+ * 出现「编号」两个字就会被当成 sn，那比没有 sn 更糟（等于编了个编号）。
+ */
+const SERIAL_LABELS: readonly RegExp[] = [/^sn$/i, /序列号/, /设备编号/, /塔机编号/]
+
+/**
+ * 台账行 → 设备序列号；台账里没有就返回 null。
+ *
+ * **取不到即视为没有**：调用方（stores/deviceLedger.ts）据此整块跳过工作循环
+ * 查询，而不是拿设备名去凑一个「编号」。空串、占位符（'--' / '无'）同样算没有。
+ */
+export function serialOf(row: DeviceInfoRow): string | null {
+  for (const [label, value] of parseExtraFields(row?.device_info?.extra_fields)) {
+    if (!SERIAL_LABELS.some((re) => re.test(label))) continue
+    const text = value.trim()
+    if (!text || /^[-—/]+$/.test(text) || text === '无') continue
+    return text
   }
   return null
 }
@@ -147,29 +189,118 @@ export function toUnit(row: DeviceInfoRow): DeviceUnit {
   }
 }
 
-/** 首页四卡的定义（id / 名称 / 图标 / 详情页），与设计稿的四类一一对应 */
+/**
+ * 机组排序用的台号：取名称里第一段数字。
+ *
+ * `智能塔机2` → 2、`传统塔机5` → 5、`2#智能爬架` → 2、`智能电梯1` → 1。
+ * 取不到数字返回 null（排到最后，不猜）。
+ *
+ * 为什么按台号而不是按名称排：服务端返回顺序是**倒序**（传统塔机5、智能塔机4…），
+ * 而现场口径是从小到大；按名称 `localeCompare` 又会把「传统」排在「智能」前面，
+ * 得到 传统塔机5 / 智能塔机2 / 3 / 4 —— 都不是想要的那一列。
+ * 台号是唯一既稳定又符合现场读数习惯的键（用户 2026-11-12 明确要求）。
+ */
+export function unitNo(name: string): number | null {
+  const m = String(name ?? '').match(/\d+/)
+  if (!m) return null
+  const n = Number(m[0])
+  return Number.isFinite(n) ? n : null
+}
+
+/** 机组排序：台号升序，无台号的排最后（同号保持服务端原序） */
+export function byUnitNo(a: DeviceUnit, b: DeviceUnit): number {
+  const na = unitNo(a.name)
+  const nb = unitNo(b.name)
+  if (na === null && nb === null) return 0
+  if (na === null) return 1
+  if (nb === null) return -1
+  return na - nb
+}
+
+/** 首页四张「有数据源」的卡片定义（id / 名称 / 图标 / 详情页），与设计稿前四类一一对应 */
 const CARD_DEFS: readonly {
   id: DeviceCategory
   name: string
   ico: string
   page: 'crane' | 'lift' | 'uav' | 'climb'
 }[] = [
-  { id: 'crane', name: '智能塔机', ico: 'crane', page: 'crane' },
+  // 名称照设计稿 gx2 与桌面端截图：这一类在界面上叫「5G塔机」，
+  // 不是「智能塔机」。服务端返回的 *设备名* 仍是「智能塔机2」这类原名，
+  // 两者不要混 —— 卡片名是展示口径，设备名是台账事实。
+  { id: 'crane', name: '5G塔机', ico: 'crane', page: 'crane' },
   { id: 'lift', name: '智能电梯', ico: 'lift', page: 'lift' },
   { id: 'drone', name: '无人机', ico: 'drone', page: 'uav' },
   { id: 'climb', name: '智能爬架', ico: 'climb', page: 'climb' },
 ]
 
 /**
- * 台账行 → 首页智控四卡。
+ * 5 类机器人的入口卡（设计稿 gx2 版 app.js:886-909 的后五条）。
+ *
+ * ## 数字从哪来
+ *
+ * 取自 **V2 客户端预制体的默认文本** —— `UIView 装备管理一张图 / 底部栏 /
+ * 施工机器人栏` 下每张卡的 `Value` 就是写死的 `5次 / 9次 / 7次 / 4次 / 3次`
+ * （读取方式与逐节点对应关系见 `data/robotStats.ts` 的文件头）。
+ *
+ * 需要说清的是：V2 自己也没有机器人作业接口，那几个数字同样是模拟值
+ * （同栏在线数一律写死 `4/4`、爬架高度写死 `0m`，性质相同）。
+ * 本项目照 V2 的做法取同一组值，用户 2026-11-12 明确要求这样做。
+ *
+ * ## 为什么仍是「静态卡」
+ *
+ * `linked: false` → 渲染成不可点的 div、不出箭头、不出「在线 x/y」。
+ * 机器人在 `:8084` 台账里一行都没有，`0/0` 会被读成「一台都没在线」，
+ * 而事实是「一台都不知道」—— 在线格连模拟值都不给。
+ *
+ * 现场接入机器人平台后，把 `data/robotStats.ts` 换成真实派生即可，
+ * 卡片渲染分支（`linked` / `stats`）不用改。
+ */
+function robotCard(id: string, name: string, ico: string): Equip {
+  const trips = robotDemoTrips(id)
+  return {
+    id,
+    name,
+    ico,
+    linked: false,
+    // 现场这几类机器人是常驻在线的，卡片标题给绿点。
+    // 必须是显式值：`units` 为空 → equipCount 派生出来是 'off'（灰点=离线），
+    // 那是在替它们下一个没依据的结论。
+    dot: 'on',
+    // 没有登记就退回「—」—— 绝不写「0次」冒充「今天没干活」
+    value: trips === null ? '—' : `${trips}次`,
+    metric: '今日作业次数',
+    units: [],
+  }
+}
+
+export const ROBOT_CARDS: readonly Equip[] = [
+  robotCard('grind', '地坪研磨机器人', 'grind'),
+  robotCard('plaster', '抹灰机器人', 'plaster'),
+  robotCard('survey', '测量机器人', 'survey'),
+  robotCard('spray', '喷涂机器人', 'spray'),
+  robotCard('screed', '混凝土整平机器人', 'screed'),
+]
+
+/** 数值格式化：重量保留两位（1.87t，与设计稿同位）；没有重量时给它「—」 */
+function weightText(weight: number | null): string {
+  return weight === null ? '—' : `${weight.toFixed(2)}t`
+}
+
+/**
+ * 台账行 → 首页智控前四卡（有数据源的那四类）。
  *
  * 四张卡**恒定存在**（即使某类 0 台也渲染，卡片显示 0/0 并给空态），
  * 因为它们是入口 —— 卡消失会让用户以为功能没了，而实际只是没设备。
  * 数值位的取值规则：
- *   · 塔机 / 电梯 / 爬架 → 台账里的高度（最大高度，爬架是爬升高度）
+ *   · 塔机 → 工作循环汇总的「今日吊重 + 今日吊次」（`craneDay` 为 null 时
+ *     退回台账里的最大高度 —— 高度的来源是台账，不是编的）
+ *   · 电梯 → 台账高度（「累计运行时间」需要工作循环能力，本机未接，见下）
+ *   · 爬架 → 台账里的爬升高度（三格传感器数据无接口，模板给空态文案）
  *   · 无人机 → 没有高度概念，数值位留空（模板会跳过）
+ *
+ * @param craneDay 塔机当日作业指标；null = 没有 sn 或接口没通（不造数）
  */
-export function toEquip(rows: DeviceInfoRow[]): Equip[] {
+export function toEquip(rows: DeviceInfoRow[], craneDay: CraneDayStats | null = null): Equip[] {
   const units: Record<DeviceCategory, EquipUnit[]> = { crane: [], lift: [], climb: [], drone: [] }
   const heights: Record<DeviceCategory, number[]> = { crane: [], lift: [], climb: [], drone: [] }
 
@@ -188,11 +319,19 @@ export function toEquip(rows: DeviceInfoRow[]): Equip[] {
       name: def.name,
       ico: def.ico,
       page: def.page,
+      linked: true,
       units: units[def.id],
     }
     if (max !== null) {
       card.value = `${max}m`
       card.metric = def.id === 'climb' ? '爬升高度' : '最大高度'
+    }
+    // 塔机有真实作业指标就优先展示（设计稿的「今日吊重 + 今日吊次」两格）
+    if (def.id === 'crane' && craneDay) {
+      card.stats = [
+        { value: weightText(craneDay.weight), metric: '今日吊重' },
+        { value: `${craneDay.trips}次`, metric: '今日吊次' },
+      ]
     }
     return card
   })

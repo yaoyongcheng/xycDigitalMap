@@ -5,6 +5,7 @@ import { fetchProfile, login as loginRequest, logout as logoutRequest } from '@/
 import { clearPictureCache } from '@/api/video'
 import { ApiError, bindSession } from '@/api/http'
 import { useAlarmStore } from './alarm'
+import { useCraneReportStore } from './craneReport'
 import { useDeviceLedgerStore } from './deviceLedger'
 import { usePatrolStore } from './patrol'
 import { useShellStore } from './shell'
@@ -138,6 +139,9 @@ export const useAuthStore = defineStore('auth', () => {
     // 设备台账同理（:8084 也要 Bearer）：不清的话智控面板会继续显示
     // 上一个账号/上一个项目拉到的机组
     useDeviceLedgerStore().reset()
+    // 作业报表的环形缓存同理：塔机平台是按项目查的，换账号后不能还挂着
+    // 上一个项目的吊次/吊重
+    useCraneReportStore().reset()
     // 无人机任务与巡检照片：keehang 用的是项目级服务凭据（不随用户会话走），
     // 但仍要清缓存 —— 换账号后继续看旧任务会串项目
     useUavStore().reset()

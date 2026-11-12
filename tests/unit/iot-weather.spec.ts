@@ -104,17 +104,33 @@ describe('C 组换令牌', () => {
     expect(f).not.toHaveBeenCalled()
   })
 
-  it('事件查询体是 startTime / endTime / eventItems', async () => {
+  it('事件查询体是 startTime / endTime / eventItems，且每项只发 eventCode', async () => {
     applyToken({ tokenKey: 'X-APP-USER', tokenValue: 'V1', expiresAt: Date.now() + 60_000 })
     const f = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ status: 0, data: [] }))
     vi.stubGlobal('fetch', f)
 
-    await fetchEvents([{ productCode: 'P000000076', sn: 'SN1', field: 'height', code: 'c1' }], '2026-11-01 00:00:00', '2026-11-02 00:00:00')
+    await fetchEvents([{ productCode: 'P000000076', sn: 'SN1', eventCode: 'EVENT_WORKDATA' }], 1762000000000, 1762086399999)
 
     const body = JSON.parse(String(f.mock.calls[0][1]?.body))
-    expect(body.startTime).toBe('2026-11-01 00:00:00')
-    expect(body.endTime).toBe('2026-11-02 00:00:00')
-    expect(body.eventItems).toHaveLength(1)
+    expect(body.startTime).toBe(1762000000000)
+    expect(body.endTime).toBe(1762086399999)
+    expect(body.eventItems).toEqual([
+      { productCode: 'P000000076', sn: 'SN1', eventCode: 'EVENT_WORKDATA' },
+    ])
+    // 事件没有 field / code 这两个维度（V2 端 IL：{productCode, sn, eventCode}）
+    expect(body.eventItems[0].field).toBeUndefined()
+    expect(body.eventItems[0].code).toBeUndefined()
+  })
+
+  it('事件查询项缺 productCode 时同样用项目码兜底', async () => {
+    applyToken({ tokenKey: 'X-APP-USER', tokenValue: 'V1', expiresAt: Date.now() + 60_000 })
+    const f = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ status: 0, data: [] }))
+    vi.stubGlobal('fetch', f)
+
+    await fetchEvents([{ sn: 'SN1', eventCode: 'EVENT_WORKDATA' }], 0, 1)
+
+    const body = JSON.parse(String(f.mock.calls[0][1]?.body))
+    expect(body.eventItems[0].productCode).toBe('P000000076')
   })
 })
 

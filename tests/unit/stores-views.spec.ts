@@ -219,17 +219,30 @@ describe('stores · alarm / home / subpage', () => {
       })
     })
 
-    it('四张卡恒定存在（入口不消失），台数来自台账', () => {
+    it('九张卡恒定存在（入口不消失）：前四类台数来自台账，后五类是静态入口', () => {
       const home = useHomeStore()
-      expect(home.siteEquip).toHaveLength(4)
+      expect(home.siteEquip).toHaveLength(9)
       const ids = home.siteEquip.map((d) => d.id)
-      expect(ids).toEqual(['crane', 'lift', 'drone', 'climb'])
-      // 台账未加载（未登录 / 刚启动）时每类都是 0 台，而不是写死的 3 台 / 4 台
-      for (const d of home.siteEquip) {
+      expect(ids).toEqual(['crane', 'lift', 'drone', 'climb', 'grind', 'plaster', 'survey', 'spray', 'screed'])
+
+      // 台账未加载（未登录 / 刚启动）时前四类都是 0 台，而不是写死的 3 台 / 4 台
+      for (const d of home.siteEquip.slice(0, 4)) {
         expect(d.units).toEqual([])
         expect(d.name).toBeTruthy()
+        expect(d.linked).toBe(true)
+        expect(d.page).toBeTruthy()
         // 数值位只放台账真有的字段，没有就留空
         expect(d.value).toBeUndefined()
+      }
+
+      // 5 类机器人没有接口与台账：不可点、不报台数；
+      // 作业次数取 V2 预制体的预置示意值（见 data/robotStats.ts）
+      for (const d of home.siteEquip.slice(4)) {
+        expect(d.linked).toBe(false)
+        expect(d.page).toBeUndefined()
+        expect(d.units).toEqual([])
+        expect(d.value).toMatch(/^\d+次$/)
+        expect(d.metric).toBe('今日作业次数')
       }
     })
 
