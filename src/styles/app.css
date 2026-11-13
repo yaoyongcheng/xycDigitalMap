@@ -8040,6 +8040,47 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 /* ---------- 设备卡 ---------- */
 
+/*
+ * 凭证失效提示条（电梯页）。
+ *
+ * 卡片还在但每一格都是「—」时必须说清原因，否则用户只会反复下拉。
+ * 左侧一条红线表达「这里有问题」，不铺满底色 —— 深色页上大面积红块太吵，
+ * 而这只是一条说明，不是一个错误弹窗。
+ */
+.dev-auth {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border-radius: var(--r-12);
+  background: var(--bg-3);
+  box-shadow: inset 3px 0 0 var(--danger-dark);
+  font-size: var(--fs-12);
+  line-height: 1.45;
+}
+
+.dev-auth p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2-dark);
+}
+
+.dev-auth-btn {
+  flex: none;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--danger-dark);
+  color: #fff;
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.dev-auth-btn:active { opacity: 0.8; }
+
 .dev-board {
   display: flex;
   flex-direction: column;
@@ -8137,12 +8178,16 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 .dev-card-grid span {
   font-size: var(--fs-11);
   color: var(--ink-3-dark);
+  /* 实时刷新时这两格每 10 秒换一次值：折行会让卡片变高、整页上移，
+     看上去就是「页面在跳」。宽度变化由 grid 的 1fr 吸收，不换行就行 */
+  white-space: nowrap;
 }
 
 .dev-card-grid b {
   font-size: var(--fs-13);
   font-weight: 650;
   color: var(--ink-1-dark);
+  white-space: nowrap;
 }
 
 .dev-card-grid b.is-alarm { color: var(--danger-dark); }
@@ -8154,6 +8199,14 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .dev-load { margin-top: 10px; }
+
+/* 卡片脚注（电梯用来说明四格取自哪一刻的工况帧） */
+.dev-note {
+  margin: 8px 0 0;
+  font-size: var(--fs-11);
+  line-height: 1.4;
+  color: var(--ink-3-dark);
+}
 
 .dev-load-hd {
   display: flex;
@@ -8434,6 +8487,9 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .uav-fly b.is-ok { color: var(--ok-dark); }
 
+/* 关机 / 未连接：跟「待机」不是一回事，V2 也是红字压一下 */
+.uav-fly b.is-down { color: var(--danger-dark); }
+
 /* 任务管理 / 设备参数共用的数值格 */
 .uav-stats {
   display: grid;
@@ -8461,8 +8517,11 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .uav-stats b.is-ok { color: var(--ok-dark); }
-.uav-stats b.is-low { color: var(--danger-dark); }
+.uav-stats b.is-low,
+.uav-stats b.is-down { color: var(--danger-dark); }
 .uav-stats b.is-long { font-size: var(--fs-12); }
+/* 「—」= 这个指标没取到数，比真读数弱一档（与报表页同一处理） */
+.uav-stats b.is-dash { font-weight: 600; color: var(--ink-3-dark); }
 
 .uav-stats span {
   font-size: var(--fs-10);
@@ -8472,25 +8531,81 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   text-overflow: ellipsis;
 }
 
-/* 网络质量画成四格信号，比写「良好」两个字更快读 */
+/*
+ * 网络质量画成四格信号（照 V2 底部栏的 signalSprites），比写「良好」两个字更快读。
+ * 高度撑到与旁边数字同一行高（22px）再底对齐，否则这一格的标签会比别格高一档。
+ */
 .uav-sig {
   display: inline-flex;
   align-items: flex-end;
   gap: 2px;
-  height: 12px;
+  height: 22px;
+  padding-bottom: 4px;
+  box-sizing: border-box;
 }
 
+/* 没点亮的格子：只留底噪。若也用强调色，四格全亮等于「满格」，读起来是反的 */
 .uav-sig i {
   width: 3px;
   height: 100%;
   border-radius: 1px;
-  background: var(--ok-dark);
+  background: var(--line-dark-strong);
 }
 
+.uav-sig i.is-on { background: var(--ok-dark); }
+/* 一到两格是「弱」：V2 上那一格就是红的，这里跟着分级，别让弱信号看起来像满格 */
+.uav-sig.is-mid i.is-on { background: var(--warn-dark); }
+.uav-sig.is-weak i.is-on { background: var(--danger-dark); }
+
 .uav-sig i:nth-child(1) { height: 4px; }
-.uav-sig i:nth-child(2) { height: 7px; }
-.uav-sig i:nth-child(3) { height: 10px; }
+.uav-sig i:nth-child(2) { height: 6px; }
+.uav-sig i:nth-child(3) { height: 9px; }
 .uav-sig i:nth-child(4) { height: 12px; }
+.uav-sig i:nth-child(5) { height: 15px; }
+
+/* 实时画面（HTTP-FLV）—— 铺满画面区，遮罩只盖住画面本身 */
+.live-player {
+  position: absolute;
+  inset: 0;
+  background: #050a15;
+}
+
+.live-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+.live-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  box-sizing: border-box;
+  background: rgba(5, 10, 21, 0.62);
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+  text-align: center;
+}
+
+.live-mask p { margin: 0; }
+
+.live-play {
+  height: 32px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--blue);
+  color: #fff;
+  font-size: var(--fs-12);
+  font-weight: 650;
+}
 
 .uav-mission {
   margin-top: 10px;
@@ -8522,20 +8637,53 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   color: var(--ink-3-dark);
 }
 
-.uav-gate {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: var(--r-pill);
-  background: rgba(46, 230, 166, 0.14);
-  color: var(--ok-dark);
-  font-style: normal;
-  font-size: var(--fs-11);
-  font-weight: 650;
+/* 执行中任务的进度条（设计稿 .uav-bar）：宽度由计划起止算出，不是写死的 62% */
+.uav-bar {
+  height: 4px;
+  border-radius: var(--r-4);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
 }
 
-.uav-gate.is-bad {
-  background: rgba(255, 107, 107, 0.14);
-  color: var(--danger-dark);
+.uav-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue-2);
+  transition: width 0.3s var(--ease-out);
+}
+
+/* 画面区的补充说明（「萤石云凭据已失效…」）——主标题已经说了结论，这行只补原因 */
+.uav-stage-sub {
+  margin: 4px 0 0;
+  font-size: var(--fs-11);
+  color: var(--ink-4-dark);
+}
+
+/*
+ * 任务下发（二期）：给一个明确的「还没做」出口。
+ * 不放一个 disabled 的「选择航线」按钮 —— 那看起来像点得动，点了没反应，
+ * 用户会以为是 bug 而不是排期。
+ */
+.uav-soon {
+  padding: 18px 14px;
+  border-radius: var(--r-10);
+  background: var(--bg-3);
+  text-align: center;
+}
+
+.uav-soon b {
+  display: block;
+  font-size: var(--fs-14);
+  font-weight: 650;
+  color: var(--ink-2-dark);
+}
+
+.uav-soon p {
+  margin: 6px 0 0;
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  color: var(--ink-3-dark);
 }
 
 .uav-allow {
@@ -8543,14 +8691,6 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   font-size: var(--fs-12);
   line-height: 1.7;
   color: var(--ink-3-dark);
-}
-
-.uav-risks {
-  margin: 0 0 10px;
-  padding-left: 16px;
-  font-size: var(--fs-12);
-  line-height: 1.7;
-  color: var(--danger-dark);
 }
 
 .uav-send {

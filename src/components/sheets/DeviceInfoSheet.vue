@@ -4,8 +4,22 @@ import { computed, onMounted, onUnmounted } from 'vue'
 import { craneSnOf } from '@/data/craneSn'
 import { deviceSet } from '@/data/device'
 import { useCraneRealtimeStore } from '@/stores/craneRealtime'
+import { useLiftStore } from '@/stores/lift'
 import { unitNo } from '@/utils/deviceLedger'
+import {
+  DASH,
+  formatFloor,
+  formatHeight,
+  formatHours,
+  formatLoad,
+  formatPeople,
+  formatTrips,
+  stateText,
+} from '@/utils/lift'
 import type { DeviceUnit } from '@/types'
+
+/** 一行信息：`[标签, 值]`。取值不到的写「—」，与读数同一列右对齐。 */
+type Row = [string, string]
 
 /**
  * 设备信息弹层
@@ -59,12 +73,33 @@ import type { DeviceUnit } from '@/types'
  *
  * ## 电梯
  *
- * V2 的升降机弹窗是「基本信息（当前状态/升降机编号）+ 实时工况信息（楼层/高度/
- * 人数/载重 + 四项今日累计）」两段，实时那段的源是 IOT `EVENT_WORKDATA`
- * （本项目 `status:11 权限不足`，未接）。当前仍按台账平铺，只过滤掉
- * 「是否隐藏」「更新时间」这两个纯后台技术字段。
+ * V2 的升降机弹窗（`UIPanelElevator`）是两段、八行，控件与顺序从
+ * `ShowPanel` / `ClearPanelData` / `UpdateRealtimeInfo` / `UpdateTodayWorkData`
+ * 的 IL 里逐行读出来：
+ *
+ * ```
+ * Title1 基本信息    ：当前状态 / 升降机编号
+ * Title2 实时工况信息 ：相对楼层 / 高度 / 载重 / 人数 / 今日运行时长 / 今日升降次数
+ * ```
+ *
+ * 每行的格式化也照 IL：
+ *   · `txtRelFloor`         = `RelFloor + "F"`（`-1` 时 V2 给 `--`）
+ *   · `txtHeight`           = `Height.ToString("F1") + "m"`
+ *   · `txtLoad`             = `Load.ToString("F1") + "kg"`  ← **kg**，不是吨
+ *   · `txtNumberOfPeople`   = `NumberOfPeople + "人"`
+ *   · `txtTodayRuntimeHours`= `hours.ToString("F1") + "h"`
+ *   · `txtTodayLiftCount`   = `count + "次"`
+ *   · `txtStatus`           = `IsOnline ? (RunningState 1→停止 / 2→上升 /
+ *                             3→下降 / 其余→在线) : 离线`
+ *
+ * ## 电梯为什么按「轿厢」打开，却也拿得到档案
+ *
+ * 电梯的档案在台账里按楼登记（2 行），实时数据按轿厢上报（4 个 sn，见
+ * `data/liftSn.ts`）。所以弹层同时接两个键：`id` 定位台账行（以后要展示
+ * 安检有效期那类档案字段时用得上），`sn` 定位 IOT 读数。设计稿的电梯卡也是
+ * 逐笼一张、各自带「设备信息」按钮。
  */
-const props = defineProps<{ device: 'crane' | 'lift'; id: string }>()
+const props = defineProps<{ device: 'crane' | 'lift'; id: string; sn?: string }>()
 
 const unit = computed<DeviceUnit | undefined>(() =>
   deviceSet(props.device).units.find((u) => u.id === props.id),
@@ -75,28 +110,36 @@ const isCrane = computed(() => props.device === 'crane')
 /** V2 `DataContent2` 的四行，顺序照预制体 */
 const LIVE_ROWS = ['实时回转', '实时幅度', '实时高度', '实时时间'] as const
 
-/** 「—」统一成一个常量：空值、无来源、无权限都用它，不写 0、不写「暂无」 */
-const DASH = '—'
-
-/**
- * 台账里只给后台看的技术字段，V2 任何弹层都不展示。
- * 只影响「是否要出现在弹层」，不影响台账本身与卡片取值。
- */
-const TECH_FIELDS = new Set(['是否隐藏', '更新时间'])
-
+/** 「—」来自 `utils/lift`（与电梯卡片同一份常量），不写 0、不写「暂无」 */
 const crane = useCraneRealtimeStore()
-const sn = computed(() => (isCrane.value ? craneSnOf(unitNo(unit.value?.name ?? '')) : null))
-const live = computed(() => crane.of(sn.value))
+const lift = useLiftStore()
+
+/** 塔机的平台编号（台账里没有这个字段，按台号映射） */
+const craneNo = computed(() => craneSnOf(unitNo(unit.value?.name ?? '')))
+const live = computed(() => crane.of(craneNo.value))
+
+/** 电梯轿厢编号：由卡片传入，没有就取不到读数（不猜） */
+const cageSn = computed(() => (isCrane.value ? '' : (props.sn ?? '')))
 
 /**
- * 实时工况这一段只在塔机弹层打开期间订阅（引用计数，关掉即断开），
- * 不常驻一条 WebSocket —— 现场是手机流量。
+ * 打开期间才订阅塔机实时通道（引用计数，关掉即断开），不常驻一条 WebSocket
+ * —— 现场是手机流量。电梯走 HTTP 拉取：先补拉一次，再开实时刷新（10 秒一轮，
+ * 与详情页/首页同一个定时器，`stores/lift.ts` 的 `startLive` 按名字登记）。
+ *
+ * 正常路径是设备页先刷过了；但弹层也可能在别处被打开、或用户在这页停留很久
+ * —— 少这一次就是「读数停在进页面那一刻」，而弹层恰恰是用户点开想看此刻状态
+ * 的地方（那八行里楼层/高度/载重/人数全在变）。
  */
 onMounted(() => {
   if (isCrane.value) crane.open()
+  else {
+    void lift.refresh()
+    lift.startLive('sheet')
+  }
 })
 onUnmounted(() => {
   if (isCrane.value) crane.close()
+  else lift.stopLive('sheet')
 })
 
 const infoMap = computed(() => new Map(unit.value?.info ?? []))
@@ -127,12 +170,12 @@ function reading(v: number, unitText: string): string {
  * 不再遍历 `u.info` 追加剩余字段 —— 那正是「是否隐藏」「更新时间」串进弹层的路径。
  * 台账以后多出新字段也不会自动漏到界面上，要展示就得在这里显式加一行。
  */
-const baseRows = computed<[string, string][]>(() => {
+const baseRows = computed<Row[]>(() => {
   const u = unit.value
   if (!u) return []
   const map = infoMap.value
   const h = live.value?.bodyHeight
-  const s = sn.value
+  const s = craneNo.value
 
   return [
     // 塔机的「当前状态」不取台账 online_status，取实时的四态（离线/待机/工作中/正在吊装）；
@@ -152,35 +195,87 @@ const baseRows = computed<[string, string][]>(() => {
 })
 
 /** 实时工况四行：有帧就填，没帧一律「—」 */
-const liveRows = computed<[string, string][]>(() => {
+const liveRows = computed<Row[]>(() => {
   const f = live.value
   const values = f
     ? [reading(f.angle, '°'), reading(f.range, 'm'), reading(f.height, 'm'), f.at || DASH]
     : [DASH, DASH, DASH, DASH]
-  return LIVE_ROWS.map((label, i) => [label, values[i]] as [string, string])
+  return LIVE_ROWS.map((label, i) => [label, values[i]] as Row)
 })
 
-/** 电梯仍按台账原字段平铺，不加段标题；只滤掉纯后台技术字段 */
-const flatRows = computed<[string, string][]>(() =>
-  (unit.value?.info ?? []).filter(([label]) => !TECH_FIELDS.has(label)),
-)
+/* ---------- 电梯：两段八行，照 `UIPanelElevator` ---------- */
+
+/**
+ * 电梯「当前状态」。
+ *
+ * 两条出口，顺序就是 V2 的判断顺序（`UpdateOnlineState`）：
+ *   1. 网关说这台不在线（含**连不上**：没有在线数据时 `isOnline` 同样为 false）
+ *      → **离线**。不回落台账 `status_text`：那是平台登记态，跟这一刻通不通无关，
+ *      拿它顶替会出现「状态在线、楼层/载重全是—」的矛盾（用户 2026-11-13 要求
+ *      电梯连不上就默认离线）。
+ *   2. 在线 → 读工况帧的 `runningState`（1 停止 / 2 上升 / 3 下降 / 其余 在线）；
+ *      没有工况帧时只能说「在线」，不能编「停止」。
+ */
+const liftStatus = computed<string>(() => {
+  const sn = cageSn.value
+  if (!sn) return unit.value?.status || DASH
+  if (!lift.isOnline(sn)) return '离线'
+  return stateText(lift.attrOfSn(sn)?.state ?? null) ?? '在线'
+})
+
+/** 第一段：当前状态 / 升降机编号 */
+const liftBaseRows = computed<Row[]>(() => [
+  ['当前状态', liftStatus.value],
+  ['升降机编号', cageSn.value || DASH],
+])
+
+/**
+ * 第二段：相对楼层 / 高度 / 载重 / 人数 + 今日累计运行时间 / 今日升降次数。
+ *
+ * 读数全部取自**这一笼**的最新工况帧；今日两项取自这一笼当天的工作循环事件。
+ * 一整行都没有源时给「—」（例如网关 `status:11 权限不足`，2026-11-13 实测）。
+ *
+ * ## 「今日累计运行时间」与 V2 同口径
+ *
+ * 算法照 V2 `FetchWorkCycleAsync`：`最后一条.runEndTime − 第一条.runStartTime`，
+ * 是**墙钟跨度**，两次升降之间没跑的时间也算在内（详见 `utils/lift.ts` 文件头）。
+ * 2026-11-13 实测 78 条循环：这个口径 6.1h，若逐条累加只有 1.3h —— 差的 4.8
+ * 小时全是停机。
+ *
+ * 曾在这一格后面挂过「含停机」小注（口径写在明面上），用户 2026-11-13 下午
+ * 要求去掉：弹层是与 V2 对照着看的，V2 没有小注，多两个字反而显得两边不一样。
+ */
+const liftLiveRows = computed<Row[]>(() => {
+  const a = cageSn.value ? lift.attrOfSn(cageSn.value) : null
+  const day = cageSn.value ? lift.todayOfSn(cageSn.value) : null
+  const sec = day?.seconds ?? null
+  return [
+    ['相对楼层', formatFloor(a?.floor ?? null)],
+    ['高度', formatHeight(a?.height ?? null)],
+    ['载重', formatLoad(a?.load ?? null)],
+    ['人数', formatPeople(a?.people ?? null)],
+    ['今日累计运行时间', formatHours(sec)],
+    ['今日升降次数', formatTrips(day?.trips ?? null)],
+  ]
+})
 </script>
 
 <template>
-  <div v-if="unit">
+  <!-- 电梯只要拿到轿厢号就能渲染：台账挂了也不该让 IOT 读数一起消失 -->
+  <div v-if="unit || cageSn">
     <section class="dev-info-block">
-      <h4 v-if="isCrane" class="dev-info-hd">基本信息</h4>
+      <h4 class="dev-info-hd">基本信息</h4>
       <div class="dev-info">
-        <div v-for="[label, value] in isCrane ? baseRows : flatRows" :key="label" class="dev-info-row">
+        <div v-for="[label, value] in isCrane ? baseRows : liftBaseRows" :key="label" class="dev-info-row">
           <span>{{ label }}</span><b :class="{ 'is-dash': value === DASH }">{{ value }}</b>
         </div>
       </div>
     </section>
 
-    <section v-if="isCrane" class="dev-info-block">
+    <section class="dev-info-block">
       <h4 class="dev-info-hd">实时工况信息</h4>
       <div class="dev-info">
-        <div v-for="[label, value] in liveRows" :key="label" class="dev-info-row">
+        <div v-for="[label, value] in isCrane ? liveRows : liftLiveRows" :key="label" class="dev-info-row">
           <span>{{ label }}</span><b :class="{ 'is-dash': value === DASH }">{{ value }}</b>
         </div>
       </div>

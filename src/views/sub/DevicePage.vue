@@ -5,14 +5,17 @@ import SvgIcon from '@/components/ui/SvgIcon.vue'
 import Skel from '@/components/ui/Skel.vue'
 import DeviceReport from '@/views/sub/DeviceReport.vue'
 import { craneSnOf } from '@/data/craneSn'
+import { LIFT_CAGES } from '@/data/liftSn'
 import { deviceSet } from '@/data/device'
 import { useAuthStore } from '@/stores/auth'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useCraneRealtimeStore } from '@/stores/craneRealtime'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
+import { useLiftStore } from '@/stores/lift'
 import { useSubpageStore } from '@/stores/subpage'
 import { loadPct } from '@/utils/craneLoad'
 import { unitNo } from '@/utils/deviceLedger'
+import { formatFloor, formatHeight, formatLoad, formatPeople } from '@/utils/lift'
 import { useSlowLoading } from '@/utils/slowLoading'
 import type { CraneRealtime } from '@/api/craneRealtime'
 import type { DeviceKind, DeviceUnit } from '@/types'
@@ -35,8 +38,10 @@ import type { DeviceKind, DeviceUnit } from '@/types'
  * 台账字段（高度、安检有效期…）不在卡面上，它们在「设备信息」弹层里 ——
  * 卡片是看今天干了多少活，弹层才是看设备档案。
  *
- * 电梯仍是台账四格：它的「今日累计人数/载重」在 IOT `EVENT_WORKDATA`，
- * 本项目 `status:11 权限不足`，没有源就不摆空指标。
+ * **电梯卡四格是「当前楼层 / 当前高度 / 当前人数 / 当前载重」**，与设计稿
+ * `renderLiftCard` 一致，数据来自 IOT 网关的 `EVENT_POST_ATTR` 工况帧
+ * （`api/lift.ts`）。电梯按**轿厢**出卡（4 笼），台账按楼登记（2 行）——
+ * 档案字段仍从所属那栋楼的行取，见 `data/liftSn.ts` 的 `building`。
  */
 const props = defineProps<{ kind: DeviceKind }>()
 
@@ -45,6 +50,7 @@ const ledger = useDeviceLedgerStore()
 const auth = useAuthStore()
 const subpage = useSubpageStore()
 const crane = useCraneRealtimeStore()
+const lift = useLiftStore()
 
 const set = computed(() => deviceSet(props.kind))
 
@@ -67,6 +73,27 @@ watch(
 onMounted(() => {
   if (auth.token) void ledger.load(auth.token)
 })
+
+/**
+ * 电梯工况与今日作业走 IOT（项目级 ak/sk，免登录），进页面就取一次并**开始轮询**。
+ *
+ * 初版这里只取一次，理由是「工况帧几十秒才一条，轮询不划算」—— 那是帧的节奏，
+ * 不是页面的期待：用户盯着「当前楼层 / 当前载重」，一帧卡十分钟不动就像坏了。
+ * 现在按 10 秒一轮刷新（`stores/lift.ts` 的 `pollOnce`，在线/今日各自再节流），
+ * 只在电梯页 + 标签页可见时跑；切到塔机页立刻停表，别让它在背后空转。
+ */
+watch(
+  () => props.kind,
+  (k) => {
+    if (k !== 'lift') {
+      lift.stopLive('device')
+      return
+    }
+    void lift.refresh()
+    lift.startLive('device')
+  },
+  { immediate: true },
+)
 
 /**
  * 实时通道：塔机卡片上的状态与「设备信息」弹层里的「当前状态」必须是同一个值。
@@ -93,6 +120,8 @@ watch(
   { immediate: true },
 )
 onUnmounted(() => {
+  // 放最前：下面那条会提前 return，停表不能被它带走
+  lift.stopLive('device')
   if (!subscribed) return
   subscribed = false
   crane.close()
@@ -139,13 +168,40 @@ function craneCells(sn: string | null, frame: CraneRealtime | null, pct: number 
 }
 
 /**
- * 实时卡的四格。
+ * 电梯卡四格 —— 照设计稿 gx2 的 `renderLiftCard`（`当前楼层 / 当前高度 /
+ * 当前人数 / 当前载重`），数据来自 IOT 最新一帧工况（`EVENT_POST_ATTR`）。
  *
- * 台账字段已经是「标签 + 已格式化文本」，这里直接用；一个字段都没有时
- * 给一格「台账信息」空提示，避免卡片中间塌成一条。电梯仍走这套。
+ * 台账字段（高度、安检有效期）**不在卡面上**：它们说的是设备档案，而这一屏
+ * 回答的是「这台电梯现在在哪、载了多少」，与塔机卡同一套思路。
+ *
+ * 单位与小数位照 V2 `UIPanelElevator.UpdateRealtimeInfo`（楼层 `8F`、
+ * 高度 `F1`、载重 `kg`、人数整数），格式化函数在 `utils/lift.ts`，
+ * 弹层里那两段用的是同一套 —— 卡片和弹层对同一帧读数不该有两种写法。
+ * （载重的 kg 是 V2 硬编码的单位，网关没有给换算说明；`status:11` 收回权限后
+ * 也拿不到新样本复核，此处按 V2 的契约走。）
+ *
+ * 这一帧的时间会被带到卡片下方的小字里 —— 电梯静止时不发包，帧可能是几小时
+ * 前的，不给时间就等于让人以为这是此刻的读数。
  */
-function liveCells(u: DeviceUnit): [string, string][] {
-  return u.cells.length ? u.cells : [['设备信息', '暂无台账字段']]
+function liftCells(sns: readonly string[]): { cells: [string, string][]; at: number | null } {
+  const a = lift.attrOf(sns)
+  return {
+    cells: [
+      ['当前楼层', formatFloor(a?.floor ?? null)],
+      ['当前高度', formatHeight(a?.height ?? null)],
+      ['当前人数', formatPeople(a?.people ?? null)],
+      ['当前载重', formatLoad(a?.load ?? null)],
+    ],
+    at: a?.at ?? null,
+  }
+}
+
+/** 工况帧时间 → `HH:mm`；拿不到就空串（不写「刚刚」这种假时间） */
+function frameTime(ms: number | null): string {
+  if (!ms) return ''
+  const d = new Date(ms)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 /**
@@ -155,24 +211,69 @@ function liveCells(u: DeviceUnit): [string, string][] {
  * 分散成多个函数会让模板对每张卡各调用几遍 `crane.of()`。
  */
 interface Card {
-  u: DeviceUnit
+  /** v-for 的 key（塔机用台账主键，电梯用轿厢 sn） */
+  key: string
+  /** 卡片标题 */
+  name: string
   status: string
   cells: [string, string][]
   /** 负荷条百分比；null = 没有实时帧，不画条（「没有数据」不该画成「负荷为零」） */
   load: number | null
+  /** 卡片底部一行小字（电梯用它标出工况帧的时间） */
+  note?: string
+  /** 「设备信息」弹层要的台账主键；null = 台账里没有对应档案，不渲染按钮 */
+  infoId: string | null
+  /** 「设备信息」弹层要的轿厢 sn（只有电梯有：档案按楼、读数按笼） */
+  sn?: string
 }
 
-const cards = computed<Card[]>(() =>
-  set.value.units.map((u) => {
-    const sn = isCrane.value ? craneSnOf(unitNo(u.name)) : null
-    const status = statusOf(u, sn)
-    if (!isCrane.value) return { u, status, cells: liveCells(u), load: null }
-
-    const frame = crane.of(sn)
-    const pct = frame ? loadPct(frame.weightRate) : null
-    return { u, status, cells: craneCells(sn, frame, pct), load: pct }
+/**
+ * 电梯：**按轿厢出 4 张卡**（V2 `UIViewElevatorLevel1.InitCards` 遍历的正是
+ * `GetSceneDeviceSnList()` 那 4 个 sn，首页底部卡也是逐笼一张）。
+ *
+ * 台账只有 2 行（按楼登记），所以档案类字段（安检有效期、责任人）仍从
+ * 所属那栋楼的台账行取 —— `data/liftSn.ts` 的 `building` 就是这条线。
+ * 卡片标题用轿厢名（`智能电梯1-1`），「设备信息」弹层同时带台账主键（取档案）
+ * 和轿厢 sn（取这一笼的读数）。
+ */
+const liftCards = computed<Card[]>(() =>
+  LIFT_CAGES.map((c) => {
+    const row = set.value.units.find((u) => unitNo(u.name) === c.building)
+    // 逐笼按网关的在线事件判；连不上（没有在线数据）也按**离线** ——
+    // 不回落台账 `status_text`：那是平台登记态，不随实时通断变化，拿它顶替
+    // 就是「卡片说在线、每一格却是—」。用户 2026-11-13 明确要求连不上即离线。
+    const status = lift.isOnline(c.sn) ? '在线' : '离线'
+    const { cells, at } = liftCells([c.sn])
+    return {
+      key: c.sn,
+      name: c.name,
+      status,
+      cells,
+      load: null,
+      note: at ? `${frameTime(at)} 工况帧` : '',
+      infoId: row?.id ?? null,
+      sn: c.sn,
+    }
   }),
 )
+
+const cards = computed<Card[]>(() => {
+  if (!isCrane.value) return liftCards.value
+  return set.value.units.map((u) => {
+    const sn = craneSnOf(unitNo(u.name))
+    const status = statusOf(u, sn)
+    const frame = crane.of(sn)
+    const pct = frame ? loadPct(frame.weightRate) : null
+    return {
+      key: u.id,
+      name: u.name,
+      status,
+      cells: craneCells(sn, frame, pct),
+      load: pct,
+      infoId: u.id,
+    }
+  })
+})
 
 /** 状态色调：工作中/正在吊装/在线 → ok，待机/停止 → wait，离线/其他 → off */
 function tone(status: string): string {
@@ -188,6 +289,30 @@ function retry(): void {
 function goLogin(): void {
   subpage.openLogin(`登录后可查看${set.value.title}运行状态`, { kind: 'device', device: props.kind })
 }
+
+/**
+ * 网关凭证失效 —— 卡片还在（台账走 `:8084`，是好的），但每一格都是「—」。
+ *
+ * 只对电梯成立：其余设备的鉴权都用业务 Bearer，401 会由 `http.ts` 直接把用户
+ * 带去登录页，不需要这里再提示一次。
+ */
+const needsRetry = computed(() => props.kind === 'lift' && lift.authLost)
+
+/**
+ * 「重试」—— **不是**「重新登录」。
+ *
+ * 这一点踩过坑：之前这里写的是「重新登录」，但登录页换到的是 `:8081` 的
+ * 业务 Bearer（账号 `xiangyangcun` 那套），而电梯用的是 IOT 云网关的项目级
+ * ak/sk 换出来的 `X-APP-USER` 令牌 —— **两套凭证不同源，登录根本换不到它**。
+ * 结果就是用户登录成功了、回来提示还在，看起来像登录没生效。
+ *
+ * 真正要做的只有一件事：把 IOT 缓存的旧令牌丢掉重换一张
+ * （`stores/lift.ts` 的 `relogin()`，名字沿用但语义是「重取数据」）。
+ */
+function goRetry(): void {
+  void lift.relogin()
+}
+
 </script>
 
 <template>
@@ -204,6 +329,17 @@ function goLogin(): void {
     </div>
 
     <template v-else-if="pageTab === 'live'">
+      <!-- 凭证失效：台账是好的，所以卡片还在，只是每一格「—」。不说明白用户只能反复下拉 -->
+      <section v-if="needsRetry" class="dev-auth" role="alert">
+        <!--
+          不写「重试可重新获取」：换令牌接口是幂等的，服务端没轮换之前重试确实
+          拿不到，那是过度承诺。`gatewayStale` 为真时说明刚点过、网关还是老样子，
+          换成一句更诚实的「还没恢复」。
+        -->
+        <p>{{ lift.gatewayStale ? '电梯物联网网关未恢复，请稍后再试' : '电梯物联网网关凭证失效，请稍后重试' }}</p>
+        <button class="dev-auth-btn" type="button" @click="goRetry">重试</button>
+      </section>
+
       <!-- 同步中：灰条铺在机组卡片的位置（卡头 + 台账四格），台账到手后原位回填 -->
       <section
         v-if="!set.units.length && ledger.state === 'loading'"
@@ -213,7 +349,7 @@ function goLogin(): void {
       >
         <span class="sr-only" role="status">正在加载{{ set.title }}台账</span>
         <div class="dev-board" aria-hidden="true">
-          <article v-for="i in 2" :key="i" class="dev-card">
+          <article v-for="i in 4" :key="i" class="dev-card">
             <div class="dev-card-hd">
               <strong>
                 <Skel w="22px" h="22px" r="var(--r-6)" />
@@ -243,14 +379,19 @@ function goLogin(): void {
 
       <section v-else class="dev-block fill-in">
         <div class="dev-board">
-          <article v-for="c in cards" :key="c.u.id" class="dev-card">
+          <article v-for="c in cards" :key="c.key" class="dev-card">
             <div class="dev-card-hd">
               <strong>
                 <SvgIcon :name="kind === 'crane' ? 'dev-crane' : 'dev-lift'" class="dev-mark" />
-                <span>{{ c.u.name }}</span>
+                <span>{{ c.name }}</span>
                 <b class="dev-status" :class="tone(c.status)">{{ c.status }}</b>
               </strong>
-              <button class="dev-link" type="button" @click="sheet.openDeviceInfo(kind, c.u.id)">
+              <button
+                v-if="c.infoId"
+                class="dev-link"
+                type="button"
+                @click="sheet.openDeviceInfo(kind, c.infoId, c.sn)"
+              >
                 设备信息
               </button>
             </div>
@@ -268,6 +409,9 @@ function goLogin(): void {
                 <i :style="{ width: `${c.load}%` }"></i>
               </div>
             </div>
+
+            <!-- 电梯：标出四格取自哪一刻的工况帧（静止时不发包，帧可能已经几小时前） -->
+            <p v-if="c.note" class="dev-note">{{ c.note }}</p>
           </article>
         </div>
       </section>

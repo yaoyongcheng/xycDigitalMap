@@ -2,40 +2,53 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
+  KH_IDS,
   clearSession,
+  fetchDockTelemetry,
+  fetchLiveStream,
   fetchMediaJobs,
   fetchRoutes,
   fetchTaskRecords,
+  fetchTaskStat,
   fetchTelemetry,
+  type DroneDock,
+  type DroneLiveStream,
   type DroneRoute,
   type DroneTaskRecord,
+  type DroneTaskStat,
   type DroneTelemetry,
 } from '@/api/drone'
+import { droneStateIsDown, droneStateText } from '@/utils/uavState'
 
 /**
- * 无人机（2026-11 阶段 8：改真实数据）
+ * 无人机（2026-11 阶段 8 起接真实数据，2026-11-13 复盘补全字段）
  *
- * 原先这个 store 不存在，UavPage 直接读 `data/device.ts` 里的三份常量：
+ * 数据源只有一个：keehang 无人机平台（`api/drone.ts`）。V2 用的是同一批接口。
  *
- *   uavLive       = { wind: 2, battery: 78, netKbps: 2079, temp: 28.8, rain: false }
- *   uavTodayTasks = 三条写死的任务（08:30 日常巡航 / 10:00 塔吊巡查 / 14:30 作业面）
- *   uavChecks     = 起飞条件校验（由 uavLive 派生，所以五项永远全过）
+ * ## 2026-11-13 复盘：三处「以为没数据」，其实是没接
  *
- * 现在全部改接 keehang 无人机平台（见 `api/drone.ts`）：
+ * ① **今日任务永远是 0**。`/task/exec/list/record` 不带日期时按开始时间**升序**
+ *    返回，`page=1` 拿到的是 2026-07-14 那几条；本地再按今天过滤 → 0 条。
+ *    现在按 `start=今天&end=明天` 查（`end` 不含当天）。
+ * ② **三格统计没有源**。其实有专门端点：`/dashboard/task/list/record` 直接回
+ *    `taskCount / finishedCount / failedCount / runningCount / planCount`，
+ *    就是设计稿「任务管理」那三格。
+ * ③ **风速 / 雨量 / 网络 / 距机库没有源**。机载遥测（type 1）里有 `windSpeed`、
+ *    `homeDistance`、`remainFlightTime`；机库遥测（type 2）里有 `windSpeed`、
+ *    `rainfall`、`networkRate`、`networkQuality`。原先是解析时只取了 9 个字段，
+ *    把另一半丢了 —— 不是厂家没给。
  *
- *   · 任务     → `GET /task/exec/list/record?pid=本项目`
- *                实测首屏是「向阳村-安全巡检」（今天 15:00 执行，机库 263）；
- *                历史里还有「测试 / 测试全景」等真实历史记录。
- *   · 机载参数 → `GET /dashboard/device/cache/telemetry/{无人机设备id}/1`
- *                实测电量 88%、电池温度 29.3℃、水平速度 0。
+ * ## 仍然取不到 / 不敢判的
  *
- * **取不到就是取不到**：风速 / 雨量 / 网络速率这三个字段遥测接口没给，
- * 起飞条件校验里对应的项显示「未接入」而不是判成「正常」——
- * 把「没有数据」当成「条件满足」是危险的方向（该拦的飞行没拦）。
+ * · **剩余续航**：`remainFlightTime` 在地面是 0，与「电池真的只剩 0 分钟」
+ *   无法区分，页面按「—」处理（电量格另有真数）。
+ * · **雨量口径**：`rainfall` 实测为 1，同日机库湿度 99%、天气阴，无法确认
+ *   1 是「有雨」还是「无雨」。**起飞条件里按未知处理**（不放行），
+ *   同时把原值如实显示出来，等厂家确认口径再改判定。
+ * · **航线下发**：没有 REST 端点，页面只做只读选择 + 告知平台地址。
  *
  * 登录态：keehang 用的是**项目级服务凭据**，不是用户会话，所以这里不接
- * `auth.token`；但仍保留 `reset()`，登出时清掉缓存的令牌，避免下一个人
- * 用着上一个账号的上下文。
+ * `auth.token`；但仍保留 `reset()`，登出时清掉缓存的令牌。
  */
 
 /** 状态：idle 未请求 / loading 请求中 / ok 已取到 / error 失败 */
@@ -44,9 +57,14 @@ export type UavState = 'idle' | 'loading' | 'ok' | 'error'
 /** 失败后的冷却时间（与 overview / deviceLedger 一致） */
 const RETRY_GAP = 60_000
 
-/** 任务执行状态 → 展示文案 */
+/** 实时遥测的刷新间隔：机库+机载两个 GET，30s 够用又不费流量 */
+const LIVE_GAP = 30_000
+
+/** 任务执行状态 → 展示文案（服务端实测：2 = 已完成、1 = 执行中、-1 = 未执行） */
 function stateText(s: number): string {
   switch (s) {
+    case -1:
+      return '未执行'
     case 0:
       return '待执行'
     case 1:
@@ -64,26 +82,57 @@ function stateText(s: number): string {
 function stateClass(s: number): string {
   if (s === 1) return 'is-ok'
   if (s === 2) return 'is-done'
+  if (s === 3) return 'is-bad'
   return ''
+}
+
+/** `YYYY-MM-DD`，offset 为天数偏移（查区间用：start = 今天、end = 明天） */
+function dayKey(offset = 0): string {
+  const d = new Date()
+  d.setDate(d.getDate() + offset)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
 /** 任务的展示视图 */
 export interface UavTaskView {
-  id: number
+  /** 列表 key：用 uuid（服务端 id 是 int64，部分行会丢精度） */
+  key: string
   /** 开始时间 'HH:mm'（从 ISO 串截取） */
   time: string
   name: string
   state: string
   stateClass: string
+  /** 任务计划时长（分钟）；start/end 缺失时 null */
+  planMin: number | null
+  /** 计划开始 / 结束的毫秒时间戳（执行中任务的进度条用它，不编 pct） */
+  startAt: number | null
+  endAt: number | null
+}
+
+/** 起飞条件的一项 */
+export interface UavCheck {
+  name: string
+  ok: boolean
+  unknown: boolean
+  risk: string
 }
 
 export const useUavStore = defineStore('uav', () => {
-  /** 任务执行记录（原始） */
+  /** 今日任务执行记录 */
   const records = ref<DroneTaskRecord[]>([])
+  /** 今日任务统计（三格） */
+  const stat = ref<DroneTaskStat | null>(null)
   /** 机载遥测 */
   const telemetry = ref<DroneTelemetry | null>(null)
+  /** 机库遥测 */
+  const dock = ref<DroneDock | null>(null)
   /** 可选航线（真实航线任务，本项目实测 15 条） */
   const routes = ref<DroneRoute[]>([])
+  /** 无人机直播流（`/live/stream/list?deviceId=`，V2 同源） */
+  const droneStream = ref<DroneLiveStream | null>(null)
+  /** 机库摄像头直播流（在库待机时 `online:false`，有地址但不推流） */
+  const dockStream = ref<DroneLiveStream | null>(null)
 
   const state = ref<UavState>('idle')
   const error = ref('')
@@ -93,44 +142,57 @@ export const useUavStore = defineStore('uav', () => {
   let lastFailAt = 0
   let inflight: Promise<void> | null = null
 
-  /** 今天的执行记录（按开始时间倒序） */
+  /**
+   * 今日任务（按开始时间倒序）。
+   *
+   * 请求已经带 `start=今天&end=明天`，这里仍按日期本地再滤一次：`end` 是
+   * **不含当天**的区间语义，一旦服务端按含端点解释就会把昨天最后一条串进来，
+   * 而「今日」这个标签不该被这种边界差异影响。
+   */
   const todayRecords = computed<DroneTaskRecord[]>(() => {
-    const today = new Date()
-    const y = today.getFullYear()
-    const m = String(today.getMonth() + 1).padStart(2, '0')
-    const d = String(today.getDate()).padStart(2, '0')
-    const prefix = `${y}-${m}-${d}`
+    const key = dayKey(0)
     return records.value
-      .filter((r) => r.start.startsWith(prefix))
+      .filter((r) => r.start.slice(0, 10) === key)
       .sort((a, b) => b.start.localeCompare(a.start))
   })
 
   /** 今日任务（视图） */
   const todayTasks = computed<UavTaskView[]>(() =>
-    todayRecords.value.map((r) => ({
-      id: r.id,
-      time: r.start.slice(11, 16),
-      name: r.taskName,
-      state: stateText(r.status),
-      stateClass: stateClass(r.status),
-    })),
+    todayRecords.value.map((r) => {
+      const a = Date.parse(r.start)
+      const b = Date.parse(r.end)
+      const ok = Number.isFinite(a) && Number.isFinite(b) && b > a
+      return {
+        key: r.uuid || String(r.id),
+        time: r.start.slice(11, 16),
+        name: r.taskName,
+        state: stateText(r.status),
+        stateClass: stateClass(r.status),
+        planMin: ok ? Math.round((b - a) / 60000) : null,
+        startAt: Number.isFinite(a) ? a : null,
+        endAt: Number.isFinite(b) ? b : null,
+      }
+    }),
   )
 
-  /** 执行中的任务（页面用它显示「当前巡检」进度条） */
+  /** 执行中的任务（页面用它显示「当前巡检」） */
   const running = computed<UavTaskView | null>(
     () => todayTasks.value.find((t) => t.stateClass === 'is-ok') ?? null,
   )
 
-  /** 今日已完成任务数 */
-  const doneCount = computed(() => todayTasks.value.filter((t) => t.stateClass === 'is-done').length)
+  /** 三格统计：接口没取到就是 null（页面写「—」，不拿本地条数冒充） */
+  const taskTotal = computed(() => stat.value?.taskCount ?? null)
+  const taskDone = computed(() => stat.value?.finishedCount ?? null)
+  const taskFailed = computed(() => stat.value?.failedCount ?? null)
 
-  /** 今日任务总数 */
-  const totalCount = computed(() => todayTasks.value.length)
-
-  /** 设备参数（机载读数；取不到的字段是 null，页面显示「—」） */
+  /** 机载读数（取不到的字段是 null，页面显示「—」） */
   const live = computed(() => {
     const t = telemetry.value
     return {
+      /** 飞机状态文案（厂家状态码映射；-1 = 关机、取不到 = 「—」） */
+      state: droneStateText(t?.status ?? null, t?.modeCode ?? null),
+      /** 状态是否「关机 / 未连接」，页面据此上色 */
+      stateDown: droneStateIsDown(t?.status ?? null, t?.modeCode ?? null),
       /** 电量 % */
       battery: t?.battery ?? null,
       /** 电池温度 ℃ */
@@ -139,8 +201,16 @@ export const useUavStore = defineStore('uav', () => {
       speed: t?.horizontalSpeed ?? null,
       /** 垂直速度 m/s */
       verticalSpeed: t?.verticalSpeed ?? null,
-      /** 相对高度 m */
-      altitude: t?.altitude ?? null,
+      /** 相对起飞点高度 m */
+      altitude: t?.relativeAltitude ?? null,
+      /** 海拔 m */
+      height: t?.height ?? null,
+      /** 距起飞点（≈ 机库）距离 m */
+      homeDistance: t?.homeDistance ?? null,
+      /** 剩余飞行时间 s */
+      remainFlight: t?.remainFlightTime ?? null,
+      /** 累计架次 */
+      totalSorties: t?.totalSorties ?? null,
       /** 航向角 ° */
       heading: t?.heading ?? null,
       /** 经纬度 */
@@ -149,17 +219,60 @@ export const useUavStore = defineStore('uav', () => {
     }
   })
 
+  /** 机库读数 */
+  const dockLive = computed(() => {
+    const d = dock.value
+    return {
+      /** 无人机是否在库（null = 机库遥测没取到） */
+      droneIn: d?.droneOnline ?? null,
+      /** 舱内温度 ℃ */
+      cabinTemp: d?.cabinTemp ?? null,
+      /** 环境温度 ℃ */
+      envTemp: d?.envTemp ?? null,
+      /** 环境湿度 % */
+      humidity: d?.humidity ?? null,
+      /** 雨量（厂家原值，口径未确认） */
+      rainfall: d?.rainfall ?? null,
+      /** 网络速率 kbps */
+      networkRate: d?.networkRate ?? null,
+      /** 网络质量等级（厂家原值） */
+      networkQuality: d?.networkQuality ?? null,
+      /** 充电状态（厂家枚举） */
+      chargeState: d?.chargeState ?? null,
+      /** 存储：已用 / 总量（GB） */
+      storageUsed: d?.storageUsed ?? null,
+      storageTotal: d?.storageTotal ?? null,
+      /** 告警 */
+      alarm: d?.alarmState ?? null,
+    }
+  })
+
+  /**
+   * 风速（m/s）：机载优先，机库兜底。
+   *
+   * 两个都对同一片空域——机载是飞机自己测的，机库是地面站测的；
+   * 飞机在地面时机载读数可能为 0，这时用机库的值更有意义。
+   */
+  const windSpeed = computed<number | null>(() => {
+    const d = telemetry.value?.windSpeed
+    if (d !== null && d !== undefined) return d
+    return dock.value?.windSpeed ?? null
+  })
+
   /**
    * 起飞条件校验。
    *
-   * 三态而不是两态：`ok` = 条件满足，`bad` = 明确不满足，
-   * `unknown` = **该指标没有数据源**（风速 / 雨量 / 网络速率）。
+   * 三态：`ok` 满足 / `bad` 明确不满足 / `unknown` **没有可信数据**。
+   * 「没有数据」绝不能算成「满足」—— 那是把安全门放松的方向。
    *
-   * 「没有数据」绝不能算成「条件满足」—— 那是把安全门放松的方向。
-   * 未知项会让「可下发」显示为不可下发，并在原因里写明缺哪个指标。
+   * 2026-11-13 之后，风速与网络从「未接入」变成真实判定（机库遥测里有）；
+   * 雨量仍是未知，原因是**口径**不明（rainfall=1 到底是晴是雨无法确认），
+   * 不是没数据 —— 页面同时显示原值，便于人工判断。
    */
-  const checks = computed<{ name: string; ok: boolean; unknown: boolean; risk: string }[]>(() => {
+  const checks = computed<UavCheck[]>(() => {
     const l = live.value
+    const d = dockLive.value
+    const wind = windSpeed.value
     return [
       {
         name: '电量',
@@ -174,21 +287,39 @@ export const useUavStore = defineStore('uav', () => {
         risk: '电池温度异常',
       },
       {
+        name: '风速',
+        ok: wind !== null && wind <= 8,
+        unknown: wind === null,
+        risk: '风速超过 8m/s',
+      },
+      {
+        name: '网络',
+        // 这里看的是**速率**（图传够不够传回视频），不是「网络质量」那格的等级：
+        // 等级只有四档、粗得很，做安全门太松。两者都来自机库遥测，但不是一个量。
+        ok: d.networkRate !== null && d.networkRate >= 500,
+        unknown: d.networkRate === null,
+        risk: '网络速率低于 500kbps',
+      },
+      {
         name: '水平速度',
         ok: l.speed !== null && l.speed <= 12,
         unknown: l.speed === null,
         risk: '水平速度过高',
       },
-      { name: '风速', ok: false, unknown: true, risk: '风速数据未接入' },
-      { name: '雨量', ok: false, unknown: true, risk: '雨量数据未接入' },
-      { name: '网络质量', ok: false, unknown: true, risk: '网络速率数据未接入' },
+      {
+        name: '雨量',
+        ok: false,
+        unknown: true,
+        // 带上原值：用户/运维能一眼看到「机库报了 1」，而不是一句空泛的「未接入」
+        risk: `机库雨量口径未确认（rainfall=${d.rainfall ?? '—'}）`,
+      },
     ]
   })
 
   /** 明确不满足的条件（页面列风险项） */
   const risks = computed(() => checks.value.filter((c) => !c.ok && !c.unknown))
 
-  /** 未知指标（数据未接入） */
+  /** 未知指标（数据未接入 / 口径未确认） */
   const unknowns = computed(() => checks.value.filter((c) => c.unknown))
 
   /**
@@ -202,13 +333,13 @@ export const useUavStore = defineStore('uav', () => {
   /** 下发条件说明文案 */
   const dispatchNote = computed(() => {
     if (canDispatch.value) {
-      return '起飞条件校验通过：电量、电池温度、水平速度符合要求'
+      return '起飞条件校验通过：电量、电池温度、风速、网络、水平速度符合要求'
     }
     const bad = risks.value.map((c) => c.name)
     const unknown = unknowns.value.map((c) => c.name)
     const parts: string[] = []
     if (bad.length) parts.push(`${bad.join('、')}未达标`)
-    if (unknown.length) parts.push(`${unknown.join('、')}数据未接入`)
+    if (unknown.length) parts.push(`${unknown.join('、')}口径未确认`)
     return parts.length ? `当前不可下发：${parts.join('；')}` : '当前条件不支持手动下发'
   })
 
@@ -219,10 +350,10 @@ export const useUavStore = defineStore('uav', () => {
   }
 
   /**
-   * 拉无人机数据。
+   * 拉一轮无人机数据（子页用）。
    *
-   * 任务与遥测**各自成败互不影响**：遥测挂了不该让任务列表也变成失败态
-   * （任务列表是更基本的信息）。
+   * 四块各自成败互不影响：任务列表是主信息（决定 state），遥测/统计/航线
+   * 失败只让自己的格子写「—」，不该把整页判成失败。
    */
   async function load(force = false): Promise<void> {
     if (inflight) return inflight
@@ -231,34 +362,97 @@ export const useUavStore = defineStore('uav', () => {
 
     state.value = 'loading'
     inflight = (async () => {
-      try {
-        const list = await fetchTaskRecords({ page: 1, size: 50 })
-        records.value = list.rows
+      const [list, s, tel, dk, rt, fly, dockFly] = await Promise.allSettled([
+        fetchTaskRecords({ start: dayKey(0), end: dayKey(1) }),
+        fetchTaskStat(),
+        fetchTelemetry(),
+        fetchDockTelemetry(),
+        fetchRoutes(),
+        fetchLiveStream(KH_IDS.droneDeviceId),
+        fetchLiveStream(KH_IDS.dockDeviceId),
+      ])
+
+      if (s.status === 'fulfilled') stat.value = s.value
+      if (tel.status === 'fulfilled') telemetry.value = tel.value
+      if (dk.status === 'fulfilled') dock.value = dk.value
+      if (rt.status === 'fulfilled') routes.value = rt.value
+      // 直播流取不到就当「没有这一路」，页面写「未开播」；不保留上一轮的旧地址，
+      // 免得停播后仍拿旧 url 连（连上去是黑的，比明说未开播更糟）
+      if (fly.status === 'fulfilled') droneStream.value = fly.value
+      if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
+
+      if (list.status === 'fulfilled') {
+        records.value = list.value.rows
         state.value = 'ok'
         error.value = ''
         updatedAt.value = stamp()
         lastFailAt = 0
-      } catch (e) {
+      } else {
         state.value = 'error'
+        const e = list.reason
         error.value = e instanceof Error ? e.message : '无人机任务加载失败'
         records.value = []
         lastFailAt = Date.now()
-      } finally {
-        // 遥测与航线是附加信息，各自失败只影响自己，不影响任务列表状态
-        try {
-          telemetry.value = await fetchTelemetry()
-        } catch {
-          telemetry.value = null
-        }
-        try {
-          routes.value = await fetchRoutes()
-        } catch {
-          routes.value = []
-        }
-        inflight = null
       }
+      inflight = null
     })()
     return inflight
+  }
+
+  /**
+   * 只拉「今日任务统计」—— 给首页卡片用。
+   *
+   * 首页只要一个「今日作业次数」，不该为它触发 CAS + 四个请求。失败静默
+   * （卡片留「—」），60s 冷却避免每次切回首页都重打。
+   */
+  async function loadStat(): Promise<void> {
+    if (stat.value) return
+    if (Date.now() - lastFailAt < RETRY_GAP) return
+    try {
+      stat.value = await fetchTaskStat()
+    } catch {
+      lastFailAt = Date.now()
+    }
+  }
+
+  /* ---------------- 实时刷新（子页「实时监控」） ---------------- */
+
+  let liveTimer: number | null = null
+  const liveOwners = new Set<string>()
+
+  /** 刷两个遥测 + 两路直播流：任务统计变化慢，没必要每 30s 打一遍 */
+  async function refreshLive(): Promise<void> {
+    const [tel, dk, fly, dockFly] = await Promise.allSettled([
+      fetchTelemetry(),
+      fetchDockTelemetry(),
+      fetchLiveStream(KH_IDS.droneDeviceId),
+      fetchLiveStream(KH_IDS.dockDeviceId),
+    ])
+    if (tel.status === 'fulfilled') telemetry.value = tel.value
+    if (dk.status === 'fulfilled') dock.value = dk.value
+    // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
+    if (fly.status === 'fulfilled') droneStream.value = fly.value
+    if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
+  }
+
+  /**
+   * 登记一个「正在看实时读数」的页面。
+   *
+   * 按 owner 名登记而不是计数：组件重复挂载/卸载不会把计数弄歪。
+   */
+  function startLive(owner: string): void {
+    liveOwners.add(owner)
+    if (liveTimer !== null) return
+    liveTimer = window.setInterval(() => {
+      void refreshLive()
+    }, LIVE_GAP)
+  }
+
+  function stopLive(owner: string): void {
+    liveOwners.delete(owner)
+    if (liveOwners.size || liveTimer === null) return
+    window.clearInterval(liveTimer)
+    liveTimer = null
   }
 
   /**
@@ -276,18 +470,34 @@ export const useUavStore = defineStore('uav', () => {
   }
 
   /** 测试接线点：直接灌数据（不走网络） */
-  function apply(recs: DroneTaskRecord[], tel: DroneTelemetry | null = null): void {
+  function apply(recs: DroneTaskRecord[], tel: DroneTelemetry | null = null, st: DroneTaskStat | null = null): void {
     records.value = recs
     telemetry.value = tel
+    stat.value = st
     state.value = 'ok'
     error.value = ''
+  }
+
+  /** 测试接线点：机库遥测 */
+  function applyDock(dk: DroneDock | null): void {
+    dock.value = dk
+  }
+
+  /** 测试接线点：直播流 */
+  function applyStream(fly: DroneLiveStream | null, dockFly: DroneLiveStream | null = null): void {
+    droneStream.value = fly
+    dockStream.value = dockFly
   }
 
   /** 退出登录 / 换账号时清空 */
   function reset(): void {
     records.value = []
+    stat.value = null
     telemetry.value = null
+    dock.value = null
     routes.value = []
+    droneStream.value = null
+    dockStream.value = null
     state.value = 'idle'
     error.value = ''
     updatedAt.value = ''
@@ -297,24 +507,36 @@ export const useUavStore = defineStore('uav', () => {
 
   return {
     records,
+    stat,
     telemetry,
+    dock,
     routes,
+    droneStream,
+    dockStream,
     state,
     error,
     updatedAt,
     todayRecords,
     todayTasks,
     running,
-    doneCount,
-    totalCount,
+    taskTotal,
+    taskDone,
+    taskFailed,
     live,
+    dockLive,
+    windSpeed,
     checks,
     risks,
     unknowns,
     canDispatch,
     dispatchNote,
     apply,
+    applyDock,
+    applyStream,
     load,
+    loadStat,
+    startLive,
+    stopLive,
     mediaOf,
     reset,
   }

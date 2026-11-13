@@ -22,71 +22,111 @@ import { attachMqttBridge } from './server/mqttBridge.mjs'
  */
 const CRANE_PREFIX = '/crane-api'
 const CRANE_UPSTREAM = 'https://tciccs.cscec3bxjy.cn:30400'
+
+/**
+ * 物联网网关的反代前缀（`/iot-api/*` → `iot.cscec3b-iti.com`）
+ *
+ * 与塔机是同一个病，但**病灶更窄**，这点值得记清楚：
+ *
+ * | 接口 | 预检 OPTIONS | 实际响应 ACAO | 浏览器能直连吗 |
+ * |---|---|---|---|
+ * | `/api/data/v1/tsdb/*` | 200 + `allow-origin/headers/methods` | 有（回显 origin） | **能** |
+ * | `/api/webgateway/v1/access/token` | **403，无任何 CORS 头** | **无** | **不能** |
+ *
+ * 也就是说数据接口本身是好的，唯独**换令牌那个接口没进 CORS 过滤链**。
+ * 浏览器带 `Content-Type: application/json` 发 POST 必然先打预检，预检 403 →
+ * 请求根本出不去，`fetch` 抛 TypeError。于是 `ensureToken()` 永远失败，
+ * 三个取数函数统统拿到 null，页面四格全「—」——**且不显示「重新登录」提示条**，
+ * 因为那提示只认 401，而这里连 HTTP 状态码都没拿到。
+ *
+ * 这正是「V2 有数据、我们没有」的真正原因：V2 是 Unity 客户端走原生 socket，
+ * 不受同源策略约束；我们是浏览器，绕不过预检。拿 curl / node 直连都能成功，
+ * 所以历史上一直误判成「参数不对」「权限被收回」。
+ *
+ * 试过且不通的路（别再试）：
+ *   · `Content-Type: text/plain` 绕预检 → 服务端 415，该接口只吃 application/json
+ *   · `application/x-www-form-urlencoded` → 同样 415
+ *   · 换 Origin 求进白名单 → localhost / *.github.io / null 全部 403
+ *   · `mode: 'no-cors'` → 请求能发出但响应是 opaque，读不到 token
+ *
+ * 唯一可行的就是同源反代。**注意它有部署前提**：`npm run dev` / `preview` 与
+ * `npm run deploy:http`（server/serve.mjs）都有这层；GitHub Pages 是纯静态托管，
+ * 没有反代 —— 那种部署下电梯数据必然拿不到，除非原厂把 token 接口的 CORS 补上。
+ */
+const IOT_PREFIX = '/iot-api'
+const IOT_UPSTREAM = 'https://iot.cscec3b-iti.com'
+
 const PROXY_MAX_BODY = 64 * 1024
 
 /**
- * 反代处理器：dev server 与 preview server 共用一份。
+ * 反代处理器工厂：dev server 与 preview server 共用一份。
  *
  * connect 的挂载会把 `req.url` 截成前缀之后的部分（`/crane-api/x` → `/x`），
  * 正好原样拼到上游主机名上，不用自己剥前缀。
+ *
+ * `maxBody` 限的是**请求体**（查询条件，几 KB）；响应不设上限 ——
+ * 电梯工况一次能回 658 帧、几百 KB，卡住就把数据截断了。
  */
-const craneHandler: Connect.NextHandleFunction = async (req, res) => {
-  if (req.method !== 'POST') {
-    res.statusCode = 405
-    res.setHeader('Allow', 'POST')
-    res.end('Method Not Allowed')
-    return
-  }
+function postProxy(upstream: string, timeoutMs = 20_000): Connect.NextHandleFunction {
+  return async (req, res) => {
+    if (req.method !== 'POST') {
+      res.statusCode = 405
+      res.setHeader('Allow', 'POST')
+      res.end('Method Not Allowed')
+      return
+    }
 
-  const chunks: Buffer[] = []
-  let size = 0
-  try {
-    await new Promise<void>((resolve, reject) => {
-      req.on('data', (c: Buffer) => {
-        size += c.length
-        if (size > PROXY_MAX_BODY) {
-          req.destroy()
-          reject(new Error('too large'))
-          return
-        }
-        chunks.push(c)
+    const chunks: Buffer[] = []
+    let size = 0
+    try {
+      await new Promise<void>((resolve, reject) => {
+        req.on('data', (c: Buffer) => {
+          size += c.length
+          if (size > PROXY_MAX_BODY) {
+            req.destroy()
+            reject(new Error('too large'))
+            return
+          }
+          chunks.push(c)
+        })
+        req.on('end', () => resolve())
+        req.on('error', reject)
       })
-      req.on('end', () => resolve())
-      req.on('error', reject)
-    })
-  } catch {
-    res.statusCode = 413
-    res.end('Payload Too Large')
-    return
-  }
+    } catch {
+      res.statusCode = 413
+      res.end('Payload Too Large')
+      return
+    }
 
-  try {
-    const up = await fetch(`${CRANE_UPSTREAM}${req.url ?? ''}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': req.headers['content-type'] ?? 'application/json; charset=UTF-8',
-        Accept: 'application/json',
-      },
-      body: Buffer.concat(chunks),
-      signal: AbortSignal.timeout(20_000),
-    })
-    const text = await up.text()
-    res.statusCode = up.status
-    res.setHeader('Content-Type', up.headers.get('content-type') ?? 'application/json; charset=utf-8')
-    res.setHeader('Cache-Control', 'no-store')
-    res.end(text)
-  } catch (e) {
-    res.statusCode = 502
-    res.end(`Bad Gateway: ${(e as Error)?.message ?? e}`)
+    try {
+      const up = await fetch(`${upstream}${req.url ?? ''}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': req.headers['content-type'] ?? 'application/json; charset=UTF-8',
+          Accept: 'application/json',
+        },
+        body: Buffer.concat(chunks),
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      const text = await up.text()
+      res.statusCode = up.status
+      res.setHeader('Content-Type', up.headers.get('content-type') ?? 'application/json; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-store')
+      res.end(text)
+    } catch (e) {
+      res.statusCode = 502
+      res.end(`Bad Gateway: ${(e as Error)?.message ?? e}`)
+    }
   }
 }
 
 function craneProxy(): Plugin {
+  const handler = postProxy(CRANE_UPSTREAM)
   return {
     name: 'xyc-crane-proxy',
     apply: 'serve',
     configureServer(server) {
-      server.middlewares.use(CRANE_PREFIX, craneHandler)
+      server.middlewares.use(CRANE_PREFIX, handler)
     },
     /**
      * `vite preview` 用的是 preview server，**不共享** `configureServer` 挂的中间件。
@@ -94,7 +134,26 @@ function craneProxy(): Plugin {
      * 看着像「反代白写了」—— 其实只是挂错了服务器。
      */
     configurePreviewServer(server) {
-      server.middlewares.use(CRANE_PREFIX, craneHandler)
+      server.middlewares.use(CRANE_PREFIX, handler)
+    },
+  }
+}
+
+/**
+ * 物联网网关反代（`/iot-api`）—— 动机见上方 `IOT_PREFIX` 的说明。
+ *
+ * 超时给 25s：换令牌 + 一次 6 小时工况窗可能回几百 KB，比塔机慢。
+ */
+function iotProxy(): Plugin {
+  const handler = postProxy(IOT_UPSTREAM, 25_000)
+  return {
+    name: 'xyc-iot-proxy',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use(IOT_PREFIX, handler)
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(IOT_PREFIX, handler)
     },
   }
 }
@@ -143,6 +202,9 @@ export default defineConfig({
 
     // 开发期把塔机数据服务挂到同源下（CORS 白名单不含本站，直连必被拦）
     craneProxy(),
+
+    // 物联网网关：换令牌接口预检 403 且无 ACAO，浏览器直连必失败（数据接口本身没问题）
+    iotProxy(),
 
     // 塔机实时推送：broker 的 MQTT-over-WS 挂到同源 /mqtt
     mqttWsProxy(),

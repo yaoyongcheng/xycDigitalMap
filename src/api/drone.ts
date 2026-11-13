@@ -76,6 +76,14 @@ const TOKEN_TTL = 30 * 60 * 1000
 export interface DroneTaskRecord {
   /** 执行记录 id（媒体文件接口按它取 job） */
   id: number
+  /**
+   * 服务端 uuid。
+   *
+   * **用做列表 key 的原因**：`id` 是 int64，部分行超过 JS 安全整数
+   * （实测 `8093284258806579000`），`JSON.parse` 会丢精度、两条不同记录可能
+   * 撞成同一个 id。uuid 是字符串，不会丢。
+   */
+  uuid: string
   /** 任务名，如「向阳村-安全巡检」 */
   taskName: string
   /** 航线 id */
@@ -98,10 +106,51 @@ export interface DroneTaskPage {
   total: number
 }
 
-/** 设备遥测（机载实时读数） */
+/**
+ * 今日任务统计（`GET /dashboard/task/list/record`）。
+ *
+ * 这是设计稿「任务管理」那三格的唯一来源，也是首页「今日作业次数」的来源。
+ * 实测该接口**不吃 `start` / `end`**（传与不传返回值一样），算的始终是「今天」，
+ * 所以别指望用它查历史 —— 历史走 `fetchTaskRecords({start,end})`。
+ *
+ * 2026-11-13 实测：`taskCount 15 = finishedCount 11 + planCount 4`，
+ * `failedCount 0`、`runningCount 0`、`suspendedCount 0`。
+ */
+export interface DroneTaskStat {
+  /** 今日任务总数（= 已完成 + 已完成之外的计划数） */
+  taskCount: number
+  /** 已完成架次 */
+  finishedCount: number
+  /** 失败架次 */
+  failedCount: number
+  /** 执行中 */
+  runningCount: number
+  /** 已计划但还没执行 */
+  planCount: number
+  /** 已暂停 */
+  suspendedCount: number
+}
+
+
+/**
+ * 无人机机载遥测（`/dashboard/device/cache/telemetry/{无人机id}/1`）。
+ *
+ * ## 2026-11-13 复核：字段比原先解析的多一倍
+ *
+ * 之前只解析了 9 个字段，把「风速 / 距机库 / 剩余续航 / 累计架次」全丢了，
+ * 于是页面与文档都写成「这些指标没有数据源」。实测响应里它们都在 ——
+ * 是**我们的解析漏了**，不是厂家没给。设计稿的设备参数八格因此全部有源。
+ *
+ * 顺带修正一个读错：相对高度在 `relativeAltitude`，`height` 是海拔
+ * （机库与无人机同时刻都约 12.06，说明 `height` 是同一个绝对基准）。
+ * 原先读 `altitude`（服务端没有这个键）退到 `height`，等于把海拔当成了
+ * 相对高度 —— 地面停着也显示「12m」。
+ */
 export interface DroneTelemetry {
-  /** 状态码（-1 = 未起飞等） */
-  status: number
+  /** 状态码（DJI `drone_status` 枚举；-1 = 飞控未上报，库里断电时就是这个值） */
+  status: number | null
+  /** 同一套枚举的另一个字段，`status` 不刷新时用它兜底 */
+  modeCode: number | null
   lat: string
   lng: string
   /** 电池电量百分比 */
@@ -112,11 +161,67 @@ export interface DroneTelemetry {
   horizontalSpeed: number | null
   /** 垂直速度 m/s */
   verticalSpeed: number | null
-  /** 相对起飞点高度 m */
-  altitude: number | null
+  /** 相对起飞点高度 m（`relativeAltitude`；未起飞时为 0） */
+  relativeAltitude: number | null
+  /** 海拔 m（`height`） */
+  height: number | null
+  /** 距起飞点（≈ 机库）的水平距离 m（`homeDistance`） */
+  homeDistance: number | null
+  /** 风速 m/s（`windSpeed`） */
+  windSpeed: number | null
+  /** 预计剩余飞行时间 s（`batteryInfo.remainFlightTime`；在地面为 0） */
+  remainFlightTime: number | null
+  /** 累计飞行架次（`totalFlightSorties`） */
+  totalSorties: number | null
   /** 航向角 */
   heading: number | null
 }
+
+/**
+ * 机库遥测（`/dashboard/device/cache/telemetry/{机库id}/2`）。
+ *
+ * 第二个路径段是**设备类型**：1 = 无人机、2 = 机库。传 `1` 查机库只会拿到
+ * 一堆 null（GPS / 电池 / 速度那套字段它没有），必须用 `2`。
+ *
+ * 风、雨、网络这三个「起飞条件」缺的指标全在这里 —— 也正因为它们在这里，
+ * 起飞条件校验才能从「三项未知」变成真实判定。
+ */
+export interface DroneDock {
+  status: number
+  /** 舱门状态（枚举，原样保留） */
+  hatchStatus: number | null
+  /** 推杆状态 */
+  putterState: number | null
+  /** 无人机是否在库（`droneOnlineStatus`，1 = 在） */
+  droneOnline: boolean | null
+  /** 无人机在哪个位置（枚举：1 = 在库内） */
+  droneLocation: number | null
+  /** 无人机充电状态（枚举：0 = 未充电） */
+  chargeState: number | null
+  /** 舱内温度 ℃ */
+  cabinTemp: number | null
+  /** 环境温度 ℃ */
+  envTemp: number | null
+  /** 环境湿度 % */
+  humidity: number | null
+  /** 雨量（厂家原值，**口径未确认**，见 `stores/uav.ts` 的说明） */
+  rainfall: number | null
+  /** 风速 m/s */
+  windSpeed: number | null
+  /** 网络质量等级（厂家原值） */
+  networkQuality: number | null
+  /** 网络速率 kbps */
+  networkRate: number | null
+  /** 存储总量 / 已用（GB） */
+  storageTotal: number | null
+  storageUsed: number | null
+  /** 是否告警 */
+  alarmState: boolean | null
+  lat: string
+  lng: string
+  height: number | null
+}
+
 
 /** 航线（任务下发的可选航线） */
 export interface DroneRoute {
@@ -319,6 +424,7 @@ export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
     if (id === null || !name) continue
     out.push({
       id,
+      uuid: str(o.uuid),
       taskName: name,
       lineId: num(o.lineId) ?? 0,
       dockId: num(o.dockId) ?? 0,
@@ -331,52 +437,139 @@ export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
   return out
 }
 
-/** 把遥测收敛成前端类型；取不到的字段是 null（页面显示「—」，不写 0） */
+/** 把机载遥测收敛成前端类型；取不到的字段是 null（页面显示「—」，不写 0） */
 export function toTelemetry(raw: unknown): DroneTelemetry {
   const o = (raw ?? {}) as Record<string, unknown>
   const batt = (o.batteryInfo ?? {}) as Record<string, unknown>
   const cells = Array.isArray(batt.batteries) ? (batt.batteries as Record<string, unknown>[]) : []
   const first = (cells[0] ?? {}) as Record<string, unknown>
   return {
-    status: num(o.status) ?? 0,
+    // 取不到就是 null，不拿 0（「待机」）冒充
+    status: num(o.status),
+    modeCode: num(o.modeCode),
     lat: str(o.lat),
     lng: str(o.lng),
     battery: num(batt.capacityPercent) ?? num(first.capacityPercent),
     temp: num(first.temperature),
     horizontalSpeed: num(o.horizontalSpeed),
     verticalSpeed: num(o.verticalSpeed),
-    altitude: num(o.altitude) ?? num(o.height) ?? num(o.relativeHeight),
+    // 旧桩里写的是 altitude（服务端没有这个键），保留它作兜底，免得既有数据断供
+    relativeAltitude: num(o.relativeAltitude) ?? num(o.altitude) ?? num(o.relativeHeight),
+    height: num(o.height),
+    homeDistance: num(o.homeDistance),
+    windSpeed: num(o.windSpeed),
+    remainFlightTime: num(batt.remainFlightTime),
+    totalSorties: num(o.totalFlightSorties),
     heading: num(o.attitudeHead),
   }
 }
+
+/** 把机库遥测收敛成前端类型（同样是「取不到 → null」，不写 0） */
+export function toDock(raw: unknown): DroneDock {
+  const o = (raw ?? {}) as Record<string, unknown>
+  const online = num(o.droneOnlineStatus)
+  return {
+    status: num(o.status) ?? 0,
+    hatchStatus: num(o.hatchStatus),
+    putterState: num(o.putterState),
+    droneOnline: online === null ? null : online === 1,
+    droneLocation: num(o.droneLocation),
+    chargeState: num(o.droneChargeState),
+    cabinTemp: num(o.cabinTemperature),
+    envTemp: num(o.environmentTemperature),
+    humidity: num(o.humidity),
+    rainfall: num(o.rainfall),
+    windSpeed: num(o.windSpeed),
+    networkQuality: num(o.networkQuality),
+    networkRate: num(o.networkRate),
+    storageTotal: num(o.storageTotal),
+    storageUsed: num(o.storageUsed),
+    alarmState: typeof o.alarmState === 'boolean' ? o.alarmState : null,
+    lat: str(o.latitude),
+    lng: str(o.longitude),
+    height: num(o.height),
+  }
+}
+
+/** 今日任务统计的收敛（字段缺就是 0 —— 这几个都是「今天几条」，0 是有效结论） */
+export function toTaskStat(raw: unknown): DroneTaskStat {
+  const o = (raw ?? {}) as Record<string, unknown>
+  return {
+    taskCount: num(o.taskCount) ?? 0,
+    finishedCount: num(o.finishedCount) ?? 0,
+    failedCount: num(o.failedCount) ?? 0,
+    runningCount: num(o.runningCount) ?? 0,
+    planCount: num(o.planCount) ?? 0,
+    suspendedCount: num(o.suspendedCount) ?? 0,
+  }
+}
+
 
 /* ---------- 业务接口 ---------- */
 
 /**
  * 任务的执行记录（本项目的）。
  *
- * 实测返回：首屏就是今天的「向阳村-安全巡检」，另有历史「测试 / 测试全景」。
- * `total` 是服务端给的条数，页面按它决定是否还能翻页。
+ * ## 必须带 `start` / `end`，否则拿到的是**最旧**的记录
+ *
+ * 不带日期时服务端按**开始时间升序**返回，实测 `page=1&size=8` 回来的是
+ * 2026-07-14 那几条 —— 拿它当「今天的任务」过滤，结果永远是 0 条。
+ * `start` / `end` 是 `YYYY-MM-DD`，**`end` 不含当天**（查今天要传明天）。
+ *
+ * ## `size` 不生效
+ *
+ * 实测 `size=20` 仍返回该区间全部记录（11 月整月 424 条、今天 30 条）。
+ * 所以别用它做分页，也别一次拉太大的区间（手机流量）。
  */
 export async function fetchTaskRecords(
-  opts: { page?: number; size?: number; pid?: number } = {},
+  opts: { page?: number; size?: number; pid?: number; start?: string; end?: string } = {},
 ): Promise<DroneTaskPage> {
-  const { page = 1, size = 20, pid = KH_PROJECT_ID } = opts
-  const q = `?page=${page}&size=${size}&pid=${pid}`
+  const { page = 1, size = 50, pid = KH_PROJECT_ID, start, end } = opts
+  let q = `?page=${page}&size=${size}&pid=${pid}`
+  if (start) q += `&start=${start}`
+  if (end) q += `&end=${end}`
   const raw = await khAuthGet<unknown>(`/task/exec/list/record${q}`)
   const rows = toTaskRecords(raw)
   return { rows, total: rows.length }
 }
 
 /**
- * 无人机机载遥测（电量 / 温度 / 速度 / 位置）。
+ * 今日任务统计（三格：今日任务 / 已完成 / 失败次数）。
  *
- * 实测：设备 id 23498 返回电量 88%、电池温度 29.3℃、水平速度 0。
+ * 这个接口**只算今天**（传 start/end 也被忽略），历史统计没有对应端点 ——
+ * 设计稿那三格本来也是「今日」。
+ */
+export async function fetchTaskStat(opts: { pid?: number } = {}): Promise<DroneTaskStat> {
+  const { pid = KH_PROJECT_ID } = opts
+  const raw = await khAuthGet<Record<string, unknown>>(`/dashboard/task/list/record?pid=${pid}`)
+  // 缺 `taskCount` 说明拿到的不是统计（比如被别的网关拦了返回一个空信封）。
+  // 抛出去比「当 0 条」安全：0 会被读成「今天一架次都没飞」。
+  if (!raw || typeof raw !== 'object' || !('taskCount' in raw)) {
+    throw new ApiError(0, '无人机任务统计返回异常')
+  }
+  return toTaskStat(raw)
+}
+
+
+/**
+ * 无人机机载遥测（电量 / 温度 / 速度 / 位置 / 风 / 距机库）。
+ *
+ * 实测：设备 id 23498 返回电量 68%、电池温度 26.4℃、风速 0、距起飞点 0.05m。
  * 第二个路径段是「设备类型」，原厂用 1（无人机）/ 2（机库）。
  */
 export async function fetchTelemetry(deviceId: number = KH_DRONE_DEVICE_ID): Promise<DroneTelemetry> {
   const raw = await khAuthGet<unknown>(`/dashboard/device/cache/telemetry/${deviceId}/1`)
   return toTelemetry(raw)
+}
+
+/**
+ * 机库遥测（舱门 / 充电 / 舱温 / 湿度 / 雨量 / 风速 / 网络）。
+ *
+ * 类型段必须是 **2**：用 1 查机库只会拿到一屏 null。
+ */
+export async function fetchDockTelemetry(deviceId: number = KH_DOCK_DEVICE_ID): Promise<DroneDock> {
+  const raw = await khAuthGet<unknown>(`/dashboard/device/cache/telemetry/${deviceId}/2`)
+  return toDock(raw)
 }
 
 /**
@@ -451,6 +644,85 @@ export async function fetchMediaJobs(jobId: number): Promise<DroneMedia[]> {
     })
   }
   return out
+}
+
+/**
+ * 一路直播流（无人机 / 机库摄像头）。
+ *
+ * **这是 V2 里那套「实时监控」画面的真实来源**（2026-11-13 打通）。
+ * V2 走的也是这条路：keehang 自建的 ZLMediaKit 流媒体服务器分发，
+ * 只是桌面端用 mediamtx/VLC 二次转协议，浏览器端直接吃 HTTP-FLV。
+ *
+ * 关键事实（都实测过，不是推断）：
+ *
+ * · 接口 `GET /live/stream/list?deviceId=23498` 直接回**播放地址**，
+ *   1197 组全量有 1.5MB，按 deviceId 过滤只有 1.2KB —— 必须带参数。
+ * · 流地址**不需要 token**，也不带签名，`Access-Control-Allow-Origin: *`，
+ *   浏览器可直接连；证书是 `*.keehang.com` 的正式 DV 证书（无需忽略校验）。
+ * · `type: 'flv'` + `protocol: 'https'` 是浏览器唯一能直接播的形态；
+ *   `rtsp` / `rtmp` 浏览器不支持，`http` 版本在 HTTPS 站点会被混合内容拦掉。
+ * · `online` 是**当前是否在推流**：无人机飞行中为 true；机库摄像头在库待机时
+ *   为 false（此时地址还在，但连上去没有画面），页面据此说「未推流」而不是干等。
+ */
+export interface DroneLiveStream {
+  /** 流 id（`/live/stream/list` 的 `streams[].id`） */
+  id: number
+  /** 流名（实测「中建三局-向阳村项目无人机2」） */
+  name: string
+  /** 服务端是否在推流 */
+  online: boolean
+  /** 浏览器可直连的 HTTPS-FLV 地址 */
+  flv: string | null
+  /** wss 版 FLV（WebSocket 承载，预留） */
+  wsFlv: string | null
+  /** RTSP（浏览器放不了，留给原厂工具 / 服务端转协议） */
+  rtsp: string | null
+}
+
+/**
+ * 把 `/live/stream/list` 的响应收敛成一路流。
+ *
+ * 响应形状是 `[{deviceId, streams:[{id,name,online,playStreams:[{type,protocol,url}]}]}]`。
+ * 一个设备有多路流时取排序最靠前的那路（本项目无人机 / 机库各只有一路）。
+ */
+export function toLiveStream(raw: unknown): DroneLiveStream | null {
+  const groups = Array.isArray(raw) ? raw : []
+  for (const g of groups) {
+    const streams = (g as Record<string, unknown>)?.streams
+    if (!Array.isArray(streams)) continue
+    for (const s of streams) {
+      const o = s as Record<string, unknown>
+      const id = num(o.id)
+      const plays = Array.isArray(o.playStreams) ? o.playStreams : []
+      let flv: string | null = null
+      let wsFlv: string | null = null
+      let rtsp: string | null = null
+      for (const p of plays) {
+        const q = p as Record<string, unknown>
+        const type = str(q.type)
+        const proto = str(q.protocol)
+        const url = str(q.url)
+        if (!url) continue
+        if (type === 'flv' && proto === 'https') flv = flv ?? url
+        else if (type === 'flv' && proto === 'wss') wsFlv = wsFlv ?? url
+        else if (type === 'rtsp') rtsp = rtsp ?? url
+      }
+      if (id === null || (!flv && !wsFlv)) continue
+      return { id, name: str(o.name), online: o.online === true, flv, wsFlv, rtsp }
+    }
+  }
+  return null
+}
+
+/**
+ * 取某台设备的直播流。
+ *
+ * `deviceId` 用 `KH_IDS.droneDeviceId` / `KH_IDS.dockDeviceId`。
+ * 设备没有配流（或接口失败）→ `null`，页面写「未开播」，不拿别处的图冒充。
+ */
+export async function fetchLiveStream(deviceId: number): Promise<DroneLiveStream | null> {
+  const raw = await khAuthGet<unknown>(`/live/stream/list?deviceId=${deviceId}`)
+  return toLiveStream(raw)
 }
 
 /** 本项目的 pid / 设备 id（页面要显示项目归属时用） */

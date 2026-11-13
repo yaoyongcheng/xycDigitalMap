@@ -7,15 +7,18 @@ import Skel from '@/components/ui/Skel.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import type { IconName } from '@/data/icons'
 import { craneSnOf } from '@/data/craneSn'
+import { LIFT_CAGES } from '@/data/liftSn'
 import { useAuthStore } from '@/stores/auth'
 import { useCraneRealtimeStore } from '@/stores/craneRealtime'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useHomeStore } from '@/stores/home'
+import { useLiftStore } from '@/stores/lift'
 import { useScaffoldStore } from '@/stores/scaffold'
 import { useSubpageStore } from '@/stores/subpage'
 import { useUavStore } from '@/stores/uav'
 import { firstOverLabel, timeHm } from '@/utils/scaffold'
 import { ROBOT_CARDS, unitNo } from '@/utils/deviceLedger'
+import { DASH, formatRuntime } from '@/utils/lift'
 import { useSlowLoading } from '@/utils/slowLoading'
 import type { Equip } from '@/types'
 
@@ -27,7 +30,11 @@ import type { Equip } from '@/types'
  * 横向三段：左 64px 设备立绘（eq-ico）+ 中 eq-main（名称行 eq-hd + 数值行
  * eq-vals）+ 右圆形箭头（eq-more）。四种形态：
  *   ① 塔机（is-crane）：在线 x/y + 今日吊重 + 今日吊次（三格，gap 16）
- *   ② 电梯 / 无人机：在线 x/y + 一个指标（电梯高度 / 无人机作业任务 x/y）
+ *   ② 电梯：在线 x/y + 今日运行时长；**无人机：只有一格「今日作业次数」**
+ *      （用户 2026-11-13 要求，不再并排念「设备状态 0/1」——那是台账登记态，
+ *      与「今天飞了几架次」无关，两格并排还会被读成「1 架里 0 架在线」）。
+ *      电梯那格**常驻**：取不到 IOT 数据就是「—」占位（设计稿是两列，
+ *      撤列会让卡宽跳动），不拿台账字段冒充。
  *   ③ 爬架（is-climb）：纵向两段 —— 上段是普通卡+三格传感器，下段可挂超限警示
  *   ④ 机器人（无 page）：静态卡，**不是 button**，一格「今日作业次数」
  *      （值取 V2 预制体预置的模拟值，见 `data/robotStats.ts`）
@@ -38,11 +45,15 @@ import type { Equip } from '@/types'
  * · 塔机「今日吊重 / 今日吊次」：塔机工作循环接口（`api/towerCrane.ts`），
  *   前提是台账能给出 sn —— 现场没有，所以塔机卡当前退回「最大高度」一格；
  *   等 sn 补上，`ledger.craneDay` 有值就自动换成两格，模板不用改。
- * · 电梯「累计运行时间」：同样需要工作循环能力（V2 端走 ElevatorRequester），
- *   本机 **未接**，也不拿台账里的高度去冒充，缺省不渲染该格。
- * · 无人机「作业任务 x/y」：`stores/uav.ts` 的 doneCount / totalCount。
- *   只有进过无人机页才取过数（keehang 要走两步 CAS 登录），首页**不为这一格
- *   去触发那串请求**，取不到就整格不渲染 —— 不写 0/0。
+ * · 电梯「在线 x/y」与「今日运行时长」：IOT 网关（`api/lift.ts`）。
+ *   在线走 `EVENT_ON_OFF`，时长来自 `EVENT_WORKDATA` 的**首尾跨度**——
+ *   与 V2 `FetchWorkCycleAsync` 同口径（含停机，理由见 `utils/lift.ts`）。
+ *   网关没数据的台次出「—」，不再拿台账里的「最大高度」顶替作业量。
+ * · 无人机「今日作业次数」：keehang `/dashboard/task/list/record` 的
+ *   `finishedCount`（已完成），与子页「任务管理」那格同值同源 —— 用户
+ *   2026-11-13 15:24 明确 V2 卡片展示的就是「已完成」。
+ *   首页在挂载 800ms 后补拉一次（`uav.loadStat()`，不抢首屏带宽；失败静默 +
+ *   60s 冷却）。取不到写「—」，不写 0 —— 那会替它宣布「今天一架次都没飞」。
  * · 爬架三格传感器（左右倾斜 / 前后倾斜 / 载荷）：四套后端都没有接口，
  *   三格显示「—」并给「数据未接入」说明；超限警示行（eq-alert）没有数据
  *   可判，整行不渲染 —— 编一个「35/36 正常」比空着更危险。
@@ -74,6 +85,7 @@ const auth = useAuthStore()
 const subpage = useSubpageStore()
 const uav = useUavStore()
 const crane = useCraneRealtimeStore()
+const lift = useLiftStore()
 
 /**
  * 面板挂载即取一次 —— 也是「切回智控」的刷新入口。
@@ -87,9 +99,24 @@ const crane = useCraneRealtimeStore()
  * 所以两条取数互不牵制 —— 台账接口挂了，爬架读数照样能出来。
  * 失败冷却由各自的 `refresh` 内部控制（弱网下连点标签不反复打请求）。
  */
+/** 无人机统计的延后取数句柄（卸载时清掉，别让定时器在别的页面里跑） */
+let statTimer: number | null = null
+
 onMounted(() => {
   if (auth.token) void ledger.refresh(auth.token)
   void scaf.refresh()
+  // 电梯走 IOT（项目级 ak/sk，与用户登录态无关），所以不等 token
+  void lift.refresh()
+  // 电梯卡上的「累计运行时间 / 在线设备」要跟着变 —— 按名字登记，离开面板即停
+  lift.startLive('equip')
+  /**
+   * 无人机卡只有一格「今日作业次数」，要一次 keehang 统计请求（CAS 两步 + 1 个 GET）。
+   *
+   * **延后 800ms**：别与台账/塔机/爬架那几路抢首屏带宽（现场是手机 4G）。
+   * 失败静默 + 60s 冷却由 `loadStat` 内部管；取不到时卡片就是「—」，
+   * 不写 0（那会替它宣布「今天一架次都没飞」）。
+   */
+  statTimer = window.setTimeout(() => void uav.loadStat(), 800)
 })
 
 /** 登录成功后补拉（登录页盖在首页上，面板不卸载，onMounted 不会重跑） */
@@ -129,6 +156,9 @@ watch(
   { immediate: true },
 )
 onUnmounted(() => {
+  // 放最前面：下面那条 `if (!subscribed) return` 会提前返回，清理不能它带走
+  if (statTimer !== null) window.clearTimeout(statTimer)
+  lift.stopLive('equip')
   if (!subscribed) return
   subscribed = false
   crane.close()
@@ -137,14 +167,25 @@ onUnmounted(() => {
 /**
  * 某类设备的「在线 x / 共 y」。
  *
- * 除塔机外一律走台账（`home.equipCount`）。塔机改走实时四态：
- * 状态不是「离线」就算在线（待机 / 工作中 / 正在吊装都是活的）。
- * `stateOf` 返回 null = 通道判断不了，这一台回落台账的 `online_status`。
+ * 三类三种口径：
+ * · **塔机**（台账 4 台）：状态不是「离线」就算在线（待机 / 工作中 / 正在吊装
+ *   都是活的）。`stateOf` 返回 null = 通道判断不了，这一台回落台账 `online_status`。
+ * · **电梯**（IOT 4 个轿厢）：逐笼判在线，查不到记录按离线（V2 `IsOnline` 口径）。
+ *   **连不上也按离线**：网关没应答时不去翻台账的登记态 —— 那是平台登记信息、
+ *   不随设备实时变化，拿它顶替会画出「4/4 在线」而每一格都是「—」。用户
+ *   2026-11-13 明确要求「电梯连不上就默认离线」。
+ *   分母是**轿厢数**，不是台账行数 —— 台账 2 行是「楼」，V2 与现场都是按笼看。
+ * · **其余**（爬架 / 无人机）：台账 `online_status`。
  *
- * 分母恒为**台账里的台数**（现场 4 台，含没有编号的传统塔机5）——
- * 这不是写死的 4：台账多一台、分母就跟着变。
+ * 塔机与电梯的分母都不写死：台账多一台 / 场景多一个笼，数字跟着变。
  */
 function countOf(d: Equip): { on: number; total: number; st: 'off' | 'warn' | 'on' } {
+  if (d.id === 'lift') {
+    const total = LIFT_CAGES.length
+    // 没有在线数据 = 连不上 → 全部离线（`isOnline` 查不到即 false，V2 口径）
+    const on = LIFT_CAGES.filter((c) => lift.isOnline(c.sn)).length
+    return { on, total, st: on <= 0 ? 'off' : on < total ? 'warn' : 'on' }
+  }
   if (d.id !== 'crane') return home.equipCount(d)
   const total = d.units.length
   let on = 0
@@ -266,15 +307,33 @@ function cellsOf(d: Equip): CardCell[] {
 
   if (!d.linked) {
     // 机器人卡：`value` 是「5次」这种「数字 + 单位」的合体文本，与塔机卡同法拆单位，
-    // 「次」走 .eq-stat-unit 排小字（V2 预制体里也是 `<size=24>5</size>次` 这种大小搭配）
+    // 「次」走 .eq-stat-unit 排小字（V2 预制体里也是 `<size=24>5</size></text>` 这种大小搭配）
     const { value, unit } = splitUnit(d.value ?? '—')
     return [{ value, unit, metric: d.metric ?? '' }]
+  }
+
+  /**
+   * 无人机：只有一格「今日作业次数」（用户 2026-11-13 要求）。
+   *
+   * 值取统计接口的 **`finishedCount`（已完成）** —— 用户 15:24 明确：V2 卡片
+   * 展示的就是子页「任务管理」里那格「已完成」（截图 15 / **11** / 0 圈的是 11），
+   * 不是「今日任务」15。两者差的是「已排班但还没飞」的 4 条，那是计划不是作业。
+   *
+   * 不再念「设备状态 0/1」——那是台账登记态，与「今天飞了几架次」无关，
+   * 两格并排还会被读成「1 架里 0 架在线」。在线与否由标题旁的状态点表达。
+   *
+   * 取不到就是「—」：`taskDone` 为 null 表示统计接口没回来，
+   * 写 0 等于替它宣布「今天一架次都没飞」。
+   */
+  if (d.id === 'drone') {
+    const n = uav.taskDone
+    return [{ value: n === null ? DASH : String(n), unit: n === null ? '' : '次', metric: '今日作业次数' }]
   }
 
   out.push({
     value: '',
     unit: '',
-    metric: d.id === 'drone' ? '设备状态' : '在线设备',
+    metric: '在线设备',
     online: true,
     on: c.on,
     total: c.total,
@@ -288,18 +347,25 @@ function cellsOf(d: Equip): CardCell[] {
     return out
   }
 
-  // 无人机：作业任务（设计稿的 jobs 格）。取不到就整格不渲染
-  if (d.id === 'drone') {
-    const total = uav.totalCount
-    // 必须是 > 0：total 为 0 时渲染「作业任务 0/0」等于宣称「今天一架次都没有」，
-    // 而实际情况是「没取过任务数据」（首页不触发 keehang 的 CAS 登录）
-    if (total > 0) {
-      out.push({ value: '', unit: '', metric: '作业任务', online: true, on: uav.doneCount, total })
-    }
+  // 无人机在上面已经单独返回，走不到这里
+
+  // 电梯：那一格是「今日运行时长」（IOT 今日工作循环，**V2 口径：首尾跨度**）。
+  // **整格常驻**：设计稿的卡是「在线 x/y + 时长」两列，取不到时用「—」占位而不是
+  // 把列撤掉 —— 少一列会让卡片宽度跳变，而且「这一格本来有内容、只是现在没数」
+  // 这个信息也丢了。绝不拿台账的「最大高度」冒充作业量。
+  //
+  // 标签比设计稿多两个字（稿上是「累计运行时间」）：那是**今日**的量，写「累计」
+  // 不带日期任谁都会读成「出厂至今一共跑了多久」，而值只有一天 —— 标签在骗人。
+  // 字数与原来相同，不撑格、不折行（折行会顶高卡片，刷新时整页跟着跳）。
+  // 卡片与弹层都不标口径（含停机）：与 V2 对照时多一句反而显得两边不一样。
+  if (d.id === 'lift') {
+    const sec = lift.totalSeconds
+    const { value, unit } = splitUnit(sec === null ? DASH : formatRuntime(sec))
+    out.push({ value, unit, metric: '今日运行时长' })
     return out
   }
 
-  // 其余（电梯 / 爬架的兜底）：台账里真有那个字段才渲染
+  // 其余（爬架的兜底）：台账里真有那个字段才渲染
   if (d.value) {
     const { value, unit } = splitUnit(d.value)
     out.push({ value, unit, metric: d.metric ?? '' })
@@ -403,17 +469,25 @@ function ariaOf(d: Equip): string {
     return `${parts.join('，')}，点击查看点位`
   }
 
-  parts.push(`${d.id === 'drone' ? '设备状态' : '在线设备'}${c.on}/${c.total}`)
-  if (d.id === 'drone' && uav.totalCount > 0) {
-    parts.push(`作业任务${uav.doneCount}/${uav.totalCount}`)
+  // 无人机只有一格「今日作业次数」，与可视格同口径（= 子页的「已完成」）
+  if (d.id === 'drone') {
+    const n = uav.taskDone
+    parts.push(n === null ? '今日作业次数未取到' : `今日作业次数${n}次`)
+    return `${parts.join('，')}，点击进入控制`
   }
+
+  parts.push(`在线设备${c.on}/${c.total}`)
   if (d.stats?.length) {
     for (const s of d.stats) parts.push(`${s.metric}${s.value}`)
+  } else if (d.id === 'lift') {
+    // 与可视格同口径：那一格常驻，没数就念「—」，不念台账里的高度
+    const sec = lift.totalSeconds
+    parts.push(`今日运行时长${sec === null ? DASH : formatRuntime(sec)}`)
   } else if (d.value) {
     parts.push(`${d.metric ?? ''}${d.value}`)
   }
 
-  return `${parts.join('，')}，点击${d.id === 'drone' ? '进入控制' : d.id === 'climb' ? '查看点位' : '查看明细'}`
+  return `${parts.join('，')}，点击${d.id === 'climb' ? '查看点位' : '查看明细'}`
 }
 
 /* ---- 顶部两块统计（真实台账） ---- */
@@ -432,11 +506,17 @@ function ariaOf(d: Equip): string {
  */
 const kinds = computed(() => (ledger.rows.length ? home.siteEquip.length : 0))
 
-/** 台账台数：4 类卡片 `units` 之和 —— 也就是**有真实在线状态**的设备 */
-const wiredQty = computed(() => home.siteEquip.reduce((s, d) => s + d.units.length, 0))
+/**
+ * 台账台数：4 类卡片分母之和 —— 也就是**页面上实际列出的台数**。
+ *
+ * 电梯这项是 4 而不是台账的 2 行：实时数据与 V2 都是按轿厢看（`data/liftSn.ts`），
+ * 卡片上写「x/4」，这里若还按台账行数数 2，就会出现「数量 13 台、在线 15 台」
+ * 这种自相矛盾的统计。塔机 / 爬架 / 无人机仍与台账行数一致。
+ */
+const wiredQty = computed(() => home.siteEquip.reduce((s, d) => s + countOf(d).total, 0))
 
 /**
- * 设备数量：台账台数 + 5 类机器人（每类按 1 台计）。
+ * 设备数量：卡片分母之和 + 5 类机器人（每类按 1 台计）。
  *
  * 口径照 V2 装备管理页：那边「设备数量」报 9，与它底部 9 张设备卡（4 类台账
  * 设备 + 5 类机器人）一一对应，即「每类 1 台」。用户 2026-11-12 要求
@@ -488,6 +568,25 @@ function retry(): void {
 /** 去登录：登录完回首页，智控面板会自动补拉（watch token） */
 function goLogin(): void {
   subpage.openLogin('登录后可查看设备台账与运行状态')
+}
+
+/**
+ * 电梯数据凭证失效 —— 台账是好的（走 `:8084`），所以九张卡都在，
+ * 只是电梯那几张每一格都是「—」。不说清楚用户只会反复下拉。
+ *
+ * 与设备详情页同一条提示、同一个出口，两处不该有两种说法。
+ */
+const needsRetry = computed(() => lift.authLost)
+
+/**
+ * 「重试」—— **不是**「重新登录」。
+ *
+ * 电梯走 IOT 云网关的项目级 ak/sk，跟登录页那套 `:8081` 业务账号（`xiangyangcun`）
+ * 是两套凭证，登录换不到 IOT 令牌。之前这里写成「重新登录」，用户登完回来提示
+ * 还在，看着像没生效。真正有效的是丢掉 IOT 旧令牌重换一张。
+ */
+function goRetry(): void {
+  void lift.relogin()
 }
 </script>
 
@@ -595,6 +694,13 @@ function goLogin(): void {
         </div>
       </div>
     </div>
+
+    <!-- 电梯数据凭证失效：九张卡都在，只有电梯那几张是「—」。得说清是为什么 -->
+    <section v-if="needsRetry" class="dev-auth" role="alert">
+      <!-- 与设备详情页同一条提示、同一个出口，两处不该有两种说法 -->
+      <p>{{ lift.gatewayStale ? '电梯物联网网关未恢复，请稍后再试' : '电梯物联网网关凭证失效，请稍后重试' }}</p>
+      <button class="dev-auth-btn" type="button" @click="goRetry">重试</button>
+    </section>
 
     <div class="eq-grid fill-in">
       <!--

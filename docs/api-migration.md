@@ -156,7 +156,7 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | POST | `https://account.keehang.com:23443/cas/auth/login` | 无人机平台登录 | ✅ 阶段 8 已接（body `{account, password}`） |
 | POST | `https://account.keehang.com:23443/cas/auth/validate` | 校验 | ✅ 阶段 8 已接（body `{st}`，**不是 tgt**） |
 | GET | `https://tciccs.cscec3bxjy.cn:30400/api/towercranedataservice/getWorkCycleInfoHis` | 塔机工作循环 | ⬜ 未验证 |
-| GET | 无人机：`/task/list`、`/task/exec/list/record`、`/dashboard/device/cache/telemetry/{id}/1`、`/media/task/job/{jobId}` | 航线、任务、遥测、媒体 | ✅ 阶段 8 已接（**必须带 pid 过滤**；媒体按执行记录 id 取） |
+| GET | 无人机：`/task/list`、`/task/exec/list/record`、`/dashboard/task/list/record`、`/dashboard/device/cache/telemetry/{id}/1`、`/{机库id}/2`、`/media/task/job/{jobId}` | 航线、任务明细、今日统计、机载遥测、机库遥测、媒体 | ✅ 阶段 8 已接（**必须带 pid 过滤**；`exec/list/record` 要带 `start/end`，否则拿最旧的一页；遥测类型段 1=无人机 2=机库） |
 | 🔒 POST | `https://iot.keehang.com/dashboard/#/control?st=`（下发控制） | 无人机控制 | 写，不调用 |
 
 ---
@@ -180,7 +180,7 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 11 | 智眸·实景核验（隐患） | `stores/airHazard.ts` 常量 | B `device/danger/page`（实测 0 条） | 5（无数据，隐患上报是写接口） |
 | 12 | 巡检任务清单 | **真实航拍照片**（keehang 媒体，按拍摄时间倒序） | D `/task/exec/list/record` + `/media/task/job/{id}` | ✅ 阶段 8 |
 | 13 | 首页天气 | 无（设计稿无天气位） | E `:8088` amap/weather（**可用**） | ✅ 阶段 8 客户端已接，无消费点 |
-| 14 | 无人机·航线与任务 | **真实任务 / 遥测 / 航线**（keehang） | D `/task/exec/list/record`、`/dashboard/device/cache/telemetry/{id}/1`、`/task/list` | ✅ 阶段 8（实时画面与航线下发仍无 REST 端点） |
+| 14 | 无人机·航线与任务 | **真实任务 / 遥测 / 航线 / 今日统计**（keehang） | D `/task/exec/list/record`、`/dashboard/task/list/record`、`/dashboard/device/cache/telemetry/{id}/1`、`/2`、`/task/list` | ✅ 阶段 8（实时画面与航线下发仍无 REST 端点） |
 | 15 | 智能爬架·机位读数 | **空态**（原 36 条手写读数已删） | 无任何后端接口 | ⚠️ 无源 |
 | 16 | 消息中心 + tabbar 角标 | **真实报警派生**（一条报警一条消息、按 id 记已读） | 无独立消息接口，源为 8085 `/api/video/alarms` | ✅ 阶段 5 |
 
@@ -358,7 +358,7 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 | 首页卡片数量 | 4 类（塔机/电梯/无人机/爬架） | **9 类**：前 4 类台账驱动，后 5 类机器人是静态入口卡（`div`，不可点），作业次数取 V2 预制体预置值，标题带绿点（现场常驻在线） |
 | 顶部统计两格 | 写死「9 种 / 9 台」「在线 5 / 离线 4」 | **9 种**（页面上的设备类别数：4 台账类 + 5 机器人）、**13 台**（台账 8 台 + 5 类机器人各 1 台）。环形图在线 = 台账在线数 + 5（机器人按在线计），离线 = 台账里 `online_status=0` 的台数。口径与 V2 装备管理页一致（那边两个数都是预制体占位 9，不随数据变） |
 | 首页四卡台数/在线数 | 写死 塔机3 / 电梯4 / 无人机1 / 爬架1 | 台账真实台数（本项目 4/2/1/1），在线数按 `online_status` |
-| 首页卡数值位 | 今日吊重 1.87t、累计运行时间 2min、作业任务 1/3 | 塔机：工作循环汇总的吊重/吊次（编号见表 `src/data/craneSn.ts`，见第 13 节）；电梯：高度；无人机：作业任务 x/y（取自 `stores/uav.ts`，没取过数就整格不渲染）；机器人：5/4/7/9/3 次，取自 V2 预制体 `UIView 装备管理一张图 / 底部栏 / 施工机器人栏` 的 `Value` 预置文本（见 `src/data/robotStats.ts`） |
+| 首页卡数值位 | 今日吊重 1.87t、累计运行时间 2min、作业任务 1/3 | 塔机：工作循环汇总的吊重/吊次（编号见表 `src/data/craneSn.ts`，见第 13 节）；电梯：IOT 今日运行时长；**无人机：一格「今日作业次数」= 统计接口 `finishedCount`（已完成），没取到写「—」**；机器人：5/4/7/9/3 次，取自 V2 预制体 `UIView 装备管理一张图 / 底部栏 / 施工机器人栏` 的 `Value` 预置文本（见 `src/data/robotStats.ts`） |
 | 爬架卡三格 + 异常行 | 36 条手写机位读数（30# 179.70mm） | 三格 = 全场最不利机位的真实读数（CDN `ScaffoldData.json`，见第 13 节）；超限报「30#机位 左右倾斜 179.5mm，超过 60mm」，未取到才退回「—」+「传感器数据未取到」 |
 | 设备详情机组 | 3 台塔机 / 4 台电梯（备案号、型号、出厂时间） | 台账 4 台塔机 / 2 台电梯，字段即 `extra_fields` |
 | 详情卡今日吊次/吊重 + 负荷条 | 10 次 / 10.00t / 32% | **已接真实源**，四格 = 今日吊次 / 今日吊重 / 当前吊重 / 当前负荷（+ 负荷条）。前两项逐台来自 `getWorkCycleInfoHis`，后两项来自 MQTT 实时报文 `weight` / `weightRate`；无帧/无编号的车给「—」，见第 13 节 (13) |
@@ -678,13 +678,31 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 
 ### 4. 起飞条件改成三态（安全门）
 
-遥测接口只给电量 / 电池温度 / 速度 / 高度 / 航向角，**风速、雨量、网络速率
-三项没有数据源**。原版的 `uavChecks` 由写死的 `uavLive` 派生，五项永远全过。
+~~遥测接口只给电量 / 电池温度 / 速度 / 高度 / 航向角，风速、雨量、网络速率
+三项没有数据源。~~
 
-现在改成三态：`ok` 满足 / `bad` 明确不满足 / `unknown` **该指标没有数据源**。
-`canDispatch = checks.every(c => c.ok)` —— **有未知项也不放行**。把「没数据」
-当成「条件满足」是放松安全门的方向，该拦的飞行没拦。未知项在界面上写明
-「风速数据未接入」，让人知道还差什么。
+**2026-11-13 15:00 更正：这个结论是错的。** 风、雨、网络一直都在接口里，
+是我们的解析只取了 9 个字段：
+
+| 指标 | 字段 | 在哪 |
+|---|---|---|
+| 风速 | `windSpeed` | 机载遥测 `/1` 与机库遥测 `/2` 都有 |
+| 雨量 | `rainfall` | 机库遥测 `/2` |
+| 网络质量 / 速率 | `networkQuality` / `networkRate` | 机库遥测 `/2` |
+| 距机库 | `homeDistance` | 机载遥测 `/1` |
+| 剩余续航 | `batteryInfo.remainFlightTime` | 机载遥测 `/1` |
+| 累计架次 | `totalFlightSorties` | 机载遥测 `/1` |
+
+注意机库遥测的**类型段是 2**（`/telemetry/{机库id}/2`），用 1 查只会拿到一屏 null。
+
+原版的 `uavChecks` 由写死的 `uavLive` 派生，五项永远全过。现在仍是三态
+（`ok` 满足 / `bad` 明确不满足 / `unknown` 没有**可信**数据），
+`canDispatch = checks.every(c => c.ok)` —— **有未知项也不放行**。
+
+目前只剩雨量是 `unknown`，原因是**口径**未确认而不是没数据：实测 `rainfall=1`
+而同日机库湿度 99%、天气阴，无法判断 1 是「有雨」还是「无雨」。所以既不改判定，
+也不隐瞒 —— 原因里直接带原值（「机库雨量口径未确认（rainfall=1）」），
+等厂家确认枚举含义后一行代码可改。
 
 ### 5. 航线下发：**没有** REST 端点，如实告知
 
@@ -694,11 +712,99 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 显示选中那条的详情、给出平台地址，并明说「航线下发需在无人机平台操作，本页
 不代为下发」。保留一个假的「已下发」toast 是在骗现场调度 —— 那条航线真的不会飞。
 
-### 6. 实时视频流：不挂静态图冒充
+### 6. 实时视频流：无人机画面走 keehang 自建流媒体，不走萤石云
 
-萤石云凭据实测已失效（`code:-1`），keehang 直播流需另一套鉴权且未验证。
-UavPage 的画面区改成明说「实时视频流未接入 / 萤石云凭据已失效」，
-不再挂一张静态示意图当直播画面 —— 示意图长得像现场画面，会被当成实时情况看。
+**2026-11-13 更正**：此前写「keehang 直播流需另一套鉴权且未验证」「萤石云凭据失效
+所以没有画面」，两句都不对 —— **无人机画面压根不走萤石云**，是我没找到接口就下了结论。
+
+真实链路（实测可用，当前正在出画面）：
+
+```
+GET /live/stream/list?deviceId=23498          ← keehang 业务服务
+  → data[].streams[].playStreams[]            ← 按协议给了 6 个地址
+  → type=flv & protocol=https                 ← 浏览器唯一能直接播的那个
+  → https://live.keehang.com:8443/djiDock/{streamId}.live.flv
+```
+
+要点（都实测过）：
+
+- 流是 **ZLMediaKit** 分发的（响应头 `Server: ZLMediaKit`），V2 桌面端拿同一路
+  RTMP/RTSP 再经本地 mediamtx 转给 Unity；网页端直接用 HTTP-FLV。
+- **不需要 token / 签名**，`Access-Control-Allow-Origin: *`，证书是 `*.keehang.com`
+  正式 DV 证书（不用忽略校验）。所以浏览器侧连 `<video>` 都不必走自家后端代理。
+- `?deviceId=` **必须带**：不带返回全平台 1197 组流、1.5MB；带上只有 1.2KB。
+- `online` 是**当前是否在推流**：无人机飞行中 true；机库摄像头在库待机时 false
+  （地址还在，连上去没有画面）。页面据此说「未开播」，不是干等。
+- HLS 未开启（`/{app}/{stream}/hls.m3u8` 404），所以只能 FLV + `mpegts.js`；
+  iOS 17 以前没有 MSE，那类浏览器给「不支持此直播格式」的明示。
+
+> 顺带发现 keehang 业务服务**开着 Springdoc**：`GET /v3/api-docs` 直接吐 325 个
+> 端点的 OpenAPI 定义（311KB，带全部参数与 schema）。整条直播链路就是这么找到的 ——
+> 以后再缺接口，先看这份 spec，不要去猜路径。
+
+### 6.1 无人机页与卡片（2026-11-13 15:00 按设计稿重排）
+
+**首页卡只留一格「今日作业次数」**，值取统计接口的 `finishedCount`（已完成）——
+用户 15:24 用截图指定：「V2 里展示的也是这个」（子页任务管理三格 15 / **11** / 0，
+圈的是 11）。不用 `taskCount`（15）：那里面含 4 条还没飞的计划，是排班不是作业。
+「设备状态 0/1」那一格同时撤掉 —— 台账登记态与「今天飞了几架次」无关，
+两格并排还会被读成「1 架里 0 架在线」。在线与否由标题旁的状态点表达。
+
+**子页四块照设计稿**，每块的数都有出处：
+
+| 区块 | 设计稿 | 数据 |
+|---|---|---|
+| 实时监控 | 无人机 / 机库 两页签 + 画面 + 五格 | **画面已接入**（HTTP-FLV，见 §6）：无人机页签＝机载画面 + 机载遥测（状态/海拔/距起飞点/水平速度/垂直速度）；机库页签＝机库摄像头 + 机库遥测（在库/充电/舱温/湿度/网络速率）。机库未推流时明说「机库画面未开播」，**不拿无人机画面顶替** |
+| 任务管理 | 今日任务 / 已完成 / 失败次数 + 当前巡检进度 | `/dashboard/task/list/record` 的 `taskCount / finishedCount / failedCount`；进度条 = `(now − start) / (end − start)`，**不是写死的 62%** |
+| 设备参数 | 状态/电量/距机库/续航/风速/网络质量/网络速率/电池温度 | 机载 + 机库遥测，**八格全部有源** |
+| 任务下发 | **二期**，当前只有一句「接入中，敬请期待」 | 平台没有下发端点（keehang `/task/start` 404，原厂是网页控制台）。条件校验那套（`canDispatch / dispatchNote / risks`）留在 store 里给二期用，但**不摆 UI**：disabled 的「选择航线」看起来点得动，点了没反应会被当 bug |
+
+三处口径要说清：
+
+- **状态**：取机载遥测 `status`，枚举是 DJI 上云 API 的 `drone_status`
+  （0 待机 … 18 空中 RTK 收敛），映射表在 `utils/uavState.ts`。
+  **`-1` 不在枚举里**，是「飞控未上报」—— 库里飞机断电时就是这个值（实测
+  `status:-1`、`modeCode:14`、电量 88%），V2 在同样的数据上显示红字「关机」，
+  我们也照做，并交叉校验 `modeCode`：若它还在有效飞行态，说明飞机只是 `status`
+  没刷新，按 `modeCode` 说，不误报关机。
+  ⚠️ 之前写的是「有执行中的任务 → 作业中，否则停泊」，那是拿任务状态冒充飞机状态
+  （任务排了没飞、飞着却没任务都会错），用户拿 V2 一比就对不上，已撤。
+- **剩余续航**：`remainFlightTime` 在地面恒为 0，与「电池真的只剩 0 分钟」区分不开，
+  所以 0 显示「—」（电量格另有真数），不写「0分」吓人。起飞后该字段自动变真值，
+  页面跟着显示。**V2 面板里其实没有「续航」这一格**（取证见下），这一格是设计稿加的。
+- **网络质量**：画成**五格递增信号**，亮几格由**网络速率**分档（≥800 满格 / ≥500 四格 /
+  ≥300 三格 / ≥100 两格 / 其余一格），颜色只有「够用（绿）/ 不够（红）」两级。
+  为什么不用厂家的 `networkQuality`：机库遥测里这个字段实测**长期恒为 1**
+  （连采 5 次，速率从 9kbps 走到 897kbps 它一步没动），画出来是死的；
+  V2 底部栏那排格子是跟着速率一起变的。档位是本项目的展示分档，不冒充厂家等级。
+  取不到 / 0 → 「—」，**不画五条空条**（会读成「有信号但一格都没满」）。
+  **起飞校验里那项「网络」同样看速率**（≥500kbps），两者现在同源。
+
+另外修掉一个会让「今日任务」永远为 0 的坑：`/task/exec/list/record` 不带日期时
+按开始时间**升序**返回（`page=1` 拿到的是 2026-07-14 那几条），本地再按今天过滤
+就是 0 条。现在带 `start=今天&end=明天`（`end` 不含当天），并保留一道本地过滤
+防边界差异。`size` 参数不生效（该区间有多少回多少），别拿它做分页。
+记录 id 是 int64，个别行超过 JS 安全整数，列表 key 改用 `uuid`。
+
+#### V2 无人机面板的取证（2026-11-13 16:00）
+
+资源清单 `http://120.26.34.95:9689/CDN/PC/v1.0/DefaultPackage_2026-11-10-512.json` 的
+`AssetList[].BundleID → BundleList[].FileHash` 能直接定位预制体；
+`UIView 无人机` 在 `6bc3a417fecd6948b4c564f3c748c9f4.bundle`（161 KB）。
+UnityPy 读出来的 `UIDroneBottomBar` 绑定字段只有这些：
+
+```
+txtStatus  txtWindSpeed  txtLensType  txtLensMode  txtZoomFactor
+txtGimbalPitch / txtGimbalYaw / txtGimbalRoll
+txtLTE  txtRC  txtTemperature  txtVatteryVoltage  txtBatteryPercent
+txtPhotoCount  txtVideoLength  txtStorafe
+```
+
+三点结论：
+① **没有「续航」字段**，设计稿那一格在 V2 里没有对应概念；
+② 网络质量在 V2 是 `signalSprites`（四个 sprite，不写文字），这就是本项目改成信号格的依据；
+③ 「预计可拍照 / 预计可录像」紧挨着 `txtStorafe`，是**存储**容量换算，不是电池续航 ——
+缺原厂码率常数，接了就是编数，所以不做。
 
 ### 7. 巡检照片为什么不自动加载缩略图
 
@@ -979,7 +1085,7 @@ mixed content 直接拦掉。所以 `api/scaffold.ts` 做成三段：
 | 通道 | 2026-11-12 实测 |
 |---|---|
 | MQTT 推送 | 订阅 `#` 跑 20s，共 21 个活跃主题，**没有一条 `P000000076`**；塔机主题只有 `P000000096`（光谷元箸项目）在推 —— **这一行后来被推翻：当时连的是 `120.26.34.95`，本项目要连 `115.159.67.12`，见下方 (10)** |
-| tsdb 查询 | `{"status":10,"msg":"部分产品数据您无权查看，非法的产品列表为：P000000076"}`（去掉 productCode 同样报非法，只有空 `queryList` 才回「查询条件为空」）—— 与电梯 `EVENT_WORKDATA` 的 `status:11 权限不足` 同属账号白名单问题 |
+| tsdb 查询 | `{"status":10,"msg":"部分产品数据您无权查看，非法的产品列表为：P000000076"}`（去掉 productCode 同样报非法，只有空 `queryList` 才回「查询条件为空」）—— 是**产品白名单**问题。注意别跟 `status:11` 混：11 是令牌无效（HTTP 401），不是权限，见四点十四·6 |
 
 同平台塔机实时报文长这样（P000000096 抓到的真实 payload，字段正好对应 V2 的
 `txtRotate / txtRange / txtRopeHeight / txtTime`）：
@@ -1219,7 +1325,7 @@ V2 弹层里是 `--`（见 (11) 表格）。2026-11-12 用户实测 V2 客户端
 | 格 | 源 | 无数据时 |
 |---|---|---|
 | 今日吊次 | `getWorkCycleInfoHis` 当天循环条数（逐台按 sn） | 「—」 |
-| 今日吊重 | 当天循环 `weight` 累加（t，两位小数） | 「—」（一条都没重量时也是「—」，不写 0.00t） |
+| 今日吊重 | 当天循环 `weight` 累加（t，两位小数） | 「—」仅限「没查到 / 无 sn」（`craneDayBySn` 里没这台）；查询成功但当天无带重量循环 → **`0.00t`**（用户 2026-11-13 要求，与首页智控卡同口径） |
 | 当前吊重 | MQTT 报文 `weight` | 「—」（25s 无帧即过期） |
 | 当前负荷 | MQTT 报文 `weightRate` → `utils/craneLoad.ts: loadPct` | 「—」，且**不画进度条** |
 
@@ -1379,8 +1485,11 @@ V2 侧逐条排除：
 月报 2026-11-01 至 11-30   413次 / 324.16t / 83.1h
 ```
 
-电梯的报表仍不接入：升降次数/载重在 IOT `EVENT_WORKDATA`（`status:11 权限不足`），
-页签给的是明确空态 + 原因说明，不摆空指标。
+电梯的报表仍不接入：升降次数/运行时长的源是 IOT `EVENT_WORKDATA`，当时测到
+`status:11` 就停下了 —— 后来查明那是**令牌失效**（不是没权限），见四点十四·6。
+接口本身是通的，口径也已定：**与 V2 一致，首尾跨度**（2026-11-13 决定，
+见四点十四·4）。接报表时直接复用 `sumWork`，别在报表里另写一套算法 ——
+同一份 `EVENT_WORKDATA` 在两个页面出两个数，比口径不纯糟得多。
 
 **遗留观察**：服务端偶发单条循环 `duration` 异常大（近 30 天里出现过 33014s ≈ 9h
 的一条），会直接抬高「作业时长」合计。这是平台原始数据，未做截断 —— 现场确认是
@@ -1445,6 +1554,473 @@ V2 侧逐条排除：
 没有任何带重量的循环**时改显示 `0.00t`（用户 2026-11-13 要求，`day.weight === null`
 就是这种情况）；**没查到 / 没有平台编号**（`craneDayBySn` 里没有这台）仍是「—」——
 「今天没吊」是结论，横杠只留给「没数据源」。
+
+#### (16) V2 塔机弹层的「告警信息」块：没有接数据，本项目暂不迁移
+
+用户 2026-11-13 要求把 V2 塔机弹层红框里的「告警信息 / 当前无报警 / 查看详情」
+搬过来。挖完之后**没有做** —— 因为它没有任何数据链路，照搬等于在界面上永久写一句
+「当前无报警」，而现场真超载时它也会这么写。四条独立取证：
+
+**① 脚本层没有落脚点。** `UIPanelCrane` 的全部字段只有
+`txtName / txtStatus / txtID / txtHeight / txtRotate / txtRange / txtRopeHeight /
+txtTime / txtSafetyInspectionValidity / txtQualityInspectionStatus /
+txtTowerCraneDriver / txtEfficiency / curData`，没有任何告警字段；基类
+`UIPopUpBase` 只有 `btnClose`。`InitPanelWithData` 的 IL 里也只给 `btnClose`
+挂了监听。热更程序集里没有「塔机告警」类，`ldstr` 全扫也搜不到
+「告警信息 / 当前无报警 / 查看详情」—— 说明那三句是预制体里的静态文本。
+
+**② 预制体层证明它是死的。** 预制体在
+`assets_hotupdateresources_prefabs_ui_塔机.bundle`（406,447 B，FileHash
+`5fa13e327b522b69d23687213690a7b9`）里，UnityPy 读出三个节点：
+
+| 节点 | 组件 | 说明 |
+|---|---|---|
+| `告警信息` | TextMeshProUGUI | 小标题 |
+| `AlarmStatus` | TextMeshProUGUI（文本 `当前无报警`）+ ContentSizeFitter | **没有任何脚本挂载** |
+| `Btn` | TextMeshProUGUI（文本 `查看详情`）+ Button | `m_OnClick.m_PersistentCalls.m_Calls` = **空数组** |
+
+再把整包 3590 个对象扫一遍「谁引用了这三个节点」：命中 5 条，全是节点自身组件的
+`m_GameObject` 反向引用，**没有任何脚本字段指向它们**。结论：这段 UI 永远是预制体
+里那三行字，运行时既不更新文本，按钮也没绑回调。
+
+**③ 接口层没有告警源。** V2 里出现的全部 URL 只有登录、`/api/data/*`、
+`/api/video/alarms`、IOT 的 `queryEvent` / `queryRealTimeDataV2`、萤石云、
+`getWorkCycleInfoHis`、讯飞语音 —— 没有塔机告警路由。另在
+`tciccs.cscec3bxjy.cn:30400` 试了 7 个候选路径（`getAlarmInfoHis` / `getAlarmInfo` /
+`getAlarmList` / `queryAlarmInfoHis` / `getAlarmDataHis` / `pushAlarmInfo` /
+`getWarnInfoHis`），**全部 404 `No handler found`**。IOT `queryEvent` 的事件码只有
+`EVENT_ON_OFF / EVENT_POST_ATTR / EVENT_WORKDATA`，没有告警事件码，且本账号
+`status:11 权限不足`。
+
+**④ 实时报文里也没有。** MQTT 一帧的键是
+`angle / backArmLength / bodyHeight / craneType / deviceName / deviceSn /
+frontArmLength / hasLoadInfo / height / markHeight / moment / monitorDateTime /
+name / obliguity / range / safeWeight / siteName / topHeight / weight /
+weightRate / windSpeed` —— 21 个，无告警/越限字段。
+
+**将来要接需要什么**：塔机平台开放告警查询接口，或 IOT 开通告警事件码权限。
+两者任一到位后，弹层加一段「告警信息」按 `sn` 查即可（结构照 V2：
+标题 + 一句状态 + 右侧「查看详情」跳报警预警），布局不用重新设计。
+
+**顺带留下重挖入口**（这次新打通的路径）：V2 的 YooAsset 资源可以直接从
+`http://120.26.34.95:9689/CDN/PC/v1.0/` 取，目录列表可浏览；
+`DefaultPackage_<PackageVersion>.json` 就是资源清单（`AssetList[].BundleID` →
+`BundleList[].FileHash`），按 `<FileHash>.bundle` 下载后 UnityPy 直读，
+不必再猜 bundle 名。
+
+---
+
+## 四点十四、智能电梯接通 IOT 网关（2026-11-13）
+
+**诉求**：照设计稿 gx2 的智能电梯卡（`在线 x/y` + `累计运行时间`）补齐首页那一格，
+并把 V2 `UIPanelElevator` 弹层里的字段搬进本项目「设备信息」。
+
+### 1. 电梯在网关里是**另一个产品**，不是项目码
+
+这一条卡了很久。塔机 / 大屏 / 报警全用项目码 `P000000076`（= `SCENE_CODE`），
+但电梯在 IOT 网关里注册成独立产品：
+
+```
+产品码  01724121a94f4893b693f253173d1082     ← V2 ElevatorIotModel.ProductCode 常量
+```
+
+拿 `P000000076` 查电梯会得到
+`{"status":10,"msg":"部分产品数据您无权查看，非法的产品列表为：P000000076"}` ——
+读起来像「没权限」，其实是查错了产品。换成电梯码后 `status:0` 且有数据。
+
+### 2. 4 个轿厢 sn 从 V2 场景包里挖出来（台账里没有）
+
+`:8084` 的设备台账**没有序列号字段**（塔机那轮已经踩过一次），电梯台账只有
+2 行（按楼登记：智能电梯1 / 智能电梯2）。实时数据却是**按轿厢**上报的 4 个 sn，
+来自 V2 场景包 `cb4440f68c48489259d528982c1d7320.bundle` 里的
+`BuildingElevator.sn` / `BuildingElevatorCage` 序列化字段。已登记在
+`src/data/liftSn.ts`：
+
+| sn | V2 friendlyName | 所属台账楼 |
+|---|---|---|
+| `3225122202` | 智能电梯1-1 | 1 |
+| `32251222021` | 智能电梯1-2 | 1 |
+| `32251222023` | 智能电梯2-1 | 2 |
+| `E03C1CB9F5011824` | 智能电梯2-2 | 2 |
+
+所以本项目：**卡片按轿厢出 4 张**（与 V2 `UIViewElevatorLevel1.InitCards` 一致），
+档案字段仍按楼取台账行。首页「在线 x/4」的分母也是 4（用户 2026-11-13 确认按 4 台）。
+
+### 3. 三份数据、三个事件码
+
+| 用途 | 接口 | 关键参数 |
+|---|---|---|
+| 在线状态 | `POST /api/data/v1/tsdb/queryRealTimeDataV2` | `field:'online'`, `code:'EVENT_ON_OFF'`，值是 **`"true"/"false"` 字符串** |
+| 当前工况 | `POST /api/data/v1/tsdb/queryEvent` | `eventCode:'EVENT_POST_ATTR'`，带 `relFloor / height / load / numberOfPeople / runningState / speed` |
+| 今日升降 + 运行时长 | 同上 | `eventCode:'EVENT_WORKDATA'`，每次升降一条，带 `runStartTime / runEndTime / driverName` |
+
+响应行格式 `{timestamp, metricIndex:"productCode~sn~eventCode", value?, resultMap?}`，
+用 `snOfMetric()` 取第 2 段把行分回设备。**值全在 `resultMap` 里**，原来的
+`toPoints()` 会把它压掉（`value` 对事件恒为 null），所以 `api/iot.ts` 另开了
+`fetchEventRows` / `fetchRealtimeRows` 两个保留原始结构的入口。
+
+CORS 实测完全放行（`Access-Control-Allow-Origin` 回显、允许 `x-app-user` 头），
+线上 GitHub Pages 也能直连，不需要代理。
+
+### 4. 「累计运行时间」接口**没有**这个字段，是客户端算的
+
+这是用户 2026-11-13 直接问过的一点，结论要写清：
+
+- 接口只回**明细**（每次升降的 `runStartTime` / `runEndTime`），**没有任何汇总字段**。
+- V2 在 `ElevatorRequester.<FetchWorkCycleAsync>d__9` 里自己算（IL 实证）：
+
+```csharp
+int count = data.Count;
+float hours = 0f;
+var start = data[0].ResultMap?.RunStartTime;          // 第一条
+var end   = data[data.Count - 1].ResultMap?.RunEndTime; // 最后一条
+if (DateTime.TryParse(start, out var t0) && DateTime.TryParse(end, out var t1))
+    hours = (float)(t1 - t0).TotalHours;               // 首尾跨度
+SetWorkCycleData(sn, count, hours);
+// 无数据时 SetWorkCycleData(sn, 0, 0f)
+```
+
+- 本项目**沿用同一接口、同一个算法（首尾跨度）**。2026-11-13 曾一度改成逐条
+  `end - start` 累加（理由是「运行时间」不该含停机），但现场要拿两个系统对账：
+  同一天 78 条循环，V2 面板显示 **6.1h**、累加只有 **1.3h**，差 4.8 小时全是停机。
+  数字对不上比口径不纯更难受，**用户当日决定与 V2 完全一致**。
+  - 实现：`src/utils/lift.ts` 的 `sumWork`（文件头有 IL 原文与取舍说明）；
+  - ~~界面上那一格带「含停机」小注~~：加过又被用户去掉（当天下午）。弹层是与
+    V2 并排对照着看的，V2 那格只有数字，多两个字反而显得两边不一样。弹层里
+    **不标任何口径小注**，`.dev-info-note` 样式与 `Row` 的第三项一并删除；
+  - 保留一处改良：V2 在 `Data[count-1].RunEndTime` 为空（最后一条还没跑完）时
+    整个分支跳过、`hours` 保持 0，会把攒了一天的值打成 `0h`。这里退到「最后一个
+    有效的结束时间」，数据完整时结果与 V2 逐字节相同。
+- 顺带修掉 V2 的一个语义损失：V2 无数据时写 `(0, 0)`，界面上「今天没跑」与
+  「没取到数」都是 `0.0h / 0次`；本项目无事件时不给值，页面显示「—」。
+
+### 5. 电梯弹层八行（`UIPanelElevator` IL 逐行读出）
+
+`ShowPanel` 的调用顺序是 `txtName = GetDisplayName(sn)` → `ClearPanelData()`（全部 `--`）
+→ `txtSn = sn` → `UpdateOnlineState` → `UpdateRealtimeInfo` → `UpdateTodayWorkData`，
+字段与格式化如下：
+
+| 控件 | 内容 | 格式化（IL） |
+|---|---|---|
+| `txtStatus` | 状态 | `IsOnline == false` → **离线**；否则 `RunningState` 1→**停止** / 2→**上升** / 3→**下降** / 其余→**在线** |
+| `txtSn` | 升降机编号 | sn 原文 |
+| `txtRelFloor` | 相对楼层 | `RelFloor.ToString() + "F"`（`-1` 时 V2 给 `--`） |
+| `txtHeight` | 高度 | `F1` + `m` |
+| `txtLoad` | 载重 | `F1` + **`kg`**（不是吨） |
+| `txtNumberOfPeople` | 人数 | 整数 + `人` |
+| `txtTodayRuntimeHours` | 今日运行时长 | `F1` + `h` |
+| `txtTodayLiftCount` | 今日升降次数 | 整数 + `次` |
+
+弹层两段：**基本信息**（当前状态 / 升降机编号）+ **实时工况信息**（相对楼层 / 高度 /
+载重 / 人数 / 今日运行时长 / 今日升降次数）。格式化函数统一在 `src/utils/lift.ts`
+（`stateText` / `formatFloor` / `formatHeight` / `formatLoad` / `formatPeople` /
+`formatHours` / `formatTrips`），卡片与弹层共用一份 —— 同一帧读数不该有两种写法。
+
+电梯弹层按**轿厢**打开：`SheetView` 同时带 `id`（台账主键，取档案）和 `sn`
+（取这一笼的读数）。少了 sn 会把 1-1 的楼层显示成 1-2 的（取「最新的那一帧」）。
+
+### 6. 更正：「status:11 权限不足」不是没权限，是**令牌失效**（当日二次取证）
+
+这一节初版写的是「服务端收回了这个 ak 对电梯产品的数据权限」。**那个结论是错的。**
+半小时后用完全相同的参数再查，数据又回来了。逐项复测后定位到真因：
+
+| 探测 | 返回 |
+|---|---|
+| 不带 `X-APP-USER` 头 | HTTP **401** + `{"status":11,"msg":"权限不足"}` |
+| 空令牌 | 同上 |
+| 随机 32 位串 | 同上 |
+| 当前有效令牌 | HTTP 200 + `status:0` + 数据 |
+
+也就是说 **`status:11` 的文案是「权限不足」，但它的 HTTP 码是 401，含义是「令牌无效」**。
+而令牌会在 `expireTs`（172800s = 48h）**之前**被服务端轮换：10:15 换到的是
+`f3ab7b03…`，10:35 再换变成 `30b97c31…`，旧的那个此时已经不能用。
+
+这里埋着一个真 bug：`iotAuthPost` 只在 `err.code === 401 || 403` 时清令牌重换，
+而 `iotJson` 抛的是 `ApiError(status=11)` —— 判据对不上，**一次令牌轮换就让整个
+会话卡死在「权限不足」，只能刷新页面才恢复**。现在 `iotJson` 把 `401` 与
+`status === 11` 统一规整成 `ApiError(401)`，自愈分支才真正生效。
+
+顺带排除的两种猜测：
+
+- **不是并发限流**：连续 24 个并发请求全部 `status:0`；
+- **不是多客户端顶号**：同一 ak 连换 3 次 token 返回的是**同一个值**（服务端幂等）。
+
+另附：4 个轿厢编号在网关侧并不等价，逐个单独查 `queryEvent` 的结果是
+
+| sn | 结果 |
+|---|---|
+| `3225122202` | 正常返回（1# 楼主笼，唯一持续上报的一台） |
+| `E03C1CB9F5011824` | `status:0` 空数组（认这台；最后一次在线是 10-21 的 `false`） |
+| `32251222021` | `status:10 所选设备您无权操作`（网关不认这个编号） |
+| `32251222023` | 同上 |
+
+后两个是场景包 `sn` 字段的字面值（长度 11，不是解析错位）。**混批查询时服务端会
+静默跳过它们**（200，只返回有数据那台的行），所以不会拖累 1-1；只有单独查一个
+无效 sn 才回 `status:10`。
+
+#### 第三轮更正：页面全横杠的主因是 **CORS**，不是令牌（同日 11:00 取证）
+
+用户反馈「V2 有数据、页面四格全 —、点了重试也没用」。逐层排查后确认：
+**换令牌那个接口没有配置 CORS**，浏览器里连请求都发不出去。这才是主因。
+
+| 接口 | 预检 `OPTIONS` | 响应 `Access-Control-Allow-Origin` | 浏览器能直连 |
+|---|---|---|---|
+| `/api/data/v1/tsdb/*`（查数据） | 200，放行 `content-type`、`x-app-user` | 有（回显 origin）+ `allow-credentials: true` | **能** |
+| `/api/webgateway/v1/access/token` | **403，无任何 CORS 头** | **无** | **不能** |
+
+浏览器发这个 POST 必带 `Content-Type: application/json` → 必触发预检 → 预检 403 →
+请求根本出不去，`fetch` 抛 `TypeError`。于是 `ensureToken()` 永远失败，三个取数
+函数统统 null，页面全「—」**且不出现任何提示条**（提示只认 401，而这里连 HTTP
+状态码都拿不到）。
+
+**这解释了三个看似矛盾的现象**：curl/node 能查到数据（不执行同源策略）、V2 有数据
+（Unity 原生 socket）、浏览器全横杠（被同源策略拦在预检）。
+
+试过且不通的路，别再试：
+
+- `Content-Type: text/plain` / `x-www-form-urlencoded` 绕预检 → 服务端 **415**，
+  该接口只吃 `application/json`
+- 换 Origin 求进白名单 → `localhost` / `127.0.0.1` / `*.github.io` / `null` 全部 403
+- `mode: 'no-cors'` → 请求能发出，但响应是 opaque，读不到 token
+- 鉴权头并没有漏：V2 `ElevatorIotModel.GetAuthHeader` 只返回 `{tokenKey: tokenValue}`
+  这一项，就是我们发的 `X-APP-USER`
+
+**唯一解法是同源反代**，已按 `/crane-api` 的现成模式落地：`vite.config.ts` 的
+`iotProxy()`（dev/preview）+ `server/serve.mjs` 的同名路由，前缀 `/iot-api`。
+**只代理换令牌这一跳** —— 数据接口 CORS 是好的，几百 KB 的工况帧不必绕一圈。
+
+⚠️ 部署前提：GitHub Pages 是纯静态托管，没有这层反代，那种部署下电梯数据拿不到，
+除非原厂给 token 接口补上 CORS。可用 `VITE_IOT_TOKEN_BASE` 指向别的可用反代。
+改 `vite.config.ts` 后**必须重启 dev server**，中间件在启动时注册，HMR 不生效。
+
+#### 第四轮：令牌「出厂即为废票」，重试也救不回
+
+反代通了之后仍拿不到数据，进一步实测：
+
+- 11:04 通过 `access/token` 拿到 `0dfb9634…`，**当时可用**（查回 658 条工况帧）；
+- 11:14 同一张令牌 → **401 + `status:11`**，而 `expireTs` 声称 48 小时；
+- 再调 `access/token`，服务端**幂等返回同一张已失效的令牌**（加 `nonce` / `timestamp` /
+  `refresh` / `forceNew` 字段都一样），于是形成死锁：换到手就是坏的；
+- `logout`（`/api/webgateway/v1/auth/api/appUser/logout`）用坏令牌调也是 401，无法自清；
+- 服务端大约每 20–30 分钟才轮换出新值（10:15 `f3ab7b03` → 10:35 `30b97c31` →
+  11:04 `0dfb9634`）。**这是服务端的状态问题，客户端无法自救。**
+
+借这一轮把客户端两个真 bug 修了：
+
+1. **`refreshToken()` 不能判「未过期就复用」**。它的调用前提就是「这张刚被判 401」，
+   判有效期等于把坏令牌原样再交一次 —— 这正是「点重试没用」的直接原因。
+2. **401 自愈要限频**。V2 程序集里有 `LoginCooldownSeconds` 常量，说明它对重新登录
+   是限频的。我们一轮 12 个请求（3 接口 × 4 台）同时 401 时，若各自去换令牌就是
+   12 次登录请求，只会把网关刷得更死。现在并发共享同一次换牌、失败后 60s 冷却，
+   只有用户显式点「重试」（`clearToken()`）才跳过冷却。
+
+另：提示条从「重新登录」改成「重试」。**登录换不到 IOT 令牌** —— 登录页登的是
+`:8081` 业务账号（`xiangyangcun`），电梯用的是 IOT 云网关的项目级 ak/sk，两套凭证
+不同源。之前让用户去登录，登完回来提示还在，反而像登录没生效。
+
+#### 第五轮：服务端已轮换，数据恢复（同日 11:44 复测）
+
+第四轮的死锁是**暂时性**的，不是永久失效。11:44 再换令牌拿到 `4c13ab21…`（不再是
+`0dfb9634…`），三份数据一起回来了：
+
+| 探测（`3225122202`） | 结果 |
+|---|---|
+| 在线 `EVENT_ON_OFF` | `"true"`（时间戳 11:30） |
+| 今日 `EVENT_WORKDATA` | 12 条运行段（06:23 起，每段 1–2 分钟） |
+| 工况 `EVENT_POST_ATTR` | `relFloor:1 / height:2.0 / load:0.0 / numberOfPeople:0` |
+
+`32251222021` / `32251222023` 仍是无数据（网关不认这两个编号），`E03C1CB9F5011824`
+最后一条是 10-21 的 `false` —— 与 `data/liftSn.ts` 登记的一致。
+
+**客户端据此加了一道自检**（`api/iot.ts`）：换令牌是幂等的，若「刚被判 401 的那张」
+重换回来**逐字节相同**，直接抛 `IotStaleTokenError` 收手，不再拿废票去打那 12 个
+数据接口。判据只看令牌值，不看时间 —— 时间判不出来（`expireTs` 写着 48h，
+实际 10 分钟就失效）。
+
+### 7. 凭证失效要给出路，不能干摆「—」
+
+自愈失败（重换令牌仍 401）时，卡片和九宫格都还在，但每一格都是「—」。这时必须
+说清楚是为什么，否则用户只会反复下拉。
+
+- `api/lift.ts` 记两个痕迹：`liftAuthFailed()`（401）与 `liftGatewayStale()`
+  （重换回来还是同一张令牌 = 网关没轮换）；
+- `stores/lift.ts` 出 `authLost` / `gatewayStale` 与 `relogin()`；
+- 首页智控面板、电梯详情页各出一条提示 + 「重试」按钮，两处文案一致：
+  - 常态：「**电梯**物联网网关凭证失效，请稍后重试」
+  - 点过重试仍是同一张令牌：「**电梯**物联网网关未恢复，请稍后再试」
+- 两句话都带「电梯」前缀：首页那屏同时有塔机 / 爬架 / 无人机，笼统写「物联网网关
+  失效」用户不知道该看哪张卡（IOT 网关其实只供电梯这一路）。
+- **不再写「重试可重新获取」**：服务端轮换之前重试确实拿不到，那是过度承诺。
+- 提示条改版前这里是「重新登录」按钮 + `watch(auth.token)` 触发重取，**两个都已删除**：
+  登录换的是 `:8081` 的 Bearer，与 IOT 的 ak/sk 令牌不同源，登录对这里毫无影响；
+  反过来 `watch` 里那次 `clearToken()` 还会把好用的一张令牌丢掉重换。
+
+### 8. 实时刷新：10 秒一轮，且**不许页面跳**
+
+初版电梯只在进页面时取一次，理由是「工况帧几十秒才一条，轮询不划算」。那是帧的
+节奏，不是页面的期待：用户盯着「当前楼层 / 当前载重」时一帧卡十分钟不动，看着就是
+坏了。现在改成轮询，但做了三层收敛：
+
+| 项 | 值 | 理由 |
+|---|---|---|
+| 工况（`EVENT_POST_ATTR`） | **10 秒** | V2 是 5 秒（原生客户端），10 秒足够「看着是活的」 |
+| 在线（`EVENT_ON_OFF`） | 每 3 轮（30 秒） | 在线态分钟级才动 |
+| 今日（`EVENT_WORKDATA`） | 每 6 轮（60 秒） | 当天累计，一分钟一刷已经够细 |
+| 工况回看窗口 | 轮询 **3 分钟**（首轮仍 6 小时） | 6 小时的帧每 10 秒重拉一遍会随当天时间线性变痛 |
+
+**只在这些地方跑**：首页智控面板、电梯详情页、设备信息弹层。三者按**名字**登记在
+`stores/lift.ts` 的 `liveOwners`（Set，重复 start 幂等，不是计数器），最后一个离开
+才停表；标签页隐藏（`visibilityState === 'hidden'`）时整轮跳过。
+
+**不跳动的四条保证**（比轮询本身更容易做错）：
+
+1. 轮询**绝不改 `state`** —— 一旦翻成 `loading`，页面会先铺骨架再回填，那就是肉眼
+   可见的跳动。`pollOnce` 只写 `online/today/attr/updatedAt`。
+2. 窗口内没有新帧时**保留上一次读数**，不清成「—」。静止的电梯停了五分钟，楼层该
+   还是「5F」（帧自带时间戳，不会骗人）。
+3. 数值格禁止折行（`.dev-card-grid b/span` 增加的 `white-space: nowrap`）：值从「5F」
+   变「12F」若折行，卡片会变高、整页跟着上移。
+4. 数值不做滚动动画（只有首页的 `CountUp` 是动画，电梯读数不走它），且全局
+   `tabular-nums` 已在 `body` 上，位数变化不会逐字符抖。
+
+凭证判定失效（`authLost`）时**整轮跳过** —— 否则每 10 秒往网关空撞一次，用户越等
+越糟；点「重试」把它清掉后自动接上。
+
+### 9. 连不上 = 离线，且**不留在线残值**
+
+用户 2026-11-13 看到一屏矛盾：顶部「4/4 在线」+ 绿点，每一格却是「—」，下面还挂着
+「网关尚未恢复」。这在语义上说不通 —— 网关都连不上了，凭什么说 4 台全在线。
+
+两个原因叠在一起：
+
+1. **在线状态留了残值。** `load()` 原本是「某块失败就保住上一次的值」，对工况 / 今日
+   是对的（读数自带时间戳），对在线是错的：上一轮那 4 条 `true` 会被一直沿用。
+2. **在线数回落了台账。** `onlineKnown` 为假时按台账 `online_status` 数，而台账对
+   两栋楼都报在线 → 4/4。
+
+改法：
+
+- `stores/lift.ts`：在线这一路**失败即清空**（`load()` 的 `else online.value = {}`、
+  `pollOnce()` 的 `else if (dueOnline) online.value = {}`）。`dueOnline` 必须留着 ——
+  节流没查（`null`）与查了失败（`null`）是两回事，混起来会把「没刷」当「刷挂了」。
+- 三处消费方一律 `isOnline(sn)` 直判，**不再回落台账**：
+  `EquipPanel.countOf`（卡片 `x/4` 与状态点）、`DevicePage.liftCards`（卡片状态）、
+  `DeviceInfoSheet.liftStatus`（弹层「当前状态」）。
+- 结果是连不上时：卡片 `0/4` + 灰点、每笼「离线」、顶部离线数 +4，与提示条一致。
+- `onlineKnown` 保留但**页面不再据此分叉**（连不上与真离线都渲染「离线」），
+  只为排查时区分这两种情况。
+
+代价是抖一下：网关偶发一次超时会把 `4/4` 打到 `0/4`，下一个在线轮次（30 秒）恢复。
+这是刻意选的方向 —— 简报好过报假平安，何况同一时刻提示条会把原因写在脸上。
+塔机那条实时通道**仍回落台账**（`stateOf` 返回 null 时），两者不同：MQTT 在线上
+HTTPS 部署里本来就常连不上，而电梯走的是普通 HTTP，连不上就是真的有问题。
+
+### 10. 作业报表（2026-11-13 下午，替换「暂未接入」空态）
+
+原来那页是一句「电梯作业报表暂未接入，当前账号没有该接口权限」。那句已经过期：
+权限问题查清是令牌失效（§6），数据本来就是通的。现在照设计稿做出了日报 / 周报 / 月报。
+
+**数据源与 V2 的对应**：`EVENT_WORKDATA`（每次升降一条），就是
+`ElevatorRequester.QueryWorkCycleHistoryAsync(sn, date, token)` 那份 ——
+V2 电梯历史弹层 `UIPopElevatorHistory` 的行项是「序号 · 司机 · 开始 · 结束」。
+V2 **只有单日**（一个 `date` 参数 + 一个日期选择器，无周报月报），设计稿的三档是
+示意版式；区间改用与塔机报表同一套 `reportRange`（自然日 / 自然周 / 自然月）。
+
+接口实测（单台 `3225122202`，2026-11-13）：当天 27KB / 7 天 213KB / 30 天 656KB，
+0.2s / 0.4s / 0.7s；30 天 2242 条、31 天有数据、日均 72 次。
+
+**「在运时段」= 按日切片再累加**，这是本节唯一需要记住的口径：
+
+| 粒度 | 结果 |
+|---|---|
+| 日报 | 只有一个日切片 → **与弹层「今日累计运行时间」逐字节相同**（V2 首尾跨度） |
+| 周报 | 7 个日切片之和 |
+| 月报 | 30 个日切片之和 |
+
+不能直接用区间首尾相减：30 天会变成「月初第一次动到月末最后一次动」≈ 720 小时，
+那是日历不是运行时段。按日切片后每一段仍是「当天的工作时段」，月报实测
+**358.8h（日均 11.6h）**，与工地电梯作息吻合（同批数据逐条累加只有 39.8h）。
+
+**三格 KPI 与表格列换了**（设计稿那几格没有数据源，不摆永远写「—」的格子）：
+
+| 设计稿 | 本项目 | 为什么 |
+|---|---|---|
+| 合计循环 | 合计循环 | 同量同词（= 事件条数 / V2 `Data.Count` / 弹层「今日升降次数」） |
+| 合计载重 | 在运时段 | 载重只有 `EVENT_POST_ATTR` 瞬时帧，没有逐次累计 |
+| 平均利用率 | 覆盖台数 | 利用率要台班排班表 |
+| 表：循环/载重/利用率/运送 | 循环/在运时段/最长单次/在用天数 | 同上；「最长单次」「在用天数」都能逐条核验 |
+
+**结论区四段照设计稿**（2026-11-13 15:00 用户决定「按现有数据定下来」）：
+关注 / 主力 / 短板 / 当前，最多四段。
+
+| 段 | 设计稿判据 | 本项目判据 | 为什么 |
+|---|---|---|---|
+| 关注 | 利用率最低 | 缺数台优先；否则**在用天数最少** | 利用率无源；天数同样表达「使用强度最弱」 |
+| 主力 | 循环占比最高（+ 运送/载重占比） | 循环最多 + 占比，**单次最长并进这句** | 设计稿只有四段，峰值不单独占段 |
+| 短板 | 循环最少 + 占比 | 同 | 同一量 |
+| 当前 | 离线台 | 同（`onlineKnown` 为真才说） | 连不上时不能写成「4 台全停」 |
+
+「缺数」占「关注」这一格：有台未纳入统计时，这比「哪台少跑」更该先说。
+
+**两种缺失必须分开说**（页面结论区）：
+
+- 键在返回里但是空数组 = 网关认这个编号、区间内没跑 → `0次`；
+- 键没回来 = 网关不认编号（`status:10`，`32251222021` / `32251222023`）或请求失败
+  → 该行 `—`，结论写「X 未纳入统计」（否则「合计 78 次」会被当成全场）。
+
+`fetchLiftWorkRange` 因此**不用 `perSn`**（它把 rejected 过滤掉、丢失「哪台失败」
+的对应关系），改成 `allSettled` 保序配对。
+
+缓存与塔机报表同规则：同区间 45 秒内复用（月报四台约 2.6MB，现场是手机流量），
+连点粒度用请求序号丢弃过期结果。
+
+**空态有五种，前一种最坑**（2026-11-13 14:30 用户截图踩到）：
+
+| 情形 | 页面 | 为什么这样写 |
+|---|---|---|
+| 网关凭证失效（`authLost`） | 「电梯物联网网关凭证失效，请稍后重试」+ **重试** | 三档走同一个网关、同一张令牌，写「换个粒度看看」是**假建议**，用户白点 |
+| 重试过、网关没轮换（`gatewayStale`） | 「电梯物联网网关未恢复，请稍后再试」 | 自检在 `ensureToken` 就收手，四个请求没发出去，说了实话 |
+| 网关认编号、区间内 0 条 | 正常报表 + `0次` | 有效结论，不是缺数 |
+| 网关不认编号 / 请求失败 | 该行 `—` + 结论「未纳入统计」 | 与「0 次」必须分开 |
+| 一台都没应答且不是凭证问题 | 「暂无作业报表数据」+「换个粒度看看」 | 这时换区间确实有意义 |
+
+报表页原先**没有**凭证提示（`DevicePage` 那条 `.dev-auth` 只挂在 `pageTab === 'live'`），
+用户看到的就是一句「暂无作业报表数据」。所以 `stores/liftReport.ts` 自己出一份
+`authLost` / `gatewayStale` 快照（读 `api/lift.ts` 的模块级痕迹），并加 `retry()`
+= `clearToken()` + 重查当前粒度 —— 不清令牌的话，`ensureToken` 会把那张刚被判 401
+的令牌原样再交一次。
+
+### 设计稿的「合计载重 / 平均利用率 / 运送人数」为什么不做（2026-11-13 复核）
+
+设计稿是「2026-10-21 · 1-1 78次 / 11.20t / 79% / 610人」，三项互相自洽
+（每次 144kg、7.8 人），看着像真数。但四个方向都查过，**本项目与 V2 都拿不到**：
+
+1. **事件报文没有这两个字段**。`EVENT_WORKDATA` 当天全部 2242 行，`resultMap`
+   的键集合只有 `deviceType / writeTsdbTime / runStartTime / runEndTime /
+   driverId / driverName` —— 逐次载重和逐次人数根本不存在，累加无从谈起。
+2. **V2 的电梯模型只存四个东西**。`ElevatorIotModel` 的字段是
+   `OnlineDic / RealtimeDataDic / TodayLiftCountDic / TodayRuntimeHoursDic`
+   （外加 token 三项），即「在线、瞬时工况、今日次数、今日时长」。没有载重、没有利用率。
+3. **V2 的历史图表画的是次数**。`UIPopElevatorHistory.RefreshChart` 的 IL：开
+   24 个 `Int32` 桶按 `Hour` 累加，series 名 `'升降次数'`，tooltip
+   `<color=#FFFFFF>{b}</color>\n<color=#0089CA>{c:f0}次</color>`。对比塔机
+   `UICraneHistoryPop` 那一套（`tog_Count` / `tog_Weight` 两个切换）—— **电梯只有次数**，
+   没有第二个可切换的量。
+4. **V2 面板的载重/人数是瞬时值**。`UIPanelElevator` 的 `txtLoad` /
+   `txtNumberOfPeople` 取 `RealtimeResultMap.Load / NumberOfPeople`，是
+   `EVENT_POST_ATTR` 那一帧的快照，不是累计。
+
+顺带核了「设计稿是不是抄的我们自己的数」：本机 30 天数据里 2026-10-21 该笼
+（`3225122202`）是 **81 次**（06:28:50 首、17:54:51 末），无重复行，凑不出 78；
+其余三笼的编号网关至今不认（`status:10`），更不可能给出 22/14/28。**所以那页数
+来自另一个系统**（大概率是电梯厂家的云平台），不是 V2，也不是本项目现有接口。
+
+**将来要接需要什么**：厂家平台或 IOT 侧开放「逐次载重 / 逐次人数」的事件码或
+汇总接口。结构不用改版 —— 三格 KPI 换回「合计循环 / 合计载重 / 平均利用率」，
+表格换回「循环 / 载重 / 利用率 / 运送」即可，`.report-*` 都是现成的。
+
+`平均利用率` 另有一层麻烦：全平台（V2 与 IOT）没有这个字段，也没有任何算法定义，
+连分母（施工时段？台班排班？）都得现场定。真要算只能造口径，所以宁缺。
 
 ---
 

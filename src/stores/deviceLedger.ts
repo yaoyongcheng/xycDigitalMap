@@ -184,8 +184,9 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
    *   ② 合计口径从严：只要有一台塔机的查询失败（`null`），`craneDay` 整体
    *      就置 null —— 合计是「全队在今天的产出」，少算一台的合计比「—」更容易被当真。
    *      **逐台不受此约束**：别台失败不该把已经拿到的这一台也抹掉。
-   *   ③ 数组为空是有效结论（接口通了、今天没吊）→ 吊次 0、吊重「—」
-   *      （一条循环都没重量，不能写 0.00t）。
+   *   ③ 数组为空是有效结论（接口通了、今天没吊）→ 吊次 0、吊重 null。
+   *      store 里保持 null（「没有称重记录」和「0 吨」在数据层是两件事），
+   *      只在**展示层**（`utils/deviceLedger.ts: weightText`）写成 0.00t。
    *   ④ 逐台的 key 就是 sn，页面用 `craneSnOf(台号)` 对齐（V2 的卡片也是
    *      按 sn 取数的，见 `data/craneSn.ts`）。没有 sn 的车（传统塔机5）
    *      不在表里 → 卡片显示「—」。

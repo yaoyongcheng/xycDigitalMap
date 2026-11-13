@@ -66,11 +66,13 @@ export function deviceSet(kind: DeviceKind): {
  *
  * 全部改接 keehang 平台的真实接口（见 `api/drone.ts` 与 `stores/uav.ts`）：
  *   航线     → GET /task/list?recycle=0&deviceId={机库}&pid={项目}（实测 15 条）
- *   任务     → GET /task/exec/list/record?pid={项目}
- *   机载读数 → GET /dashboard/device/cache/telemetry/{设备id}/1
+ *   任务明细 → GET /task/exec/list/record?start={今天}&end={明天}（不带日期拿到的是最旧的）
+ *   今日统计 → GET /dashboard/task/list/record（今日任务 / 已完成 / 失败次数）
+ *   机载读数 → GET /dashboard/device/cache/telemetry/{无人机id}/1
+ *   机库读数 → GET /dashboard/device/cache/telemetry/{机库id}/2（风 / 雨 / 网络 / 舱温）
  *   航拍照片 → GET /media/task/job/{执行记录id}
  *
  * 其中 uavChecks 最需要删：它由 uavLive 派生，所以「起飞条件校验」永远显示
  * 通过 —— 现场调度看到的是一道**永远敞开的门**。现在改成三态（满足 / 不满足 /
- * 数据未接入），数据未接入的一律不放行。
+ * 口径未确认），不确定的一律不放行。
  */

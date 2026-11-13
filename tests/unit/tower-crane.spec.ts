@@ -302,10 +302,10 @@ describe('首页卡片的静态机器人组', () => {
     expect(cards.find((c) => c.id === 'crane')!.stats).toBeUndefined()
   })
 
-  it('吊重拿不到时给「—」，不写 0.00t', () => {
+  it('当天没吊（weight 为 null）时吊重写 0.00t，不是横杠', () => {
     const cards = toEquip(deviceRows(), { trips: 0, weight: null })
     expect(cards.find((c) => c.id === 'crane')!.stats).toEqual([
-      { value: '—', metric: '今日吊重' },
+      { value: '0.00t', metric: '今日吊重' },
       { value: '0次', metric: '今日吊次' },
     ])
   })

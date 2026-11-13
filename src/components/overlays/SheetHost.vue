@@ -8,6 +8,7 @@ import PatrolSheet from '@/components/sheets/PatrolSheet.vue'
 import UavRouteSheet from '@/components/sheets/UavRouteSheet.vue'
 import UavTodaySheet from '@/components/sheets/UavTodaySheet.vue'
 import { deviceSet } from '@/data/device'
+import { LIFT_CAGES } from '@/data/liftSn'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { usePatrolStore } from '@/stores/patrol'
 
@@ -54,6 +55,11 @@ const subtitle = computed(() => {
   // 巡检大图不设副标题：分类 / 来源 / 时间都在下面的 meta 三行里，
   // 标题行再来一遍就是同一句话写两次
   if (sheet.kind === 'patrol') return ''
+  // 电梯按轿厢出卡，副标题用轿厢名（台账行只有「1#楼电梯」这种按楼的登记名）
+  if (sheet.view?.sn) {
+    const cage = LIFT_CAGES.find((c) => c.sn === sheet.view?.sn)
+    if (cage) return cage.name
+  }
   if (sheet.kind === 'device-history' || sheet.kind === 'device-info')
     return deviceUnit.value?.name ?? ''
   return ''
@@ -68,6 +74,7 @@ const subtitle = computed(() => {
       v-else-if="sheet.kind === 'device-info' && sheet.view?.device"
       :device="sheet.view.device"
       :id="sheet.id"
+      :sn="sheet.view.sn"
     />
 
     <DeviceHistorySheet

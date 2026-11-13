@@ -15,6 +15,7 @@ import {
   clearToken,
   fetchEvents,
   fetchRealtimeData,
+  IotStaleTokenError,
   requestToken,
   toPoints,
 } from '@/api/iot'
@@ -41,6 +42,9 @@ function openResponse(data: unknown): Response {
 }
 
 afterEach(() => {
+  // `clearToken()` 刻意不清「废牌记忆」（用户点重试走的就是那条路），
+  // 用例之间要显式抹掉，否则上一条的 STALE 会污染下一条的自检判定。
+  applyToken(null)
   clearToken()
   vi.unstubAllGlobals()
 })
@@ -102,6 +106,82 @@ describe('C 组换令牌', () => {
 
     expect(await fetchRealtimeData([])).toEqual([])
     expect(f).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 令牌会在 expireTs（48h）之前被服务端轮换，失效后的返回是
+   * **HTTP 401 + `{status:11, msg:"权限不足"}`**（无 / 空 / 随机令牌实测一致）。
+   *
+   * 这里钉的是那次踩坑：`status` 是 11 不是 401，若按 status 透传，
+   * 自愈分支（判 code 401）永远不触发 —— 一次轮换就让整个会话卡死在
+   * 「权限不足」，页面只能靠刷新才恢复。
+   */
+  it('令牌失效（401 + status 11）自动重换并重试，不是直接报权限不足', async () => {
+    applyToken({ tokenKey: 'X-APP-USER', tokenValue: 'STALE', expiresAt: Date.now() + 60_000 })
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('/access/token')) {
+        return jsonResponse({ status: 0, data: { tokenKey: 'X-APP-USER', tokenValue: 'FRESH', expireTs: 172800 } })
+      }
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      if (headers['X-APP-USER'] === 'STALE') {
+        return jsonResponse({ status: 11, msg: '权限不足', data: null }, 401)
+      }
+      return jsonResponse({ status: 0, data: [{ uuid: 'u1', timestamp: 1, metricIndex: 0, value: 1 }] })
+    })
+    vi.stubGlobal('fetch', f)
+
+    const rows = await fetchRealtimeData([{ productCode: 'P000000076', sn: 'SN1', field: 'height', code: 'c1' }])
+
+    expect(rows).toHaveLength(1)
+    expect(f).toHaveBeenCalledTimes(3) // 查(旧) → 换令牌 → 查(新)
+    const retryInit = f.mock.calls[2][1] as { headers: Record<string, string> }
+    expect(retryInit.headers['X-APP-USER']).toBe('FRESH')
+  })
+
+  /**
+   * 「换了等于没换」—— 网关换令牌是幂等的，服务端没轮换之前会原样再发一张。
+   * 这时若继续拿它去打数据接口，就是白撞一轮（每台 3 个接口 × 4 台）。
+   * 所以自检要在这里就收手：**只多一次换牌请求，不再发数据请求**。
+   */
+  it('换回来还是刚被判 401 的那张 → 判定网关未恢复，不再打数据接口', async () => {
+    applyToken({ tokenKey: 'X-APP-USER', tokenValue: 'STALE', expiresAt: Date.now() + 60_000 })
+    const f = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes('/access/token')) {
+        // 幂等：原样再发一张 STALE
+        return jsonResponse({ status: 0, data: { tokenKey: 'X-APP-USER', tokenValue: 'STALE', expireTs: 172800 } })
+      }
+      return jsonResponse({ status: 11, msg: '权限不足', data: null }, 401)
+    })
+    vi.stubGlobal('fetch', f)
+
+    await expect(
+      fetchRealtimeData([{ productCode: 'P000000076', sn: 'SN1', field: 'height', code: 'c1' }]),
+    ).rejects.toBeInstanceOf(IotStaleTokenError)
+    // 2 次：查(旧) → 换令牌。第三次数据请求**没有**发出去
+    expect(f).toHaveBeenCalledTimes(2)
+  })
+
+  it('换到不同令牌就照旧重试一次（自检不能误伤正常恢复）', async () => {
+    applyToken({ tokenKey: 'X-APP-USER', tokenValue: 'STALE', expiresAt: Date.now() + 60_000 })
+    let n = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).includes('/access/token')) {
+          return jsonResponse({ status: 0, data: { tokenKey: 'X-APP-USER', tokenValue: 'FRESH', expireTs: 172800 } })
+        }
+        const headers = (init?.headers ?? {}) as Record<string, string>
+        n += 1
+        return headers['X-APP-USER'] === 'FRESH'
+          ? jsonResponse({ status: 0, data: [] })
+          : jsonResponse({ status: 11, msg: '权限不足', data: null }, 401)
+      }),
+    )
+
+    await expect(
+      fetchRealtimeData([{ productCode: 'P000000076', sn: 'SN1', field: 'height', code: 'c1' }]),
+    ).resolves.toEqual([])
+    expect(n).toBe(2)
   })
 
   it('事件查询体是 startTime / endTime / eventItems，且每项只发 eventCode', async () => {

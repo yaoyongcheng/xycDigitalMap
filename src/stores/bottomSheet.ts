@@ -43,6 +43,14 @@ export interface SheetView {
   id: string
   /** device-info / device-history 用：塔机还是电梯 */
   device?: DeviceKind
+  /**
+   * device-info 用：电梯轿厢 sn。
+   *
+   * 电梯的**档案**按楼登记（台账 2 行），**实时数据**按轿厢上报（4 个 sn）——
+   * 打开「智能电梯1-1」的弹层时 `id` 仍是那栋楼的台账主键（取档案类字段），
+   * 读数则必须按这个 sn 取，否则 1-1 会显示 1-2 的楼层。
+   */
+  sn?: string
 }
 
 export const useBottomSheetStore = defineStore('bottomSheet', () => {
@@ -57,9 +65,13 @@ export const useBottomSheetStore = defineStore('bottomSheet', () => {
     view.value = { kind: 'patrol', id: photoId }
   }
 
-  /** 打开「设备信息」（原 openCraneInfo / openLiftInfo） */
-  function openDeviceInfo(device: DeviceKind, unitId: string): void {
-    view.value = { kind: 'device-info', id: unitId, device }
+  /**
+   * 打开「设备信息」（原 openCraneInfo / openLiftInfo）
+   *
+   * `sn` 只有电梯用（按轿厢出卡，实时数据按轿厢上报）；塔机传不传都一样。
+   */
+  function openDeviceInfo(device: DeviceKind, unitId: string, sn?: string): void {
+    view.value = { kind: 'device-info', id: unitId, device, sn }
   }
 
   /** 打开「历史数据」（原 openCraneHistory / openLiftHistory） */

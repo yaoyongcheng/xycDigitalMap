@@ -2,6 +2,7 @@
 import { computed, watch } from 'vue'
 
 import Skel from '@/components/ui/Skel.vue'
+import LiftReport from '@/views/sub/LiftReport.vue'
 import { craneSnOf } from '@/data/craneSn'
 import { deviceSet } from '@/data/device'
 import { useCraneReportStore } from '@/stores/craneReport'
@@ -47,6 +48,15 @@ import type { ReportUnit } from '@/stores/craneReport'
  *
  * 传统塔机5 没有平台编号（`data/craneSn.ts` 里明确为空），取不到工作循环 ——
  * 它那几格写「—」，并在结论里单列一条「未纳入统计」，不拿台账的功效顶替。
+ *
+ * ## 电梯不走这里
+ *
+ * 电梯的报表在 `views/sub/LiftReport.vue`：数据源是 IOT 的 `EVENT_WORKDATA`
+ * 事件（V2 电梯历史弹层看的那份），按笼询 `sn`；塔机是 `:30400` 的工作循环
+ * REST，按台询 `deviceSN`。两边 KPI 与表格列都不同（电梯没有吊重、也没有
+ * 载重与利用率的累计源），硬塞进一个组件只会让它到处 `isCrane` 分叉。
+ * 版式（pill → 区间 → 三格 → 结论 → 分台表 → 导出）两页共用同一套
+ * `.report-*` 样式，看起来是一个系统。
  */
 const props = defineProps<{ kind: DeviceKind }>()
 
@@ -229,7 +239,7 @@ async function onShare(): Promise<void> {
     结果到手后再决定出报表还是出下面的空态。
   -->
   <section
-    v-if="syncing || (isCrane && !hasData && report.state === 'loading')"
+    v-if="isCrane && (syncing || (!hasData && report.state === 'loading'))"
     class="dev-block skel-fade"
     :class="{ 'is-on': showSkel }"
     aria-busy="true"
@@ -254,13 +264,8 @@ async function onShare(): Promise<void> {
     </div>
   </section>
 
-  <!-- 电梯：作业数据在 IOT 平台且当前账号无权限 → 说明白，不摆空指标 -->
-  <section v-else-if="!isCrane" class="dev-block">
-    <div class="data-empty" data-empty="device-report">
-      <p>电梯作业报表暂未接入</p>
-      <p class="data-empty-sub">电梯的升降次数与载重来自 IOT 平台的作业数据接口，当前账号没有该接口权限。</p>
-    </div>
-  </section>
+  <!-- 电梯是另一条数据源（IOT 事件 vs 塔机平台的工作循环 REST），字段也不同，单独一个组件 -->
+  <LiftReport v-else-if="!isCrane" />
 
   <!-- 塔机一台车都没取到（接口不通 / 全部无编号）→ 明确空态 -->
   <section v-else-if="!hasData" class="dev-block">

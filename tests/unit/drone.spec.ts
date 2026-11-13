@@ -18,11 +18,17 @@ import {
   applySession,
   casLogin,
   clearSession,
+  fetchDockTelemetry,
+  fetchLiveStream,
   fetchMediaJobs,
   fetchRoutes,
   fetchTaskRecords,
+  fetchTaskStat,
   fetchTelemetry,
+  toDock,
+  toLiveStream,
   toTaskRecords,
+  toTaskStat,
   toTelemetry,
 } from '@/api/drone'
 import { usePatrolStore } from '@/stores/patrol'
@@ -182,8 +188,31 @@ describe('toTelemetry 收敛', () => {
     expect(t.temp).toBe(29.3)
     expect(t.horizontalSpeed).toBe(0)
     expect(t.verticalSpeed).toBeNull()
-    expect(t.altitude).toBe(117)
+    // 旧桩写 altitude，保留兜底
+    expect(t.relativeAltitude).toBe(117)
     expect(t.heading).toBe(90)
+  })
+
+  it('相对高度读 relativeAltitude，海拔读 height（2026-11-13 修正）', () => {
+    // 服务端真实响应：在地面时 relativeAltitude=0、height=12.04。
+    // 旧解析没有 relativeAltitude 这个键，退到 height —— 地面停着也显示「12m」。
+    const t = toTelemetry({ relativeAltitude: 0, height: 12.04, windSpeed: 2.5, homeDistance: 0.054 })
+    expect(t.relativeAltitude).toBe(0)
+    expect(t.height).toBe(12.04)
+    expect(t.windSpeed).toBe(2.5)
+    expect(t.homeDistance).toBe(0.054)
+  })
+
+  it('剩余续航 / 累计架次 / 风速都在响应里，不能当「没有数据源」', () => {
+    const t = toTelemetry({
+      batteryInfo: { remainFlightTime: 1520 },
+      totalFlightSorties: 3067,
+      windSpeed: 0,
+    })
+    expect(t.remainFlightTime).toBe(1520)
+    expect(t.totalSorties).toBe(3067)
+    // 风速 0 是有效读数（此刻没风），不是「没数据」
+    expect(t.windSpeed).toBe(0)
   })
 
   it('整体缺失时所有读数为 null', () => {
@@ -195,6 +224,140 @@ describe('toTelemetry 收敛', () => {
 
   it('容量百分比兼容顶层 batteryInfo.capacityPercent', () => {
     expect(toTelemetry({ batteryInfo: { capacityPercent: 55 } }).battery).toBe(55)
+  })
+})
+
+describe('toDock 机库遥测收敛', () => {
+  it('风 / 雨 / 网络 / 舱温 全部取到（这些是起飞条件的另一半）', () => {
+    const d = toDock({
+      status: 1,
+      droneOnlineStatus: 1,
+      cabinTemperature: 18.1,
+      environmentTemperature: 17.4,
+      humidity: 99,
+      rainfall: 1,
+      windSpeed: 0,
+      networkQuality: 1,
+      networkRate: 441,
+      droneChargeState: 0,
+      storageTotal: 76,
+      storageUsed: 3,
+      alarmState: false,
+    })
+    expect(d.droneOnline).toBe(true)
+    expect(d.cabinTemp).toBe(18.1)
+    expect(d.rainfall).toBe(1)
+    expect(d.networkRate).toBe(441)
+    expect(d.chargeState).toBe(0)
+    expect(d.alarmState).toBe(false)
+  })
+
+  it('缺失字段为 null（不是 0）', () => {
+    const d = toDock(undefined)
+    expect(d.windSpeed).toBeNull()
+    expect(d.networkRate).toBeNull()
+    expect(d.droneOnline).toBeNull()
+  })
+})
+
+describe('toTaskStat 今日统计', () => {
+  it('三格 + 执行中 / 计划 / 暂停', () => {
+    const s = toTaskStat({
+      taskCount: 15,
+      finishedCount: 11,
+      failedCount: 0,
+      runningCount: 0,
+      planCount: 4,
+      suspendedCount: 0,
+    })
+    expect(s.taskCount).toBe(15)
+    expect(s.finishedCount).toBe(11)
+    expect(s.planCount).toBe(4)
+  })
+})
+
+
+describe('今日统计 / 机库遥测 接口', () => {
+  it('统计走 /dashboard/task/list/record，机库遥测的类型段是 2', async () => {
+    const f = khRoute({
+      '/dashboard/task/list/record': { taskCount: 15, finishedCount: 11, failedCount: 0 },
+      '/telemetry/23452/2': { cabinTemperature: 18.1, networkRate: 441 },
+    })
+    vi.stubGlobal('fetch', f)
+
+    const stat = await fetchTaskStat()
+    const dock = await fetchDockTelemetry()
+
+    expect(stat.taskCount).toBe(15)
+    expect(dock.networkRate).toBe(441)
+
+    const urls = f.mock.calls.map((c) => String(c[0]))
+    expect(urls.some((u) => u.includes('/dashboard/task/list/record'))).toBe(true)
+    // 用 1 查机库只会拿到一屏 null，必须 2
+    expect(urls.some((u) => u.includes('/telemetry/23452/2'))).toBe(true)
+  })
+
+  it('响应里没有 taskCount → 抛错（不能当成「今天 0 条」）', async () => {
+    vi.stubGlobal('fetch', khRoute({ '/dashboard/task/list/record': { hello: 1 } }))
+    await expect(fetchTaskStat()).rejects.toThrow('无人机任务统计返回异常')
+  })
+})
+
+describe('直播流（与 V2 同一路 HTTP-FLV）', () => {
+  const payload = [
+    {
+      deviceId: 23498,
+      streams: [
+        {
+          id: 934,
+          name: '中建三局-向阳村项目无人机2',
+          online: true,
+          playStreams: [
+            { type: 'flv', protocol: 'http', url: 'http://live.keehang.com:8080/djiDock/uav.live.flv' },
+            { type: 'flv', protocol: 'https', url: 'https://live.keehang.com:8443/djiDock/uav.live.flv' },
+            { type: 'flv', protocol: 'wss', url: 'wss://live.keehang.com:8443/djiDock/uav.live.flv' },
+            { type: 'rtsp', protocol: 'rtsp', url: 'rtsp://live.keehang.com:8554/djiDock/uav' },
+          ],
+        },
+      ],
+    },
+  ]
+
+  it('取 flv + https：http 版在 HTTPS 站点会被混合内容拦掉', () => {
+    const s = toLiveStream(payload)
+    expect(s?.flv).toBe('https://live.keehang.com:8443/djiDock/uav.live.flv')
+    expect(s?.wsFlv).toBe('wss://live.keehang.com:8443/djiDock/uav.live.flv')
+    expect(s?.rtsp).toBe('rtsp://live.keehang.com:8554/djiDock/uav')
+    expect(s?.online).toBe(true)
+    expect(s?.id).toBe(934)
+  })
+
+  it('只有 rtsp 的设备不算有可播流 → null（浏览器放不了 rtsp）', () => {
+    const s = toLiveStream([
+      {
+        deviceId: 1,
+        streams: [
+          {
+            id: 1,
+            name: '某摄像头',
+            online: true,
+            playStreams: [{ type: 'rtsp', protocol: 'rtsp', url: 'rtsp://x/y' }],
+          },
+        ],
+      },
+    ])
+    expect(s).toBeNull()
+  })
+
+  it('按 deviceId 过滤取流（全量列表 1197 组 / 1.5MB，拉全量是浪费）', async () => {
+    const f = khRoute({ '/live/stream/list': payload })
+    vi.stubGlobal('fetch', f)
+
+    const s = await fetchLiveStream(23498)
+    expect(s?.name).toBe('中建三局-向阳村项目无人机2')
+
+    const urls = f.mock.calls.map((c) => String(c[0]))
+    expect(urls.some((u) => u.includes('/live/stream/list?deviceId=23498'))).toBe(true)
   })
 })
 
@@ -249,13 +412,21 @@ describe('uav store', () => {
     setActivePinia(createPinia())
   })
 
-  it('今日任务按当天过滤，按开始时间倒序', async () => {
+  it('今日任务按当天过滤、按开始时间倒序；三格取自统计接口', async () => {
     const d = new Date()
     const p = (n: number): string => String(n).padStart(2, '0')
     const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
     vi.stubGlobal(
       'fetch',
       khRoute({
+        '/dashboard/task/list/record': {
+          taskCount: 3,
+          finishedCount: 1,
+          failedCount: 0,
+          runningCount: 1,
+          planCount: 1,
+          suspendedCount: 0,
+        },
         '/task/exec/list/record': [
           { id: 1, taskName: '早班巡检', start: `${today}T09:00:00`, status: 2 },
           { id: 2, taskName: '午班巡检', start: `${today}T15:00:00`, status: 1 },
@@ -268,9 +439,28 @@ describe('uav store', () => {
     await s.load()
 
     expect(s.todayTasks.map((t) => t.name)).toEqual(['午班巡检', '早班巡检'])
-    expect(s.totalCount).toBe(2)
-    expect(s.doneCount).toBe(1)
+    expect(s.taskTotal).toBe(3)
+    expect(s.taskDone).toBe(1)
+    expect(s.taskFailed).toBe(0)
     expect(s.running?.name).toBe('午班巡检')
+  })
+
+  it('查今日明细必须带 start/end（不带拿到的是 7 月那几条最旧记录）', async () => {
+    const f = khRoute({ '/task/exec/list/record': [] })
+    vi.stubGlobal('fetch', f)
+
+    const s = useUavStore()
+    await s.load()
+
+    const url = f.mock.calls.map((c) => String(c[0])).find((u) => u.includes('/task/exec/list/record'))
+    const today = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    const key = `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`
+    expect(url).toContain(`start=${key}`)
+    // end 不含当天：查今天要传明天
+    const tomorrow = new Date(today.getTime() + 86_400_000)
+    const key2 = `${tomorrow.getFullYear()}-${p(tomorrow.getMonth() + 1)}-${p(tomorrow.getDate())}`
+    expect(url).toContain(`end=${key2}`)
   })
 
   it('遥测失败不影响任务列表状态（各自成败互不影响）', async () => {
@@ -311,10 +501,11 @@ describe('uav store', () => {
     expect(s.state).toBe('error')
     expect(s.error).toContain('服务端故障')
     expect(s.records).toEqual([])
-    expect(s.totalCount).toBe(0)
+    // 统计接口也挂了 → 「—」，不拿 0 冒充「今天没任务」
+    expect(s.taskTotal).toBeNull()
   })
 
-  it('起飞条件三态：缺数据源的项算未知，不算满足', () => {
+  it('起飞条件三态：没有遥测时不给放行，也不写成「已满足」', () => {
     const s = useUavStore()
     s.apply([])
 
@@ -324,20 +515,104 @@ describe('uav store', () => {
     // 有未知项 → 不可下发（保守侧）
     expect(s.canDispatch).toBe(false)
     expect(s.unknowns.map((c) => c.name)).toContain('风速')
-    expect(s.dispatchNote).toContain('数据未接入')
+    expect(s.dispatchNote).toContain('口径未确认')
+  })
+
+  it('机库遥测到了之后，风速与网络变成真实判定', () => {
+    const s = useUavStore()
+    s.apply(
+      [],
+      {
+        status: 1,
+        modeCode: 1,
+        lat: '',
+        lng: '',
+        battery: 88,
+        temp: 26.4,
+        horizontalSpeed: 0,
+        verticalSpeed: 0,
+        relativeAltitude: 0,
+        height: 12,
+        homeDistance: 0.05,
+        windSpeed: 2.4,
+        remainFlightTime: 0,
+        totalSorties: 3067,
+        heading: 0,
+      },
+      { taskCount: 15, finishedCount: 11, failedCount: 0, runningCount: 0, planCount: 4, suspendedCount: 0 },
+    )
+    s.applyDock({
+      status: 1,
+      hatchStatus: 2,
+      putterState: 2,
+      droneOnline: true,
+      droneLocation: 1,
+      chargeState: 0,
+      cabinTemp: 18.1,
+      envTemp: 17.4,
+      humidity: 99,
+      rainfall: 1,
+      windSpeed: 2.4,
+      networkQuality: 1,
+      networkRate: 720,
+      storageTotal: 76,
+      storageUsed: 3,
+      alarmState: false,
+      lat: '',
+      lng: '',
+      height: 12,
+    })
+
+    // 风速 / 网络 不再是「未接入」
+    expect(s.checks.find((c) => c.name === '风速')?.unknown).toBe(false)
+    expect(s.checks.find((c) => c.name === '风速')?.ok).toBe(true)
+    expect(s.checks.find((c) => c.name === '网络')?.ok).toBe(true)
+    // 雨量仍按未知处理（口径未确认），所以整体仍不放行 —— 但原因里带着原值
+    expect(s.canDispatch).toBe(false)
+    expect(s.unknowns.map((c) => c.name)).toEqual(['雨量'])
+    expect(s.unknowns[0].risk).toContain('rainfall=1')
+  })
+
+  it('风速超 8m/s 是「明确不满足」', () => {
+    const s = useUavStore()
+    s.apply([], {
+      status: 1,
+      modeCode: 1,
+      lat: '',
+      lng: '',
+      battery: 88,
+      temp: 26.4,
+      horizontalSpeed: 0,
+      verticalSpeed: 0,
+      relativeAltitude: 0,
+      height: 12,
+      homeDistance: 0,
+      windSpeed: 9.6,
+      remainFlightTime: 0,
+      totalSorties: 0,
+      heading: 0,
+    })
+
+    expect(s.risks.map((c) => c.name)).toContain('风速')
   })
 
   it('电量低于 30% 是「明确不满足」，进风险列表', () => {
     const s = useUavStore()
     s.apply([], {
       status: 1,
+      modeCode: 1,
       lat: '',
       lng: '',
       battery: 12,
       temp: 20,
       horizontalSpeed: 0,
       verticalSpeed: 0,
-      altitude: 10,
+      relativeAltitude: 10,
+      height: 10,
+      homeDistance: 0,
+      windSpeed: 2,
+      remainFlightTime: 0,
+      totalSorties: 0,
       heading: 0,
     })
 
@@ -346,6 +621,20 @@ describe('uav store', () => {
     expect(battery?.ok).toBe(false)
     expect(s.risks.map((c) => c.name)).toContain('电量')
     expect(s.dispatchNote).toContain('未达标')
+  })
+
+  it('loadStat 只拉统计（首页那一格），不触发遥测 / 明细', async () => {
+    const f = khRoute({ '/dashboard/task/list/record': { taskCount: 7, finishedCount: 6, failedCount: 1 } })
+    vi.stubGlobal('fetch', f)
+
+    const s = useUavStore()
+    await s.loadStat()
+
+    expect(s.taskTotal).toBe(7)
+    expect(s.taskFailed).toBe(1)
+    const urls = f.mock.calls.map((c) => String(c[0]))
+    expect(urls.some((u) => u.includes('/task/exec/list/record'))).toBe(false)
+    expect(urls.some((u) => u.includes('/telemetry'))).toBe(false)
   })
 
   it('遥测字段缺失时对应读数是 null（页面显示「—」）', () => {

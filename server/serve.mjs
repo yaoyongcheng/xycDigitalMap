@@ -143,6 +143,30 @@ const CRANE_PREFIX = '/crane-api'
 const CRANE_UPSTREAM = 'https://tciccs.cscec3bxjy.cn:30400'
 const PROXY_MAX_BODY = 64 * 1024
 
+/**
+ * 物联网网关「换令牌」接口的反代（`/iot-api/*` → `iot.cscec3b-iti.com`）
+ *
+ * 与塔机不同，这里**只有换令牌那一跳有问题**：这个云网关的
+ * `POST /api/webgateway/v1/access/token` 没进 CORS 过滤链 ——
+ * 预检 `OPTIONS` 一律 403 且不回任何 `Access-Control-*` 头，
+ * 实际响应的 `Access-Control-Allow-Origin` 也是空的（2026-11-13 实测，
+ * localhost / *.github.io / null 各种 Origin 全试过）。
+ *
+ * 而它的数据接口 `/api/data/v1/tsdb/*` CORS 是好的：预检 200、
+ * `allow-headers: content-type, x-app-user`、响应回显 origin 且
+ * `allow-credentials: true`。所以**数据查询继续让浏览器直连**，
+ * 只有换令牌走这层反代 —— 几百 KB 的工况帧没必要绕一圈。
+ *
+ * 不反代会怎样：`fetch` 在预检阶段就被浏览器拦掉，抛 TypeError，
+ * 连 HTTP 状态码都拿不到 → 页面既没有数据也无法判定「凭证失效」。
+ * 这正是「curl 能查、页面全横杠」的成因。
+ *
+ * ⚠️ 前提：GitHub Pages 是纯静态托管，没有这层反代 —— 那种部署下
+ * 电梯数据拿不到，除非原厂给 token 接口补上 CORS。
+ */
+const IOT_PREFIX = '/iot-api'
+const IOT_UPSTREAM = 'https://iot.cscec3b-iti.com'
+
 /** 读请求体（带大小上限，超了直接掐掉连接） */
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -162,7 +186,7 @@ function readBody(req) {
   })
 }
 
-async function proxyCrane(req, res, url) {
+async function proxyPost(req, res, url, prefix, upstream, timeoutMs = 20_000) {
   const method = req.method ?? 'POST'
   if (method !== 'POST') {
     send(res, 405, 'Method Not Allowed', { Allow: 'POST' }, method)
@@ -177,7 +201,7 @@ async function proxyCrane(req, res, url) {
     return
   }
 
-  const target = CRANE_UPSTREAM + url.pathname.slice(CRANE_PREFIX.length) + url.search
+  const target = upstream + url.pathname.slice(prefix.length) + url.search
   try {
     const up = await fetch(target, {
       method: 'POST',
@@ -187,7 +211,7 @@ async function proxyCrane(req, res, url) {
       },
       body,
       // 上游是公网 + 网关，给宽一点；超时按 502 回报，页面按「没数据」处理
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     const text = await up.text()
     res.writeHead(up.status, {
@@ -230,7 +254,13 @@ const server = createServer(async (req, res) => {
 
   // 反代要排在「只接受 GET/HEAD」之前 —— 它本身就是 POST
   if (url.pathname === CRANE_PREFIX || url.pathname.startsWith(`${CRANE_PREFIX}/`)) {
-    await proxyCrane(req, res, url)
+    await proxyPost(req, res, url, CRANE_PREFIX, CRANE_UPSTREAM)
+    return
+  }
+
+  // 物联网网关换令牌（只有这一跳缺 CORS，数据接口仍由浏览器直连）
+  if (url.pathname === IOT_PREFIX || url.pathname.startsWith(`${IOT_PREFIX}/`)) {
+    await proxyPost(req, res, url, IOT_PREFIX, IOT_UPSTREAM, 25_000)
     return
   }
 

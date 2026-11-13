@@ -281,9 +281,17 @@ export const ROBOT_CARDS: readonly Equip[] = [
   robotCard('screed', '混凝土整平机器人', 'screed'),
 ]
 
-/** 数值格式化：重量保留两位（1.87t，与设计稿同位）；没有重量时给它「—」 */
+/**
+ * 数值格式化：重量保留两位（1.87t，与设计稿同位）。
+ *
+ * `weight === null`（当天一条带重量的循环都没有）写 **0.00t**，不是「—」——
+ * 用户 2026-11-13 明确要求，与设备详情页四格同一口径（`DevicePage.craneCells`）。
+ * 这里的 null 只可能是「接口通了、今天没吊」，因为查询失败时 `craneDay` 整块
+ * 是 null、根本走不到这张 stats 卡（卡片会退回台账里的最大高度）。
+ * 换言之「—」只留给「没有数据源」，不留给「今天确实是 0」。
+ */
 function weightText(weight: number | null): string {
-  return weight === null ? '—' : `${weight.toFixed(2)}t`
+  return `${(weight ?? 0).toFixed(2)}t`
 }
 
 /**
@@ -294,7 +302,8 @@ function weightText(weight: number | null): string {
  * 数值位的取值规则：
  *   · 塔机 → 工作循环汇总的「今日吊重 + 今日吊次」（`craneDay` 为 null 时
  *     退回台账里的最大高度 —— 高度的来源是台账，不是编的）
- *   · 电梯 → 台账高度（「累计运行时间」需要工作循环能力，本机未接，见下）
+ *   · 电梯 → 台账高度（**仅兜底**：首页那一格实际读 IOT 的今日运行时长，
+ *     见 `EquipPanel.cellsOf` 的 lift 分支；这个 metric 现在不会露脸）
  *   · 爬架 → 台账里的爬升高度（三格传感器数据无接口，模板给空态文案）
  *   · 无人机 → 没有高度概念，数值位留空（模板会跳过）
  *

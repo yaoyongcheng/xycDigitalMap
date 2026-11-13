@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "jsencrypt": "^3.5.4",
+    "mpegts.js": "^1.8.2",
     "pinia": "^4.0.3",
     "vue": "^3.5.43"
   },

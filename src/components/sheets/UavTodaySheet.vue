@@ -31,7 +31,7 @@ const showSkel = useSlowLoading(() => syncing.value)
       </div>
     </div>
 
-    <div v-for="t in uav.todayTasks" :key="t.id" class="uav-log-row">
+    <div v-for="t in uav.todayTasks" :key="t.key" class="uav-log-row">
       <b>{{ t.time }}</b>
       <span>{{ t.name }}</span>
       <em :class="t.stateClass">{{ t.state }}</em>

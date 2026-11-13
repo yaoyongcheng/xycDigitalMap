@@ -8,9 +8,17 @@ import { clearSession } from '@/api/drone'
 import type { CraneRealtimeHandlers } from '@/api/craneRealtime'
 import { subscribeCraneRealtime } from '@/api/craneRealtime'
 import { fetchScaffold } from '@/api/scaffold'
+import {
+  fetchLiftAttr,
+  fetchLiftOnline,
+  fetchLiftToday,
+  liftAuthFailed,
+  liftGatewayStale,
+} from '@/api/lift'
 import SheetHost from '@/components/overlays/SheetHost.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
 import CountUp from '@/components/ui/CountUp.vue'
+import LivePlayer from '@/components/ui/LivePlayer.vue'
 import { CRANE_SNS } from '@/data/craneSn'
 import { useAuthStore } from '@/stores/auth'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
@@ -18,6 +26,35 @@ import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useScaffoldStore } from '@/stores/scaffold'
 import { useSubpageStore } from '@/stores/subpage'
 import { useUavStore } from '@/stores/uav'
+
+/*
+ * mpegts.js 的桩：happy-dom 没有 MSE，真库既加载失败又慢。
+ * 这里给一个「能连上」的假播放器 —— 真正的 MSE 解码测不了，但状态机可以测：
+ * 事件回调留在 `globalThis.__mpegts` 上，用例可以手动触发 ERROR，
+ * 也可以给 `<video>` 派发 `playing` 来模拟真的出画面。
+ */
+vi.mock('mpegts.js', () => {
+  const handlers: Record<string, () => void> = {}
+  ;(globalThis as Record<string, unknown>).__mpegts = handlers
+  return {
+    default: {
+      isSupported: () => true,
+      Events: { ERROR: 'error', MEDIA_INFO: 'mediaInfo' },
+      createPlayer: () => ({
+        attachMediaElement: vi.fn(),
+        load: vi.fn(),
+        play: () => Promise.resolve(),
+        pause: vi.fn(),
+        unload: vi.fn(),
+        detachMediaElement: vi.fn(),
+        destroy: vi.fn(),
+        on: (ev: string, cb: () => void) => {
+          handlers[ev] = cb
+        },
+      }),
+    },
+  }
+})
 import EquipPanel from '@/views/home/EquipPanel.vue'
 import { SKEL_DELAY } from '@/utils/slowLoading'
 import { deviceRows, ledgerEnvelope } from '../fixtures/ledger'
@@ -57,6 +94,33 @@ vi.mock('@/api/scaffold', () => ({ fetchScaffold: vi.fn() }))
 const mockScaffold = vi.mocked(fetchScaffold)
 
 /**
+ * 电梯数据同样改由接口给（2026-11-13）。
+ *
+ * 智控面板与电梯详情页挂载时都会 `lift.refresh()`（切回智控 = 重新取数），
+ * 真实实现会打 IOT 网关。测试里必须换成假实现：一来不该打真实网络，
+ * 二来「有 IOT 数据时怎么渲染」需要按用例决定返回什么。
+ *
+ * 默认三个都回 null（= 网关没有任何电梯数据），此时电梯卡只剩「在线 x/y」
+ * 一格且走台账口径 —— 与改造前的可见结果一致。
+ */
+vi.mock('@/api/lift', () => ({
+  LIFT_PRODUCT: '01724121a94f4893b693f253173d1082',
+  fetchLiftOnline: vi.fn(),
+  fetchLiftToday: vi.fn(),
+  fetchLiftAttr: vi.fn(),
+  // 作业报表（电梯分支）：这个 spec 只测实时状态页，报表页有自己的 lift-report.spec
+  fetchLiftWorkRange: vi.fn(async () => null),
+  // 凭证失效标记：默认「没失效」，用例按需让它为真以驱动提示条
+  liftAuthFailed: vi.fn(() => false),
+  // 「重试过、网关还没轮换令牌」：默认假，用例按需打开第二句文案
+  liftGatewayStale: vi.fn(() => false),
+  clearLiftAuthFailure: vi.fn(),
+}))
+const mockLiftOnline = vi.mocked(fetchLiftOnline)
+const mockLiftToday = vi.mocked(fetchLiftToday)
+const mockLiftAttr = vi.mocked(fetchLiftAttr)
+
+/**
  * 塔机实时通道改由用例驱动（2026-11-13）。
  *
  * 首页 5G塔机卡的「在线设备」现在按**子页面口径**算：状态取自实时四态
@@ -94,6 +158,13 @@ describe('智控面板（真实台账）', () => {
     setActivePinia(createPinia())
     // 默认「传感器没取到」，需要读数的用例自己改返回值
     mockScaffold.mockResolvedValue(null)
+    // 默认「IOT 里没有电梯数据」—— 电梯连不上即全部离线，今日运行时长那格念「—」
+    mockLiftOnline.mockResolvedValue(null)
+    mockLiftToday.mockResolvedValue(null)
+    mockLiftAttr.mockResolvedValue(null)
+    // 默认「凭证有效」，要测提示条的用例自己打开
+    vi.mocked(liftAuthFailed).mockReturnValue(false)
+    vi.mocked(liftGatewayStale).mockReturnValue(false)
     craneHandlers = null
     mockSubscribe.mockReset()
     mockSubscribe.mockImplementation((h) => {
@@ -165,14 +236,23 @@ describe('智控面板（真实台账）', () => {
     expect(crane.text()).toContain('最大高度')
 
     const lift = w.find('[data-page="lift"]')
-    expect(lift.text()).toContain('2/2')
+    // 电梯按**轿厢**算：分母 4（台账那 2 行是「楼」，实时数据是逐笼的）。
+    // 这条用例里网关没有应答（默认 mock 回 null）→ **全部算离线 0/4**。
+    // 不回落台账：台账登记态不随实时通断变化，拿它顶替会画出「4/4 在线」
+    // 而每一格都是「—」（用户 2026-11-13 要求连不上即离线）。
+    expect(lift.text()).toContain('0/4')
 
     const drone = w.find('[data-page="uav"]')
-    // 无人机没有高度字段 → 数值位不渲染，只剩设备状态
+    /*
+     * 无人机卡只剩一格「今日作业次数」（用户 2026-11-13 要求）。
+     * 不再并排念「设备状态 0/1」——那是台账登记态，与「今天飞了几架次」无关，
+     * 两格并排还会被读成「1 架里 0 架在线」。在线与否由标题旁的状态点表达。
+     */
     expect(drone.findAll('.eq-val')).toHaveLength(1)
-    expect(drone.text()).toContain('设备状态')
-    // 作业任务那一格要 uav store 真的取过数才出现（首页不为此触发 CAS 登录）
-    expect(drone.text()).not.toContain('作业任务')
+    expect(drone.text()).toContain('今日作业次数')
+    // 这一屏没有灌统计 → 「—」，不写 0
+    expect(drone.text()).toContain('—')
+    expect(drone.text()).not.toContain('设备状态')
 
     // 页面边界：整页就是「统计两卡 + 9 张卡」，与设计稿 renderEquip 一致。
     // 曾有的「全部设备运行状态」逐台清单已按用户要求移除，逐台状态归详情页。
@@ -397,7 +477,7 @@ describe('智控面板（真实台账）', () => {
     w.unmount()
   })
 
-  it('统计卡：9 类（4 类台账设备 + 5 类机器人）13 台（台账 8 台 + 机器人 5 台）', async () => {
+  it('统计卡：9 类（4 类台账设备 + 5 类机器人）15 台（卡片分母 10 台 + 机器人 5 台）', async () => {
     signIn()
     vi.useFakeTimers()
     const w = mount(EquipPanel)
@@ -407,34 +487,47 @@ describe('智控面板（真实台账）', () => {
     expect(items).toHaveLength(2)
     // 种类 / 台数来自 CountUp 的入参（渲染值要等滚动动画结束）
     const nums = items.map((i) => i.findComponent(CountUp).props('value'))
-    expect(nums).toEqual([9, 13])
+    expect(nums).toEqual([9, 15])
 
     // 滚完之后上屏的也是这两个数
     // 种类 = 页面上的设备类别数（4 台账类 + 5 机器人，与 V2 装备管理页同口径）
-    // 台数 = 台账 8 台（4 塔机 + 2 电梯 + 1 无人机 + 1 爬架）+ 5 类机器人各 1 台
+    // 台数 = 各卡分母之和 10 台（塔机 4 + 电梯 4 + 无人机 1 + 爬架 1）+ 5 类机器人各 1 台
+    // 电梯按 4 个轿厢计（台账只有 2 行「楼」，见 data/liftSn.ts）
     vi.advanceTimersByTime(1000)
     await nextTick()
     expect(items[0].find('b').text()).toBe('9种')
-    expect(items[1].find('b').text()).toBe('13台')
+    expect(items[1].find('b').text()).toBe('15台')
 
-    // 台账 8 台里 6 台在线（塔机 2/4）+ 5 类机器人各计 1 台在线 = 11；
-    // 离线 2 台：台账离线的智能塔机3 + 没有平台编号的传统塔机5
+    // 在线 = 塔机 2 + 电梯 0（网关没应答 → 连不上即离线，不回落台账）+ 爬架 1
+    //      + 无人机 1 + 5 类机器人各计 1 台 = 9；离线 = 15 - 9 = 6
+    // 离线那六台：4 个轿厢（网关连不上）+ 台账就是离线的智能塔机3 + 没有平台编号的传统塔机5
     const leg = w.findAll('.eq-status-leg > div')
     expect(leg).toHaveLength(2)
-    expect(leg[0].find('b').text()).toBe('11')
-    expect(leg[1].find('b').text()).toBe('2')
+    expect(leg[0].find('b').text()).toBe('9')
+    expect(leg[1].find('b').text()).toBe('6')
 
     w.unmount()
     vi.useRealTimers()
   })
 
-  it('无人机：今天没有任务（totalCount 为 0）时整格不渲染，不写 0/0', async () => {
+  it('无人机：统计没取到时写「—」，不写 0/0 也不退回历史条数', async () => {
     signIn()
 
-    // 有执行记录，但都不是今天的 → todayTasks 为空 → totalCount === 0
+    // 有执行记录，但都不是今天的 —— 这不再决定卡片数字（数字只认统计接口）。
+    // 关键是 `stat` 仍为空 → 卡片必须写「—」，因为「今天没飞」与「没取到」不同。
     const past = '2026-01-05'
     useUavStore().apply([
-      { id: 1, taskName: '向阳村-安全巡检', lineId: 1, dockId: 263, start: `${past}T09:00:00`, end: `${past}T09:20:00`, status: 2, scheduled: true },
+      {
+        id: 1,
+        uuid: 'u-1',
+        taskName: '向阳村-安全巡检',
+        lineId: 1,
+        dockId: 263,
+        start: `${past}T09:00:00`,
+        end: `${past}T09:20:00`,
+        status: 2,
+        scheduled: true,
+      },
     ])
 
     const w = mount(EquipPanel)
@@ -442,9 +535,83 @@ describe('智控面板（真实台账）', () => {
 
     const drone = w.find('[data-page="uav"]')
     expect(drone.findAll('.eq-val')).toHaveLength(1)
-    expect(drone.text()).not.toContain('作业任务')
+    expect(drone.text()).toContain('今日作业次数')
+    expect(drone.text()).toContain('—')
     expect(drone.text()).not.toContain('0/0')
 
+    w.unmount()
+  })
+
+  it('电梯卡：在线数与今日运行时长来自 IOT，不再拿台账高度顶替', async () => {
+    signIn()
+    /*
+     * 2026-11-13 现场实测的一组数：
+     *   1# 楼主笼（3225122202）在线、今日 51 条工作循环共 2841s ≈ 47min；
+     *   2# 楼副笼（E03C1CB9F5011824）明确离线；另两个轿厢网关里没有记录。
+     * 分母是**轿厢数 4**（台账只有 2 行「楼」，实时数据是逐笼的），
+     * 没有记录的两笼按 V2 `IsOnline` 口径算离线 → 1/4。
+     */
+    mockLiftOnline.mockResolvedValue({ '3225122202': true, E03C1CB9F5011824: false })
+    mockLiftToday.mockResolvedValue({ '3225122202': { trips: 51, seconds: 2841 } })
+
+    const w = mount(EquipPanel)
+    await flushPromises()
+
+    const lift = w.find('[data-page="lift"]')
+    const vals = lift.findAll('.eq-val')
+    expect(vals[0].text()).toContain('1')
+    expect(vals[0].text()).toContain('/4')
+    expect(vals[0].text()).toContain('在线设备')
+    // 第二格：设计稿那格（稿上写「累计运行时间」，这里补上「今日」），
+    // 2841s → 47min
+    expect(vals[1].find('b').text()).toBe('47min')
+    expect(vals[1].text()).toContain('今日运行时长')
+
+    w.unmount()
+  })
+
+  it('电梯凭证失效：首页给提示条，点「重试」重新取数而不是跳登录页', async () => {
+    signIn()
+    vi.mocked(liftAuthFailed).mockReturnValue(true)
+
+    const w = mount(EquipPanel)
+    await nextTick()
+    await flushPromises()
+
+    const bar = w.find('.dev-auth')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('电梯物联网网关凭证失效')
+    expect(bar.find('.dev-auth-btn').text()).toBe('重试')
+
+    const before = mockLiftOnline.mock.calls.length
+    await bar.find('.dev-auth-btn').trigger('click')
+    await flushPromises()
+    // 真的又去取了一轮
+    expect(mockLiftOnline.mock.calls.length).toBeGreaterThan(before)
+    // 但**不跳登录页**：登录换的是 :8081 的 Bearer，跟 IOT 的 ak/sk 令牌不同源
+    expect(useSubpageStore().view.kind).not.toBe('login')
+    w.unmount()
+  })
+
+  /**
+   * 「重试过了，网关还是原来那张令牌」—— 网络层已经收手（一个数据请求都没发），
+   * 页面上必须换句话，否则用户会以为自己没点上，反复点。
+   *
+   * 这里连 `authLost` 的文案边界一起钉住：不能再说「重试可重新获取」。
+   */
+  it('网关未恢复：提示条换成「尚未恢复」，不再承诺重试可得', async () => {
+    signIn()
+    vi.mocked(liftAuthFailed).mockReturnValue(true)
+    vi.mocked(liftGatewayStale).mockReturnValue(true)
+
+    const w = mount(EquipPanel)
+    await nextTick()
+    await flushPromises()
+
+    const bar = w.find('.dev-auth')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('电梯物联网网关未恢复')
+    expect(bar.text()).not.toContain('重新获取')
     w.unmount()
   })
 
@@ -457,11 +624,13 @@ describe('智控面板（真实台账）', () => {
     expect(w.find('[data-page="crane"]').attributes('aria-label')).toBe(
       '5G塔机，在线设备2/4，最大高度70m，点击查看明细',
     )
+    // 电梯「今日运行时长」那格常驻（设计稿是两列），没数就念「—」——
+    // 与可视格同口径，不拿台账的高度冒充
     expect(w.find('[data-page="lift"]').attributes('aria-label')).toBe(
-      '智能电梯，在线设备2/2，最大高度60m，点击查看明细',
+      '智能电梯，在线设备0/4，今日运行时长—，点击查看明细',
     )
-    // 无人机没有数值格 → 只有在线数与去向；去向是「进入控制」而不是「查看明细」
-    expect(w.find('[data-page="uav"]').attributes('aria-label')).toBe('无人机，设备状态1/1，点击进入控制')
+    // 无人机只有一格「今日作业次数」，没取到就如实说不报数
+    expect(w.find('[data-page="uav"]').attributes('aria-label')).toBe('无人机，今日作业次数未取到，点击进入控制')
     // 爬架：传感器没取到这条结论要念出来，在线数是真的
     expect(w.find('[data-page="climb"]').attributes('aria-label')).toBe(
       '智能爬架，传感器数据未取到，在线 1/1，点击查看点位',
@@ -539,32 +708,30 @@ describe('智控面板（真实台账）', () => {
     w.unmount()
   })
 
-  it('无人机取到任务数据后才渲染「作业任务 x/y」', async () => {
+  it('无人机取到今日统计后渲染「今日作业次数 N次」（取已完成，不是任务总数）', async () => {
     signIn()
 
-    // 今日两条执行记录：一条已完成、一条执行中 → 作业任务 1/2
-    const now = new Date()
-    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-    const rec = (id: number, hh: string, status: number): DroneTaskRecord => ({
-      id,
-      taskName: '向阳村-安全巡检',
-      lineId: 1,
-      dockId: 263,
-      start: `${day}T${hh}:00:00`,
-      end: `${day}T${hh}:20:00`,
-      status,
-      scheduled: true,
+    // 截图同款：今日任务 15 / 已完成 11 / 失败 0 —— 卡片要的是 11
+    useUavStore().apply([], null, {
+      taskCount: 15,
+      finishedCount: 11,
+      failedCount: 0,
+      runningCount: 0,
+      planCount: 4,
+      suspendedCount: 0,
     })
-    useUavStore().apply([rec(1, '09', 2), rec(2, '10', 1)])
 
     const w = mount(EquipPanel)
     await nextTick()
 
     const drone = w.find('[data-page="uav"]')
     const cells = drone.findAll('.eq-val')
-    expect(cells).toHaveLength(2)
-    expect(cells[1].text()).toContain('作业任务')
-    expect(cells[1].text()).toContain('1/2')
+    expect(cells).toHaveLength(1)
+    expect(cells[0].text()).toContain('今日作业次数')
+    expect(cells[0].text()).toContain('11')
+    expect(cells[0].text()).toContain('次')
+    // 「今日任务 15」含 4 条还没飞的计划，不是作业次数
+    expect(cells[0].text()).not.toContain('15')
 
     w.unmount()
   })
@@ -607,6 +774,13 @@ describe('智控面板（真实台账）', () => {
 describe('设备详情页（真实台账）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    // 电梯页挂载即拉 IOT；默认回空，不让测试打真实网关
+    mockLiftOnline.mockResolvedValue(null)
+    mockLiftToday.mockResolvedValue(null)
+    mockLiftAttr.mockResolvedValue(null)
+    // 默认「凭证有效」，用例要测提示条时自己打开
+    vi.mocked(liftAuthFailed).mockReturnValue(false)
+    vi.mocked(liftGatewayStale).mockReturnValue(false)
   })
 
   afterEach(() => {
@@ -716,18 +890,104 @@ describe('设备详情页（真实台账）', () => {
     w.unmount()
   })
 
-  it('电梯：同一份页面，机组来自台账（2 台）', async () => {
+  it('电梯：按轿厢出 4 张卡（不是台账那 2 行），四格是 IOT 工况', async () => {
     signIn()
     const w = await open('lift')
     await nextTick()
 
     expect(w.find('#subTitle').text()).toBe('智能电梯')
     const cards = w.findAll('.dev-card')
-    expect(cards).toHaveLength(2)
-    // 同样是台号升序：智能电梯1(60m) 在 智能电梯2(30m) 之前
-    expect(cards.map((c) => c.find('.dev-card-hd strong span').text())).toEqual(['智能电梯1', '智能电梯2'])
-    expect(w.text()).toContain('30m')
-    expect(w.text()).toContain('60m')
+    // 台账只有「智能电梯1/2」两行（按楼登记），但实时数据是逐笼的 —— 4 个轿厢各一张卡
+    expect(cards).toHaveLength(4)
+    expect(cards.map((c) => c.find('.dev-card-hd strong span').text())).toEqual([
+      '智能电梯1-1',
+      '智能电梯1-2',
+      '智能电梯2-1',
+      '智能电梯2-2',
+    ])
+    // 四格照设计稿 gx2 的 renderLiftCard；网关没有工况帧时全「—」，
+    // 不回落到台账的「高度 60m」—— 档案字段不该冒充实时读数
+    expect(cards[0].findAll('.dev-card-grid span').map((s) => s.text())).toEqual([
+      '当前楼层',
+      '当前高度',
+      '当前人数',
+      '当前载重',
+    ])
+    expect(cards[0].findAll('.dev-card-grid b').map((b) => b.text())).toEqual(['—', '—', '—', '—'])
+    // 「设备信息」仍指向所属那栋楼的台账档案
+    expect(cards[0].find('.dev-link').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('电梯详情：四格取最新一帧工况，状态也走 IOT 在线', async () => {
+    signIn()
+    mockLiftOnline.mockResolvedValue({ '3225122202': true, E03C1CB9F5011824: false })
+    mockLiftAttr.mockResolvedValue({
+      // 1# 楼主笼：15 层 / 40.1m / 3 人 / 480kg（单位与小数位照 V2
+      // `UpdateRealtimeInfo`：楼层 `F`、高度 `F1`、载重 `kg`）
+      '3225122202': {
+        floor: 15,
+        height: 40.1,
+        people: 3,
+        load: 480.5,
+        state: 2,
+        speed: 0.3,
+        at: new Date(2026, 10, 13, 9, 59).getTime(),
+      },
+    })
+
+    const w = await open('lift')
+    await flushPromises()
+
+    const first = w.findAll('.dev-card')[0]
+    expect(first.findAll('.dev-card-grid b').map((b) => b.text())).toEqual([
+      '15F',
+      '40.1m',
+      '3人',
+      '480.5kg',
+    ])
+    // 工况帧时间要露出来：电梯静止时不发包，帧可能是几小时前的
+    expect(first.find('.dev-note').text()).toContain('09:59')
+    expect(first.find('.dev-status').text()).toBe('在线')
+    w.unmount()
+  })
+
+  /**
+   * 凭证失效（HTTP 401 + `status:11 权限不足`，自动重换也没救回来）时，
+   * 卡片还在但每一格都是「—」。这时必须给一条能操作的提示，
+   * 否则用户看到的就是满屏横杠 + 不知道为什么。
+   *
+   * 注意提示给的是「重试」而不是「重新登录」：电梯走 IOT 网关的项目级 ak/sk，
+   * 与登录页那套 `:8081` 业务账号（`xiangyangcun`）是两套凭证，登录换不到它。
+   */
+  it('凭证失效：给「重试」提示条并真的重取，不是干摆一堆「—」', async () => {
+    signIn()
+    vi.mocked(liftAuthFailed).mockReturnValue(true)
+
+    const w = await open('lift')
+    await flushPromises()
+
+    const bar = w.find('.dev-auth')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('电梯物联网网关凭证失效')
+    expect(bar.find('.dev-auth-btn').text()).toBe('重试')
+
+    const before = mockLiftOnline.mock.calls.length
+    await bar.find('.dev-auth-btn').trigger('click')
+    await flushPromises()
+    expect(mockLiftOnline.mock.calls.length).toBeGreaterThan(before)
+
+    const sub = useSubpageStore()
+    expect(sub.view.kind).not.toBe('login')
+    w.unmount()
+  })
+
+  it('凭证有效时不出现提示条', async () => {
+    signIn()
+    const w = await open('lift')
+    await flushPromises()
+
+    expect(w.find('.dev-auth').exists()).toBe(false)
     w.unmount()
   })
 
@@ -858,8 +1118,6 @@ describe('设备弹层（真实台账）', () => {
     const liveLabels = blocks[1].findAll('.dev-info-row span').map((s) => s.text())
     expect(liveLabels).toEqual(['实时回转', '实时幅度', '实时高度', '实时时间'])
     expect(blocks[1].findAll('.dev-info-row b.is-dash')).toHaveLength(4)
-    // V2 弹层没有说明行
-    expect(w.find('.dev-info-note').exists()).toBe(false)
     // 编号不再是「—」：台号 4 → 向阳村4#塔机 → sn（V2 弹层同一个值）
     expect(blocks[0].text()).toContain('EW4')
     w.unmount()
@@ -897,7 +1155,69 @@ describe('设备弹层（真实台账）', () => {
     w.unmount()
   })
 
-  it('设备信息：电梯只有一段，不出现实时工况', async () => {
+  it('设备信息：电梯按轿厢展示 V2 那八行（状态/编号 + 六项工况与今日）', async () => {
+    signIn()
+    mockLiftOnline.mockResolvedValue({ '3225122202': true, E03C1CB9F5011824: false })
+    mockLiftAttr.mockResolvedValue({
+      '3225122202': {
+        floor: 8,
+        height: 22.4,
+        people: 6,
+        load: 480.5,
+        state: 2,
+        speed: 0.3,
+        at: new Date(2026, 10, 13, 9, 59).getTime(),
+      },
+    })
+    mockLiftToday.mockResolvedValue({ '3225122202': { trips: 86, seconds: 23_040 } })
+
+    const sub = useSubpageStore()
+    sub.openDevice('lift')
+    const sheet = useBottomSheetStore()
+    const w = mount(Host)
+    await nextTick()
+
+    // 台账主键定位档案（'78' = 1#楼那行），sn 定位这一笼的读数
+    sheet.openDeviceInfo('lift', '78', '3225122202')
+    await flushPromises()
+
+    // 副标题用轿厢名，不用台账那行「智能电梯1」
+    expect(w.find('.pop-sub').text()).toBe('智能电梯1-1')
+
+    const blocks = w.findAll('.dev-info-block')
+    expect(blocks).toHaveLength(2)
+    expect(blocks.map((b) => b.find('.dev-info-hd').text())).toEqual(['基本信息', '实时工况信息'])
+
+    const rows = new Map(
+      w.findAll('.dev-info-row').map((r) => [r.find('span').text(), r.find('b').text()]),
+    )
+    expect([...rows.keys()]).toEqual([
+      '当前状态',
+      '升降机编号',
+      '相对楼层',
+      '高度',
+      '载重',
+      '人数',
+      '今日累计运行时间',
+      '今日升降次数',
+    ])
+    // runningState 2 → V2 的 switch 里是「上升」
+    expect(rows.get('当前状态')).toBe('上升')
+    expect(rows.get('升降机编号')).toBe('3225122202')
+    expect(rows.get('相对楼层')).toBe('8F')
+    expect(rows.get('高度')).toBe('22.4m')
+    // 载重是 V2 硬编码的 kg（不是吨）
+    expect(rows.get('载重')).toBe('480.5kg')
+    expect(rows.get('人数')).toBe('6人')
+    // 23040s = 6.4h，86 次 —— 与 V2 txtTodayRuntimeHours / txtTodayLiftCount 同格式。
+    // 不挂任何口径小注（用户 2026-11-13 要求）：弹层是与 V2 并排对照看的，
+    // V2 那格只有数字，多两个字反而显得两边不一样
+    expect(rows.get('今日累计运行时间')).toBe('6.4h')
+    expect(rows.get('今日升降次数')).toBe('86次')
+    w.unmount()
+  })
+
+  it('设备信息：电梯网关连不上时八行全是「—」，状态按离线', async () => {
     signIn()
     const sub = useSubpageStore()
     sub.openDevice('lift')
@@ -905,13 +1225,21 @@ describe('设备弹层（真实台账）', () => {
     const w = mount(Host)
     await nextTick()
 
-    sheet.openDeviceInfo('lift', '78')
-    await nextTick()
+    sheet.openDeviceInfo('lift', '78', '3225122202')
+    await flushPromises()
 
-    expect(w.find('.pop-sub').text()).toBe('智能电梯1')
-    expect(w.findAll('.dev-info-block')).toHaveLength(1)
-    expect(w.find('.dev-info-hd').exists()).toBe(false)
-    expect(w.text()).not.toContain('实时工况')
+    const rows = new Map(
+      w.findAll('.dev-info-row').map((r) => [r.find('span').text(), r.find('b').text()]),
+    )
+    // 在线数据整批没取到 = 连不上 → **离线**。不回落台账：台账那行写的是
+    // 「在线」，会与下面一整列「—」自相矛盾（用户 2026-11-13 要求默认离线）
+    expect(rows.get('当前状态')).toBe('离线')
+    expect(rows.get('升降机编号')).toBe('3225122202')
+    for (const k of ['相对楼层', '高度', '载重', '人数', '今日累计运行时间', '今日升降次数']) {
+      expect(rows.get(k)).toBe('—')
+    }
+    // 六个「—」都带 is-dash，与塔机弹层同一套灰字样式
+    expect(w.findAll('.dev-info-row b.is-dash')).toHaveLength(6)
     w.unmount()
   })
 
@@ -996,15 +1324,27 @@ describe('智能爬架（真实台账 + 空态）', () => {
 describe('无人机页', () => {
   /** stub 返回的执行记录；用例按需改写 */
   let stubRecords: DroneTaskRecord[] = []
-  /** stub 返回的遥测 */
+  /** stub 返回的机载遥测（无人机 id 23498 / 类型 1） */
   let stubTelemetry: Record<string, unknown> = {}
+  /** stub 返回的机库遥测（机库 id 23452 / 类型 2） */
+  let stubDock: Record<string, unknown> = {}
+  /** stub 返回的今日任务统计 */
+  let stubStat: Record<string, unknown> = {}
+  /** stub 返回的无人机直播流 */
+  let stubStream: Record<string, unknown>[] = []
+  /** stub 返回的机库直播流 */
+  let stubDockStream: Record<string, unknown>[] = []
 
   beforeEach(() => {
     setActivePinia(createPinia())
     stubRecords = []
     stubTelemetry = {}
+    stubDock = {}
+    stubStat = { taskCount: 0, finishedCount: 0, failedCount: 0, runningCount: 0, planCount: 0, suspendedCount: 0 }
+    stubStream = []
+    stubDockStream = []
     // 无人机页挂载即 load()，不 stub 会真的去请求 keehang 平台。
-    // 这里按真实响应形状返回，用例改写 stubRecords / stubTelemetry 即可。
+    // 这里按真实响应形状返回，用例改写 stub* 即可。
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
@@ -1013,7 +1353,11 @@ describe('无人机页', () => {
         if (u.includes('/cas/auth/login')) return ok({ tgt: 'T', st: 'ST' })
         if (u.includes('/cas/auth/validate')) return ok({ uid: '1', token: 'TK' })
         if (u.includes('/task/exec/list/record')) return ok(stubRecords)
-        if (u.includes('/dashboard/device/cache/telemetry')) return ok(stubTelemetry)
+        if (u.includes('/dashboard/task/list/record')) return ok(stubStat)
+        // 两个设备类型分开：/1 是无人机、/2 是机库，混了会互相顶掉读数
+        if (u.includes('/telemetry/23498/1')) return ok(stubTelemetry)
+        if (u.includes('/telemetry/23452/2')) return ok(stubDock)
+        if (u.includes('/live/stream/list')) return ok(u.includes('23452') ? stubDockStream : stubStream)
         return ok({})
       }),
     )
@@ -1034,6 +1378,7 @@ describe('无人机页', () => {
     const start = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T15:00:00`
     return {
       id: 147744,
+      uuid: 'u-147744',
       taskName: '向阳村-安全巡检',
       lineId: 12,
       dockId: 23452,
@@ -1057,20 +1402,186 @@ describe('无人机页', () => {
     w.unmount()
   })
 
-  it('实时画面不再挂静态示意图，明说视频流未接入', async () => {
+  it('完全没有直播流时整块说明，不挂静态示意图', async () => {
     const sub = useSubpageStore()
     sub.openUav()
     const w = mount(Host)
-    await nextTick()
+    await flushPromises()
 
     expect(w.find('.uav-stage').classes()).toContain('is-wait')
+    // 示意图长得像现场画面，会被当成实时情况 —— 一律不挂
     expect(w.find('.uav-stage img').exists()).toBe(false)
-    expect(w.find('.uav-stage').text()).toContain('实时视频流未接入')
+    expect(w.find('.live-player').exists()).toBe(false)
+    expect(w.find('.uav-stage').text()).toContain('实时画面未开播')
+    expect(w.find('.uav-stage').text()).toContain('平台没有这台无人机的直播流')
     w.unmount()
   })
 
-  it('任务数取真实执行记录，不写死', async () => {
-    stubRecords = [todayRecord({ id: 1 }), todayRecord({ id: 2, status: 2 })]
+  it('有地址就先连：不等 online，LIVE 角标只认真的出画面', async () => {
+    stubRecords = [todayRecord()]
+    stubStream = [
+      {
+        deviceId: 23498,
+        streams: [
+          {
+            id: 934,
+            name: '中建三局-向阳村项目无人机2',
+            // 快照说没在推流 —— 但地址在，照样先连（起飞瞬间的空窗就是这么填的）
+            online: false,
+            playStreams: [
+              { type: 'flv', protocol: 'https', url: 'https://live.example.com/djiDock/uav.live.flv' },
+              { type: 'rtsp', protocol: 'rtsp', url: 'rtsp://live.example.com/djiDock/uav' },
+            ],
+          },
+        ],
+      },
+    ]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    expect(w.find('.uav-stage').classes()).not.toContain('is-wait')
+    expect(w.find('.live-player').exists()).toBe(true)
+    // 还在连：转圈 + 说明，没有 LIVE（没画面就挂 LIVE 是撒谎）
+    expect(w.find('.live-player').classes()).toContain('is-loading')
+    expect(w.find('.uav-stage').text()).toContain('正在连接实时画面')
+    expect(w.find('.uav-live').exists()).toBe(false)
+
+    // 真的出画面（video 开始解码）才挂 LIVE
+    w.find('.live-video').element.dispatchEvent(new Event('playing'))
+    await nextTick()
+    expect(w.find('.uav-live').text()).toContain('LIVE')
+    w.unmount()
+  })
+
+  it('连不上时说「画面未开播」并给重试，不说「画面中断」', async () => {
+    stubRecords = [todayRecord()]
+    stubStream = [
+      {
+        deviceId: 23498,
+        streams: [
+          {
+            id: 934,
+            name: '无人机',
+            online: false,
+            playStreams: [{ type: 'flv', protocol: 'https', url: 'https://live.example.com/uav.live.flv' }],
+          },
+        ],
+      },
+    ]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    // 一次都没出过画面就断了 → 是「没在推流」，不是「播着播着断了」
+    const handlers = (globalThis as unknown as { __mpegts: Record<string, () => void> }).__mpegts
+    handlers.error()
+    await nextTick()
+
+    expect(w.find('.live-player').classes()).toContain('is-offair')
+    expect(w.find('.uav-stage').text()).toContain('画面未开播')
+    expect(w.find('.uav-stage').text()).toContain('起飞推流后会自动出画面')
+    expect(w.find('.uav-stage').text()).not.toContain('画面中断')
+    expect(w.find('.live-play').text()).toContain('重试')
+    w.unmount()
+  })
+
+  it('机库页签换机库那一路流；待机没推流也先连，不拿无人机画面顶替', async () => {
+    stubRecords = [todayRecord()]
+    stubStream = [
+      {
+        deviceId: 23498,
+        streams: [
+          {
+            id: 934,
+            name: '无人机',
+            online: true,
+            playStreams: [{ type: 'flv', protocol: 'https', url: 'https://live.example.com/uav.live.flv' }],
+          },
+        ],
+      },
+    ]
+    // 机库：地址在，但 `online:false`（在库待机时不推流）
+    stubDockStream = [
+      {
+        deviceId: 23452,
+        streams: [
+          {
+            id: 874,
+            name: '机库1',
+            online: false,
+            playStreams: [{ type: 'flv', protocol: 'https', url: 'https://live.example.com/dock.live.flv' }],
+          },
+        ],
+      },
+    ]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+    expect(w.findComponent(LivePlayer).props('src')).toBe('https://live.example.com/uav.live.flv')
+
+    await w.findAll('.dev-tabs button')[1].trigger('click')
+    // 新组件要等一次动态 import 才建好播放器、挂上事件回调
+    await flushPromises()
+    await nextTick()
+    // 换的是地址，不是整块撤掉
+    expect(w.findComponent(LivePlayer).props('src')).toBe('https://live.example.com/dock.live.flv')
+    expect(w.find('.live-player').exists()).toBe(true)
+
+    // 机库没推流 → 说机库的原因，不冒充无人机画面
+    const handlers = (globalThis as unknown as { __mpegts: Record<string, () => void> }).__mpegts
+    handlers.error()
+    await nextTick()
+    expect(w.find('.live-player').classes()).toContain('is-offair')
+    expect(w.find('.uav-stage').text()).toContain('机库摄像头在库待机时不推流')
+    w.unmount()
+  })
+
+  it('网络质量跟着速率走：9kbps 只亮一格红', async () => {
+    stubRecords = [todayRecord()]
+    stubDock = { networkRate: 9 }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const on = w.findAll('.dev-block')[2].findAll('.uav-sig i').filter((b) => b.classes().includes('is-on'))
+    expect(on).toHaveLength(1)
+    expect(w.find('.uav-sig').classes()).toContain('is-weak')
+    w.unmount()
+  })
+
+  it('网络质量跟着速率走：900kbps 亮满五格转绿', async () => {
+    stubRecords = [todayRecord()]
+    stubDock = { networkRate: 900 }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const on = w.findAll('.dev-block')[2].findAll('.uav-sig i').filter((b) => b.classes().includes('is-on'))
+    expect(on).toHaveLength(5)
+    expect(w.find('.uav-sig').classes()).toContain('is-ok')
+    w.unmount()
+  })
+
+  it('任务三格取统计接口，不数本地条数', async () => {
+    // 本地今天只有 1 条记录，但统计接口说 15 / 11 / 2 —— 页面认接口的数
+    stubRecords = [todayRecord()]
+    stubStat = { taskCount: 15, finishedCount: 11, failedCount: 2, runningCount: 0, planCount: 4, suspendedCount: 0 }
 
     const sub = useSubpageStore()
     sub.openUav()
@@ -1080,12 +1591,13 @@ describe('无人机页', () => {
 
     const stats = w.findAll('.dev-block')[1].findAll('.uav-stats > div')
     expect(stats).toHaveLength(3)
-    expect(stats[0].text()).toContain('2') // 今日任务
-    expect(stats[1].text()).toContain('1') // 已完成
+    expect(stats[0].text()).toContain('15') // 今日任务
+    expect(stats[1].text()).toContain('11') // 已完成
+    expect(stats[2].text()).toContain('2') // 失败次数
     w.unmount()
   })
 
-  it('没有执行记录时给空态，不回落演示任务', async () => {
+  it('没有任务时给空态，不回落演示任务', async () => {
     const sub = useSubpageStore()
     sub.openUav()
     const w = mount(Host)
@@ -1096,18 +1608,86 @@ describe('无人机页', () => {
     w.unmount()
   })
 
-  it('设备参数用真实遥测；取不到的字段显示「—」而不是 0', async () => {
-    stubRecords = [todayRecord()]
+  it('两个页签切的是两套读数：机载飞行参数 ↔ 机库状态', async () => {
+    // 2026-11-13 实测形态：海拔 12.4m、相对高度 0（在地面）、距起飞点 0.05m
     stubTelemetry = {
-      status: 1,
-      lat: '30.5123',
-      lng: '114.4567',
-      batteryInfo: { batteries: [{ capacityPercent: 88, temperature: 29.3 }] },
-      horizontalSpeed: 0,
-      verticalSpeed: null,
-      altitude: 117,
-      attitudeHead: null,
+      relativeAltitude: 0,
+      height: 12.4,
+      homeDistance: 126,
+      horizontalSpeed: 4.2,
+      verticalSpeed: 0.3,
+      windSpeed: 2.4,
     }
+    stubDock = {
+      droneOnlineStatus: 1,
+      droneChargeState: 0,
+      cabinTemperature: 18.1,
+      humidity: 99,
+      networkRate: 441,
+    }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    // 无人机页签：设计稿五格
+    let fly = w.find('.uav-fly')
+    expect(fly.text()).toContain('海拔')
+    expect(fly.text()).toContain('12.4m')
+    expect(fly.text()).toContain('126m')
+    expect(fly.text()).toContain('4.2m/s')
+    expect(fly.text()).toContain('0.3m/s')
+
+    // 机库页签：切过去要看到机库自己的读数，而不是同一套飞行参数
+    await w.findAll('.dev-tabs button')[1].trigger('click')
+    fly = w.find('.uav-fly')
+    expect(fly.text()).toContain('在库')
+    expect(fly.text()).toContain('未充电')
+    expect(fly.text()).toContain('18.1℃')
+    expect(fly.text()).toContain('99%')
+    expect(fly.text()).toContain('441kbps')
+    expect(fly.text()).not.toContain('海拔')
+
+    w.unmount()
+  })
+
+  it('状态格取厂家状态码：库里断电显示「关机」（与 V2 一致），不是「停泊」', async () => {
+    stubRecords = [todayRecord()]
+    // 2026-11-13 实测：飞机在库、飞控断电
+    stubTelemetry = { status: -1, modeCode: 14, batteryInfo: { capacityPercent: 88 } }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const cell = w.findAll('.dev-block')[2].findAll('.uav-stats > div')[0]
+    expect(cell.text()).toContain('关机')
+    expect(cell.text()).not.toContain('停泊')
+    // 关机要压红，跟「待机」区分开
+    expect(cell.find('b').classes()).toContain('is-down')
+    w.unmount()
+  })
+
+  it('设备参数八格全有源：电量 / 距机库 / 续航 / 风速 / 网络 / 温度', async () => {
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    stubRecords = [
+      todayRecord({ start: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T15:00:00` }),
+    ]
+    stubTelemetry = {
+      relativeAltitude: 86.2,
+      height: 98.3,
+      homeDistance: 126,
+      batteryInfo: { batteries: [{ capacityPercent: 88, temperature: 26.4 }], remainFlightTime: 1520 },
+      horizontalSpeed: 4.2,
+      verticalSpeed: 0.3,
+      windSpeed: 2.4,
+    }
+    stubDock = { networkRate: 441, networkQuality: 1, cabinTemperature: 18.1 }
 
     const sub = useSubpageStore()
     sub.openUav()
@@ -1118,14 +1698,48 @@ describe('无人机页', () => {
     const stats = w.findAll('.dev-block')[2].findAll('.uav-stats > div')
     expect(stats).toHaveLength(8)
     expect(stats[1].text()).toContain('88%') // 电量
-    expect(stats[3].text()).toContain('0m/s') // 水平速度
-    // 垂直速度 / 航向角遥测没给 → 「—」，不能写成 0
-    expect(stats[4].text()).toContain('—')
-    expect(stats[6].text()).toContain('29.3℃')
+    expect(stats[2].text()).toContain('126m') // 距机库
+    expect(stats[3].text()).toContain('25分') // 续航（1520s）
+    expect(stats[4].text()).toContain('2.4m/s') // 风速
+    // 网络质量画五格递增信号，亮几格由**速率**分档（441kbps → 三格），
+    // 不读恒为 1 的 `networkQuality`，也不写「偏低」两字
+    const sig = stats[5].findAll('.uav-sig i')
+    expect(sig).toHaveLength(5)
+    expect(sig.filter((b) => b.classes().includes('is-on'))).toHaveLength(3)
+    expect(stats[5].find('.uav-sig').classes()).toContain('is-mid')
+    expect(stats[5].text()).not.toContain('偏低')
+    expect(stats[6].text()).toContain('441kbps') // 网络速率
+    expect(stats[7].text()).toContain('26.4℃') // 电池温度
     w.unmount()
   })
 
-  it('缺数据的起飞条件按「未知」处理，不可下发并写明缺哪个指标', async () => {
+  it('取不到的字段显示「—」而不是 0', async () => {
+    stubRecords = [todayRecord()]
+    stubTelemetry = { status: 1, batteryInfo: null, horizontalSpeed: null }
+    stubDock = {}
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const stats = w.findAll('.dev-block')[2].findAll('.uav-stats > div')
+    // 电量 / 距机库 / 续航 / 风速 / 网络质量 / 网络速率 / 电池温度 都没有 → 全「—」
+    for (const i of [1, 2, 3, 4, 5, 6, 7]) expect(stats[i].text()).toContain('—')
+    // 网络质量没数时不画五格空条（那会读成「有信号但一格都没有」）
+    expect(w.find('.uav-sig').exists()).toBe(false)
+    w.unmount()
+  })
+
+  /*
+   * 任务下发从「条件校验 + 选择航线」改成二期占位（用户 2026-11-13 定）。
+   * 守两点：①「任务下发」这一块还在（四块版式不变）；② 不留假按钮 ——
+   * disabled 的「选择航线」看起来像点得动、点了没反应，会被当成 bug。
+   * 起飞条件那套判定（canDispatch / dispatchNote / risks）仍在 store 里，
+   * 由 drone.spec 覆盖，二期直接拿来接下发。
+   */
+  it('任务下发改成二期占位：接入中，敬请期待', async () => {
     stubRecords = [todayRecord()]
 
     const sub = useSubpageStore()
@@ -1134,12 +1748,13 @@ describe('无人机页', () => {
     await flushPromises()
     await nextTick()
 
-    // 风速 / 雨量 / 网络速率遥测接口没提供 → 不放行（把「没数据」当「满足」是放松安全门）
-    const uav = useUavStore()
-    expect(uav.canDispatch).toBe(false)
-    expect(w.find('.uav-gate').text()).toBe('不可下发')
-    expect(w.find('.uav-allow').text()).toContain('数据未接入')
-    expect(w.find('.uav-send').attributes('disabled')).toBeDefined()
+    const blk = w.findAll('.dev-block')[3]
+    expect(blk.find('h4').text()).toBe('任务下发')
+    expect(blk.text()).toContain('接入中，敬请期待')
+    // 旧的三件套全部撤掉：状态胶囊 / 放行说明 / 航线按钮
+    expect(w.find('.uav-gate').exists()).toBe(false)
+    expect(w.find('.uav-allow').exists()).toBe(false)
+    expect(w.find('.uav-send').exists()).toBe(false)
     w.unmount()
   })
 
@@ -1148,12 +1763,14 @@ describe('无人机页', () => {
 
     const sub = useSubpageStore()
     sub.openUav()
-    mount(Host)
+    const w = mount(Host)
     await flushPromises()
 
     const uav = useUavStore()
     const battery = uav.checks.find((c) => c.name === '电量')
     expect(battery?.unknown).toBe(true)
     expect(battery?.ok).toBe(false)
+    // 必须卸载：页面开着 30s 实时刷新定时器，不 unmount 会让 vitest 进程挂着不退
+    w.unmount()
   })
 })
