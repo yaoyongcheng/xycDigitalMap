@@ -86,6 +86,13 @@ export interface DroneTaskRecord {
   uuid: string
   /** 任务名，如「向阳村-安全巡检」 */
   taskName: string
+  /**
+   * 任务（排班项）id。同一条航线的每次执行都是同一个 `taskId`、不同 `id`。
+   *
+   * 进度条的「预计时长」要按它分组算历史实测中位数 —— 用 `id` 分不了组
+   * （每次执行 id 都不一样），用 `taskName` 分组会在改名后断档。
+   */
+  taskId: number | null
   /** 航线 id */
   lineId: number
   /** 机库 id */
@@ -436,6 +443,7 @@ export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
       id,
       uuid: str(o.uuid),
       taskName: name,
+      taskId: num(o.taskId),
       lineId: num(o.lineId) ?? 0,
       dockId: num(o.dockId) ?? 0,
       start: str(o.start),

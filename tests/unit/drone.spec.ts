@@ -156,10 +156,15 @@ describe('业务请求头', () => {
 describe('toTaskRecords 收敛', () => {
   it('映射 id / 任务名 / 时间 / 状态', () => {
     const rows = toTaskRecords([
-      { id: 147744, taskName: '向阳村-安全巡检', lineId: 12, dockId: 23452, start: '2026-11-11T15:00:00', end: '2026-11-11T15:20:00', status: 2, scheduled: true },
+      { id: 147744, taskId: 4912, taskName: '向阳村-安全巡检', lineId: 12, dockId: 23452, start: '2026-11-11T15:00:00', end: '2026-11-11T15:20:00', status: 2, scheduled: true },
     ])
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ id: 147744, taskName: '向阳村-安全巡检', lineId: 12, status: 2, scheduled: true })
+    expect(rows[0]).toMatchObject({ id: 147744, taskId: 4912, taskName: '向阳村-安全巡检', lineId: 12, status: 2, scheduled: true })
+  })
+
+  it('taskId 缺失 → null（进度条按它查历史，不能拿别的东西顶）', () => {
+    const rows = toTaskRecords([{ id: 1, taskName: 'x', start: '', end: '' }])
+    expect(rows[0].taskId).toBeNull()
   })
 
   it('缺 id 或任务名的脏行丢掉', () => {

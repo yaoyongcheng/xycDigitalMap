@@ -521,6 +521,7 @@ describe('智控面板（真实台账）', () => {
         id: 1,
         uuid: 'u-1',
         taskName: '向阳村-安全巡检',
+        taskId: 4912,
         lineId: 1,
         dockId: 263,
         start: `${past}T09:00:00`,
@@ -1324,6 +1325,8 @@ describe('智能爬架（真实台账 + 空态）', () => {
 describe('无人机页', () => {
   /** stub 返回的执行记录；用例按需改写 */
   let stubRecords: DroneTaskRecord[] = []
+  /** stub 返回的历史执行记录（近 7 天，进度条算「预计时长」用） */
+  let stubHistory: DroneTaskRecord[] = []
   /** stub 返回的机载遥测（无人机 id 23498 / 类型 1） */
   let stubTelemetry: Record<string, unknown> = {}
   /** stub 返回的机库遥测（机库 id 23452 / 类型 2） */
@@ -1338,6 +1341,7 @@ describe('无人机页', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     stubRecords = []
+    stubHistory = []
     stubTelemetry = {}
     stubDock = {}
     stubStat = { taskCount: 0, finishedCount: 0, failedCount: 0, runningCount: 0, planCount: 0, suspendedCount: 0 }
@@ -1352,7 +1356,14 @@ describe('无人机页', () => {
         const ok = (data: unknown) => ({ ok: true, status: 200, json: async () => ({ code: 200, data }) })
         if (u.includes('/cas/auth/login')) return ok({ tgt: 'T', st: 'ST' })
         if (u.includes('/cas/auth/validate')) return ok({ uid: '1', token: 'TK' })
-        if (u.includes('/task/exec/list/record')) return ok(stubRecords)
+        if (u.includes('/task/exec/list/record')) {
+          // 两个区间分开：今天（三格与执行中卡）和近 7 天（进度条的历史分母）
+          const m = /[?&]start=(\d{4}-\d{2}-\d{2})/.exec(u)
+          const today = new Date()
+          const p = (n: number): string => String(n).padStart(2, '0')
+          const todayKey = `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`
+          return ok(m && m[1] !== todayKey ? stubHistory : stubRecords)
+        }
         if (u.includes('/dashboard/task/list/record')) return ok(stubStat)
         // 两个设备类型分开：/1 是无人机、/2 是机库，混了会互相顶掉读数
         if (u.includes('/telemetry/23498/1')) return ok(stubTelemetry)
@@ -1380,6 +1391,7 @@ describe('无人机页', () => {
       id: 147744,
       uuid: 'u-147744',
       taskName: '向阳村-安全巡检',
+      taskId: 4912,
       lineId: 12,
       dockId: 23452,
       start,
@@ -1387,6 +1399,31 @@ describe('无人机页', () => {
       status: 1,
       scheduled: true,
       ...over,
+    }
+  }
+
+  /** Date → 服务端原样的 'YYYY-MM-DDTHH:mm:ss' */
+  function isoOf(d: Date): string {
+    const p = (n: number): string => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  }
+
+  /** 昨天的一条已完成执行（进度条的历史样本），跑了 minutes 分钟 */
+  function historyRun(taskId: number, minutes: number): DroneTaskRecord {
+    const s = new Date()
+    s.setDate(s.getDate() - 1)
+    s.setHours(9, 45, 0, 0)
+    return {
+      id: 900000 + minutes,
+      uuid: `h-${taskId}-${minutes}`,
+      taskName: '向阳村-安全巡检',
+      taskId,
+      lineId: 12,
+      dockId: 23452,
+      start: isoOf(s),
+      end: isoOf(new Date(s.getTime() + minutes * 60_000)),
+      status: 2,
+      scheduled: true,
     }
   }
 
@@ -1744,6 +1781,51 @@ describe('无人机页', () => {
 
     expect(stats()[1].text()).toContain('14') // 已完成
     expect(w.text()).not.toContain('当前巡检') // 执行中卡自己消失
+    w.unmount()
+  })
+
+  it('当前巡检卡：进度条的分母取同任务历史实测时长，不写死百分比', async () => {
+    // 设计稿那 62% 是设计数值。真实数据里服务端**没有计划时长**：
+    // 排班只有触发时刻，执行中那条记录的 end 是 null。所以分母用同一 taskId
+    // 近 7 天已完成执行的中位数（现场很稳：安全巡检一直 11 分钟）。
+    const start = Date.now() - 4 * 60_000
+    stubRecords = [todayRecord({ status: 1, end: '', start: isoOf(new Date(start)) })]
+    stubHistory = [historyRun(4912, 11)]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    // 4 / 11 ≈ 36%（用例跑起来会差几十毫秒，取区间不断言死数字）
+    const shown = Number(w.find('.uav-mission-hd em').text().replace('%', ''))
+    expect(shown).toBeGreaterThanOrEqual(35)
+    expect(shown).toBeLessThanOrEqual(38)
+    expect(w.find('.uav-bar i').attributes('style')).toContain(`${shown}%`)
+    const line = w.find('.uav-mission p').text()
+    expect(line).toContain('起飞')
+    expect(line).toMatch(/已飞 4(\.\d)? 分钟/)
+    expect(line).toContain('预计 11 分钟')
+    expect(line).not.toContain('任务执行中') // 有真进度就不再写空话
+    w.unmount()
+  })
+
+  it('当前巡检卡：这个任务没跑完过一次就不画条，也不编「预计」', async () => {
+    stubRecords = [todayRecord({ status: 1, end: '', start: isoOf(new Date(Date.now() - 3 * 60_000)) })]
+    stubHistory = []
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    expect(w.find('.uav-bar').exists()).toBe(false)
+    expect(w.find('.uav-mission-hd em').exists()).toBe(false)
+    const line = w.find('.uav-mission p').text()
+    expect(line).toMatch(/已飞 3(\.\d)? 分钟/) // 已飞时长是真的，照给
+    expect(line).not.toContain('预计')
     w.unmount()
   })
 

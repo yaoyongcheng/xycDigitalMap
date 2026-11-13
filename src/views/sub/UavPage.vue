@@ -8,6 +8,7 @@ import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useUavStore } from '@/stores/uav'
 import { DASH } from '@/utils/lift'
 import { useSlowLoading } from '@/utils/slowLoading'
+import { missionProgress } from '@/utils/uavProgress'
 
 /**
  * 无人机页（2026-11-13 按设计稿 gx2 重排）
@@ -220,12 +221,15 @@ const chargeText = computed(() => {
  * 设计稿那根进度条是写死的 62%。我们不编：用接口给的计划起止时间算，
  * 超出计划就停在 100%（不写 137% 这种吓人的数）。
  */
-const runningPct = computed(() => {
-  const r = uav.running
-  if (!r || r.startAt === null || r.endAt === null || r.endAt <= r.startAt) return null
-  const p = ((now.value - r.startAt) / (r.endAt - r.startAt)) * 100
-  return Math.max(0, Math.min(100, Math.round(p)))
-})
+/** 当前巡检的进度：已飞多久 / 预计多久 / 百分之几（分母是历史实测中位数） */
+const mission = computed(() =>
+  missionProgress(uav.running?.startAt ?? null, uav.runningEstimate, now.value),
+)
+
+/** 已飞分钟：一位小数（8.4 分钟），小时级任务也不会挤爆这一行 */
+function min1(v: number): string {
+  return v.toFixed(1)
+}
 
 /** 阈值告警着色（告警值本身要看得出来） */
 function toneOf(v: string, k: string): string {
@@ -323,11 +327,20 @@ function retry(): void {
       <div v-if="uav.running" class="uav-mission">
         <div class="uav-mission-hd">
           <strong>当前巡检 · {{ uav.running.name }}</strong>
-          <em v-if="runningPct !== null">{{ runningPct }}%</em>
+          <em v-if="mission.pct !== null">{{ mission.pct }}%</em>
         </div>
-        <div v-if="runningPct !== null" class="uav-bar" aria-hidden="true"><i :style="{ width: `${runningPct}%` }"></i></div>
-        <p>
-          {{ uav.running.time }} 起飞 · 任务执行中<template v-if="uav.running.planMin !== null"> · 计划 {{ uav.running.planMin }} 分钟</template>
+        <!-- 进度条：分母是同一任务近 7 天真跑出来的中位数，不是写死的百分比 -->
+        <div
+          v-if="mission.pct !== null"
+          class="uav-bar"
+          role="progressbar"
+          :aria-valuenow="mission.pct"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-label="`当前巡检进度 ${mission.pct}%`"
+        ><i :style="{ width: `${mission.pct}%` }"></i></div>
+        <p :title="mission.estimateMin !== null ? '预计时长按同一任务近 7 天已完成执行的中位数' : ''">
+          {{ uav.running.time }} 起飞<template v-if="mission.elapsedMin !== null"> · 已飞 {{ min1(mission.elapsedMin) }} 分钟</template><template v-if="mission.estimateMin !== null"> · 预计 {{ mission.estimateMin }} 分钟</template><template v-if="mission.elapsedMin === null"> · 任务执行中</template>
         </p>
       </div>
       <div v-else-if="uav.state === 'error'" class="data-empty">

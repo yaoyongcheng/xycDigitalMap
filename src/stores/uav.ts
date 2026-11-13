@@ -18,6 +18,7 @@ import {
   type DroneTaskStat,
   type DroneTelemetry,
 } from '@/api/drone'
+import { estimateByTask } from '@/utils/uavProgress'
 import { droneStateIsDown, droneStateText } from '@/utils/uavState'
 
 /**
@@ -60,6 +61,12 @@ const RETRY_GAP = 60_000
 /** 实时遥测的刷新间隔：机库+机载两个 GET，30s 够用又不费流量 */
 const LIVE_GAP = 30_000
 
+/** 历史时长（进度条分母）的复用期：6 小时。任务的耗时不会一天之内变样 */
+const ESTIMATE_GAP = 6 * 60 * 60 * 1000
+
+/** 历史时长算失败后的重试间隔：5 分钟（30s 刷新会反复触发，别空转） */
+const ESTIMATE_RETRY = 5 * 60 * 1000
+
 /** 任务执行状态 → 展示文案（服务端实测：2 = 已完成、1 = 执行中、-1 = 未执行） */
 function stateText(s: number): string {
   switch (s) {
@@ -101,13 +108,17 @@ export interface UavTaskView {
   /** 开始时间 'HH:mm'（从 ISO 串截取） */
   time: string
   name: string
+  /** 任务（排班项）id：按它查历史实测时长 */
+  taskId: number | null
   state: string
   stateClass: string
-  /** 任务计划时长（分钟）；start/end 缺失时 null */
-  planMin: number | null
-  /** 计划开始 / 结束的毫秒时间戳（执行中任务的进度条用它，不编 pct） */
+  /**
+   * 起飞时刻（毫秒）。执行中的任务进度条用它算「已飞多久」。
+   *
+   * 只有 `start` 一个时刻 —— 执行中那条记录的 `end` 是 `null`，服务端也没有
+   * 计划结束时间，所以进度条的分母另走历史实测（`runningEstimate`）。
+   */
   startAt: number | null
-  endAt: number | null
 }
 
 /** 起飞条件的一项 */
@@ -133,6 +144,14 @@ export const useUavStore = defineStore('uav', () => {
   const droneStream = ref<DroneLiveStream | null>(null)
   /** 机库摄像头直播流（在库待机时 `online:false`，有地址但不推流） */
   const dockStream = ref<DroneLiveStream | null>(null)
+  /**
+   * 各任务的历史实测时长中位数（分钟），按 `taskId` 索引。
+   *
+   * 服务端没有「计划时长」这个字段（详见 `utils/uavProgress.ts` 开头），
+   * 所以进度条的分母只能用同一任务过去几次真跑出来的时长中位数。
+   * 取不到就没有分母 —— 页面只写已飞时长，不画条。
+   */
+  const estimates = ref<Record<string, number>>({})
 
   const state = ref<UavState>('idle')
   const error = ref('')
@@ -141,6 +160,11 @@ export const useUavStore = defineStore('uav', () => {
 
   let lastFailAt = 0
   let inflight: Promise<void> | null = null
+  /** 历史时长算出来的时刻（ms）；6 小时内复用，不每次进页面都拉一遍 7 天记录 */
+  let estimatesAt = 0
+  /** 上一次算失败的时刻：失败后 5 分钟再试，别让 30s 的刷新把它打成循环重试 */
+  let estimatesFailAt = 0
+  let estimatesInflight: Promise<void> | null = null
 
   /**
    * 今日任务（按开始时间倒序）。
@@ -160,17 +184,14 @@ export const useUavStore = defineStore('uav', () => {
   const todayTasks = computed<UavTaskView[]>(() =>
     todayRecords.value.map((r) => {
       const a = Date.parse(r.start)
-      const b = Date.parse(r.end)
-      const ok = Number.isFinite(a) && Number.isFinite(b) && b > a
       return {
         key: r.uuid || String(r.id),
         time: r.start.slice(11, 16),
         name: r.taskName,
+        taskId: r.taskId,
         state: stateText(r.status),
         stateClass: stateClass(r.status),
-        planMin: ok ? Math.round((b - a) / 60000) : null,
         startAt: Number.isFinite(a) ? a : null,
-        endAt: Number.isFinite(b) ? b : null,
       }
     }),
   )
@@ -179,6 +200,13 @@ export const useUavStore = defineStore('uav', () => {
   const running = computed<UavTaskView | null>(
     () => todayTasks.value.find((t) => t.stateClass === 'is-ok') ?? null,
   )
+
+  /** 当前巡检的预计时长（同任务历史实测中位数）；这个任务没跑完过就是 null */
+  const runningEstimate = computed<number | null>(() => {
+    const r = running.value
+    if (!r || r.taskId === null) return null
+    return estimates.value[String(r.taskId)] ?? null
+  })
 
   /** 三格统计：接口没取到就是 null（页面写「—」，不拿本地条数冒充） */
   const taskTotal = computed(() => stat.value?.taskCount ?? null)
@@ -399,6 +427,8 @@ export const useUavStore = defineStore('uav', () => {
         error.value = ''
         updatedAt.value = stamp()
         lastFailAt = 0
+        // 有执行中的任务才需要「预计时长」；不必为静态页多打一个 7 天的请求
+        if (running.value) void loadEstimates()
       } else {
         state.value = 'error'
         const e = list.reason
@@ -409,6 +439,34 @@ export const useUavStore = defineStore('uav', () => {
       inflight = null
     })()
     return inflight
+  }
+
+  /**
+   * 算「每个任务跑一趟要多久」—— 拉最近 7 天的执行记录取中位数。
+   *
+   * 只在页面存在执行中的任务时打（`load()` / `refreshLive()` 里判 `running`），
+   * 一次 7 天实测 114 行 / 32KB，6 小时内复用。失败静默：没有历史就没有分母，
+   * 页面不画进度条也不编时长，不影响别的块。
+   */
+  async function loadEstimates(): Promise<void> {
+    if (estimatesInflight) return estimatesInflight
+    if (Date.now() - estimatesAt < ESTIMATE_GAP) return
+    if (Date.now() - estimatesFailAt < ESTIMATE_RETRY) return
+    estimatesInflight = (async () => {
+      try {
+        // `end` 不含当天，所以要传明天；`start` 取 6 天前 = 近 7 天
+        const page = await fetchTaskRecords({ start: dayKey(-6), end: dayKey(1) })
+        estimates.value = estimateByTask(page.rows)
+        estimatesAt = Date.now()
+      } catch {
+        // 静默失败：预计时长是补充信息，不该让整页报错。
+        // 但 30s 刷新会反复调到这里，失败一次压 5 分钟再试，不空转
+        estimatesFailAt = Date.now()
+      } finally {
+        estimatesInflight = null
+      }
+    })()
+    return estimatesInflight
   }
 
   /**
@@ -463,6 +521,8 @@ export const useUavStore = defineStore('uav', () => {
     if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
     if (s.status === 'fulfilled') stat.value = s.value
     if (list.status === 'fulfilled') records.value = list.value.rows
+    // 任务刚起飞（进页面时还没跑）：这时才去补历史时长，补到就出进度条
+    if (running.value) void loadEstimates()
   }
 
   /**
@@ -532,6 +592,8 @@ export const useUavStore = defineStore('uav', () => {
     error.value = ''
     updatedAt.value = ''
     lastFailAt = 0
+    estimates.value = {}
+    estimatesAt = 0
     clearSession()
   }
 
@@ -549,6 +611,7 @@ export const useUavStore = defineStore('uav', () => {
     todayRecords,
     todayTasks,
     running,
+    runningEstimate,
     taskTotal,
     taskDone,
     taskFailed,
