@@ -166,6 +166,21 @@ export const useOverviewStore = defineStore('overview', () => {
     return inflight
   }
 
+  /**
+   * 切回智巡面板时的刷新（首页标签切换会调用）。
+   *
+   * 与 `load(true)` 的区别：**失败冷却仍然生效**。用户在三个标签之间连点时，
+   * 弱网下每切一次就打一遍注定失败的请求没有意义；真想立刻重试，页面上
+   * 那个「重试」按钮走的是 `load(true)`，会绕过冷却。
+   *
+   * 已成功取过也要重拉：首页的「更新于 HH:mm」与今日出勤都是会变的，
+   * 切回来看到的应该是此刻的数，而不是上次进首页那一刻的数。
+   */
+  async function refresh(): Promise<void> {
+    if (error.value && Date.now() - lastFailAt < RETRY_GAP) return
+    return load(true)
+  }
+
   /** 退出登录 / 换账号时清空，避免展示上一个人的现场 */
   function reset(): void {
     overall.value = null
@@ -195,6 +210,7 @@ export const useOverviewStore = defineStore('overview', () => {
     hourLive,
     weekTrend,
     load,
+    refresh,
     reset,
   }
 })

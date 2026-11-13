@@ -25,15 +25,16 @@ const subpage = useSubpageStore()
 /**
  * 二维 / 三维视图切换（2026-10 版本同步 · 第二批）
  *
- * 两张底图不是同一张图的比例变换：三维图是透视渲染（1024×709），
- * 二维图是正射影像（1024×747），取景范围也不同。因此：
+ * 两张底图不是同一张图的比例变换：三维图是斜视影像（1024×642，2026-11-13
+ * 换成设计稿 gx2 的实景航拍 + 白模叠加），二维图是正射影像（1024×747），
+ * 取景范围也不同。因此：
  *   · 报警点有各自一套坐标（Alarm.flat / Alarm.pin）。
  * 关闭地图时自动复位成三维，下次进来不会停在二维（与原版 closeMapLand 一致）。
  */
 const flat = ref(false)
 
 const MAP_SRC = {
-  map: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261109`,
+  map: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261113`,
   flat: `${import.meta.env.BASE_URL}img/site-flat.webp?v=20261109`,
 } as const
 

@@ -146,6 +146,20 @@ export const useAlarmStore = defineStore('alarm', () => {
   }
 
   /**
+   * 切回智巡面板时的刷新（首页标签切换会调用）。
+   *
+   * 与 `syncFromVideo(token, true)` 的区别：**失败冷却仍生效** ——
+   * 连点标签时不该把注定失败的请求反复打出去；页面上的「重试」按钮
+   * 才走 force 版本。成功过的也要重拉：现场报警是持续新增的，
+   * 切回来看到的应该是此刻的今日条数与趋势。
+   */
+  async function refresh(token: string): Promise<boolean> {
+    if (!token) return false
+    if (liveState.value === 'error' && Date.now() - liveTriedAt < RETRY_MS) return false
+    return syncFromVideo(token, true)
+  }
+
+  /**
    * 按需回补更早的历史（历史页翻月历时用）。
    *
    * 目标日期已在已加载范围内就直接返回 —— 绝大多数点击都是这种情况，
@@ -315,6 +329,7 @@ export const useAlarmStore = defineStore('alarm', () => {
     feed,
     trend,
     syncFromVideo,
+    refresh,
     ensureDate,
     appendLive,
     clearLive,

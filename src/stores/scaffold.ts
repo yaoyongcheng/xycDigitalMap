@@ -41,7 +41,14 @@ export const useScaffoldStore = defineStore('scaffold', () => {
   /** 三格（最不利机位）+ 机位数 + 最新更新时间 */
   const summary = computed(() => summarize(sensors.value))
 
-  const hasData = computed(() => state.value === 'ok' && sensors.value.length > 0)
+  /**
+   * 有没有可渲染的读数。
+   *
+   * 同 `deviceLedger.hasData`：**只看读数、不看 `state`**。切回智控会刷新，
+   * 刷新期间 state 是 `loading`，若这里要求 `ok`，爬架说明行会闪一下
+   * 「数据未取到」。取不到时 sensors 已被清空，判据依然成立。
+   */
+  const hasData = computed(() => sensors.value.length > 0)
 
   let lastFailAt = 0
   let inflight: Promise<void> | null = null
@@ -89,6 +96,21 @@ export const useScaffoldStore = defineStore('scaffold', () => {
     return inflight
   }
 
+  /**
+   * 切回智控面板时的刷新（首页标签切换会调用）。
+   *
+   * 与 `load(true)` 的区别：**失败冷却仍生效**（弱网下连点标签不反复打公网 CDN）；
+   * 页面上的「重试」按钮才走 force。
+   *
+   * 文件头说的「一次会话拉一次」指的是**不轮询**：这里只在用户主动切回智控时
+   * 重取，仍然不会自己定时打。CDN 那份 JSON 现场 updateTime 跨度只有几分钟，
+   * 用户来回切的频率远低于它的更新频率，重取代价可以接受。
+   */
+  async function refresh(): Promise<void> {
+    if (state.value === 'error' && Date.now() - lastFailAt < RETRY_GAP) return
+    return load(true)
+  }
+
   /** 清空（页面卸载 / 强制重取时用；传感器不随登出清，见文件头） */
   function reset(): void {
     sensors.value = []
@@ -98,5 +120,5 @@ export const useScaffoldStore = defineStore('scaffold', () => {
     lastFailAt = 0
   }
 
-  return { sensors, state, error, source, summary, hasData, apply, load, reset }
+  return { sensors, state, error, source, summary, hasData, apply, load, refresh, reset }
 })

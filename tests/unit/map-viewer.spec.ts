@@ -15,14 +15,14 @@ const POINTS: MapPoint[] = [
 ]
 
 /**
- * 容器 800×600、底图 1024×709、fit=cover 下的几何常量：
- *   fitScale = max(800/1024, 600/709) = 600/709 = 0.84654443…
- *   canvas   = 866.573…×600    → 画布高度恰好等于容器高度
- *   mx(可平移量) = (866.573…-800)/2 = 33.286…
+ * 容器 800×600、底图 1024×642（2026-11-13 换设计稿底图后）、fit=cover 下的几何常量：
+ *   fitScale = max(800/1024, 600/642) = 600/642 = 0.9345794…
+ *   canvas   = 957.009…×600    → 画布高度恰好等于容器高度
+ *   mx(可平移量) = (957.009…-800)/2 = 78.504…
  *   my = 0                      → 垂直方向完全不可平移
  */
 const BOX = { left: 0, top: 0, width: 800, height: 600 }
-const CANVAS_W_AT_1X = 614400 / 709
+const CANVAS_W_AT_1X = 614400 / 642
 const PAN_LIMIT_X = (CANVAS_W_AT_1X - BOX.width) / 2
 /** tx = 0 时的 left */
 const BASE_LEFT = (BOX.width - CANVAS_W_AT_1X) / 2
@@ -148,7 +148,8 @@ describe('components/ui/MapViewer', () => {
   describe('渲染', () => {
     it('底图默认取 PWA base 下的 site-map.webp（带缓存版本号）', async () => {
       await setupMounted()
-      expect(wrapper.find('img').attributes('src')).toBe('/img/site-map.webp?v=20261109')
+      // 版本号随底图内容走：2026-11-13 换成设计稿 gx2 的实景航拍图
+      expect(wrapper.find('img').attributes('src')).toBe('/img/site-map.webp?v=20261113')
     })
 
     it('底图地址可被覆盖', async () => {

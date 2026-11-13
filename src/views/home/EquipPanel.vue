@@ -1,19 +1,21 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import DonutTouch from '@/components/ui/DonutTouch.vue'
 import Skel from '@/components/ui/Skel.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import type { IconName } from '@/data/icons'
+import { craneSnOf } from '@/data/craneSn'
 import { useAuthStore } from '@/stores/auth'
+import { useCraneRealtimeStore } from '@/stores/craneRealtime'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useHomeStore } from '@/stores/home'
 import { useScaffoldStore } from '@/stores/scaffold'
 import { useSubpageStore } from '@/stores/subpage'
 import { useUavStore } from '@/stores/uav'
 import { firstOverLabel, timeHm } from '@/utils/scaffold'
-import { ROBOT_CARDS } from '@/utils/deviceLedger'
+import { ROBOT_CARDS, unitNo } from '@/utils/deviceLedger'
 import { useSlowLoading } from '@/utils/slowLoading'
 import type { Equip } from '@/types'
 
@@ -71,25 +73,87 @@ const scaf = useScaffoldStore()
 const auth = useAuthStore()
 const subpage = useSubpageStore()
 const uav = useUavStore()
+const crane = useCraneRealtimeStore()
 
 /**
- * 面板挂载即取一次；store 内部有并发去重与失败冷却。
+ * 面板挂载即取一次 —— 也是「切回智控」的刷新入口。
+ *
+ * 首页切换三个模块标签时面板是真的卸载再挂载（`HomeSheet` 的 `.home-panels`
+ * 带 `:key="home.homeMod"`），所以这里必须走 `refresh()`：在线状态、塔机今日
+ * 吊次/吊重、爬架读数都会变，切回来看到的得是此刻的数，而不是上次进首页那一批。
+ * （`load()` 有「已 ok 就跳过」的缓存，只适合首次进入。）
  *
  * 传感器走 public CDN（免登录），**不等登录态**：台账要 Bearer，传感器不要，
  * 所以两条取数互不牵制 —— 台账接口挂了，爬架读数照样能出来。
+ * 失败冷却由各自的 `refresh` 内部控制（弱网下连点标签不反复打请求）。
  */
 onMounted(() => {
-  if (auth.token) void ledger.load(auth.token)
-  void scaf.load()
+  if (auth.token) void ledger.refresh(auth.token)
+  void scaf.refresh()
 })
 
-/** 首页面板常驻（切 tab 只切 class），登录态后到时必须补拉 */
+/** 登录成功后补拉（登录页盖在首页上，面板不卸载，onMounted 不会重跑） */
 watch(
   () => auth.token,
   (t) => {
     if (t) void ledger.load(t, true)
   },
 )
+
+/**
+ * 塔机实时通道订阅 —— 只为把塔机卡的「在线设备」对齐子页面的口径。
+ *
+ * 子页面（`views/sub/DevicePage.vue`）的塔机状态走 V2 `GetTowerState` 四态
+ * （离线 / 待机 / 工作中 / 正在吊装），卡片上写「离线」才算不在线；而台账的
+ * `online_status` 只说这台设备在平台登记为在线 —— 传统塔机5 台账是在线的，
+ * 但它没有平台编号、也就没有实时工况，子页面里它显示的是「离线」。
+ *
+ * 两处用两套口径就会出现「首页 4/4、点进去只有 3 台非离线」，用户 2026-11-13
+ * 明确要求首页按子页面读。所以这里开一条与详情页同一个 store 的通道，
+ * 引用计数由 store 管（详情页也开着时不会重复连）。
+ *
+ * 未登录时卡片整块是登录引导，没有数字要显示 → 不订阅，省现场流量。
+ * 通道没通（线上 HTTPS 没有 WS 反代）时 `stateOf` 返回 null，由 `countOf`
+ * 回落到台账状态 —— 不把「我们看不到」写成「设备离线」。
+ */
+const wantRealtime = computed(() => auth.isLoggedIn)
+let subscribed = false
+watch(
+  wantRealtime,
+  (want) => {
+    if (want === subscribed) return
+    subscribed = want
+    if (want) crane.open()
+    else crane.close()
+  },
+  { immediate: true },
+)
+onUnmounted(() => {
+  if (!subscribed) return
+  subscribed = false
+  crane.close()
+})
+
+/**
+ * 某类设备的「在线 x / 共 y」。
+ *
+ * 除塔机外一律走台账（`home.equipCount`）。塔机改走实时四态：
+ * 状态不是「离线」就算在线（待机 / 工作中 / 正在吊装都是活的）。
+ * `stateOf` 返回 null = 通道判断不了，这一台回落台账的 `online_status`。
+ *
+ * 分母恒为**台账里的台数**（现场 4 台，含没有编号的传统塔机5）——
+ * 这不是写死的 4：台账多一台、分母就跟着变。
+ */
+function countOf(d: Equip): { on: number; total: number; st: 'off' | 'warn' | 'on' } {
+  if (d.id !== 'crane') return home.equipCount(d)
+  const total = d.units.length
+  let on = 0
+  for (const u of d.units) {
+    const st = crane.stateOf(craneSnOf(unitNo(u.name)))
+    if (st === null ? u.on : st !== '离线') on += 1
+  }
+  return { on, total, st: on <= 0 ? 'off' : on < total ? 'warn' : 'on' }
+}
 
 /** 详情页路由（原 data-crane/lift/uav/climb） */
 function pageOf(d: Equip): string | undefined {
@@ -197,7 +261,7 @@ function splitUnit(text: string): { value: string; unit: string } {
  *     没有在线格（0/0 会被读成「一台都没有」）。取不到时退回「—」
  */
 function cellsOf(d: Equip): CardCell[] {
-  const c = home.equipCount(d)
+  const c = countOf(d)
   const out: CardCell[] = []
 
   if (!d.linked) {
@@ -270,7 +334,7 @@ const climbCells = computed<ClimbCell[]>(() =>
 /** 爬架在线数（在线信息仍然是真的，放进说明行而不是挤第四格） */
 const climbOnline = computed(() => {
   const d = home.siteEquip.find((x) => x.id === 'climb')
-  return d ? home.equipCount(d) : { on: 0, total: 0, st: 'off' as const }
+  return d ? countOf(d) : { on: 0, total: 0, st: 'off' as const }
 })
 
 /**
@@ -322,7 +386,7 @@ function ariaOf(d: Equip): string {
     return `${d.name}，${live}${d.metric ?? ''}${v}，示意值`
   }
 
-  const c = home.equipCount(d)
+  const c = countOf(d)
   const parts: string[] = [d.name]
 
   if (d.id === 'climb') {
@@ -381,14 +445,15 @@ const wiredQty = computed(() => home.siteEquip.reduce((s, d) => s + d.units.leng
 const qty = computed(() => wiredQty.value + ROBOT_CARDS.length)
 
 /**
- * 在线台数：台账按 `units[].on` 数；5 类机器人各计 1 台在线。
+ * 在线台数：每张可下钻卡按 `countOf` 数（塔机走实时四态，其余走台账）；
+ * 5 类机器人各计 1 台在线。
  *
  * 机器人没有台账、也没有在线接口，但现场它们是常驻在线的
  * （用户 2026-11-12 确认）。这与作业次数是同一套授权：模拟值，
  * 只在 `data/robotStats.ts` / `ROBOT_CARDS` 里，不混进台账统计。
  */
 const onCount = computed(() =>
-  home.siteEquip.reduce((s, d) => s + (d.linked ? d.units.filter((u) => u.on).length : 1), 0),
+  home.siteEquip.reduce((s, d) => s + (d.linked ? countOf(d).on : 1), 0),
 )
 
 /** 离线 = 设备数量 - 在线（本轮恒为 0，机器人也算在线） */
@@ -565,7 +630,7 @@ function goLogin(): void {
                 状态点：有台账的卡按 `units` 派生；机器人没有台账，
                 由 `Equip.dot` 显式给 'on'（现场这几类机器人常驻在线）。
               -->
-              <i v-if="d.linked || d.dot" class="eq-dot" :class="d.dot ?? home.equipCount(d).st"></i>
+              <i v-if="d.linked || d.dot" class="eq-dot" :class="d.dot ?? countOf(d).st"></i>
             </span>
             <!-- 爬架：三格「正常机位数 / 有读数的机位数」（CDN 真实读数） -->
             <span v-if="isClimb(d)" class="eq-vals">

@@ -130,7 +130,9 @@ function craneCells(sn: string | null, frame: CraneRealtime | null, pct: number 
   const day = sn ? ledger.craneDayBySn[sn] : undefined
   return [
     ['今日吊次', day ? `${day.trips}次` : DASH],
-    ['今日吊重', day && day.weight !== null ? `${day.weight.toFixed(2)}t` : DASH],
+    // 今日吊重：查询成功但当天一条带重量的循环都没有时写 0.00t（用户 2026-11-13
+    // 要求）—— 「今天没吊」是个结论，横杠只该留给「没查到 / 没这台的编号」。
+    ['今日吊重', !sn || !day ? DASH : `${(day.weight ?? 0).toFixed(2)}t`],
     ['当前吊重', frame ? `${frame.weight.toFixed(2)}t` : DASH],
     ['当前负荷', pct !== null ? `${pct}%` : DASH],
   ]

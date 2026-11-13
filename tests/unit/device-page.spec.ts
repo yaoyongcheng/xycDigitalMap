@@ -5,9 +5,13 @@ import { defineComponent, h, nextTick } from 'vue'
 
 import type { DroneTaskRecord } from '@/api/drone'
 import { clearSession } from '@/api/drone'
+import type { CraneRealtimeHandlers } from '@/api/craneRealtime'
+import { subscribeCraneRealtime } from '@/api/craneRealtime'
+import { fetchScaffold } from '@/api/scaffold'
 import SheetHost from '@/components/overlays/SheetHost.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
 import CountUp from '@/components/ui/CountUp.vue'
+import { CRANE_SNS } from '@/data/craneSn'
 import { useAuthStore } from '@/stores/auth'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
@@ -41,6 +45,33 @@ const SCAFFOLD_ROWS = [
   { item: '6#机位', lrTilt: 1.2, fbTilt: 3.3, load: 0.61, time: '2026-11-07 13:58:53' },
 ]
 
+/**
+ * 爬架读数改由接口给（2026-11-13）。
+ *
+ * 智控面板现在每次挂载都会刷新（切回智控标签时的行为，见 `EquipPanel` 的
+ * onMounted），所以「用 `apply()` 先灌好数据再 mount」会被这次刷新覆盖掉。
+ * 想断言「有读数时怎么渲染」，就得让这次刷新真的拿到读数 —— 因此 mock 掉
+ * `api/scaffold`，按用例决定返回 live / snapshot / null。
+ */
+vi.mock('@/api/scaffold', () => ({ fetchScaffold: vi.fn() }))
+const mockScaffold = vi.mocked(fetchScaffold)
+
+/**
+ * 塔机实时通道改由用例驱动（2026-11-13）。
+ *
+ * 首页 5G塔机卡的「在线设备」现在按**子页面口径**算：状态取自实时四态
+ * （离线 / 待机 / 工作中 / 正在吊装），不是台账的 `online_status`。
+ * 想知道「有帧时怎么渲染」，就得能往 store 里推帧 —— 真实 WebSocket 在
+ * 测试里连不上，所以这里把订阅函数换成一个可以手动回放的假实现。
+ *
+ * 默认不推任何帧：此时 `stateOf()` 返回 null，回落到台账 —— 与改造前一致。
+ */
+vi.mock('@/api/craneRealtime', async (orig) => {
+  const actual = await orig<typeof import('@/api/craneRealtime')>()
+  return { ...actual, subscribeCraneRealtime: vi.fn() }
+})
+const mockSubscribe = vi.mocked(subscribeCraneRealtime)
+
 const Host = defineComponent({
   components: { SubPage, SheetHost },
   setup: () => () => h('div', [h(SubPage), h(SheetHost)]),
@@ -55,9 +86,20 @@ function signIn(): void {
   useDeviceLedgerStore().apply(deviceRows())
 }
 
+/** 当前挂上的实时订阅（用例往里推帧）；没订阅时是 null */
+let craneHandlers: CraneRealtimeHandlers | null = null
+
 describe('智控面板（真实台账）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    // 默认「传感器没取到」，需要读数的用例自己改返回值
+    mockScaffold.mockResolvedValue(null)
+    craneHandlers = null
+    mockSubscribe.mockReset()
+    mockSubscribe.mockImplementation((h) => {
+      craneHandlers = h
+      return () => {}
+    })
   })
 
   afterEach(() => {
@@ -113,8 +155,9 @@ describe('智控面板（真实台账）', () => {
     expect(pages).toEqual(['crane', 'lift', 'uav', 'climb'])
 
     const crane = w.find('[data-page="crane"]')
-    // 塔机 4 台、3 台在线（智能塔机3 离线）
-    expect(crane.text()).toContain('3/4')
+    // 塔机 4 台、2 台在线：智能塔机3 台账就是离线；传统塔机5 没有平台编号，
+    // 实时四态恒为「离线」（子页面里它也显示离线）。没推帧的其余车回落台账。
+    expect(crane.text()).toContain('2/4')
     // 塔机的作业指标（吊重/吊次）要工作循环接口 + sn，现场没有 →
     // 数值位退回台账里的最大高度；单位走 .eq-stat-unit 单独排（设计稿做法）
     expect(crane.text()).toContain('70')
@@ -135,6 +178,41 @@ describe('智控面板（真实台账）', () => {
     // 曾有的「全部设备运行状态」逐台清单已按用户要求移除，逐台状态归详情页。
     expect(w.text()).not.toContain('全部设备运行状态')
     expect(w.findAll('.eq-card')).toHaveLength(9)
+
+    w.unmount()
+  })
+
+  it('塔机在线数按子页面口径：有实时帧就算在线，没编号的传统塔机5 恒离线', async () => {
+    signIn()
+    const w = mount(EquipPanel)
+    await nextTick()
+
+    // 还没推帧：通道判断不了这几台 → 回落到台账（智能塔机3 台账离线）
+    expect(w.find('[data-page="crane"]').text()).toContain('2/4')
+
+    // 三台车各来一帧、都没动 → 子页面里是「待机」，都算非离线
+    craneHandlers?.onState?.('open')
+    for (const e of CRANE_SNS) {
+      craneHandlers?.onData({
+        sn: e.sn,
+        deviceName: e.name,
+        at: '2026-11-13 09:00:00',
+        angle: 0,
+        range: 0,
+        height: 0,
+        weight: 0,
+        weightRate: 0,
+        hasLoad: false,
+        bodyHeight: 0,
+        topHeight: 0,
+      })
+    }
+    await nextTick()
+
+    const crane = w.find('[data-page="crane"]')
+    expect(crane.text()).toContain('3/4')
+    // 3/4 是「部分在线」，状态点跟着走，不能还是满格绿
+    expect(crane.find('.eq-dot').classes()).toContain('warn')
 
     w.unmount()
   })
@@ -163,7 +241,7 @@ describe('智控面板（真实台账）', () => {
 
   it('爬架卡：三格是「正常机位数/有读数的机位数」，超限那格少一台并报出机位名', async () => {
     signIn()
-    useScaffoldStore().apply(SCAFFOLD_ROWS)
+    mockScaffold.mockResolvedValue({ sensors: SCAFFOLD_ROWS, source: 'live' })
     const w = mount(EquipPanel)
     await flushPromises()
 
@@ -191,7 +269,7 @@ describe('智控面板（真实台账）', () => {
    */
   it('爬架卡：快照来源不写「离线快照」，只报读数时间', async () => {
     signIn()
-    useScaffoldStore().apply(SCAFFOLD_ROWS, 'snapshot')
+    mockScaffold.mockResolvedValue({ sensors: SCAFFOLD_ROWS, source: 'snapshot' })
     const w = mount(EquipPanel)
     await flushPromises()
 
@@ -208,13 +286,13 @@ describe('智控面板（真实台账）', () => {
   it('爬架卡：快照来源未超限时也只标「HH:mm 更新」', async () => {
     signIn()
     // 三条读数全部在阈值内 —— 走的是「全部在阈值内」那一支
-    useScaffoldStore().apply(
-      [
+    mockScaffold.mockResolvedValue({
+      sensors: [
         { item: '19#机位', lrTilt: 0.4, fbTilt: 6.36, load: 0.1, time: '2026-11-07 13:58:53' },
         { item: '6#机位', lrTilt: 1.2, fbTilt: 3.3, load: 0.61, time: '2026-11-07 14:02:49' },
       ],
-      'snapshot',
-    )
+      source: 'snapshot',
+    })
     const w = mount(EquipPanel)
     await flushPromises()
 
@@ -339,12 +417,12 @@ describe('智控面板（真实台账）', () => {
     expect(items[0].find('b').text()).toBe('9种')
     expect(items[1].find('b').text()).toBe('13台')
 
-    // 台账 8 台里 7 台在线（塔机 3/4）+ 5 类机器人各计 1 台在线 = 12；
-    // 离线只剩台账里那 1 台塔机
+    // 台账 8 台里 6 台在线（塔机 2/4）+ 5 类机器人各计 1 台在线 = 11；
+    // 离线 2 台：台账离线的智能塔机3 + 没有平台编号的传统塔机5
     const leg = w.findAll('.eq-status-leg > div')
     expect(leg).toHaveLength(2)
-    expect(leg[0].find('b').text()).toBe('12')
-    expect(leg[1].find('b').text()).toBe('1')
+    expect(leg[0].find('b').text()).toBe('11')
+    expect(leg[1].find('b').text()).toBe('2')
 
     w.unmount()
     vi.useRealTimers()
@@ -377,7 +455,7 @@ describe('智控面板（真实台账）', () => {
 
     // 句式照设计稿 app.js:982-990，但只念真实存在的格子（没有的格子不报）
     expect(w.find('[data-page="crane"]').attributes('aria-label')).toBe(
-      '5G塔机，在线设备3/4，最大高度70m，点击查看明细',
+      '5G塔机，在线设备2/4，最大高度70m，点击查看明细',
     )
     expect(w.find('[data-page="lift"]').attributes('aria-label')).toBe(
       '智能电梯，在线设备2/2，最大高度60m，点击查看明细',
@@ -607,6 +685,34 @@ describe('设备详情页（真实台账）', () => {
 
     // 状态：实时通道没通 → 回落台账（智能塔机3 的 online_status 是 0）
     expect(cards.some((c) => c.find('.dev-status').classes().includes('is-off'))).toBe(true)
+    w.unmount()
+  })
+
+  it('塔机：当天一条循环都没有时，今日吊重写 0.00t 而不是横杠', async () => {
+    const auth = useAuthStore()
+    auth.token = 'test-token'
+    auth.expiresAt = Date.now() + 3_600_000
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('getWorkCycleInfoHis')) {
+          // 接口通了、今天一条都没有 —— 与「接口挂了」是两件事
+          return { ok: true, status: 200, json: async () => ({ code: 200, success: true, data: [] }) } as unknown as Response
+        }
+        return ledgerEnvelope()
+      }),
+    )
+    useDeviceLedgerStore().apply(deviceRows())
+    await flushPromises()
+
+    const w = await open('crane')
+    await nextTick()
+
+    const cards = w.findAll('.dev-card')
+    // 2#/3#/4# 查询成功、当天 0 条：吊次 0次、吊重 0.00t（「今天没吊」是结论）
+    expect(cards[0].findAll('.dev-card-grid b').map((b) => b.text())).toEqual(['0次', '0.00t', '—', '—'])
+    // 传统塔机5 没有平台编号，连「今天没吊」都无从谈起 → 保持「—」
+    expect(cards[3].findAll('.dev-card-grid b').map((b) => b.text())).toEqual(['—', '—', '—', '—'])
     w.unmount()
   })
 

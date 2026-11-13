@@ -34,8 +34,16 @@ import { useSlowLoading } from '@/utils/slowLoading'
 const sheet = useBottomSheetStore()
 const patrol = usePatrolStore()
 
+/**
+ * 面板挂载即取一次。
+ *
+ * 首页切换「智巡 / 智眸 / 智控」标签时面板是真的卸载再挂载（`HomeSheet` 的
+ * `.home-panels` 带 `:key="home.homeMod"`），所以这里同时是「切回智眸」的入口：
+ * 走 `refresh()` 才会在已有数据时也重新拉一次航拍任务，否则切回来永远是
+ * 首次进首页那批照片。失败冷却由 `refresh` 内部控制。
+ */
 onMounted(() => {
-  void patrol.load()
+  void patrol.refresh()
 })
 
 /** 慢请求才显示骨架 */

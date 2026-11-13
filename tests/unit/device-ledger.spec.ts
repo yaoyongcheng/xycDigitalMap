@@ -203,4 +203,45 @@ describe('deviceLedger store', () => {
     expect(ledger.state).toBe('idle')
     expect(deviceSet('crane').units).toEqual([])
   })
+
+  /**
+   * 首页切换「智巡 / 智眸 / 智控」标签时面板会重新挂载（`HomeSheet` 的
+   * `.home-panels` 带 :key），挂载点走的是 `refresh()`：**已经 ok 也要重拉**。
+   *
+   * 如果这里退化成 `load()` 的「已 ok 就跳过」，用户切回智控看到的就还是
+   * 上次进首页那一刻的在线数与塔机今日吊次 —— 那正是本次要解决的问题。
+   */
+  it('refresh：已 ok 也重拉（切回智控要看此刻的在线状态与吊次）', async () => {
+    const spy = vi.fn(async () => ledgerEnvelope())
+    vi.stubGlobal('fetch', spy)
+    const ledger = useDeviceLedgerStore()
+
+    await ledger.load('token')
+    expect(ledger.state).toBe('ok')
+    const afterLoad = spy.mock.calls.length
+    expect(afterLoad).toBeGreaterThan(0)
+
+    await ledger.refresh('token')
+    expect(spy.mock.calls.length).toBeGreaterThan(afterLoad)
+  })
+
+  /** 连点标签不该把注定失败的请求反复打出去（弱网现场），冷却仍在 */
+  it('refresh：失败冷却期内不重复打（force 才绕过）', async () => {
+    const spy = vi.fn(
+      async () => ({ ok: false, status: 500, text: async () => '' }) as unknown as Response,
+    )
+    vi.stubGlobal('fetch', spy)
+    const ledger = useDeviceLedgerStore()
+
+    await ledger.refresh('token')
+    expect(ledger.state).toBe('error')
+    const afterFail = spy.mock.calls.length
+
+    await ledger.refresh('token')
+    expect(spy.mock.calls.length).toBe(afterFail)
+
+    // 页面上的「重试」按钮走 force，能立刻再来一次
+    await ledger.load('token', true)
+    expect(spy.mock.calls.length).toBeGreaterThan(afterFail)
+  })
 })

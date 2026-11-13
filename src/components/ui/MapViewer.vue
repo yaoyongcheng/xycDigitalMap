@@ -32,7 +32,12 @@ const props = withDefaults(
     points?: MapPoint[]
     /** cover：铺满容器（裁切多余部分）；contain：完整容纳（留白） */
     fit?: 'cover' | 'contain'
-    /** 底图地址，默认取 PWA base 下的 site-map.webp */
+    /**
+     * 底图地址，默认取 PWA base 下的 site-map.webp。
+     *
+     * 2026-11-13：底图换成设计稿 gx2 的 `site-map.jpg`（实景航拍 + 白模叠加），
+     * 尺寸从 1024×709 变成 1024×642。版本号必须跟着换，同名文件会被缓存住。
+     */
     src?: string
     /**
      * 紧凑模式：小容器（首页顶部地图区）用更小的针标与字号，
@@ -69,7 +74,7 @@ const props = withDefaults(
   {
     points: () => [],
     fit: 'cover',
-    src: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261109`,
+    src: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261113`,
     compact: false,
     allowZoomOut: false,
     suspended: false,
@@ -81,9 +86,9 @@ const emit = defineEmits<{ select: [p: MapPoint]; alarm: [id: string] }>()
 
 const boxEl = ref<HTMLElement | null>(null)
 
-/** 底图自然尺寸，onload 后校准（默认值与 site-map.webp 一致） */
+/** 底图自然尺寸，onload 后校准（默认值与 site-map.webp 一致：1024×642） */
 const natW = ref(1024)
-const natH = ref(709)
+const natH = ref(642)
 
 /** 容器尺寸（ResizeObserver 维护） */
 const boxW = ref(0)

@@ -616,7 +616,10 @@ button, input, textarea { font-family: inherit; color: inherit; }
   top: 0;
   height: calc(42% + 20px);
   background-color: rgb(5, 10, 21);
-  background-image: url("/img/site-map.webp");
+  /* 底图（2026-11-13 换成设计稿 gx2 的 site-map.jpg：实景航拍 + 白模叠加）。
+     这里只是 MapViewer 加载出图前的兜底底色，真正显示的是组件里的 <img>；
+     版本号要跟着换图一起改，否则 public 下的同名文件会被浏览器缓存住。 */
+  background-image: url("/img/site-map.webp?v=20261113");
   background-repeat: no-repeat;
   background-size: cover;
   background-position: center center;

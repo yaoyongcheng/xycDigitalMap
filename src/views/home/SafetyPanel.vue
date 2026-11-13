@@ -65,18 +65,27 @@ const showCrewSkel = useSlowLoading(() => !overview.hasLive && overview.loading)
 const showHourSkel = useSlowLoading(() => !overview.hourLive && overview.loading)
 const showTeamSkel = useSlowLoading(() => !overview.teamRows.length && overview.loading)
 
-/** 面板挂载即取一次；store 内部有并发去重与失败冷却 */
+/**
+ * 面板挂载即取一次。
+ *
+ * 首页三个模块标签切换时，`HomeSheet` 的 `.home-panels` 带 `:key="home.homeMod"`，
+ * 面板是**真的卸载再挂载**的 —— 所以这里就是「切回智巡」的入口，必须走
+ * `refresh()`（已有数据也重拉）而不是 `load()`（有缓存就跳过），否则切回来
+ * 看到的还是上次进首页那一刻的报警与人员数。
+ *
+ * `refresh` 内部保留失败冷却：连点标签不会把注定失败的请求反复打出去。
+ */
 onMounted(() => {
-  void overview.load()
+  void overview.refresh()
   // 视频报警接口要 Bearer，未登录必定 401 —— 未登录时不打这趟请求
-  if (auth.token) void alarm.syncFromVideo(auth.token)
+  if (auth.token) void alarm.refresh(auth.token)
 })
 
 /**
- * 登录态变化时补拉一次报警。
+ * 登录态变化时补拉一次。
  *
- * 首页面板是常驻组件（切 tab 只切 class，不重新挂载），`onMounted` 全程只跑一次。
- * 用户「先进首页 → 再去我的登录 → 回首页」时 token 才出现，光靠 onMounted
+ * 登录页是盖在首页上的子页，首页面板本身**不卸载**，`onMounted` 不会因为登录
+ * 成功而重跑：「先进首页 → 去我的登录 → 回首页」时 token 才出现，光靠 onMounted
  * 永远等不到。退出登录的清理由 auth store 的 clear() 负责（调用 alarm.clearLive）。
  */
 watch(

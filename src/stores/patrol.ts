@@ -147,6 +147,18 @@ export const usePatrolStore = defineStore('patrol', () => {
     return inflight
   }
 
+  /**
+   * 切回智眸面板时的刷新（首页标签切换会调用）。
+   *
+   * 与 `load(true)` 的区别：**失败冷却仍生效** —— 连点标签时不该把注定失败的
+   * 请求反复打出去（keehang 那串要两步 CAS 登录，失败一次代价不小）；
+   * 页面上的「重试」按钮才走 force。成功过的也重拉：航拍任务随时在新增。
+   */
+  async function refresh(): Promise<void> {
+    if (state.value === 'error' && Date.now() - lastFailAt < 60_000) return
+    return load(true)
+  }
+
   /** 测试接线点：直接灌数据 */
   function apply(list: PatrolPhotoReal[]): void {
     photos.value = list
@@ -172,6 +184,7 @@ export const usePatrolStore = defineStore('patrol', () => {
     sizeText,
     apply,
     load,
+    refresh,
     reset,
   }
 })

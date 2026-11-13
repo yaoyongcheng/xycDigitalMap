@@ -100,7 +100,15 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
 
   const equip = computed<Equip[]>(() => toEquip(rows.value, craneDay.value))
 
-  const hasData = computed(() => state.value === 'ok' && rows.value.length > 0)
+  /**
+   * 有没有可渲染的台账行。
+   *
+   * **只看行、不看 `state`**：切回智控面板会强制重拉（`refresh`），而 `load`
+   * 一进来就把 state 置成 `loading` —— 若这里要求 `state === 'ok'`，切回那一帧
+   * 卡片会整块被骨架顶掉、再闪回来。失败分支已经清空 rows，所以「失败」依然
+   * 是 false，语义没丢。
+   */
+  const hasData = computed(() => rows.value.length > 0)
 
   /** 设备总数与在线数（首页计数卡用；含未归类的设备，按真实台账算） */
   const total = computed(() => rows.value.length)
@@ -265,6 +273,22 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     return inflight
   }
 
+  /**
+   * 切回智控面板时的刷新（首页标签切换会调用）。
+   *
+   * 与 `load(token, true)` 的区别：**失败冷却仍生效** —— 连点标签时不该反复
+   * 打注定失败的台账请求；页面上的「重试」按钮才走 force。
+   *
+   * 台账本身变化不多，但**在线状态与塔机今日吊次/吊重是实时变的**，
+   * 这两个正是智控卡上最该「切回来就是此刻」的字段。重拉会连带
+   * `loadCraneDay` 再跑一遍（同一份数据喂给全场合计与逐台两套口径）。
+   */
+  async function refresh(token: string): Promise<void> {
+    if (!token) return
+    if (state.value === 'error' && Date.now() - lastFailAt < RETRY_GAP) return
+    return load(token, true)
+  }
+
   /** 退出登录 / 换账号时清空 */
   function reset(): void {
     rows.value = []
@@ -295,6 +319,7 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     unitsOf,
     apply,
     load,
+    refresh,
     reset,
     areas,
     areasState,
