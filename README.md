@@ -185,8 +185,23 @@ server {
   location = /xycDigitalMap/sw.js {
     add_header Cache-Control "no-cache";
   }
+
+  # 电梯必须这一段：IOT 网关换令牌的接口没配 CORS，浏览器直连会在预检被拦，
+  # 页面只能拿到 TypeError（连状态码都没有）→ 电梯工况与报表全「—」。
+  # 只有换令牌这一跳要代理，数据接口 /api/data/v1/tsdb/* 的 CORS 是好的，仍直连。
+  location /iot-api/ {
+    proxy_pass https://iot.cscec3b-iti.com/;
+    proxy_set_header Host iot.cscec3b-iti.com;
+    proxy_ssl_server_name on;
+    proxy_read_timeout 25s;
+  }
 }
 ```
+
+> `server/serve.mjs` 已内置上面这段反代（`/iot-api`），用 `npm run deploy:http`
+> 不用另配；**只把 `dist/` 丢给 nginx 而漏了 `location /iot-api/`，电梯数据就是空的**
+> —— 与 GitHub Pages 上的表现一样。塔机的工作循环也有一层同类反代
+> （`/crane-api`），用 nginx 部署时同理需要补上。
 
 **HTTP 的固有代价**（浏览器规范，任何 HTTP 部署都一样，不是本项目的 bug）：
 

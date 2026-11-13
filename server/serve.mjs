@@ -357,6 +357,7 @@ server.listen(PORT, HOST, () => {
   console.log(`\n  静态目录 ${DIR}`)
   console.log(`  接口地址 ${process.env.VITE_API_BASE || 'http://115.159.67.12:8081'}（构建时写入）`)
   console.log(`  同源反代 ${CRANE_PREFIX}/* → ${CRANE_UPSTREAM}（塔机工作循环，那边不放行跨域）`)
+  console.log(`          ${IOT_PREFIX}/* → ${IOT_UPSTREAM}（电梯换令牌，该接口没有 CORS）`)
   console.log(`  同源桥   ${MQTT_PATH} → mqtt://${MQTT_HOST}:${MQTT_PORT}（塔机实时工况推送，本机直连 broker）`)
   console.log('\n  提示：HTTP 属非安全上下文，Service Worker 不注册（无离线/PWA 安装）、')
   console.log('        navigator.share 不可用（「存相册」回退为下载文件）。\n')
