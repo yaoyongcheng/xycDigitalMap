@@ -1,23 +1,34 @@
 /**
  * 无人机「状态」格 → 文案
  *
- * 数据来源：机载遥测 `status`（偶发 `status` 不刷新时退到 `modeCode`）。
+ * 数据来源：机载遥测 **`modeCode` 为主**，`status` 只在 `modeCode` 缺失时兜底。
  *
- * 枚举就是 DJI 上云 API 的 `drone_status`（0 待机 … 18 空中 RTK 收敛），
+ * ## 为什么主次是反的（2026-11-13 17:07 实测）
+ *
+ * 早先以 `status` 为主，理由是它名字更像「状态」。现场连着采样才发现：
+ * 飞机从 69m 高度自动降落（`verticalSpeed -3.9`、`relativeAltitude 69.3`）
+ * 到落回库内静止，**`status` 全程恒为 1**，而 `modeCode` 跟着走完
+ * `10 自动降落 → 0 待机` 两段。于是页面永远写「起飞准备」，
+ * 与 V2 同一时刻的「航线飞行 / 待机」对不上 —— 就是用户截图那一格。
+ *
+ * 结论：keehang 的 `status` 是**设备状态**（1 = 在线正常、-1 = 飞控未上报），
+ * `modeCode` 才是 DJI 的 `mode_code` 飞行模式。两者同枚举、不同用途，
+ * 位置摆错就会画出一个恒定的假状态。
+ *
+ * 枚举就是 DJI 上云 API 的 `mode_code`（0 待机 … 18 空中 RTK 收敛），
  * 和 V2 用的是同一张表 —— 从 V2 热更程序集 `HotUpdateScripts.dll` 的字符串堆
  * （`#US`，UTF-16LE）里能按顺序读到「待机 / 自动起飞 / 全景拍照 / ADS-B 躲避 /
  * 自动返航 / 升级 / APAS / 虚拟摇杆 / 指令飞行 / 空中 RTK 收敛模式 / 机场」，
  * 与官方枚举逐项吻合；「关机」在同一段里写成 `<color=red>关机</color>`。
  *
- * ## `-1` 为什么要单独处理
+ * ## 「关机」的判定
  *
- * `-1` 不在 DJI 枚举里。库里飞机飞控断电时 keehang 就报 `status: -1`
- * （2026-11-13 实测：`status: -1`、`modeCode: 14`、`gear: 1`、电量 88%），
- * V2 在这个值上显示的是红字「关机」。所以照它做。
+ * `status: -1` 不在 DJI 枚举里。库里飞机飞控断电时 keehang 报
+ * `status: -1` + `modeCode: 14`（2026-11-13 实测：`gear: 1`、电量 88%），
+ * V2 在这个组合上显示红字「关机」，所以照它做。
  *
- * 但**不直接照抄**：多一步交叉校验 —— 若 `status` 是 `-1` 而 `modeCode`
- * 还在有效飞行态（不是 14「未连接」），说明飞机其实是连着的、只是 `status`
- * 没刷新，那种情况按 `modeCode` 说，免得「在飞」被写成「关机」。
+ * 只有 `status` 真的是 `-1`（明确「没上报」）才敢说关机；`status` 缺失但
+ * `modeCode` 是 14 时只说「未连接」—— 缺数据不等于断电。
  *
  * 之前这里写的是「有执行中的任务 → 作业中，否则停泊」，那是自己编的语义：
  * 任务和飞机状态不是一回事（任务排了但没飞、飞机飞着但没有任务），
@@ -56,21 +67,19 @@ const DASH = '—'
 /**
  * 飞机状态文案。
  *
- * @param status   机载遥测 `status`（-1 = 飞控未上报/关机）
- * @param modeCode 机载遥测 `modeCode`（同枚举，用于交叉校验与兜底）
+ * @param status   机载遥测 `status`（**设备状态**：1 = 在线正常，-1 = 飞控未上报）
+ * @param modeCode 机载遥测 `modeCode`（DJI `mode_code` 飞行模式，主字段）
  */
 export function droneStateText(status: number | null, modeCode: number | null): string {
-  // 主字段能读就直接用（-1 不在枚举里，下面单独收）
+  // 断电在库：status 明确说「没上报」且 modeCode 说「未连接」→ V2 写「关机」
+  if (status === -1 && modeCode === MODE_DISCONNECTED) return '关机'
+
+  // 主字段：modeCode 是唯一跟随飞行状态的那个（实测 status 会恒定不动）
+  if (modeCode !== null && modeCode >= 0) return DRONE_STATUS_NAME[modeCode] ?? DASH
+
+  // modeCode 缺失 → 退到 status（只给一个字段的机型/旧快照）
   if (status !== null && status >= 0) return DRONE_STATUS_NAME[status] ?? DASH
-
-  // status 无效（-1 / 缺失）：modeCode 还在有效态说明飞机其实连着，以它为准
-  if (modeCode !== null && modeCode >= 0 && modeCode !== MODE_DISCONNECTED) {
-    return DRONE_STATUS_NAME[modeCode] ?? DASH
-  }
-
-  // 两个字段都说没连上 → 库里断电，V2 写「关机」
   if (status === -1) return '关机'
-  if (modeCode === MODE_DISCONNECTED) return '未连接'
   return DASH
 }
 

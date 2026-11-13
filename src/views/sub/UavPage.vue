@@ -88,7 +88,14 @@ function pct(v: number | null): string {
   return v === null ? DASH : `${v}%`
 }
 
-/** 米 → 整数米 / 一位小数公里（距机库那格） */
+/**
+ * 米 → 整数米 / 一位小数公里。
+ *
+ * 两处用它，语义不同但都指「一段距离」：飞行参数的**累计里程**
+ * （`totalFlightDistance`，实测 10809054.8 ≈ 10809.1km）与设备参数的
+ * **当前距机库**（`homeDistance`，在库里是 0.01m 这种）。V2 面板把里程原样
+ * 打成 `10808461.45m`，这里统一折成 km —— 同一个数，只是别让人读八位数。
+ */
 function dist(m: number | null): string {
   if (m === null) return DASH
   if (m < 1000) return `${Math.round(m)}m`
@@ -107,6 +114,20 @@ function remain(sec: number | null): string {
 function speed(v: number | null): string {
   return v === null ? DASH : `${v.toFixed(1)}m/s`
 }
+
+/**
+ * 「续航」为什么常看到「—」—— 给一句解释，别让人以为数据没接上。
+ *
+ * 飞控的 `remainFlightTime` 在**地面恒为 0**（实测：库里关机时电量 80%、
+ * 该字段 0；起飞后同一字段给 1753s）。0 既可能是「没电了」也可能是
+ * 「还没飞」，两种意思混在一个数里，所以一律显示「—」并在这里说明。
+ * 只在「地面 + 读数为 0」时出现，飞行中不占版面。
+ */
+const remainNote = computed(() =>
+  uav.live.remainFlight !== null && uav.live.remainFlight <= 0 && uav.live.onGround
+    ? '续航取飞控的剩余飞行时间，飞机在地面时为 0，起飞后自动有值'
+    : '',
+)
 
 const netRate = computed(() => {
   const r = uav.dockLive.networkRate
@@ -260,7 +281,7 @@ function retry(): void {
       <div v-if="tab === 'fly'" class="uav-fly">
         <div><span>状态</span><b :class="{ 'is-down': uav.live.stateDown }">{{ flyState }}</b></div>
         <div><span>海拔</span><b>{{ uav.live.height !== null ? `${uav.live.height.toFixed(1)}m` : DASH }}</b></div>
-        <div><span>距起飞点</span><b>{{ dist(uav.live.homeDistance) }}</b></div>
+        <div><span>飞行距离</span><b>{{ dist(uav.live.flightDistance) }}</b></div>
         <div><span>水平速度</span><b>{{ speed(uav.live.speed) }}</b></div>
         <div><span>垂直速度</span><b>{{ speed(uav.live.verticalSpeed) }}</b></div>
       </div>
@@ -343,6 +364,9 @@ function retry(): void {
           {{ uav.live.temp !== null ? `${uav.live.temp}℃` : DASH }}
         </b><span>电池温度</span></div>
       </div>
+
+      <!-- 地面时续航为 0（不是没数据），一句话说清，不占飞行中的版面 -->
+      <p v-if="remainNote" class="uav-note">{{ remainNote }}</p>
     </section>
 
     <!-- ④ 任务下发（二期占位） -->

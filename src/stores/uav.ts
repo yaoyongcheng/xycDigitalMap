@@ -205,10 +205,22 @@ export const useUavStore = defineStore('uav', () => {
       altitude: t?.relativeAltitude ?? null,
       /** 海拔 m */
       height: t?.height ?? null,
-      /** 距起飞点（≈ 机库）距离 m */
+      /** 距起飞点（≈ 机库）当前水平距离 m —— 设备参数「距机库」那格 */
       homeDistance: t?.homeDistance ?? null,
+      /** 累计飞行里程 m —— 飞行参数「飞行距离」那格（V2 同字段 `totalFlightDistance`） */
+      flightDistance: t?.totalFlightDistance ?? null,
       /** 剩余飞行时间 s */
       remainFlight: t?.remainFlightTime ?? null,
+      /**
+       * 是否处在地面（待机 / 升级 / 未连接 / 飞控未上报）。
+       *
+       * 只用来说明「为什么续航是 —」：`remainFlightTime` 在地面恒为 0，
+       * 与「真的只剩 0 分钟」区分不开，页面按「—」处理并给一句解释。
+       * 这不是安全判定，别拿它做业务门禁。
+       */
+      onGround:
+        t !== null &&
+        (t.status === -1 || t.modeCode === 0 || t.modeCode === 13 || t.modeCode === 14),
       /** 累计架次 */
       totalSorties: t?.totalSorties ?? null,
       /** 航向角 ° */
@@ -420,19 +432,37 @@ export const useUavStore = defineStore('uav', () => {
   let liveTimer: number | null = null
   const liveOwners = new Set<string>()
 
-  /** 刷两个遥测 + 两路直播流：任务统计变化慢，没必要每 30s 打一遍 */
+  /**
+   * 刷一轮「实时监控」看到的东西：两路遥测 + 两路直播流 + 任务三格与今日明细。
+   *
+   * ## 任务统计为什么也在这里刷（2026-11-13 用户要求）
+   *
+   * 早先只刷遥测，理由是「任务统计变化慢」。实际用起来很别扭：任务飞完、
+   * 执行记录变成「已完成」，页面那三格（今日任务 / 已完成 / 失败次数）和
+   * 「当前巡检 · xxx」卡还停在起飞前的样子，得退出子页再进来才更新。
+   *
+   * 两路加起来也就十几条记录（今天全部执行记录），KB 级，和一张遥测快照差不多，
+   * 所以按同一节拍（30s）走，不另开定时器、也不做双周期节流 ——
+   * 「换个数字要等一分钟」在作业现场就是没对齐。
+   *
+   * 失败一律保留旧值、不把页面清空：刷新失败不等于「今天没有任务」。
+   */
   async function refreshLive(): Promise<void> {
-    const [tel, dk, fly, dockFly] = await Promise.allSettled([
+    const [tel, dk, fly, dockFly, s, list] = await Promise.allSettled([
       fetchTelemetry(),
       fetchDockTelemetry(),
       fetchLiveStream(KH_IDS.droneDeviceId),
       fetchLiveStream(KH_IDS.dockDeviceId),
+      fetchTaskStat(),
+      fetchTaskRecords({ start: dayKey(0), end: dayKey(1) }),
     ])
     if (tel.status === 'fulfilled') telemetry.value = tel.value
     if (dk.status === 'fulfilled') dock.value = dk.value
     // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
     if (fly.status === 'fulfilled') droneStream.value = fly.value
     if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
+    if (s.status === 'fulfilled') stat.value = s.value
+    if (list.status === 'fulfilled') records.value = list.value.rows
   }
 
   /**
@@ -537,6 +567,7 @@ export const useUavStore = defineStore('uav', () => {
     loadStat,
     startLive,
     stopLive,
+    refreshLive,
     mediaOf,
     reset,
   }

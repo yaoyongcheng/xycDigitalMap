@@ -8532,6 +8532,17 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /*
+ * 「续航在地面为 0」这类口径说明：一行小字，只在需要时出现。
+ * 比在格子里写「未起飞」好 —— 格子是读数位，混进状态词会被当数值读。
+ */
+.uav-note {
+  margin: 8px 0 0;
+  font-size: var(--fs-10);
+  line-height: 1.5;
+  color: var(--ink-3-dark);
+}
+
+/*
  * 网络质量画成四格信号（照 V2 底部栏的 signalSprites），比写「良好」两个字更快读。
  * 高度撑到与旁边数字同一行高（22px）再底对齐，否则这一格的标签会比别格高一档。
  */

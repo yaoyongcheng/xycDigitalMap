@@ -165,8 +165,18 @@ export interface DroneTelemetry {
   relativeAltitude: number | null
   /** 海拔 m（`height`） */
   height: number | null
-  /** 距起飞点（≈ 机库）的水平距离 m（`homeDistance`） */
+  /** 当前距起飞点（≈ 机库）的水平距离 m（`homeDistance`） */
   homeDistance: number | null
+  /**
+   * **累计飞行里程** m（`totalFlightDistance`）—— V2 详情面板「飞行距离」那一行。
+   *
+   * 别与 `homeDistance` 混用：两者名字像、语义完全不同，量级差 7~8 个数量级。
+   * 2026-11-13 实测同一时刻：`totalFlightDistance` 10809054.8（≈10809km，这台机
+   * 累计飞了三千多架次），`homeDistance` 0.0136（飞机正停在机库里）。
+   * 早先页面那格叫「距起飞点」但用户按 V2 心智读成「飞行距离」，
+   * 看到 162m 会以为里程丢了 —— 现在改回 V2 的口径与本字段。
+   */
+  totalFlightDistance: number | null
   /** 风速 m/s（`windSpeed`） */
   windSpeed: number | null
   /** 预计剩余飞行时间 s（`batteryInfo.remainFlightTime`；在地面为 0） */
@@ -457,6 +467,7 @@ export function toTelemetry(raw: unknown): DroneTelemetry {
     relativeAltitude: num(o.relativeAltitude) ?? num(o.altitude) ?? num(o.relativeHeight),
     height: num(o.height),
     homeDistance: num(o.homeDistance),
+    totalFlightDistance: num(o.totalFlightDistance),
     windSpeed: num(o.windSpeed),
     remainFlightTime: num(batt.remainFlightTime),
     totalSorties: num(o.totalFlightSorties),

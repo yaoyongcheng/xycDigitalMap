@@ -203,6 +203,16 @@ describe('toTelemetry 收敛', () => {
     expect(t.homeDistance).toBe(0.054)
   })
 
+  it('累计飞行里程读 totalFlightDistance，与 homeDistance 分属两个字段', () => {
+    // 2026-11-13 实测同一时刻：累计里程 10809054.8m（这台机飞了 3070 架次），
+    // 而 homeDistance 0.0136m（飞机正停在库里）。V2 面板「飞行距离」= 前者。
+    const t = toTelemetry({ totalFlightDistance: 10809054.798538862, homeDistance: 0.0136223491281271 })
+    expect(t.totalFlightDistance).toBeCloseTo(10809054.8, 1)
+    expect(t.homeDistance).toBeCloseTo(0.0136, 4)
+    // 缺字段是 null（页面写「—」），不是 0
+    expect(toTelemetry({}).totalFlightDistance).toBeNull()
+  })
+
   it('剩余续航 / 累计架次 / 风速都在响应里，不能当「没有数据源」', () => {
     const t = toTelemetry({
       batteryInfo: { remainFlightTime: 1520 },
@@ -534,6 +544,7 @@ describe('uav store', () => {
         relativeAltitude: 0,
         height: 12,
         homeDistance: 0.05,
+        totalFlightDistance: 10809054.8,
         windSpeed: 2.4,
         remainFlightTime: 0,
         totalSorties: 3067,
@@ -587,6 +598,7 @@ describe('uav store', () => {
       relativeAltitude: 0,
       height: 12,
       homeDistance: 0,
+      totalFlightDistance: 0,
       windSpeed: 9.6,
       remainFlightTime: 0,
       totalSorties: 0,
@@ -610,6 +622,7 @@ describe('uav store', () => {
       relativeAltitude: 10,
       height: 10,
       homeDistance: 0,
+      totalFlightDistance: 0,
       windSpeed: 2,
       remainFlightTime: 0,
       totalSorties: 0,

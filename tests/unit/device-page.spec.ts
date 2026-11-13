@@ -1609,11 +1609,12 @@ describe('无人机页', () => {
   })
 
   it('两个页签切的是两套读数：机载飞行参数 ↔ 机库状态', async () => {
-    // 2026-11-13 实测形态：海拔 12.4m、相对高度 0（在地面）、距起飞点 0.05m
+    // 2026-11-13 实测形态：海拔 12.4m、相对高度 0（在地面）、累计里程 10809km
     stubTelemetry = {
       relativeAltitude: 0,
       height: 12.4,
       homeDistance: 126,
+      totalFlightDistance: 10809054.8,
       horizontalSpeed: 4.2,
       verticalSpeed: 0.3,
       windSpeed: 2.4,
@@ -1636,7 +1637,11 @@ describe('无人机页', () => {
     let fly = w.find('.uav-fly')
     expect(fly.text()).toContain('海拔')
     expect(fly.text()).toContain('12.4m')
-    expect(fly.text()).toContain('126m')
+    // 第三格是「飞行距离」= 累计里程（V2 面板同字段 totalFlightDistance），
+    // 不是「距起飞点」的 homeDistance —— 后者是设备参数里的「距机库」
+    expect(fly.text()).toContain('飞行距离')
+    expect(fly.text()).toContain('10809.1km')
+    expect(fly.text()).not.toContain('距起飞点')
     expect(fly.text()).toContain('4.2m/s')
     expect(fly.text()).toContain('0.3m/s')
 
@@ -1710,6 +1715,71 @@ describe('无人机页', () => {
     expect(stats[5].text()).not.toContain('偏低')
     expect(stats[6].text()).toContain('441kbps') // 网络速率
     expect(stats[7].text()).toContain('26.4℃') // 电池温度
+    w.unmount()
+  })
+
+  it('任务飞完：实时刷新把三格与「当前巡检」卡一起更新，不用退出子页', async () => {
+    // 用户 2026-11-13 17:08 截图要求：任务完成后「已完成」要实时变，执行中卡要消失
+    stubStat = { taskCount: 15, finishedCount: 13, failedCount: 0, runningCount: 1, planCount: 1, suspendedCount: 0 }
+    stubRecords = [todayRecord()] // status 1 = 执行中
+    stubTelemetry = { status: 1, modeCode: 5 }
+    stubDock = { networkRate: 620 }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const stats = () => w.findAll('.dev-block')[1].findAll('.uav-stats > div')
+    expect(stats()[1].text()).toContain('13')
+    expect(w.text()).toContain('当前巡检')
+
+    // 降落后服务端把这条记录标成已完成（status 2），统计 finishedCount +1
+    stubRecords = [todayRecord({ status: 2 })]
+    stubStat = { ...stubStat, finishedCount: 14, runningCount: 0 }
+    await useUavStore().refreshLive()
+    await flushPromises()
+    await nextTick()
+
+    expect(stats()[1].text()).toContain('14') // 已完成
+    expect(w.text()).not.toContain('当前巡检') // 执行中卡自己消失
+    w.unmount()
+  })
+
+  it('续航在地面读数为 0：显示「—」并给一句口径说明，不写「0分」', async () => {
+    // 2026-11-13 实测：库里关机（status -1 / modeCode 14）时电量 80%、
+    // remainFlightTime 0；起飞后同一字段给 1753s。0 与「没电」混在一个数里。
+    stubRecords = [todayRecord()]
+    stubTelemetry = { status: -1, modeCode: 14, batteryInfo: { remainFlightTime: 0, batteries: [{ capacityPercent: 80 }] } }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const stats = w.findAll('.dev-block')[2].findAll('.uav-stats > div')
+    expect(stats[3].text()).toContain('—') // 续航
+    expect(stats[3].text()).not.toContain('0分')
+    // 解释只在「地面 + 读数为 0」时出现
+    expect(w.find('.uav-note').text()).toContain('地面时为 0')
+    w.unmount()
+  })
+
+  it('飞行中续航有值就显示分钟数，口径说明收起来', async () => {
+    stubRecords = [todayRecord()]
+    stubTelemetry = { status: 1, modeCode: 5, batteryInfo: { remainFlightTime: 1520, batteries: [{ capacityPercent: 66 }] } }
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    const stats = w.findAll('.dev-block')[2].findAll('.uav-stats > div')
+    expect(stats[3].text()).toContain('25分')
+    expect(w.find('.uav-note').exists()).toBe(false)
     w.unmount()
   })
 
