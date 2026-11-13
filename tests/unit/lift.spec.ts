@@ -21,6 +21,7 @@ import {
   LIFT_PRODUCT,
   liftAuthFailed,
   liftGatewayStale,
+  liftGatewayUnreachable,
 } from '@/api/lift'
 import { LIFT_SNS } from '@/data/liftSn'
 import { useLiftStore } from '@/stores/lift'
@@ -353,6 +354,62 @@ describe('api/lift 请求契约', () => {
     // 数据请求只有首发那 4 次（每台一次去撞），没有「换牌后重试」的第 5 次
     const dataCalls = f.mock.calls.filter((c) => !String(c[0]).includes('/access/token'))
     expect(dataCalls).toHaveLength(LIFT_SNS.length)
+  })
+
+  /**
+   * 部署漏了 `/iot-api` 反代（自建 nginx 只配了静态规则）时，换令牌这一跳会
+   * 命中 404 —— 或者被 SPA 回退吐回一份 index.html（JSON 解析失败）。
+   *
+   * 两者都不是 401，所以以前页面只有一排「—」，跟「电梯今天没数据」长得一样，
+   * 现场只能靠猜。现在这类失败要单独记一笔，让页面能说「网关没连上」。
+   */
+  it('换令牌这一跳 404（缺反代）→ 记「没连上」，不冒充凭证失效', async () => {
+    const f = vi.fn(async (_url?: string) => jsonResponse({ error: 'not found' }, 404))
+    vi.stubGlobal('fetch', f)
+
+    expect(await fetchLiftOnline()).toBeNull()
+
+    expect(liftAuthFailed()).toBe(false)
+    expect(liftGatewayStale()).toBe(false)
+    expect(liftGatewayUnreachable()).toBe(true)
+
+    // 令牌都没换到，数据接口一次都不该发
+    const dataCalls = f.mock.calls.filter((c) => !String(c[0]).includes('/access/token'))
+    expect(dataCalls).toHaveLength(0)
+  })
+
+  it('凭证问题（401）不走「没连上」那条提示，两个状态不互相抢话', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ status: 11, msg: '权限不足', data: null }, 401)),
+    )
+
+    expect(await fetchLiftOnline()).toBeNull()
+    expect(liftAuthFailed()).toBe(true)
+    expect(liftGatewayUnreachable()).toBe(false)
+  })
+
+  /** 一旦令牌换成功，「没连上」的痕迹必须自己消掉，否则提示条永远挂着 */
+  it('令牌换成功后「没连上」的标记自动清除', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'not found' }, 404)))
+    await fetchLiftOnline()
+    expect(liftGatewayUnreachable()).toBe(true)
+
+    clearToken()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).includes('/access/token')) {
+          return jsonResponse({
+            status: 0,
+            data: { tokenKey: 'X-APP-USER', tokenValue: 'OK', expireTs: 172800 },
+          })
+        }
+        return iotOk([])
+      }),
+    )
+    expect(await fetchLiftOnline()).toEqual({})
+    expect(liftGatewayUnreachable()).toBe(false)
   })
 })
 

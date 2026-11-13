@@ -257,6 +257,26 @@ let lastAuthFailAt = 0
  */
 let rejectedValue = ''
 
+/**
+ * 换令牌这一跳**根本没发出去**（或没回音）的时刻。
+ *
+ * 与 401 是两件完全不同的事，之前把它们混成了一条「—」：
+ *   · 401 / `status:11` → 网关说她认不出这张令牌，会自动重换，页面上有「重试」；
+ *   · 请求没出门 → 反代缺失（nginx 没配 `/iot-api`）、域名不可达、服务器不出网。
+ *     这种失败**永远不会自愈**，而且一条数据都拿不到。
+ *
+ * 典型现场情形：把 `dist/` 拷到自建 nginx 上，只配了静态文件规则 —— 浏览器
+ * 请求 `/iot-api/...` 命中 nginx 的 404（或 SPA 回退吐回 index.html，JSON 解析
+ * 失败），页面全横杠且没有任何提示，用户根本无从判断是「没数据」还是「没配好」。
+ * 这里记一笔，让页面能把原因说出来。
+ */
+let tokenProbeFailAt = 0
+
+/** 换令牌这一跳是否没打通（页面据此提示「反代/网络」而不是沉默的「—」） */
+export function iotTokenUnreachable(): boolean {
+  return tokenProbeFailAt > 0
+}
+
 /** 换令牌；单独导出是为了单测能直接断言请求体与响应解析 */
 export async function requestToken(): Promise<IotToken> {
   const data = await iotJson<{
@@ -299,7 +319,14 @@ export async function ensureToken(): Promise<IotToken> {
         throw new IotStaleTokenError()
       }
       token = next
+      tokenProbeFailAt = 0
       return next
+    } catch (err) {
+      // 只记「请求没打通」那一类：401 归 `authLost` 提示条，这里不抢话。
+      // `IotStaleTokenError` 继承自 `ApiError(401)`，一并被排除。
+      const credentialIssue = err instanceof ApiError && err.code === 401
+      if (!credentialIssue) tokenProbeFailAt = Date.now()
+      throw err
     } finally {
       inflight = null
     }
@@ -328,17 +355,20 @@ export function applyToken(t: IotToken | null): void {
   token = t
   lastAuthFailAt = 0
   rejectedValue = ''
+  tokenProbeFailAt = 0
 }
 
 /**
  * 清令牌（用户点「重试」/ 强制重取时调用）。
  *
  * 顺带清掉自愈冷却 —— 这是**用户显式要重来**，应该立刻真的去换一次；
- * 自动自愈才受 `TOKEN_RETRY_GAP` 约束。
+ * 自动自愈才受 `TOKEN_RETRY_GAP` 约束。也顺手清掉「没打通」的痕迹：
+ * 这一下要是再失败，`ensureToken` 会重新记上，不必留着上一轮的旧结论。
  */
 export function clearToken(): void {
   token = null
   lastAuthFailAt = 0
+  tokenProbeFailAt = 0
 }
 
 /** 带令牌的 POST（401 时自愈一次，失败进冷却） */

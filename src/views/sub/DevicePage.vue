@@ -299,6 +299,18 @@ function goLogin(): void {
 const needsRetry = computed(() => props.kind === 'lift' && lift.authLost)
 
 /**
+ * 换令牌那一跳根本没打通 —— 部署问题，不是凭证问题。
+ *
+ * 与 `needsRetry` 互斥（`liftGatewayUnreachable()` 里已经排掉 401）。要单独提示，
+ * 是因为它的处置完全不同：点「重试」不会好，得去查 nginx 有没有 `/iot-api`
+ * 那段 `proxy_pass`、或服务器能否访问 `iot.cscec3b-iti.com`。
+ *
+ * 以前这种情况页面只显示一排「—」，跟「电梯今天没数据」长得一模一样 ——
+ * 现场部署一次就要排查半天，所以这条提示值一个位置。
+ */
+const gatewayLost = computed(() => props.kind === 'lift' && lift.gatewayUnreachable)
+
+/**
  * 「重试」—— **不是**「重新登录」。
  *
  * 这一点踩过坑：之前这里写的是「重新登录」，但登录页换到的是 `:8081` 的
@@ -329,6 +341,12 @@ function goRetry(): void {
     </div>
 
     <template v-else-if="pageTab === 'live'">
+      <!-- 换令牌那一跳没出去：多半是部署漏了 /iot-api 反代，点「重试」不管用也得给 -->
+      <section v-if="gatewayLost" class="dev-auth is-warn" role="alert">
+        <p>电梯网关没连上 —— 部署环境缺「/iot-api」反代，或服务器无法出网</p>
+        <button class="dev-auth-btn" type="button" @click="goRetry">重试</button>
+      </section>
+
       <!-- 凭证失效：台账是好的，所以卡片还在，只是每一格「—」。不说明白用户只能反复下拉 -->
       <section v-if="needsRetry" class="dev-auth" role="alert">
         <!--

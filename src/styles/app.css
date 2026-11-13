@@ -8081,6 +8081,24 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .dev-auth-btn:active { opacity: 0.8; }
 
+/*
+ * 「网关没连上」与「凭证失效」要一眼分开。
+ *
+ * 前者是部署问题（nginx 漏了 /iot-api 反代、或服务器出不了网），点「重试」
+ * 不会好，只能去改配置；后者是网关侧令牌轮换，等一下重试有用。所以这里用
+ * 警示色而不是危险色，按钮降成描边次级样式，别让用户以为点一下就解决。
+ * 环用 inset box-shadow 画（与状态胶囊同法），不用 border，免得顶高行高。
+ */
+.dev-auth.is-warn {
+  box-shadow: inset 3px 0 0 var(--warn-dark);
+}
+
+.dev-auth.is-warn .dev-auth-btn {
+  background: transparent;
+  color: var(--warn-dark);
+  box-shadow: inset 0 0 0 1px var(--warn-dark);
+}
+
 .dev-board {
   display: flex;
   flex-direction: column;

@@ -1816,6 +1816,28 @@ SetWorkCycleData(sn, count, hours);
 除非原厂给 token 接口补上 CORS。可用 `VITE_IOT_TOKEN_BASE` 指向别的可用反代。
 改 `vite.config.ts` 后**必须重启 dev server**，中间件在启动时注册，HMR 不生效。
 
+⚠️ 自己用 nginx / 任何静态 HTTP 服务部署时，**必须补上同一段反代**：
+
+```nginx
+location /iot-api/ {
+  proxy_pass https://iot.cscec3b-iti.com/;
+  proxy_set_header Host iot.cscec3b-iti.com;
+  proxy_ssl_server_name on;
+  proxy_read_timeout 25s;
+}
+```
+
+漏了它的表现极具误导性：换令牌请求命中 nginx 的 404（或被 SPA 回退吐回
+`index.html`，JSON 解析失败），`ensureToken()` 报错 → 三个取数接口全部返回
+`null` → **电梯每一格都是「—」，而且没有任何报错**。这与「电梯今天没数据」
+长得一模一样，现场只能靠猜。所以 2026-11-13 补了一条独立状态：
+`api/iot.ts` 的 `iotTokenUnreachable()` 记录「换令牌这一跳没打通」，
+`api/lift.ts` 的 `liftGatewayUnreachable()` 把它与 401 分开，
+设备详情页据此显示警示条「电梯网关没连上 —— 部署环境缺「/iot-api」反代，
+或服务器无法出网」。**看到这条提示就去查部署，点「重试」不会好。**
+（`server/serve.mjs` 已内置这层反代，`npm run deploy:http` 不必额外配置。）
+
+
 #### 第四轮：令牌「出厂即为废票」，重试也救不回
 
 反代通了之后仍拿不到数据，进一步实测：

@@ -8,6 +8,7 @@ import {
   LIVE_ATTR_WINDOW,
   liftAuthFailed,
   liftGatewayStale,
+  liftGatewayUnreachable,
 } from '@/api/lift'
 import { clearToken } from '@/api/iot'
 import type { LiftAttr, LiftToday } from '@/utils/lift'
@@ -95,6 +96,15 @@ export const useLiftStore = defineStore('lift', () => {
    * 自己刚才那一下没点上，继续反复点。
    */
   const gatewayStale = ref(false)
+
+  /**
+   * 换令牌这一跳没打通 —— 反代缺失 / 域名不可达 / 服务器不出网。
+   *
+   * 这一条是**部署问题**，不是凭证问题，也不是「电梯没数据」：一条数据都拿不到，
+   * 而且永远不会自己恢复。典型产生方式是「把 dist 拷到自建 nginx，只配了静态规则，
+   * 漏了 `/iot-api` 那段 proxy_pass」。不说明白，现场只能看到一排「—」。
+   */
+  const gatewayUnreachable = ref(false)
 
   let lastFailAt = 0
   let inflight: Promise<void> | null = null
@@ -264,6 +274,7 @@ export const useLiftStore = defineStore('lift', () => {
 
       authLost.value = liftAuthFailed()
       gatewayStale.value = liftGatewayStale()
+      gatewayUnreachable.value = liftGatewayUnreachable()
 
       if (on || day || live) {
         state.value = 'ok'
@@ -326,6 +337,7 @@ export const useLiftStore = defineStore('lift', () => {
 
     authLost.value = liftAuthFailed()
     gatewayStale.value = liftGatewayStale()
+    gatewayUnreachable.value = liftGatewayUnreachable()
     if (liveAttr || on || day) {
       state.value = 'ok'
       updatedAt.value = stamp()
@@ -388,6 +400,7 @@ export const useLiftStore = defineStore('lift', () => {
     updatedAt.value = ''
     authLost.value = false
     gatewayStale.value = false
+    gatewayUnreachable.value = false
     lastFailAt = 0
   }
 
@@ -417,6 +430,7 @@ export const useLiftStore = defineStore('lift', () => {
     updatedAt,
     authLost,
     gatewayStale,
+    gatewayUnreachable,
     hasData,
     totalSeconds,
     onlineKnown,

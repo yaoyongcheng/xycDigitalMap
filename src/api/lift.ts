@@ -1,4 +1,4 @@
-import { fetchEventRows, fetchRealtimeRows, snOfMetric, IotStaleTokenError, type IotEventRow } from './iot'
+import { fetchEventRows, fetchRealtimeRows, snOfMetric, IotStaleTokenError, iotTokenUnreachable, type IotEventRow } from './iot'
 import { ApiError } from './http'
 import { LIFT_SNS } from '@/data/liftSn'
 import { sumWork, toAttr, type LiftAttr, type LiftToday } from '@/utils/lift'
@@ -64,6 +64,19 @@ export function liftAuthFailed(): boolean {
 /** 网关还没轮换令牌（重试也没用，文案要说实话） */
 export function liftGatewayStale(): boolean {
   return staleAt > 0
+}
+
+/**
+ * 换令牌这一跳根本没打通（反代缺失 / 域名不可达 / 服务器不出网）。
+ *
+ * 与 `liftAuthFailed()` 互斥：那条说的是「网关回了 401」，这条说的是
+ * 「请求压根没出得去」。两者的处置完全不同 —— 前者点「重试」等网关轮换，
+ * 后者要去查部署（nginx 有没有 `/iot-api` 那一层），点一百次也不会好。
+ *
+ * 之前这种情况页面只显示一排「—」，用户没法把它和「电梯真没数据」分开。
+ */
+export function liftGatewayUnreachable(): boolean {
+  return !liftAuthFailed() && iotTokenUnreachable()
 }
 
 /** 清掉痕迹（取数成功 / 重新登录后调用） */

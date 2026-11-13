@@ -14,11 +14,13 @@ import {
   fetchLiftToday,
   liftAuthFailed,
   liftGatewayStale,
+  liftGatewayUnreachable,
 } from '@/api/lift'
 import SheetHost from '@/components/overlays/SheetHost.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
 import CountUp from '@/components/ui/CountUp.vue'
 import LivePlayer from '@/components/ui/LivePlayer.vue'
+import DevicePage from '@/views/sub/DevicePage.vue'
 import { CRANE_SNS } from '@/data/craneSn'
 import { useAuthStore } from '@/stores/auth'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
@@ -114,6 +116,8 @@ vi.mock('@/api/lift', () => ({
   liftAuthFailed: vi.fn(() => false),
   // 「重试过、网关还没轮换令牌」：默认假，用例按需打开第二句文案
   liftGatewayStale: vi.fn(() => false),
+  // 换令牌那一跳没打通（缺 /iot-api 反代 / 服务器出不了网）：默认假
+  liftGatewayUnreachable: vi.fn(() => false),
   clearLiftAuthFailure: vi.fn(),
 }))
 const mockLiftOnline = vi.mocked(fetchLiftOnline)
@@ -165,6 +169,7 @@ describe('智控面板（真实台账）', () => {
     // 默认「凭证有效」，要测提示条的用例自己打开
     vi.mocked(liftAuthFailed).mockReturnValue(false)
     vi.mocked(liftGatewayStale).mockReturnValue(false)
+    vi.mocked(liftGatewayUnreachable).mockReturnValue(false)
     craneHandlers = null
     mockSubscribe.mockReset()
     mockSubscribe.mockImplementation((h) => {
@@ -613,6 +618,29 @@ describe('智控面板（真实台账）', () => {
     expect(bar.exists()).toBe(true)
     expect(bar.text()).toContain('电梯物联网网关未恢复')
     expect(bar.text()).not.toContain('重新获取')
+    w.unmount()
+  })
+
+  /**
+   * 自建 nginx 漏了 `/iot-api` 反代时，换令牌这一跳 404（或被 SPA 回退吐回 HTML）。
+   *
+   * 这种失败**不会自愈**，也拿不到任何一条电梯数据。以前页面只有一排「—」，
+   * 和「电梯今天没数据」长得一模一样 —— 现场部署一次要排查半天。
+   * 现在要给出提示条，并且说清是「缺反代」而不是「凭证失效」。
+   */
+  it('电梯网关没连上（缺 /iot-api 反代）：详情页给警示条，不冒充当凭证失效', async () => {
+    signIn()
+    vi.mocked(liftGatewayUnreachable).mockReturnValue(true)
+
+    const w = mount(DevicePage, { props: { kind: 'lift' } })
+    await flushPromises()
+
+    const bar = w.find('.dev-auth.is-warn')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('/iot-api')
+    expect(bar.text()).not.toContain('凭证失效')
+    // 两条提示互斥：不能同时挂两条让用户不知道该看哪条
+    expect(w.findAll('.dev-auth')).toHaveLength(1)
     w.unmount()
   })
 

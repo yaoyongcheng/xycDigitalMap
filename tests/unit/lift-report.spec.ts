@@ -34,6 +34,8 @@ vi.mock('@/api/lift', () => ({
   fetchLiftAttr: vi.fn(async () => null),
   liftAuthFailed: vi.fn(() => false),
   liftGatewayStale: vi.fn(() => false),
+  // 报表页也要读这条（换令牌没打通 / 缺反代），默认「连得上」
+  liftGatewayUnreachable: vi.fn(() => false),
   clearLiftAuthFailure: vi.fn(),
 }))
 
