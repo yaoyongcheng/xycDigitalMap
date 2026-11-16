@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { fetchMediaJobs, fetchTaskRecords, type DroneMedia } from '@/api/drone'
 import { ApiError } from '@/api/http'
+import { isEquirect } from '@/utils/pano'
 
 /**
  * 巡检照片（2026-11 阶段 8：改真实航拍图；2026-11-16 重构取数与分类）
@@ -34,10 +35,18 @@ import { ApiError } from '@/api/http'
  * 3. **媒体只能逐条取**（`/media/task/job/{id}`，`job/list` 之类端点不存在），
  *    所以按倒序最多试 `MAX_PROBE` 条，够 `MAX_JOBS` 个任务就收手。
  *
- * ## 关于图片体积
+ * ## 关于图片体积（2026-11-16 用户要求「像微信那样」）
  *
- * 原图单张 5~8MB；媒体接口同时给了 `thumbnail`（约 440KB，实测全部有值）。
- * 列表用缩略图 + `loading="lazy"`，点开大图才加载原图。
+ * 原图单张 4~8MB；媒体接口同时给了 `thumbnail`（约 370~520KB，实测全部有值）。
+ * 列表只用缩略图；点开大图先显示**同一张缩略图**（已在缓存里，秒开），
+ * 用户点「查看原图」才去拉原图并显示下载进度。`limitUrl` 不是压缩版 ——
+ * 实测与 `url` 一模一样的字节数，只是换了 moss 域名，别拿它当低清图。
+ *
+ * ## 全景
+ *
+ * 平台没有任何「这是全景图」的字段，只能按图片宽高比判定（2:1 = 等距圆柱）。
+ * 判定与角度数学在 `utils/pano.ts`；这里只负责把**列表里加载缩略图时顺手
+ * 拿到的尺寸**记下来，供大图弹层与卡片角标判断，省掉再发一次请求。
  */
 
 /** 一张真实航拍照片 */
@@ -160,6 +169,15 @@ export const usePatrolStore = defineStore('patrol', () => {
   /** 本次同步扫过的飞行次数（页面可显示「已同步 N 次飞行」） */
   const flightCount = ref(0)
 
+  /**
+   * 照片 id → 原图尺寸（宽 × 高）。
+   *
+   * 来源是列表里 `<img>` 的 `naturalWidth/Height` —— 缩略图与原图尺寸一致，
+   * 加载缩略图时顺手就拿到了，不用为「判断是不是全景」再发一次请求。
+   * 记录后不再覆盖（同一张图的尺寸不会变）。
+   */
+  const dims = ref<Record<string, { w: number; h: number }>>({})
+
   const state = ref<PatrolState>('idle')
   const error = ref('')
 
@@ -180,6 +198,29 @@ export const usePatrolStore = defineStore('patrol', () => {
     if (bytes < 1024) return `${bytes}B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`
     return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+  }
+
+  /** 记一张图的原始尺寸（尺寸无效或已记录时不动） */
+  function setDims(id: string, w: number, h: number): void {
+    if (!(w > 0) || !(h > 0)) return
+    if (dims.value[id]) return
+    dims.value = { ...dims.value, [id]: { w, h } }
+  }
+
+  /** 这张照片是不是球面全景（尺寸未知时一律 false，见 utils/pano.ts） */
+  function isPano(id: string): boolean {
+    const d = dims.value[id]
+    return d ? isEquirect(d.w, d.h) : false
+  }
+
+  /**
+   * 低清预览源：缩略图优先，没有缩略图才退回原图。
+   *
+   * 大图弹层首屏用它（缩略图通常已在列表里缓存过，等于零等待），
+   * 也用它兜「这张图没有缩略图」的情况 —— 那种情况下原图就是唯一选择。
+   */
+  function previewOf(p: Pick<PatrolPhotoReal, 'thumbnail' | 'url'>): string {
+    return p.thumbnail || p.url
   }
 
   /**
@@ -291,6 +332,8 @@ export const usePatrolStore = defineStore('patrol', () => {
         // 增量写入（`probe` 拿到一个任务就 push 一批），所以先清空
         photos.value = []
         flightCount.value = 0
+        // 尺寸缓存跟着换：新一批照片的 id 可能完全不同，旧记录白占内存
+        dims.value = {}
 
         for (const days of WINDOWS) {
           let rows
@@ -355,6 +398,7 @@ export const usePatrolStore = defineStore('patrol', () => {
   function reset(): void {
     photos.value = []
     flightCount.value = 0
+    dims.value = {}
     state.value = 'idle'
     error.value = ''
     lastFailAt = 0
@@ -364,10 +408,14 @@ export const usePatrolStore = defineStore('patrol', () => {
   return {
     photos,
     flightCount,
+    dims,
     state,
     error,
     list,
     sizeText,
+    setDims,
+    isPano,
+    previewOf,
     apply,
     load,
     refresh,

@@ -7758,7 +7758,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   object-fit: cover;
 }
 
-/* 左上角「航拍原图」角标：与 .patrol-tag 同款胶囊，只是定位在图内 */
+/* 左上角角标（航拍 / 全景）：与 .patrol-tag 同款胶囊，只是定位在图内 */
 .patrol-thumb-tag {
   position: absolute;
   top: 6px;
@@ -7772,6 +7772,12 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   font-size: var(--fs-10);
   font-weight: 650;
   line-height: 16px;
+}
+
+/* 全景（2:1 等距圆柱）用蓝色标出来：点开是环视，不是普通大图 */
+.patrol-thumb-tag.is-pano {
+  background: var(--blue);
+  color: #fff;
 }
 
 /* 右下角原图体积：照片显示出来后，「多大」不该再占一整行 */
@@ -7924,6 +7930,120 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   max-height: 46vh;
   object-fit: contain;
   object-position: center;
+}
+
+/* =====================================================================
+ * 智眸大图 · 缩略图 → 原图 与 全景环视（2026-11-16）
+ *
+ * 照片默认只加载缩略图（370~520KB），点「查看原图」才拉 4~8MB 的原图，
+ * 下载过程走 .hd-progress 这条真实进度条（字节来自流读取，不是估算）。
+ * 等距圆柱图（2:1）改用球面播放器，画布铺满 .pano-stage。
+ * ===================================================================== */
+
+/* 图内角标：压缩预览 / 原图 / 全景 · 可环视 */
+.patrol-view-tag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: rgba(5, 10, 21, 0.62);
+  color: var(--ink-1-dark);
+  font-size: var(--fs-11);
+  line-height: 20px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.patrol-view-tag.is-pano {
+  background: var(--blue);
+  color: #fff;
+  font-weight: 650;
+}
+
+/* 全景舞台：黑底 + 圆角裁切，画布吃掉整个 46vh（弹层内可用的最大高度） */
+.pano-stage {
+  position: relative;
+  margin: 8px 0 14px;
+  border-radius: var(--r-12);
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+.pano-host {
+  position: relative;
+  width: 100%;
+  height: 46vh;
+  max-height: 420px;
+  min-height: 200px;
+}
+
+/* 退路（无 WebGL）时是平面大图，按 contain 装进同一块区域 */
+.pano-host img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.pano-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 环视必须吃掉浏览器默认的触摸滚动，否则手指一动页面跟着走 */
+  touch-action: none;
+  cursor: grab;
+}
+
+.pano-canvas:active { cursor: grabbing; }
+
+.pano-reset {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: rgba(5, 10, 21, 0.62);
+  box-shadow: inset 0 0 0 1px var(--line-dark-2);
+  color: var(--ink-2-dark);
+  font-size: var(--fs-11);
+  cursor: pointer;
+}
+
+.pano-reset:active { opacity: 0.7; }
+
+/* 手势提示压在画布底部（渐变压一层，不挡画面中心） */
+.pano-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 18px 12px 8px;
+  background: linear-gradient(180deg, rgba(5, 10, 21, 0) 0%, rgba(5, 10, 21, 0.82) 100%);
+  color: var(--ink-3-dark);
+  font-size: var(--fs-11);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* 原图下载进度（宽度是真百分比，服务端没给长度时停在 0 当不确定态） */
+.hd-progress {
+  height: 3px;
+  margin: -6px 0 12px;
+  border-radius: var(--r-2);
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.hd-progress i {
+  display: block;
+  height: 100%;
+  background: var(--blue-dark);
+  transition: width 0.2s var(--ease-out);
 }
 
 .patrol-meta {

@@ -227,10 +227,75 @@ describe('智眸大图弹层（真实航拍照片）', () => {
     expect(meta).toContain('向阳村-安全巡检')
     expect(meta).toContain('无人机')
     expect(meta).toContain('2026-07-15 09:38')
-    // 大图 src 是 OSS 原图直链，不是缩略图、也不是本地静态 webp
+    // 2026-11-16 起首屏只给缩略图（微信式两层）：原图 4~8MB，点「查看原图」才拉
     const src = w.find('.patrol-view img').attributes('src') ?? ''
     expect(src).toContain('oss.keehang.com')
+    expect(src).toContain('/thumbnail/')
+    expect(w.find('.photo-btn').text()).toContain('查看原图')
+    w.unmount()
+  })
+
+  it('点「查看原图」才换成原图（不点就一直在缩略图上）', async () => {
+    const patrol = usePatrolStore()
+    patrol.apply([photo({ id: 'a', name: 'DJI_0001_V.jpeg', size: 7_825_440 })])
+    const w = mount(Host)
+    await nextTick()
+    await w.findAll('.patrol-card')[0].trigger('click')
+    await nextTick()
+
+    // 原图下载：返回一份真字节的 blob（带 content-length 才能算进度）
+    const bytes = 7_825_440
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: (k: string) => (k.toLowerCase() === 'content-length' ? String(bytes) : null) },
+        blob: async () => new Blob([new Uint8Array(8)], { type: 'image/jpeg' }),
+      })),
+    )
+
+    const btn = w.find('.photo-btn')
+    expect(btn.text()).toContain('查看原图 · 7.5MB')
+    await btn.trigger('click')
+    // 等解码兜底（短则立刻，长则 1.2s 超时）；这里给足余量
+    await new Promise((r) => setTimeout(r, 1400))
+    await flushPromises()
+
+    const src = w.find('.patrol-view img').attributes('src') ?? ''
     expect(src).not.toContain('/thumbnail/')
+    expect(w.find('.photo-btn').text()).toContain('已是原图')
+    w.unmount()
+  })
+
+  it('2:1 全景图走进球面播放器，普通 4:3 仍是平面大图', async () => {
+    const patrol = usePatrolStore()
+    patrol.apply([
+      photo({ id: 'pano', name: 'pano.jpeg' }),
+      photo({ id: 'flat', name: 'flat.jpeg' }),
+    ])
+
+    // 尺寸来自列表里缩略图的 naturalWidth/Height；这里直接灌进 store
+    patrol.setDims('pano', 8192, 4096)
+    patrol.setDims('flat', 4032, 3024)
+
+    const w = mount(Host)
+    await nextTick()
+
+    useBottomSheetStore().openPatrol('pano')
+    await nextTick()
+    await nextTick()
+    expect(w.find('.pano-stage').exists()).toBe(true)
+    expect(w.find('.patrol-view').exists()).toBe(false)
+    // happy-dom 没有 WebGL：必须退回平面并写明，不能白屏
+    expect(w.find('.pano-hint').text()).toContain('不支持全景渲染')
+    expect(w.find('.pano-host img').exists()).toBe(true)
+
+    useBottomSheetStore().openPatrol('flat')
+    await nextTick()
+    await nextTick()
+    expect(w.find('.pano-stage').exists()).toBe(false)
+    expect(w.find('.patrol-view').exists()).toBe(true)
     w.unmount()
   })
 

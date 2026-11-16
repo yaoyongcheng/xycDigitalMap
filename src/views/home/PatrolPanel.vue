@@ -91,6 +91,18 @@ function markBroken(id: string): void {
   broken.value = { ...broken.value, [id]: true }
 }
 
+/**
+ * 缩略图上屏时顺手记下原图尺寸。
+ *
+ * 缩略图与原图同尺寸，所以这一次 `naturalWidth/Height` 就是判断「是不是 2:1
+ * 全景」的全部依据（平台没有全景字段，见 `utils/pano.ts`）。记在 store 里，
+ * 大图弹层打开时直接命中，不用再等一张图加载才知道该用球面还是平面。
+ */
+function onThumbLoad(id: string, e: Event): void {
+  const img = e.target as HTMLImageElement | null
+  if (img) patrol.setDims(id, img.naturalWidth, img.naturalHeight)
+}
+
 function retry(): void {
   void patrol.load(true)
 }
@@ -143,7 +155,7 @@ function retry(): void {
         :key="p.id"
         class="patrol-card"
         type="button"
-        :aria-label="`${p.taskName}，${p.time.slice(0, 16).replace('T', ' ')}，${activeName}，查看大图`"
+        :aria-label="`${p.taskName}，${p.time.slice(0, 16).replace('T', ' ')}，${activeName}，${patrol.isPano(p.id) ? '查看全景' : '查看大图'}`"
         @click="sheet.openPatrol(p.id)"
       >
         <div class="patrol-thumb">
@@ -154,10 +166,13 @@ function retry(): void {
             loading="lazy"
             decoding="async"
             referrerpolicy="no-referrer"
+            @load="onThumbLoad(p.id, $event)"
             @error="markBroken(p.id)"
           />
           <span v-else class="patrol-thumb-hint">点击查看原图 · {{ patrol.sizeText(p.size) }}</span>
-          <span class="patrol-thumb-tag">航拍原图</span>
+          <span class="patrol-thumb-tag" :class="{ 'is-pano': patrol.isPano(p.id) }">
+            {{ patrol.isPano(p.id) ? '全景' : '航拍' }}
+          </span>
           <span v-if="p.thumbnail && !broken[p.id]" class="patrol-thumb-size">
             {{ patrol.sizeText(p.size) }}
           </span>
