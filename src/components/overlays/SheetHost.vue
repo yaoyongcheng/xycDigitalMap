@@ -10,7 +10,8 @@ import UavTodaySheet from '@/components/sheets/UavTodaySheet.vue'
 import { deviceSet } from '@/data/device'
 import { LIFT_CAGES } from '@/data/liftSn'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
-import { usePatrolStore } from '@/stores/patrol'
+import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
+import { panoLabel } from '@/utils/pano'
 
 /**
  * 弹层宿主（2026-10 版本同步 · 第一批建立，第四批补齐内容）
@@ -47,7 +48,12 @@ const TITLES: Record<string, string> = {
 }
 
 const title = computed(() => {
-  if (sheet.kind === 'patrol') return photo.value?.name ?? '照片'
+  if (sheet.kind === 'patrol') {
+    // 全景来自重建成果，标题用「站点-全景」（服务端名字末尾那串记录 id 去掉，
+    // 见 utils/pano.ts 的 panoLabel）；文件名的 `_0.jpg` 对用户没有意义
+    if (sheet.id === PANO_SHEET_ID) return (patrol.pano && panoLabel(patrol.pano.taskName)) || '项目全景'
+    return photo.value?.name ?? '照片'
+  }
   return (sheet.kind && TITLES[sheet.kind]) || '明细'
 })
 

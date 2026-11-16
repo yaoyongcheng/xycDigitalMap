@@ -7,7 +7,7 @@ import { clearSession } from '@/api/drone'
 import SheetHost from '@/components/overlays/SheetHost.vue'
 import { PATROL_CATS, catOfTask } from '@/data/config'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
-import { usePatrolStore, type PatrolPhotoReal } from '@/stores/patrol'
+import { PANO_SHEET_ID, usePatrolStore, type PatrolPhotoReal } from '@/stores/patrol'
 import HomeSheet from '@/views/home/HomeSheet.vue'
 import PatrolPanel from '@/views/home/PatrolPanel.vue'
 
@@ -406,5 +406,344 @@ describe('航线分类映射（catOfTask）', () => {
     expect(catOfTask('例行飞行任务')).toBe('layout')
     expect(catOfTask('')).toBe('layout')
     expect(catOfTask(undefined as unknown as string)).toBe('layout')
+  })
+})
+
+/* ================================================================ *
+ * 项目全景（2026-11-16：吃平台拼好的重建成果，不自拼）                *
+ * ================================================================ */
+
+/** keehang 的响应包：`{code,msg,data}`，code === 200 才算成功 */
+function khOk(body: unknown): Response {
+  return { ok: true, status: 200, json: async () => body } as unknown as Response
+}
+
+/**
+ * 一条全景成果。
+ *
+ * 现场实测（2026-11-15，record 181616）：一次飞行产出 3 个成果，名字按
+ * `_0 / _1 / _2` 结尾；`thumbnail` 是 3162×1581 的等距圆柱预览图（OSS 缩略图桶），
+ * `download` 是 10000×5000 的 `origin.jpg`（moss 域名），`url` 指向立方体切片
+ * 清单 `pano.json`（V2 的 `#/pano` 用它，我们不用）。
+ */
+function achievement(id: number, secret: string, name: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    secret,
+    materialId: `m-${id}`,
+    name,
+    mediaType: 2,
+    size: 13_688_984,
+    recreateType: 'PANO',
+    url: `https://oss.keehang.com:19090/models/${id}/pano.json`,
+    thumbnail: `https://oss.keehang.com:19090/thumbnail/model/${id}/thumbnail.jpg`,
+    download: `https://moss.keehang.com:9443/models/${id}/origin.jpg`,
+    ...over,
+  }
+}
+
+/** 一条全景重建任务（`getProjectRecreateInfo` 的一行，成果内嵌在 DTO 列表里） */
+function panoTask(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: '220fe3eb-06ac-43b9-98a6-94b0b44d00d2',
+    recordId: 181616,
+    projectId: 193640872670213,
+    projectName: '中建三局-向阳村项目',
+    taskName: '向阳村-全景_202611151130181616',
+    lineName: '向阳村-全景',
+    taskType: 2,
+    progress: 100,
+    status: 2,
+    createTime: '2026-11-15 12:10:54',
+    resultRecordDTOList: [
+      achievement(103180, 'b3uT22dX', '向阳村-全景_202611151130181616_0.jpg'),
+      achievement(103181, 'LsM8Eppu', '向阳村-全景_202611151130181616_1.jpg'),
+      achievement(103182, 'QjPlKQbX', '向阳村-全景_202611151130181616_2.jpg'),
+    ],
+    ...over,
+  }
+}
+
+/** 一条正射任务（同一个列表里混着的干扰项） */
+function orthoTask(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    recordId: 181819,
+    taskName: '向阳村-正射_202611160800181819',
+    lineName: '向阳村-正射',
+    taskType: 3,
+    status: 2,
+    createTime: '2026-11-16 09:00:28',
+    resultRecordDTOList: [
+      achievement(103342, 'NCQnEO4d', '向阳村-正射_202611160800181819_W.tif', { recreateType: 'ORTHO', mediaType: 3 }),
+    ],
+    ...over,
+  }
+}
+
+/** 一次普通航拍飞行（照片墙的正经来源） */
+function flightRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 147744,
+    taskId: 4912,
+    taskName: '向阳村-安全巡检',
+    start: '2026-11-15T09:00:00',
+    end: '2026-11-15T09:20:00',
+    ...over,
+  }
+}
+
+/**
+ * 按 URL 分发的桩：CAS 两步 + 执行记录 + 媒体 + 重建任务列表。
+ *
+ * `recreate` 可以换成 Array 或 Response，用来演「接口挂了 / 一条全景都没有」。
+ */
+function panoFetch(opts: { recreate?: unknown; records?: unknown[] } = {}): ReturnType<typeof vi.fn> {
+  const recreate = opts.recreate ?? [orthoTask(), panoTask()]
+  const records = opts.records ?? [flightRecord()]
+  return vi.fn(async (url: string) => {
+    const u = String(url)
+    if (u.includes('/cas/auth/login')) {
+      return khOk({ code: 200, data: { tgt: 'TGT', st: 'ST', userDetail: { uid: 42 } } })
+    }
+    if (u.includes('/cas/auth/validate')) {
+      return khOk({ code: 200, data: { uid: '42', token: 'TOKEN-1', timestamp: Date.now() } })
+    }
+    if (u.includes('/dashboard/recreate/getProjectRecreateInfo')) {
+      if (!Array.isArray(recreate)) return recreate as Response
+      return khOk({ code: 200, data: { total: recreate.length, page: 1, size: 30, list: recreate } })
+    }
+    if (u.includes('/task/exec/list/record')) return khOk({ code: 200, data: records })
+    if (u.includes('/media/task/job/')) {
+      return khOk({
+        code: 200,
+        data: [
+          {
+            name: 'DJI_20261115090000_0001_V.jpeg',
+            url: 'https://oss.keehang.com:19090/iot-media/a.jpeg',
+            thumbnail: 'https://oss.keehang.com:19090/thumbnail/iot/a.jpeg',
+            mediaType: 'image/jpeg',
+            size: 4_411_392,
+            lastModified: '2026-11-15 09:12:00',
+          },
+        ],
+      })
+    }
+    return { ok: false, status: 404, json: async () => ({ code: 404 }) } as unknown as Response
+  })
+}
+
+describe('项目全景（平台拼好的重建成果）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(async () => {
+    await flushPromises()
+    clearSession()
+    vi.unstubAllGlobals()
+  })
+
+  it('拿的是重建成果（等距圆柱图），不是那 26 张原片', async () => {
+    const f = panoFetch()
+    vi.stubGlobal('fetch', f)
+    const patrol = usePatrolStore()
+    await patrol.load()
+
+    expect(patrol.pano).not.toBeNull()
+    expect(patrol.pano?.taskName).toBe('向阳村-全景_202611151130181616')
+    // 预览 = OSS 缩略图桶里的等距圆柱图；高清 = moss 上的 origin.jpg
+    expect(patrol.pano?.preview).toContain('/thumbnail/model/103180/thumbnail.jpg')
+    expect(patrol.pano?.full).toContain('/models/103180/origin.jpg')
+    expect(patrol.pano?.size).toBe(13_688_984)
+    expect(patrol.panoState).toBe('ok')
+  })
+
+  it('全景航线的原片不进照片墙，也**不为它发媒体请求**', async () => {
+    const f = panoFetch({
+      records: [flightRecord({ id: 181616, taskId: 4911, taskName: '向阳村-全景', start: '2026-11-15T11:30:00' })],
+    })
+    vi.stubGlobal('fetch', f)
+    const patrol = usePatrolStore()
+    await patrol.load()
+
+    expect(patrol.photos).toHaveLength(0)
+    const media = f.mock.calls.filter((c) => String(c[0]).includes('/media/task/job/'))
+    expect(media).toHaveLength(0)
+  })
+
+  it('只取最新一条，且必须是已完成（跳过更新的失败任务）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      panoFetch({
+        recreate: [
+          panoTask({ recordId: 181999, status: 1, createTime: '2026-11-16 10:00:00' }),
+          orthoTask(),
+          panoTask(),
+          panoTask({ recordId: 181421, createTime: '2026-11-14 12:02:02' }),
+        ],
+      }),
+    )
+    const patrol = usePatrolStore()
+    await patrol.load()
+    expect(patrol.pano?.recordId).toBe(181616)
+  })
+
+  it('一次飞 3 个成果也只取第一个（用户要求只留一张）', async () => {
+    vi.stubGlobal('fetch', panoFetch())
+    const patrol = usePatrolStore()
+    await patrol.load()
+
+    expect(patrol.pano?.id).toBe(103180)
+    expect(patrol.pano?.name).toContain('_0.jpg')
+  })
+
+  it('**按项目筛**：别的工地更新的全景不能顶进来（光谷元著 13:29 > 向阳村 12:10）', async () => {
+    const gg = panoTask({
+      recordId: 181656,
+      projectId: 231070463906821,
+      projectName: '中建三局-光谷元著项目',
+      taskName: '光谷元著-全景_202611151300181656',
+      createTime: '2026-11-15 13:29:17',
+      resultRecordDTOList: [
+        achievement(103195, 'gh000000', '光谷元著-全景_202611151300181656_0.jpg', { size: 14_519_091 }),
+      ],
+    })
+    vi.stubGlobal('fetch', panoFetch({ recreate: [gg, panoTask()] }))
+    const patrol = usePatrolStore()
+    await patrol.load()
+
+    // 更晚的那张属于另一个项目，必须被筛掉
+    expect(patrol.pano?.recordId).toBe(181616)
+    expect(patrol.pano?.projectId).toBe(193640872670213)
+    expect(patrol.pano?.projectName).toBe('中建三局-向阳村项目')
+  })
+
+  it('请求里带 pid（V2 的 getProjectRecreateInfo 也是 {pid, pageNo} 一起传）', async () => {
+    const f = panoFetch()
+    vi.stubGlobal('fetch', f)
+    const patrol = usePatrolStore()
+    await patrol.load()
+
+    const call = f.mock.calls.map((c) => String(c[0])).find((u) => u.includes('/dashboard/recreate/getProjectRecreateInfo'))
+    expect(call).toContain('pid=193640872670213')
+    expect(call).toContain('pageNo=1')
+  })
+
+  it('列表里全是正射时，全景就是没有（null，不编一张）', async () => {
+    vi.stubGlobal('fetch', panoFetch({ recreate: [orthoTask()] }))
+    const patrol = usePatrolStore()
+    await patrol.load()
+    expect(patrol.pano).toBeNull()
+    expect(patrol.panoState).toBe('ok')
+  })
+
+  it('重建接口挂了不影响照片墙（panoState=error，照片照常）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      panoFetch({ recreate: { ok: false, status: 500, json: async () => ({ code: 500 }), body: null } as unknown }),
+    )
+    const patrol = usePatrolStore()
+    await patrol.load()
+
+    expect(patrol.photos.length).toBeGreaterThan(0)
+    expect(patrol.state).toBe('ok')
+    expect(patrol.pano).toBeNull()
+    expect(patrol.panoState).toBe('error')
+  })
+
+  it('签名过期后能重取（force 换一组新直链）', async () => {
+    vi.stubGlobal('fetch', panoFetch())
+    const patrol = usePatrolStore()
+    await patrol.load()
+    const first = patrol.pano?.full
+
+    // 服务端换了一次签名：第二次拿到的是新 URL
+    vi.stubGlobal(
+      'fetch',
+      panoFetch({
+        recreate: [
+          panoTask({
+            resultRecordDTOList: [
+              achievement(103180, 'b3uT22dX', '向阳村-全景_202611151130181616_0.jpg', {
+                download: 'https://moss.keehang.com:9443/models/103180/origin.jpg?X-Amz-Signature=NEW',
+              }),
+            ],
+          }),
+        ],
+      }),
+    )
+    await patrol.loadPano(true)
+    expect(first).toContain('/models/103180/origin.jpg')
+    expect(patrol.pano?.full).toContain('X-Amz-Signature=NEW')
+  })
+})
+
+describe('智眸面板 · 项目全景卡片', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    offline()
+  })
+
+  afterEach(async () => {
+    await flushPromises()
+    clearSession()
+    vi.unstubAllGlobals()
+  })
+
+  /** 灌一张现成的全景（绕过网络，只测渲染与点击） */
+  function withPano(): void {
+    const patrol = usePatrolStore()
+    patrol.apply([])
+    patrol.pano = {
+      id: 103180,
+      secret: 'b3uT22dX',
+      recordId: 181616,
+      projectId: 193640872670213,
+      projectName: '中建三局-向阳村项目',
+      taskName: '向阳村-全景_202611151130181616',
+      name: '向阳村-全景_202611151130181616_0.jpg',
+      time: '2026-11-15 12:10:54',
+      preview: 'https://oss.keehang.com:19090/thumbnail/model/103180/thumbnail.jpg',
+      full: 'https://moss.keehang.com:9443/models/103180/origin.jpg',
+      size: 13_688_984,
+    }
+  }
+
+  it('「项目全景」里是**一张**全景卡片（不是一堆俯视照片）', async () => {
+    withPano()
+    const w = mount(PatrolPanel)
+    await nextTick()
+
+    expect(w.find('.patrol-card.is-pano').exists()).toBe(true)
+    expect(w.findAll('.patrol-card')).toHaveLength(1)
+    const card = w.find('.patrol-card.is-pano').text()
+    expect(card).toContain('向阳村-全景')
+    expect(card).toContain('可环视')
+    // 角标写真实体积（13.1MB），不写「N 张拼接」——那是原片张数，已不是显示对象
+    expect(card).toContain('13.1MB')
+    w.unmount()
+  })
+
+  it('点卡片用保留 id 打开弹层（全景来自成果，没有照片 id 可用）', async () => {
+    withPano()
+    const sheet = useBottomSheetStore()
+    const w = mount(Host)
+    await nextTick()
+
+    await w.find('.patrol-card.is-pano').trigger('click')
+    expect(sheet.kind).toBe('patrol')
+    expect(sheet.id).toBe(PANO_SHEET_ID)
+    w.unmount()
+  })
+
+  it('只有全景、没有普通照片时不是空态（分类条照旧在）', async () => {
+    withPano()
+    const w = mount(PatrolPanel)
+    await nextTick()
+
+    expect(w.find('.patrol-cats').exists()).toBe(true)
+    expect(w.find('.data-empty').exists()).toBe(false)
+    expect(w.find('.patrol-cats button').text()).toContain('项目全景')
+    w.unmount()
   })
 })

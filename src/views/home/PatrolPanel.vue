@@ -4,7 +4,8 @@ import { computed, onMounted, ref } from 'vue'
 import Skel from '@/components/ui/Skel.vue'
 import { PATROL_CATS, catOfTask } from '@/data/config'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
-import { usePatrolStore } from '@/stores/patrol'
+import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
+import { panoLabel } from '@/utils/pano'
 import { useSlowLoading } from '@/utils/slowLoading'
 
 /**
@@ -66,7 +67,12 @@ const groups = computed(() => {
 
 /** 六个分类恒定显示（0 张也占位，保住 3×2 的版式） */
 const chips = computed(() =>
-  PATROL_CATS.map((c) => ({ id: c.id, name: c.name, count: (groups.value.get(c.id) ?? []).length })),
+  PATROL_CATS.map((c) => {
+    // 「项目全景」下**只放那一张最新全景**（2026-11-16 用户要求）：正射 / 三维
+    // 那些俯视照片不再挤进来，这一格就是「点进去环视」的入口，计数恒为 0 或 1。
+    if (c.id === 'pano') return { id: c.id, name: c.name, count: patrol.pano ? 1 : 0 }
+    return { id: c.id, name: c.name, count: (groups.value.get(c.id) ?? []).length }
+  }),
 )
 
 /** 手动选中的分类（空串 = 还没点过，跟随默认） */
@@ -80,9 +86,31 @@ const activeCat = computed(() =>
   picked.value && chips.value.some((c) => c.id === picked.value) ? picked.value : defaultCat.value,
 )
 
-const shown = computed(() => groups.value.get(activeCat.value) ?? [])
+/**
+ * 当前分类下要铺的照片。
+ *
+ * 「项目全景」这一格**不铺照片**：它只放那一张最新全景（见模板里的全景卡片）。
+ * 正射 / 三维归的是同一个分类，但用户要的是"点进去环视"，不是再看一遍
+ * 一堆俯视航拍图 —— 那些照片在 UavPage 的任务记录里本来就能翻。
+ */
+const shown = computed(() =>
+  activeCat.value === 'pano' ? [] : (groups.value.get(activeCat.value) ?? []),
+)
 
 const activeName = computed(() => chips.value.find((c) => c.id === activeCat.value)?.name ?? '')
+
+/**
+ * 当前分类下有没有东西可看。
+ *
+ * 项目全景来自**重建成果接口**，不在照片墙里（`shown` 是空的），所以单独判：
+ * 现场如果只飞了全景航线，这个分类里 `shown` 为空但全景卡片要在。
+ */
+const hasContent = computed(
+  () => shown.value.length > 0 || (activeCat.value === 'pano' && Boolean(patrol.pano)),
+)
+
+/** 全景的生成时间（服务端是 `YYYY-MM-DDTHH:mm:ss`，截到分钟） */
+const panoTime = computed(() => (patrol.pano?.time ?? '').slice(0, 16).replace('T', ' '))
 
 /** 缩略图加载失败的 id 集合（失败的卡片回退成文字占位，不留破图） */
 const broken = ref<Record<string, boolean>>({})
@@ -106,17 +134,22 @@ function onThumbLoad(id: string, e: Event): void {
 function retry(): void {
   void patrol.load(true)
 }
+
+/** 全景单独重试：不重扫照片墙（那串要十几秒且撞限流） */
+function retryPano(): void {
+  void patrol.loadPano(true)
+}
 </script>
 
 <template>
   <div class="safe-block">
     <div class="patrol-hd">
       <h4>最新照片</h4>
-      <em>{{ shown.length }} 张</em>
+      <em>{{ chips.find((c) => c.id === activeCat)?.count ?? 0 }} 张</em>
     </div>
 
     <!-- 分类：3 列 × 2 行固定版式（设计稿 .patrol-cats），0 张的分类照旧占位 -->
-    <div v-if="patrol.list.length" class="patrol-cats" role="group" aria-label="照片分类">
+    <div v-if="patrol.list.length || patrol.pano" class="patrol-cats" role="group" aria-label="照片分类">
       <button
         v-for="c in chips"
         :key="c.id"
@@ -144,12 +177,58 @@ function retry(): void {
       </div>
     </div>
 
-    <!-- 有照片，但当前分类下没有：设计稿原文「这个分类下还没有照片」 -->
-    <div v-else-if="patrol.list.length && !shown.length" class="patrol-empty">
-      这个分类下还没有照片
+    <!-- 有内容，但当前分类下没有：设计稿原文「这个分类下还没有照片」 -->
+    <div v-else-if="!hasContent && (patrol.list.length || patrol.pano)" class="patrol-empty">
+      <!-- 全景走的是另一条接口，挂了要说「取不到」而不是「没有照片」 -->
+      <p v-if="activeCat === 'pano' && patrol.panoState === 'error'">项目全景暂时取不到</p>
+      <p v-else>这个分类下还没有照片</p>
+      <button
+        v-if="activeCat === 'pano' && patrol.panoState === 'error'"
+        class="data-empty-btn"
+        type="button"
+        @click="retryPano"
+      >
+        重试
+      </button>
     </div>
 
-    <div v-else-if="shown.length" class="patrol-grid">
+    <div v-else-if="hasContent" class="patrol-grid">
+      <!--
+        项目全景：只放**最新的一张**（平台拼好的等距圆柱成果），点开可环视。
+        用保留 id `pano` 打开弹层 —— 全景来自重建成果，没有照片 id 可用。
+      -->
+      <button
+        v-if="activeCat === 'pano' && patrol.pano"
+        class="patrol-card is-pano"
+        type="button"
+        :aria-label="`${patrol.pano.taskName}，${panoTime}，项目全景，查看球面全景`"
+        @click="sheet.openPatrol(PANO_SHEET_ID)"
+      >
+        <div class="patrol-thumb">
+          <!-- 预览图就是弹层里那张等距圆柱图（185KB）：卡片加载过，点开即出 -->
+          <img
+            :src="patrol.pano.preview"
+            alt=""
+            loading="lazy"
+            decoding="async"
+            referrerpolicy="no-referrer"
+          />
+          <span class="patrol-thumb-tag is-pano">全景</span>
+          <span class="patrol-thumb-size">{{ patrol.sizeText(patrol.pano.size) }}</span>
+        </div>
+        <div class="patrol-card-ft">
+          <div class="patrol-card-name">
+            <!-- 名字前段就是「站点-全景」，一眼能看出是哪片工地（全景不按项目筛，见 api/drone.ts） -->
+            <strong>{{ panoLabel(patrol.pano.taskName) }}</strong>
+            <em>{{ panoTime || '—' }}</em>
+          </div>
+          <div class="patrol-tags">
+            <span class="patrol-tag">可环视</span>
+            <span class="alarm-src alarm-src-drone">无人机</span>
+          </div>
+        </div>
+      </button>
+
       <button
         v-for="p in shown"
         :key="p.id"

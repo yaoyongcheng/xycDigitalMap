@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { clampFov, clampPitch, degPerPixel, wrapYaw } from '@/utils/pano'
+import { clampFov, clampPitch, degPerPixel, panoTexScale, wrapYaw } from '@/utils/pano'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -45,6 +45,8 @@ const emit = defineEmits<{
   unsupported: []
   /** 贴图已上屏（父组件可据此收起自己的加载态） */
   ready: []
+  /** 贴图加载失败 —— 多半是 OSS 签名过期（2 小时），交给父组件决定是否重取 */
+  error: []
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -72,7 +74,6 @@ let isWebGL2 = false
 let prog: WebGLProgram | null = null
 let tex: WebGLTexture | null = null
 let posBuf: WebGLBuffer | null = null
-let uvBuf: WebGLBuffer | null = null
 let idxBuf: WebGLBuffer | null = null
 let idxCount = 0
 let uProj: WebGLUniformLocation | null = null
@@ -99,13 +100,27 @@ const {
 
 /* ---------- 着色器 ---------- */
 
+/**
+ * 经纬度**在片元里按视线方向现算**，不靠顶点 UV 插值。
+ *
+ * 早先每个顶点带一个 (u,v) 属性靠光栅化线性插值。极点附近最后一圈三角形是
+ * "从 82.5° 收到极点"的 48 条细长楔形，楔形内的 UV 线性插值会把整圈压成一
+ * 根条带 —— 那是多出来的一层误差，白送给极点。改成把单位方向传到片元、
+ * 用 atan / acos 现算，映射与细分完全无关、逐像素精确，顺带省掉一个 uv 缓冲区。
+ *
+ * 但要说清楚：**这条不是天底放射纹的根因**（换算法前后条纹依旧）。根因在源图
+ * 自己 —— 见 FRAG 里 pole 混合那段的说明。
+ *
+ * 注意 `vDir` 传的是**旋转前**的顶点方向：贴图固定在球面上，转头不该让
+ * 贴图跟着转（转的是投影）。所以顶点着色器里先赋值再旋转。
+ */
 const VERT = `
 attribute vec3 aPos;
-attribute vec2 aUv;
 uniform mat4 uProj;
 uniform float uYaw;
 uniform float uPitch;
-varying vec2 vUv;
+// 方向必须是 highp：mediump 只有 10 位尾数，插值到片元后 acos 在极点会跳变
+varying highp vec3 vDir;
 
 // 先把点绕 Y 转（左右环视），再绕 X 转（上下俯仰）。视角变换等价于
 // 把整个球反着转 —— 顶点着色器里做掉，就省了 CPU 侧的矩阵库。
@@ -117,29 +132,57 @@ vec3 rotate(vec3 p) {
 }
 
 void main() {
-  vUv = aUv;
+  vDir = aPos;
   gl_Position = uProj * vec4(rotate(aPos), 1.0);
 }
 `
 
 const FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
-varying vec2 vUv;
+#endif
+varying highp vec3 vDir;
 uniform sampler2D uTex;
+const float TAU = 6.28318530718;
+const float PI = 3.14159265359;
 void main() {
-  gl_FragColor = texture2D(uTex, vUv);
+  vec3 d = normalize(vDir);
+  // 与球面 UV 的相位对齐：u = θ/2π（θ 是绕 Y 的方位角，0 = +Z），
+  // v = 从上到下的纬度比例（球顶 = 0 = 图像第一行）
+  float u = fract(atan(d.x, d.z) / TAU + 1.0);
+  float v = acos(clamp(d.y, -1.0, 1.0)) / PI;
+  vec3 col = texture2D(uTex, vec2(u, v)).rgb;
+
+  /**
+   * 天底死区（|d.y| → 1）：方位角在这里失去意义，360° 全挤到一个点上，
+   * 于是源图天底那一带的**列向明暗带**会被拉成放射状辐条 —— 看起来像
+   * 一圈"星芒"，比 V2（立方体贴图，天底是独立正方形面）明显难看得多。
+   *
+   * 这块在源图里本来就是全景相机天底的填充白斑（没有真实地面细节可抢救），
+   * 所以就近按方位多点平均把它抹平：只在离天底约 15° 以内生效，超出范围
+   * 一次采样都不多花，正常地面细节一点不损失。
+   */
+  float pole = smoothstep(0.965, 0.9995, abs(d.y));
+  // 采样放在分支之外：隐式导数的 texture2D 若写在非一致控制流里，GLSL 规定行为
+  // 未定义，边界那一圈会出接缝。8 次采样对一张全屏 quad 来说开销可以忽略。
+  vec3 acc = col;
+  for (int i = 1; i < 8; i++) {
+    acc += texture2D(uTex, vec2(fract(u + float(i) / 8.0), v)).rgb;
+  }
+  gl_FragColor = vec4(mix(col, acc / 8.0, pole), 1.0);
 }
 `
 
 /* ---------- 一次性建好球面几何 ---------- */
 
-/** 经向 / 纬向分段：48×24 在 4032 宽贴图下已经看不出多边形边 */
+/** 经向 / 纬向分段：球面只用来给方向，逐像素的经纬度在片元里算（见 FRAG） */
 const WSEG = 48
 const HSEG = 24
 
-function buildSphere(): { pos: Float32Array; uv: Float32Array; idx: Uint16Array } {
+function buildSphere(): { pos: Float32Array; idx: Uint16Array } {
   const pos: number[] = []
-  const uv: number[] = []
   const idx: number[] = []
   for (let i = 0; i <= HSEG; i += 1) {
     // φ: +90°（顶）→ -90°（底）
@@ -151,9 +194,6 @@ function buildSphere(): { pos: Float32Array; uv: Float32Array; idx: Uint16Array 
       const theta = (j / WSEG) * Math.PI * 2
       // 球心在原点、半径为 1；摄像机朝 -Z 看，θ=180° 正对镜头 → 初始看到贴图中线
       pos.push(r * Math.sin(theta), y, r * Math.cos(theta))
-      // v：贴图上传时没开 UNPACK_FLIP_Y，纹理 t=0 就是图像第一行（顶部），
-      // 所以球顶（i=0）对应 v=0
-      uv.push(j / WSEG, i / HSEG)
     }
   }
   const row = WSEG + 1
@@ -166,7 +206,7 @@ function buildSphere(): { pos: Float32Array; uv: Float32Array; idx: Uint16Array 
       idx.push(a, c, b, b, c, d)
     }
   }
-  return { pos: new Float32Array(pos), uv: new Float32Array(uv), idx: new Uint16Array(idx) }
+  return { pos: new Float32Array(pos), idx: new Uint16Array(idx) }
 }
 
 /** 透视投影矩阵（列主序，WebGL 直接吃） */
@@ -213,14 +253,10 @@ function initGl(glc: WebGLRenderingContext): boolean {
   uPitch = glc.getUniformLocation(p, 'uPitch')
   uTex = glc.getUniformLocation(p, 'uTex')
 
-  const { pos, uv, idx } = buildSphere()
+  const { pos, idx } = buildSphere()
   posBuf = glc.createBuffer()
   glc.bindBuffer(glc.ARRAY_BUFFER, posBuf)
   glc.bufferData(glc.ARRAY_BUFFER, pos, glc.STATIC_DRAW)
-
-  uvBuf = glc.createBuffer()
-  glc.bindBuffer(glc.ARRAY_BUFFER, uvBuf)
-  glc.bufferData(glc.ARRAY_BUFFER, uv, glc.STATIC_DRAW)
 
   idxBuf = glc.createBuffer()
   glc.bindBuffer(glc.ELEMENT_ARRAY_BUFFER, idxBuf)
@@ -258,11 +294,6 @@ function draw(): void {
   gl.enableVertexAttribArray(aPos)
   gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0)
 
-  const aUv = gl.getAttribLocation(prog, 'aUv')
-  gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf)
-  gl.enableVertexAttribArray(aUv)
-  gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0)
-
   gl.activeTexture(gl.TEXTURE0)
   gl.bindTexture(gl.TEXTURE_2D, tex)
   gl.uniform1i(uTex, 0)
@@ -283,9 +314,11 @@ function requestDraw(): void {
 
 function upload(img: HTMLImageElement): void {
   if (!gl || !tex) return
+  const src = fitTex(img)
+  if (!src) return
   gl.bindTexture(gl.TEXTURE_2D, tex)
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0)
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src)
 
   // WebGL1 对非 2 的幂贴图不允许 mipmap / REPEAT；全景长宽本来就不规则，
   // 于是先在 WebGL2 里开 mipmap（缩小时画质明显更好），退回 1 时只用线性过滤。
@@ -296,6 +329,50 @@ function upload(img: HTMLImageElement): void {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
   if (mip) gl.generateMipmap(gl.TEXTURE_2D)
+
+  /**
+   * 各向异性过滤：缩小视角时（看远处、或整张图缩进弹层）斜向细节不会糊成一片。
+   *
+   * 注意它治不了天底 —— 天底的问题是源图那一带的列向明暗带被极点压缩拉成
+   * 辐条（见 FRAG 里的 pole 混合），实测开关这个扩展画面完全一致。
+   * 取 16 倍：手机端普遍支持 4~16；扩展不存在时静默跳过（不影响出图）。
+   */
+  const aniso =
+    gl.getExtension('EXT_texture_filter_anisotropic') ??
+    gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic') ??
+    gl.getExtension('MOZ_EXT_texture_filter_anisotropic')
+  if (mip && aniso) {
+    const max = gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number
+    gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, max || 1))
+  }
+}
+
+/**
+ * 把过大的图缩到显卡吃得下的尺寸，返回可直接 texImage2D 的源。
+ *
+ * 现场的全景原图是 **10000×5000**（13MB）。但 `MAX_TEXTURE_SIZE` 在手机上普遍
+ * 只有 4096~8192（桌面才常见 16384），超过上限时 `texImage2D` 直接报
+ * INVALID_VALUE、贴图保持不完整 —— 表现不是"糊"而是**整屏黑**；而刚好在上限内
+ * 的设备又要吃 10000×5000×4 ≈ 190MB 显存（加 mipmap 再 +33%），低端机会被
+ * 系统杀掉。所以在 CPU 侧先缩到合法尺寸再上传（阈值见 `panoTexScale`）。
+ */
+function fitTex(img: HTMLImageElement): TexImageSource | null {
+  const iw = img.naturalWidth
+  const ih = img.naturalHeight
+  if (!iw || !ih) return null
+  const maxSide = gl ? (gl.getParameter(gl.MAX_TEXTURE_SIZE) as number) || 4096 : 4096
+  const k = panoTexScale(iw, ih, maxSide)
+  if (k >= 1) return img
+
+  const cv = document.createElement('canvas')
+  cv.width = Math.max(2, Math.round(iw * k))
+  cv.height = Math.max(2, Math.round(ih * k))
+  const cx = cv.getContext('2d')
+  if (!cx) return img
+  cx.imageSmoothingEnabled = true
+  cx.imageSmoothingQuality = 'high'
+  cx.drawImage(img, 0, 0, cv.width, cv.height)
+  return cv
 }
 
 function loadTexture(src: string): void {
@@ -310,6 +387,10 @@ function loadTexture(src: string): void {
     upload(img)
     requestDraw()
     emit('ready')
+  }
+  img.onerror = () => {
+    if (key !== texSeq) return
+    emit('error')
   }
   img.src = src
 }
@@ -498,7 +579,6 @@ onBeforeUnmount(() => {
   if (gl) {
     gl.deleteTexture(tex)
     gl.deleteBuffer(posBuf)
-    gl.deleteBuffer(uvBuf)
     gl.deleteBuffer(idxBuf)
     gl.deleteProgram(prog)
     // 主动释放上下文：Safari 同时存活的 WebGL 上下文有限（约 16 个），
@@ -522,6 +602,7 @@ onBeforeUnmount(() => {
       :alt="props.alt || ''"
       :style="imgStyle"
       v-on="flatHandlers"
+      @error="$emit('error')"
     />
     <template v-else>
       <canvas

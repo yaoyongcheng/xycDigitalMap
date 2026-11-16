@@ -1,15 +1,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchBlobWithProgress } from '@/utils/blobFetch'
-import { clampFov, clampPitch, degPerPixel, isEquirect, wrapYaw } from '@/utils/pano'
+import {
+  clampFov,
+  clampPitch,
+  degPerPixel,
+  isEquirect,
+  PANO_TEX_MAX_PX,
+  panoLabel,
+  panoTexScale,
+  wrapYaw,
+} from '@/utils/pano'
 
 /**
  * 全景判定与环视数学（2026-11-16）
  *
- * 这些断言的源头是实测数据：本项目 12 条航线（全景 / 正射 / 三维 / 各类定点）
- * 逐条抽样，图像尺寸全是 4032×3024 或 4000×3000 —— 也就是**平台里一张
- * 真正的 2:1 球面全景都没有**。判定因此只能按几何形状做，而"4:3 不能进
- * 球面"正是这里最要紧的一条：判错会把普通照片糊成一圈畸变画面。
+ * 这些断言的源头是实测数据：本项目 12 条航线的**原片**（媒体接口）逐条抽样，
+ * 尺寸全是 4032×3024 或 4000×3000 —— 一条 2:1 都没有。真正的 2:1 是平台拼好的
+ * 重建成果（`origin.jpg` 10000×5000 / 缩略图 3162×1581），那条链不走这里。
+ * 判定因此只能按几何形状做，而"4:3 不能进球面"正是最要紧的一条：
+ * 判错会把普通照片糊成一圈畸变画面。
  */
 describe('isEquirect（2:1 才认作球面全景）', () => {
   it('真全景（2:1）通过', () => {
@@ -115,5 +125,45 @@ describe('fetchBlobWithProgress', () => {
   it('HTTP 失败往上抛（调用方自己决定退回直链）', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403, headers: { get: () => null } })))
     await expect(fetchBlobWithProgress('https://oss.keehang.com/x.jpeg')).rejects.toThrow('HTTP 403')
+  })
+})
+
+describe('panoLabel（服务端任务名 → 界面标题）', () => {
+  it('去掉末尾的执行记录 id', () => {
+    expect(panoLabel('光谷元著-全景_202611151300181656')).toBe('光谷元著-全景')
+    expect(panoLabel('向阳村-全景_202611151130181616')).toBe('向阳村-全景')
+  })
+
+  it('没有 id 后缀就原样返回（不误删航线名里的下划线）', () => {
+    expect(panoLabel('向阳村-全景')).toBe('向阳村-全景')
+    expect(panoLabel('向阳村_土方1')).toBe('向阳村_土方1')
+    expect(panoLabel('')).toBe('')
+  })
+})
+
+describe('panoTexScale（贴图上传前缩到显卡吃得下的尺寸）', () => {
+  it('现场原图 10000×5000 在 8192 上限的设备上必须缩（不缩就整屏黑）', () => {
+    // 这是实测踩到的坑：SwiftShader / 多数手机 GPU 的 MAX_TEXTURE_SIZE 是 8192，
+    // 10000×5000 直接 texImage2D INVALID_VALUE，贴图不完整 → 画面全黑
+    const k = panoTexScale(10000, 5000, 8192)
+    expect(k).toBeLessThan(1)
+    expect(Math.round(10000 * k)).toBeLessThanOrEqual(8192)
+    expect(Math.round(5000 * k)).toBeLessThanOrEqual(8192)
+  })
+
+  it('边长没超限也要受像素预算约束（8192×4096 是 134MB，会 OOM）', () => {
+    const k = panoTexScale(8192, 4096, 16384)
+    expect(k).toBeLessThan(1)
+    expect(8192 * k * 4096 * k).toBeLessThanOrEqual(PANO_TEX_MAX_PX * 1.001)
+  })
+
+  it('缩略图 3162×1581 不缩（本来就在预算内）', () => {
+    expect(panoTexScale(3162, 1581, 8192)).toBe(1)
+  })
+
+  it('尺寸拿不到时返回 1，交给调用方自己兜底', () => {
+    expect(panoTexScale(0, 0, 8192)).toBe(1)
+    expect(panoTexScale(Number.NaN, 100, 8192)).toBe(1)
+    expect(panoTexScale(100, 100, Number.NaN)).toBeLessThanOrEqual(1)
   })
 })

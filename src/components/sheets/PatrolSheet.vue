@@ -2,10 +2,10 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import PanoViewer from '@/components/ui/PanoViewer.vue'
-import { usePatrolStore } from '@/stores/patrol'
+import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
 import { useShellStore } from '@/stores/shell'
 import { fetchBlobWithProgress } from '@/utils/blobFetch'
-import { isEquirect } from '@/utils/pano'
+import { isEquirect, panoLabel } from '@/utils/pano'
 import { savePhoto } from '@/utils/photoHd'
 import { useImageZoom } from '@/utils/zoom'
 
@@ -25,11 +25,15 @@ import { useImageZoom } from '@/utils/zoom'
  * （OSS 两个域名都回 ACAO，实测可跨域读）。拉不到就退回直接塞给 `<img>`
  * —— 慢是慢，但图还是能出来。
  *
- * ## 全景
+ * ## 两种「全景」，别搞混
  *
- * 等距圆柱图（宽高比 2:1）改用 `ui/PanoViewer.vue` 的球面环视，拖拽 / 双指 /
- * 滚轮都在里面。判定见 `utils/pano.ts`（平台没有全景字段，只能按几何形状）。
- * 没有 WebGL 的环境自动退成平面 + 双指缩放，并在这里补一句说明。
+ * 1. **项目全景**（`PANO_SHEET_ID`）：来自重建成果接口的**拼接好的等距圆柱图**
+ *    （预览 3162×1581 / 原图 10000×5000），这里只是把它贴到球面上；
+ * 2. **照片墙里的单张全景**：万一媒体里出现 2:1 的图，按几何形状认出来
+ *    （`utils/pano.ts` 的 `isEquirect`）也进球面 —— 平台目前没有这种图。
+ *
+ * 两条路最终都是 `ui/PanoViewer.vue`（手写 WebGL 球面，拖拽 / 双指 / 滚轮，
+ * 无 WebGL 退成平面 + 双指缩放并补一句说明）。
  */
 const props = defineProps<{ id: string }>()
 
@@ -37,6 +41,116 @@ const shell = useShellStore()
 const patrol = usePatrolStore()
 
 const photo = computed(() => patrol.photos.find((p) => p.id === props.id))
+
+/* ---------- 项目全景（平台拼好的等距圆柱成果，2026-11-16） ---------- */
+
+/**
+ * 打开的是不是「项目全景」。
+ *
+ * 全景来自**重建成果**（不是某一张媒体），没有照片 id，所以用保留 id `pano`
+ * 打开；真正的内容从 store 的 `pano` 拿。
+ */
+const isPanoView = computed(() => props.id === PANO_SHEET_ID && Boolean(patrol.pano))
+
+/** 全景的拍摄/生成时间（服务端给 `YYYY-MM-DDTHH:mm:ss`，截到分钟） */
+const panoTime = computed(() => (patrol.pano?.time ?? '').slice(0, 16).replace('T', ' '))
+
+/** 全景原图体积（真实字节数） */
+const panoSize = computed(() => patrol.sizeText(patrol.pano?.size ?? 0))
+
+/**
+ * 这张全景属于哪个项目。
+ *
+ * 全景按 V2 的口径取**全平台最新**（不按项目筛），所以可能不是本项目拍的 ——
+ * 项目名必须显式写出来。服务端没给项目名时退回任务名前段（`光谷元著-全景`）。
+ */
+const panoProject = computed(() => {
+  const p = patrol.pano
+  if (!p) return '—'
+  return p.projectName || panoLabel(p.taskName)
+})
+
+/**
+ * 全景默认显示**预览图**（3162×1581，约 185KB，OSS 缩略图桶）。
+ *
+ * 原图是 10000×5000（约 13MB）—— 一进页面就拉十几 MB 不合适，做成和照片
+ * 一样的「先看预览，要看细节再看高清」。两张都是 2:1 等距圆柱，球面不用变。
+ */
+const panoHd = ref(false)
+/** 点了高清但还没上屏（按钮文案用），贴图没到位前旧图继续显示，不闪 */
+const panoHdWait = ref(false)
+const panoSrc = computed(() => {
+  const p = patrol.pano
+  if (!p) return ''
+  return panoHd.value && p.full ? p.full : p.preview
+})
+
+/** 图彻底拉不开（多半是 OSS 签名过期），提示重取 */
+const panoBroken = ref(false)
+
+function onPanoError(): void {
+  if (panoHd.value) {
+    // 高清那张挂了：退回预览，别把整块画面留在纯色上
+    panoHd.value = false
+    panoHdWait.value = false
+    shell.showToast('高清全景加载失败，已退回预览', 'warn')
+    return
+  }
+  panoBroken.value = true
+}
+
+function onPanoReady(): void {
+  panoHdWait.value = false
+  panoBroken.value = false
+}
+
+function onPanoHd(): void {
+  if (panoHd.value || panoHdWait.value || !patrol.pano?.full) return
+  panoHdWait.value = true
+  panoHd.value = true
+}
+
+const panoHdLabel = computed(() => {
+  if (panoHd.value) return '已是高清'
+  if (panoHdWait.value) return '高清加载中'
+  return `看高清 · ${panoSize.value}`
+})
+
+/** 签名过期后重取一次（store 会换一组新直链，弹层里的图跟着换） */
+async function onPanoRetry(): Promise<void> {
+  panoBroken.value = false
+  await patrol.loadPano(true)
+  if (!patrol.pano) shell.showToast('暂时取不到项目全景', 'warn')
+}
+
+/** 存进手机相册的是**高清那张**（预览只是列表用的低清） */
+async function onPanoDownload(): Promise<void> {
+  const p = patrol.pano
+  if (!p) return
+  const name = (p.name || p.taskName).replace(/\.[^.]+$/, '')
+  try {
+    const res = await savePhoto(p.full || p.preview, name)
+    if (res === 'album') shell.showToast('已保存到相册', 'success')
+    else if (res === 'download') shell.showToast('已开始下载', 'success')
+  } catch {
+    shell.showToast('保存失败', 'warn')
+  }
+}
+
+/** 打开即取一次（store 已有就不重复发，签名过期时上面另有入口） */
+if (isPanoView.value) void patrol.loadPano()
+
+/** 换到全景时复位高清状态 */
+watch(
+  () => props.id,
+  (id) => {
+    if (id !== PANO_SHEET_ID) return
+    panoHd.value = false
+    panoHdWait.value = false
+    panoBroken.value = false
+    panoUnsupported.value = false
+  },
+)
 
 /** 缩略图（低清）与原图直链 */
 const thumb = computed(() => photo.value?.thumbnail ?? '')
@@ -242,8 +356,65 @@ onBeforeUnmount(dropHd)
 </script>
 
 <template>
-  <div v-if="photo">
-    <!-- 全景：等距圆柱投影才有，球面环视（拖拽 / 双指 / 滚轮） -->
+  <div v-if="isPanoView || photo">
+    <!-- 项目全景：平台拼好的等距圆柱成果，贴到球面内壁环视（手机 / 电脑同一套手势） -->
+    <template v-if="isPanoView">
+      <figure class="pano-stage">
+        <PanoViewer
+          ref="panoRef"
+          :src="panoSrc"
+          :alt="`${patrol.pano?.taskName ?? ''} 项目全景`"
+          @unsupported="panoUnsupported = true"
+          @error="onPanoError"
+          @ready="onPanoReady"
+        />
+        <span class="patrol-view-tag is-pano">{{ panoHd ? '全景 · 高清' : '全景 · 可环视' }}</span>
+        <button
+          v-if="!panoUnsupported"
+          class="pano-reset"
+          type="button"
+          aria-label="复位视角"
+          @click="panoRef?.reset()"
+        >
+          复位
+        </button>
+        <p class="pano-hint">
+          {{
+            panoUnsupported
+              ? '当前环境不支持全景渲染，已切换为平面查看'
+              : '拖动环视 · 双指或滚轮缩放'
+          }}
+        </p>
+      </figure>
+
+      <!-- 签名过期（OSS 预签名 2 小时）：给一个明确的重取入口，而不是干瞪黑屏 -->
+      <div v-if="panoBroken" class="pano-expired">
+        <span>全景图链接已过期</span>
+        <button type="button" @click="onPanoRetry">重新获取</button>
+      </div>
+
+      <div class="patrol-meta">
+        <!-- 全景**不按项目筛**（照 V2：全平台最新），所以项目名必须写出来，
+             否则用户会以为这张是向阳村自己拍的 -->
+        <div><span>项目</span><b>{{ panoProject }}</b></div>
+        <div><span>时间</span><b>{{ panoTime || '—' }}</b></div>
+        <div><span>大小</span><b>{{ panoSize || '—' }}</b></div>
+        <div>
+          <span>来源</span>
+          <span class="alarm-src alarm-src-drone">无人机</span>
+        </div>
+      </div>
+
+      <div class="photo-actions">
+        <button class="photo-btn" type="button" :disabled="panoHd || panoHdWait" @click="onPanoHd">
+          {{ panoHdLabel }}
+        </button>
+        <button class="photo-btn" type="button" @click="onPanoDownload">下载</button>
+      </div>
+    </template>
+
+    <template v-else-if="photo">
+    <!-- 单张照片：等距圆柱投影（2:1）才进球面，球面环视（拖拽 / 双指 / 滚轮） -->
     <figure v-if="isPano" class="pano-stage">
       <PanoViewer
         ref="panoRef"
@@ -301,5 +472,6 @@ onBeforeUnmount(dropHd)
       </button>
       <button class="photo-btn" type="button" @click="onDownload">下载</button>
     </div>
+    </template>
   </div>
 </template>

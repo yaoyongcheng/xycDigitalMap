@@ -2347,24 +2347,85 @@ V2 源码 `MqttDroneRealTimeInfoRequester.cs` 里写死：
 「下载」优先复用点过原图后已经拿到的字节（直接包成 jpg `File`），
 省掉再下一次 6MB；没点过原图才走原来的 `savePhoto(url)` 现转。
 
-### 6. 全景：平台里目前一张都没有（重要）
+### 6. 项目全景：走「重建成果」接口（2026-11-16 修正）
 
-需求是「全景图要能拖拽环视」。查证结论：**没有现成的全景资产**。
+> ⚠️ **上一版这一节的结论是错的**（「平台里一张全景都没有」）。当时只查了
+> 媒体接口 `/media/task/job/{id}` —— 那是**原始拍摄件**。真正拼好的全景在
+> **重建成果**里，V2 控制台「成果预览」用的就是这套。
 
-- keehang 媒体接口没有「是否全景」字段，`/task/list` 的 `taskType` 全 `AIRLINE`；
-- `/pano/list`、`/panorama/list`、`/media/panorama/*`、`/model/list` 全部 **404**；
-- 2026-11-16 逐条抽样 12 条航线的首图尺寸：**全部 4032×3024 或 4000×3000**
-  （4:3 普通航拍）。名字叫「向阳村-全景」的那条航线返回的是 **78 张普通照片**
-  + 1 个 `.DAT`，不是拼接好的球面图；
-- 「正射」105 张、「三维」（加密）940 张、「三维（新）」560 张，同样都是 4:3。
+**接口（与 V2 `#/control` 同源）**
 
-所以判定只能按几何形状：**宽高比 1.9~2.1（2:1 等距圆柱）才算全景**
-（`utils/pano.ts` 的 `isEquirect`）。尺寸来自列表里缩略图的 `naturalWidth/Height`
-（`stores/patrol.ts` 的 `dims`），不额外发请求。
+```
+GET  /dashboard/recreate/getProjectRecreateInfo?pid=<项目>&pageNo=1&size=30
+       → {total, list:[{recordId, projectId, projectName, taskName, taskType,
+                        status, createTime, resultRecordDTOList:[…]}]}
+GET  /dashboard/recreate/recordInfo/{recordId}          ← 本项目不需要（列表已内嵌成果）
+POST /share/recreate/fileUrl/{achievementId}/{secret}   → 重签 pano.json 直链
+POST /share/recreate/sts/models/{id}/{secret}           → STS（V2 用它自己签每个切片）
+POST /share/recreate/panoconfig/{id}                    → 默认视角 {yaw,pitch,zoom}（本项目为空）
+```
 
-真来了 2:1 的图就自动进 `ui/PanoViewer.vue`：WebGL 球面 + 拖拽环视 + 双指/滚轮
-改视场角 + 松手惯性；没有 WebGL 的环境退成平面 + 双指缩放，并在弹层里写明
-「当前环境不支持全景渲染」，不留白屏。
+**关键事实（全部实测）**
 
-若 V2 那边的「全景」另有来源（外部 720 云链接 / 三维瓦片 / 别的平台），
-需要先拿到地址再接线 —— 现有五个后端里都没有这类数据。
+- `taskType`：**1=三维 2=全景 3=正射**；`status`：2=已完成。
+- `taskType` / `status` **作为查询参数传了会被忽略**（返回的仍是最新那几条），
+  所以必须自己筛。`page` / `pageNo` 都认，`size` 生效（`size=500` 一次回全部 419 条）。
+- 排序默认 `createTime` 倒序。本项目 419 条，全景大致每 4 条出现一次
+  （正射 → 三维 → 正射 → 全景 的节奏）。**2026-11-16 16:47 实测**：带 `pid` 时
+  `size=30` 第一页就命中本项目最新全景（约 80KB）；不带 `pid` 时全平台 434 条，
+  最新的是**光谷元著** 11-15 13:29（比向阳村 11-15 12:10 晚 1 小时）。
+- 列表每行的 `resultRecordDTOList` **已经带签名直链**，不用再调 `recordInfo`。
+- 一次飞行产出**多个**全景点：向阳村 `_0/_1/_2`（3 个，13.05/13.91/13.54MB）、
+  光谷元著 `_0.._4`（5 个）。按名字排序取 `_0`（用户要求只留一张）。
+- 每个成果带三样东西（签名 URL，`X-Amz-Expires=7200`，**2 小时过期**）：
+  - `url` → `…_0/pano.json`：**立方体切片清单**（`cube` 六面 + `tiles.col=4` 的 4×4 切片），
+    V2 的 `iot.keehang.com/pano/#/panorama` 用 Photo Sphere Viewer 读它；
+  - `thumbnail` → **3162×1581 等距圆柱预览图**（约 185KB，OSS 缩略图桶）；
+  - `download` → **`origin.jpg` 10000×5000 等距圆柱原图**（约 13MB，moss 域名）。
+- 两个域名都回 `Access-Control-Allow-Origin`（**带 Origin 请求头时才回**），
+  也支持 `Range` —— 能直接 `crossOrigin='anonymous'` 交给 WebGL 当贴图。
+
+**本项目的实现（比 V2 简单一档）**
+
+V2 的 cube 分支只贴 6 张 `cube/*_low.jpg`（每面 1024²，等效约 11 px/度），
+高清还要另走 STS + 逐块切片。既然 `origin.jpg` 本身就是 2:1 等距圆柱，
+这里直接**贴一张等距圆柱图**：`utils/pano.ts` + `ui/PanoViewer.vue`（手写 WebGL 球面），
+手机与电脑同一套手势（拖拽 / 双指 / 滚轮 / 惯性 / 复位）。
+
+- 首屏用 `thumbnail`（185KB）；「看高清」才拉 `download`（13MB），贴图没到位前
+  旧图继续显示，不闪白。没有 WebGL 退平面 + 双指缩放，并写明原因。
+- **按项目筛**（`pid` + 本地 `projectId` 双保险）：不筛会静默把光谷元著顶进来。
+- 全景航线的**原片不进照片墙**（26 张碎片），也不为它发媒体请求。
+- 签名过期时弹层给「全景图链接已过期 · 重新获取」，走 `loadPano(true)` 重取。
+
+**仍然成立的旧结论**：媒体接口里没有 2:1 的图（12 条航线抽样全是 4032×3024 /
+4000×3000），所以照片墙那条「按几何形状认全景」（`isEquirect`）保留着，
+真来了就自动进环视。
+
+#### 6.1 为什么不用 V2 那套 cubemap（2026-11-16 实测）
+
+`pano.json`（`url` 指向它）里写着两种投影：
+
+| 字段 | 内容 | 能不能直接取 |
+| --- | --- | --- |
+| `origin` | `origin.jpg`，**10000×5000** 等距圆柱（27.8 px/度） | 能，`download` 是签名直链，13MB |
+| `cube` | 六面 `cube/{front,back,left,right,top,bottom}_low.jpg`，每张 **2500×2500**（27.8 px/度） | 不能，裸 URL 一律 **403**，要 STS 临时凭证自签 |
+| `tiles` | `tiles/{面}_{行}_{列}.jpg`（4×4 切片） | 不能，目录实测 **404** |
+
+**结论是等距圆柱够用**：两者角分辨率完全一样（都是 27.8 px/度），换 cubemap
+不会更清晰，只会多出「STS 换凭证 + 浏览器端 SigV4 自签 6 个 URL」一条新链路
+（`POST /share/recreate/sts/models/{id}/{secret}` 能换到临时 ak/sk，实测能签出
+`cube/bottom_low.jpg`）。收益只有一个：**天底那块更平滑**。
+
+**天底为什么会糊（已定案，不是渲染 bug）**：全景相机天底位置是相机自己的死区，
+平台那里填的是一块接近纯白的补丁，且带**按列的明暗带**。等距圆柱把这圈方位压
+成一个点，那些列向带纹就被拉成放射状辐条 —— 看起来像一圈星芒。V2 用 cubemap
+时天底是独立的正方形面，没有极点收敛，所以只是一团柔和的白雾。
+
+处理办法（`PanoViewer` 的 `FRAG`）：离天底 15° 以内按方位 8 点平均，把死区抹平；
+范围外一次采样都不多花。**这块源图里没有真实地面细节可抢救**，抹平不损失信息。
+
+**另一个真坑（顺手修掉）**：`origin.jpg` 10000×5000，超过多数设备的
+`MAX_TEXTURE_SIZE`（手机 4096~8192）。超限时 `texImage2D` 报 INVALID_VALUE、
+贴图保持不完整 —— 表现**不是糊而是整屏黑**，且各机型不一致。现在先按
+`utils/pano.ts` 的 `panoTexScale` 缩到「边长 ≤ 上限 且 总像素 ≤ 18M」再上传。

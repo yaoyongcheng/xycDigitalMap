@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchMediaJobs, fetchTaskRecords, type DroneMedia } from '@/api/drone'
+import { fetchLatestPano, fetchMediaJobs, fetchTaskRecords, type DroneMedia, type DronePano } from '@/api/drone'
 import { ApiError } from '@/api/http'
 import { isEquirect } from '@/utils/pano'
 
@@ -42,11 +42,15 @@ import { isEquirect } from '@/utils/pano'
  * 用户点「查看原图」才去拉原图并显示下载进度。`limitUrl` 不是压缩版 ——
  * 实测与 `url` 一模一样的字节数，只是换了 moss 域名，别拿它当低清图。
  *
- * ## 全景
+ * ## 全景（2026-11-16 改吃「拼接成果」）
  *
- * 平台没有任何「这是全景图」的字段，只能按图片宽高比判定（2:1 = 等距圆柱）。
- * 判定与角度数学在 `utils/pano.ts`；这里只负责把**列表里加载缩略图时顺手
- * 拿到的尺寸**记下来，供大图弹层与卡片角标判断，省掉再发一次请求。
+ * 原片只是原料：一次「向阳村-全景」飞 26 张 4032×3024 的碎片，**平台已经把它们
+ * 拼成了等距圆柱图**，存在重建成果里（`/dashboard/recreate/*`，V2 的
+ * 「控制 → 成果预览」用的就是这套）。所以这条航线**不进照片墙**、也不自己拼球，
+ * 只由 `loadPano()` 取回最近一个成果点（见 `api/drone.ts` 的 `fetchLatestPano`）。
+ *
+ * 照片墙里那条「2:1 就是全景」的判定（`utils/pano.ts` 的 `isEquirect`）仍然保留：
+ * 万一某天媒体里直接出现一张等距圆柱图，大图弹层照样能进环视。
  */
 
 /** 一张真实航拍照片 */
@@ -163,11 +167,39 @@ export function patrolCatKey(p: Pick<PatrolPhotoReal, 'taskId' | 'taskName'>): s
   return p.taskId === null ? `name:${p.taskName}` : `task:${p.taskId}`
 }
 
+/**
+ * 这条航线是不是「全景航线」。
+ *
+ * 现场唯一一条叫「向阳村-全景」，一次飞 3 个全景点（每个 26 张）。
+ * 它的**原片不进照片墙** —— 那些碎片是拼接原料，成果由平台拼好（见 `loadPano`）。
+ */
+export function isPanoTask(taskName: string): boolean {
+  return String(taskName ?? '').includes('全景')
+}
+
+/**
+ * 全景在弹层里的「照片 id」。
+ *
+ * 大图弹层是按照片 id 打开一张图，而「项目全景」来自重构成果、没有照片 id，
+ * 所以给它一个不会与真实媒体名冲突的保留值；`SheetHost` 与 `PatrolSheet`
+ * 都认这个常量（别在两处各写一个字符串）。
+ */
+export const PANO_SHEET_ID = 'pano'
+
 export const usePatrolStore = defineStore('patrol', () => {
   /** 真实照片 */
   const photos = ref<PatrolPhotoReal[]>([])
   /** 本次同步扫过的飞行次数（页面可显示「已同步 N 次飞行」） */
   const flightCount = ref(0)
+  /** 最新一个全景点（平台已拼好，没有全景航线时为 null） */
+  const pano = ref<DronePano | null>(null)
+  /**
+   * 全景的加载状态：idle / loading / ok / error
+   *
+   * 单独一套，不跟 `state` 混：照片墙和全景是两条独立的链（一个扫媒体、
+   * 一个查重建成果），全景取不到不该把整页翻回骨架。
+   */
+  const panoState = ref<PatrolState>('idle')
 
   /**
    * 照片 id → 原图尺寸（宽 × 高）。
@@ -250,6 +282,30 @@ export const usePatrolStore = defineStore('patrol', () => {
   }
 
   /**
+   * 取最近一个「项目全景」点（**平台拼好的成果，不是原片**）。
+   *
+   * 与照片墙是两条独立的链：那边逐条扫媒体（慢、有限流），这边一次列表请求
+   * （80KB）就够，所以 `load()` 里并行发出，谁先回来谁先上屏。
+   *
+   * 取不到时**保留旧的全景**（和照片一个道理：网络抖一下就把图撤掉更难受），
+   * 只有服务端明确回「一条都没有」才清空。失败**不抛** —— 全景是附加内容。
+   *
+   * 成果直链是 OSS 预签名（2 小时过期），所以 `force` 重取是常态：
+   * 页面上的「重新获取」走它。
+   */
+  async function loadPano(force = false): Promise<void> {
+    if (!force && (panoState.value === 'loading' || pano.value)) return
+    panoState.value = 'loading'
+    try {
+      const p = await fetchLatestPano()
+      pano.value = p
+      panoState.value = 'ok'
+    } catch {
+      panoState.value = 'error'
+    }
+  }
+
+  /**
    * 取一次某次飞行的媒体，带限流重试。
    *
    * 失败返回 null（调用方跳过这条记录），**不抛** —— 一条记录取不到不该让整页失败。
@@ -288,6 +344,10 @@ export const usePatrolStore = defineStore('patrol', () => {
 
     for (const rec of rows.slice(0, MAX_PROBE)) {
       if (done.size >= MAX_JOBS) break
+      // 全景航线的原片是拼接原料，成果由平台拼好、由 `loadPano()` 单独取。
+      // 在**发请求之前**就跳过：这 26 张既不上墙，也没必要拉媒体列表。
+      if (isPanoTask(rec.taskName)) continue
+
       const key = patrolCatKey(rec)
       if (done.has(key)) continue
 
@@ -331,9 +391,14 @@ export const usePatrolStore = defineStore('patrol', () => {
         let lastErr: unknown = null
         // 增量写入（`probe` 拿到一个任务就 push 一批），所以先清空
         photos.value = []
+        pano.value = null
+        panoState.value = 'idle'
         flightCount.value = 0
         // 尺寸缓存跟着换：新一批照片的 id 可能完全不同，旧记录白占内存
         dims.value = {}
+
+        // 全景走另一条链（一次列表请求），与照片探测并行；自己吞错不拖累这里
+        const panoTask = loadPano(true)
 
         for (const days of WINDOWS) {
           let rows
@@ -348,10 +413,13 @@ export const usePatrolStore = defineStore('patrol', () => {
           const started = rows.filter((r) => !r.start || r.start <= now)
           const desc = started.slice().sort((a, b) => b.start.localeCompare(a.start))
           await probe(desc)
+          // 有照片就不用再回溯 180 天
           if (photos.value.length) break
         }
 
-        if (!photos.value.length && lastErr) throw lastErr
+        await panoTask
+        // 全景也算「有内容」：某个项目只飞了全景航线时不该当成整页失败
+        if (!photos.value.length && !pano.value && lastErr) throw lastErr
 
         state.value = 'ok'
         error.value = ''
@@ -397,6 +465,8 @@ export const usePatrolStore = defineStore('patrol', () => {
 
   function reset(): void {
     photos.value = []
+    pano.value = null
+    panoState.value = 'idle'
     flightCount.value = 0
     dims.value = {}
     state.value = 'idle'
@@ -407,6 +477,8 @@ export const usePatrolStore = defineStore('patrol', () => {
 
   return {
     photos,
+    pano,
+    panoState,
     flightCount,
     dims,
     state,
@@ -416,6 +488,7 @@ export const usePatrolStore = defineStore('patrol', () => {
     setDims,
     isPano,
     previewOf,
+    loadPano,
     apply,
     load,
     refresh,

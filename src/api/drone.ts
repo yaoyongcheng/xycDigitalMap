@@ -822,6 +822,198 @@ export async function fetchMediaJobs(jobId: number): Promise<DroneMedia[]> {
   return out
 }
 
+/* ---------- 项目全景（重建成果，V2「控制 → 成果」同一条链） ---------- */
+
+/**
+ * 一条重建成果（`achievementList` / `resultRecordDTOList` 的元素）。
+ *
+ * ⚠️ 这是**拼接好的成果**，不是原始拍摄件，和 `DroneMedia` 是两套东西：
+ * 媒体接口（`/media/task/job/{id}`）给的是无人机上传的原片，一次全景飞行
+ * 26 张 4032×3024 的碎片；成果接口给的是服务端拼好的等距圆柱图。
+ *
+ * 三种成果靠 `recreateType` 区分：`PANO` 全景 / `MODEL` 三维 / 正射是 tif。
+ */
+export interface DroneAchievement {
+  /** 成果 id（与 `secret` 一起换签名直链：`POST /share/recreate/fileUrl/{id}/{secret}`） */
+  id: number
+  /** 成果密钥（服务端签直链用） */
+  secret: string
+  /** 文件名（全景是 `…_0.jpg`，下划线后是该次飞行的第几个全景点） */
+  name: string
+  /** 成果体积（字节） */
+  size: number
+  /** 全景：立方体切片清单 `pano.json`（V2 的 `#/pano` 用 PSV 读它） */
+  url: string
+  /** 全景：**3162×1581 等距圆柱预览图**（约 185KB，OSS 缩略图桶） */
+  thumbnail: string
+  /** 全景：**10000×5000 等距圆柱原图**（`origin.jpg`，约 13MB，moss 域名） */
+  download: string
+  /** `PANO` / `MODEL` / … */
+  recreateType: string
+}
+
+/**
+ * 一个「项目全景」点。
+ *
+ * 平台已经把 26 张碎片拼好了，本项目的智眸面板**只放这一张**（用户要求）。
+ * 预览与原图都是 2:1 等距圆柱投影，`ui/PanoViewer.vue` 直接贴上球面。
+ */
+export interface DronePano {
+  /** 成果 id（不是执行记录 id） */
+  id: number
+  /** 成果密钥 */
+  secret: string
+  /** 执行记录 id（同一次飞行的原片 id） */
+  recordId: number
+  /** 所属项目 id（与 `KH_PROJECT_ID` 同源，见 `pickLatestPano` 的守卫） */
+  projectId: number
+  /** 所属项目名（实测「中建三局-向阳村项目」） */
+  projectName: string
+  /** 航线名（现场「向阳村-全景_202611151130181616」） */
+  taskName: string
+  /** 成果文件名（`…_0.jpg`，存盘时用） */
+  name: string
+  /** 成果生成时间 `YYYY-MM-DD HH:mm:ss` */
+  time: string
+  /** 预览图（等距圆柱，约 185KB）—— 首屏 / 列表卡片都用它 */
+  preview: string
+  /** 原图（等距圆柱，约 13MB）—— 点「看高清」才拉 */
+  full: string
+  /** 原图体积（字节） */
+  size: number
+}
+
+/** `taskType`：1=三维 2=全景 3=正射 */
+const RECREATE_TASK_PANO = 2
+/** `status`：2=已完成 */
+const RECREATE_STATUS_DONE = 2
+
+/**
+ * 每页条数。
+ *
+ * 平台**不支持按类型过滤**（`taskType` / `status` 传了被忽略，实测返回还是最新的
+ * 正射），所以只能按时间倒序翻页再自己挑。现场节奏是「正射 → 三维 → 正射 → 全景」
+ * 循环，全景大约每 4 条出现一次；30 条一页既够命中，响应也只有 80KB
+ * （100 条是 270KB —— 每条都内嵌成果直链，很占）。
+ */
+const PANO_PAGE_SIZE = 30
+/** 最多翻几页（够不着就认「最近没有全景」） */
+const PANO_MAX_PAGE = 4
+
+/** 把一条成果收敛成前端类型；缺直链的行丢掉（没有图就没有意义） */
+function toAchievement(raw: unknown): DroneAchievement | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const id = num(o.id)
+  if (id === null) return null
+  const thumbnail = str(o.thumbnail)
+  const download = str(o.download)
+  if (!thumbnail && !download) return null
+  return {
+    id,
+    secret: str(o.secret),
+    name: str(o.name),
+    size: num(o.size) ?? 0,
+    url: str(o.url),
+    thumbnail,
+    download,
+    recreateType: str(o.recreateType),
+  }
+}
+
+/**
+ * 从重建任务列表里挑出最新的一条全景。
+ *
+ * 优先取 `taskType === 2 && status === 2`（已完成的全景），按 `createTime` 倒序；
+ * 一条成果都没有（只有 pano.json、没有等距圆柱图）就接着往下挑，不硬顶第一条。
+ *
+ * 一次飞行会产出**多个**全景点（向阳村实测 3 个、光谷元著 5 个），按名字排序
+ * 取第一个 —— 用户要求（2026-11-16）「只存最新的一张」，对应 V2 截图里那张
+ * `向阳村-全景_202611151130181616_0.jpg`（13.05MB）。
+ *
+ * ⚠️ `projectId` 是**客户端守卫**，不是多余的一道：这个接口的 `pid` 传了不一定
+ * 被服务端采纳（`taskType` / `status` 就是传了被忽略的实测例子），一旦漏了，
+ * 返回的会是全平台最新 —— 光谷元著 11-15 13:29 比向阳村 11-15 12:10 晚一小时，
+ * 「项目全景」里就会静默变成另一个工地。宁可没有，也不能张冠李戴。
+ */
+export function pickLatestPano(raw: unknown, projectId?: number): DronePano | null {
+  const list = Array.isArray((raw as { list?: unknown })?.list)
+    ? ((raw as { list: unknown[] }).list as unknown[])
+    : []
+  const tasks: Record<string, unknown>[] = []
+  for (const r of list) {
+    if (!r || typeof r !== 'object') continue
+    const o = r as Record<string, unknown>
+    if (num(o.taskType) !== RECREATE_TASK_PANO) continue
+    if (num(o.status) !== RECREATE_STATUS_DONE) continue
+    if (projectId !== undefined && num(o.projectId) !== projectId) continue
+    tasks.push(o)
+  }
+  tasks.sort((a, b) => str(b.createTime).localeCompare(str(a.createTime)))
+
+  for (const t of tasks) {
+    const rows = Array.isArray(t.resultRecordDTOList) ? (t.resultRecordDTOList as unknown[]) : []
+    const panos = rows
+      .map(toAchievement)
+      .filter((a): a is DroneAchievement => a !== null && a.recreateType === 'PANO')
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const first = panos[0]
+    if (!first) continue
+    return {
+      id: first.id,
+      secret: first.secret,
+      recordId: num(t.recordId) ?? 0,
+      projectId: num(t.projectId) ?? 0,
+      projectName: str(t.projectName),
+      taskName: str(t.taskName) || str(t.lineName),
+      name: first.name,
+      time: str(t.createTime),
+      preview: first.thumbnail || first.download,
+      full: first.download || first.thumbnail,
+      size: first.size,
+    }
+  }
+  return null
+}
+
+/**
+ * 取本项目最近一个「项目全景」点（拼接成果）。
+ *
+ * 数据链与 V2 的「控制 → 成果预览」一致（V2 的 `getProjectRecreateInfo` 也是
+ * `{pid, pageNo}` 一起传）：
+ *   `GET /dashboard/recreate/getProjectRecreateInfo?pid=&pageNo=&size=`
+ *   → 每行内嵌 `resultRecordDTOList`（含 `thumbnail` / `download` 签名直链）
+ *
+ * **按项目筛**（`pid` + 本地 `projectId` 双保险，见 `pickLatestPano`）：光谷元著
+ * 11-15 13:29 那张虽然更新，但那是另一个工地，不能顶到向阳村的「项目全景」里。
+ *
+ * **不需要再调 `recordInfo`** —— 列表里已经把成果直链带回来了（实测）。
+ * 直链是 OSS 预签名，`X-Amz-Expires=7200`（2 小时），所以不能长期缓存，
+ * 每次进页面重取一遍拿新签名。
+ *
+ * 两种「没有」要分开：**真没有全景**返回 null；**接口挂了**抛错（第一页就失败
+ * 才抛，翻页失败当翻到底）。调用方据此区分「暂无全景」和「取不到，可重试」。
+ */
+export async function fetchLatestPano(): Promise<DronePano | null> {
+  for (let page = 1; page <= PANO_MAX_PAGE; page += 1) {
+    let raw: unknown
+    try {
+      raw = await khAuthGet<unknown>(
+        `/dashboard/recreate/getProjectRecreateInfo?pid=${KH_PROJECT_ID}&pageNo=${page}&size=${PANO_PAGE_SIZE}`,
+      )
+    } catch (e) {
+      if (page === 1) throw e
+      // 后面几页失败：已有结果就按「翻到底」处理，别把前几页挑到的丢掉
+      return null
+    }
+    const hit = pickLatestPano(raw, KH_PROJECT_ID)
+    if (hit) return hit
+    const rows = (raw as { list?: unknown[] })?.list
+    if (!Array.isArray(rows) || rows.length < PANO_PAGE_SIZE) return null
+  }
+  return null
+}
+
 /**
  * 一路直播流（无人机 / 机库摄像头）。
  *

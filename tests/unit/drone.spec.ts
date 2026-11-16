@@ -27,6 +27,7 @@ import {
   fetchTodayRecords,
   fetchProjectIds,
   fetchTelemetry,
+  pickLatestPano,
   toDock,
   toLiveStream,
   toTaskRecords,
@@ -961,5 +962,121 @@ describe('会话注入', () => {
 
     const logins = f.mock.calls.filter((c) => String(c[0]).includes('/cas/auth/login'))
     expect(logins).toHaveLength(0)
+  })
+})
+
+/**
+ * 项目全景：从重建任务列表里挑最新一个「等距圆柱成果」。
+ *
+ * 结构是对着现场实测抄的（2026-11-15 record 181616）：列表按 createTime 倒序、
+ * 混着正射/三维、每条内嵌 `resultRecordDTOList`、一次飞行 3 个 PANO 成果。
+ */
+describe('pickLatestPano（重建成果里挑全景）', () => {
+  const pano = (id: number, secret: string, name: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id,
+    secret,
+    name,
+    mediaType: 2,
+    size: 13_688_984,
+    recreateType: 'PANO',
+    url: `https://oss.keehang.com:19090/models/${id}/pano.json`,
+    thumbnail: `https://oss.keehang.com:19090/thumbnail/model/${id}/thumbnail.jpg`,
+    download: `https://moss.keehang.com:9443/models/${id}/origin.jpg`,
+    ...over,
+  })
+  const task = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    recordId: 181616,
+    taskName: '向阳村-全景_202611151130181616',
+    taskType: 2,
+    status: 2,
+    createTime: '2026-11-15 12:10:54',
+    resultRecordDTOList: [
+      pano(103181, 'LsM8Eppu', 'pano_1.jpg'),
+      pano(103180, 'b3uT22dX', 'pano_0.jpg'),
+      pano(103182, 'QjPlKQbX', 'pano_2.jpg'),
+    ],
+    ...over,
+  })
+
+  it('按名字排序取第一个（一次飞 3 个只留一张）', () => {
+    const p = pickLatestPano({ list: [task()] })
+    expect(p?.id).toBe(103180)
+    expect(p?.name).toBe('pano_0.jpg')
+    expect(p?.secret).toBe('b3uT22dX')
+    expect(p?.preview).toContain('/thumbnail/model/103180/')
+    expect(p?.full).toContain('/models/103180/origin.jpg')
+  })
+
+  it('跳过正射 / 三维和未完成的任务，取最新一条已完成全景', () => {
+    const p = pickLatestPano({
+      list: [
+        { ...task(), recordId: 1, taskType: 3, createTime: '2026-11-16 09:00:00' },
+        { ...task(), recordId: 2, status: 1, createTime: '2026-11-16 10:00:00' },
+        { ...task(), recordId: 3, createTime: '2026-11-14 12:00:00' },
+        task(),
+      ],
+    })
+    expect(p?.recordId).toBe(181616)
+  })
+
+  it('只有预览图没有原图时，preview / full 都落到预览上（不返回空 URL）', () => {
+    const p = pickLatestPano({
+      list: [task({ resultRecordDTOList: [pano(103180, 'S', 'pano_0.jpg', { download: '' })] })],
+    })
+    expect(p?.preview).toContain('/thumbnail/')
+    expect(p?.full).toBe(p?.preview)
+  })
+
+  it('成果为空 / 只有切片没有等距圆柱图 → null（宁可不显示，也不给个空壳）', () => {
+    expect(pickLatestPano({ list: [task({ resultRecordDTOList: [] })] })).toBeNull()
+    expect(pickLatestPano({ list: [task({ resultRecordDTOList: [pano(1, 'S', 'x', { thumbnail: '', download: '' })] })] })).toBeNull()
+    expect(pickLatestPano({ list: [] })).toBeNull()
+    expect(pickLatestPano(null)).toBeNull()
+  })
+})
+
+describe('pickLatestPano · 项目守卫', () => {
+  const t = (over: Record<string, unknown>): Record<string, unknown> => ({
+    recordId: 1,
+    projectId: 193640872670213,
+    projectName: '中建三局-向阳村项目',
+    taskName: '向阳村-全景',
+    taskType: 2,
+    status: 2,
+    createTime: '2026-11-15 12:10:54',
+    resultRecordDTOList: [
+      {
+        id: 1,
+        secret: 'S',
+        name: 'a_0.jpg',
+        mediaType: 2,
+        size: 1,
+        recreateType: 'PANO',
+        url: '',
+        thumbnail: 'https://oss/x/thumbnail/1.jpg',
+        download: 'https://moss/x/1/origin.jpg',
+      },
+    ],
+    ...over,
+  })
+
+  it('带上 projectId 时，别的项目更新的记录直接被跳过', () => {
+    const p = pickLatestPano(
+      { list: [t({ recordId: 181656, projectId: 231070463906821, createTime: '2026-11-15 13:29:17' }), t({ recordId: 181616 })] },
+      193640872670213,
+    )
+    expect(p?.recordId).toBe(181616)
+  })
+
+  it('不带 projectId 时取最新（守卫可选，便于排查「到底是哪条」）', () => {
+    const p = pickLatestPano({
+      list: [t({ recordId: 181656, projectId: 231070463906821, createTime: '2026-11-15 13:29:17' }), t({ recordId: 181616 })],
+    })
+    expect(p?.recordId).toBe(181656)
+  })
+
+  it('本项目一条都没有时返回 null（不会退而求其次拿别的项目）', () => {
+    const p = pickLatestPano({ list: [t({ recordId: 181656, projectId: 231070463906821 })] }, 193640872670213)
+    expect(p).toBeNull()
   })
 })

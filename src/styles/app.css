@@ -7909,6 +7909,10 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   color: var(--ink-3-dark);
 }
 
+.patrol-empty p { margin: 0; }
+
+.patrol-empty .data-empty-btn { margin-top: 10px; }
+
 /* ---------- 大图（弹层内） ---------- */
 
 .patrol-view { position: relative; margin: 8px 0 14px; }
@@ -7977,6 +7981,9 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   height: 46vh;
   max-height: 420px;
   min-height: 200px;
+  /* 贴图还没上屏时露的就是这层底色（与画布的 clearColor 同一档深色）。
+     不画「天 → 地」渐变：那会让人以为图已经出来了，其实还在下。 */
+  background: var(--bg-1);
 }
 
 /* 退路（无 WebGL）时是平面大图，按 contain 装进同一块区域 */
@@ -8016,8 +8023,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 .pano-reset:active { opacity: 0.7; }
 
 /* 手势提示压在画布底部（渐变压一层，不挡画面中心） */
-.pano-hint {
-  position: absolute;
+.pano-hint {  position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
@@ -8029,6 +8035,35 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   text-align: center;
   pointer-events: none;
 }
+
+/* OSS 签名过期后的补一条：说明 + 重取按钮（不占画布，压在画布下面一条） */
+.pano-expired {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -6px 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--r-8);
+  background: rgba(255, 168, 71, 0.12);
+  color: var(--warn-dark);
+  font-size: var(--fs-12);
+}
+
+.pano-expired button {
+  flex: none;
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: rgba(255, 168, 71, 0.18);
+  color: inherit;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.pano-expired button:active { opacity: 0.7; }
 
 /* 原图下载进度（宽度是真百分比，服务端没给长度时停在 0 当不确定态） */
 .hd-progress {
