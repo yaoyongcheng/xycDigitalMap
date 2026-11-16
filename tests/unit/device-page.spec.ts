@@ -1824,10 +1824,11 @@ describe('无人机页', () => {
     w.unmount()
   })
 
-  it('刷新分两档：遥测 2s 一轮（对齐 V2 的 OSD 节奏），任务与直播地址仍 30s', async () => {
+  it('刷新分两档：机载遥测 2s 一轮（对齐 V2 的 OSD 节奏），机库/任务/直播地址 30s', async () => {
     // V2 是 MQTT 推送（OSD 约 1Hz，3s 无消息判离线），浏览器接不了那层推送，
-    // 只能轮询 —— 2s 是最接近的近似。但任务记录一条要跑十几分钟、直播地址只在
-    // 开播/关播时变，跟着 2s 跑纯属白烧流量（今日明细 2s 一次 ≈ 9MB/小时）。
+    // 只能轮询 —— 2s 是最接近的近似。但机库读数（舱温/湿度/雨量/网络）是分钟级变化，
+    // 任务记录一条要跑十几分钟、直播地址只在开播/关播时变，跟着 2s 跑纯属白烧流量
+    // （今日明细 2s 一次 ≈ 9MB/小时、机库 2s 一次 ≈ 1.4MB/小时）。
     vi.useFakeTimers()
     try {
       stubRecords = [todayRecord()]
@@ -1850,20 +1851,21 @@ describe('无人机页', () => {
       const rec = hits('/task/exec/list/record')
       const stream = hits('/live/stream/list')
 
-      // 过 2 秒：两路遥测各走一轮
+      // 过 2 秒：只有机载那一路走一轮
       await vi.advanceTimersByTimeAsync(2_000)
       await nextTick()
       expect(hits('/telemetry/23498/1')).toBe(tel + 1)
-      expect(hits('/telemetry/23452/2')).toBe(dock + 1)
+      expect(hits('/telemetry/23452/2')).toBe(dock)
       // 慢变那几样一动不动
       expect(hits('/task/exec/list/record')).toBe(rec)
       expect(hits('/live/stream/list')).toBe(stream)
 
-      // 满 30 秒：慢变那一档才动
+      // 满 30 秒：慢变那一档才动（机库读数也在这一档）
       await vi.advanceTimersByTimeAsync(28_000)
       await nextTick()
       expect(hits('/task/exec/list/record')).toBeGreaterThan(rec)
       expect(hits('/live/stream/list')).toBeGreaterThan(stream)
+      expect(hits('/telemetry/23452/2')).toBeGreaterThan(dock)
 
       w.unmount()
     } finally {

@@ -764,28 +764,30 @@ GET /live/stream/list?deviceId=23498          ← keehang 业务服务
 
 三处口径要说清：
 
-- **刷新节拍：遥测 2s、任务与直播地址 30s**（`stores/uav.ts` 的 `LIVE_GAP` / `SLOW_GAP`）。
+- **刷新节拍：机载遥测 2s / 其余 30s**（`stores/uav.ts` 的 `LIVE_GAP` / `SLOW_GAP`）。
   V2 根本不轮询 —— `MqttDroneRealTimeInfoRequester` 连 broker `47.106.219.250:1883`
   订阅 `/prod/thing/product/{sn}/osd`，一条 OSD 到就刷界面，`droneOfflineTimeoutSeconds = 3`
   判离线，飞控 OSD 本身约 1Hz。浏览器接不了那层推送（broker 裸端口在 HTTPS 页面下被
   混合内容拦，Pages 更没有反代），只能轮询；2s 是最接近的近似 —— 实测服务端缓存就是
-  秒级（每 2s 采样，翻滚角 / 水平速度 / 航向每次都在变）。轮询成本 2.3KB/轮（机载 1.5KB
-  + 机库 0.8KB）≈ 4MB/小时，页面不可见时整轮跳过。任务三格、今日明细、直播流地址
-  变化慢，走 30s 慢档（今日明细 2s 拉一次一小时 9MB，白烧流量换不来观感）。
+  秒级（每 2s 采样，翻滚角 / 水平速度 / 航向每次都在变）。2s 档**只拉飞机**
+  （1.5KB/轮 ≈ 2.7MB/小时），页面不可见时整轮跳过。
+- **机库读数（`/telemetry/23452/2`）走 30s 档**（2026-11-16 调整）。V2 从同一条 OSD
+  推送里拿机库的 `network_state` / 湿度 / 雨量，**从来没有单独高频请求过这个接口**
+  （三元里源码全量 grep 无 `cache/telemetry`；向阳村 V2 进程也没有无人机 broker 连接），
+  所以 2s 拉机库不是「对齐 V2」而是自加的成本（0.8KB × 1800 次/小时 ≈ 1.4MB/h）。
+  而舱温 / 湿度 / 雨量 / 网络本来就是分钟级变化 → 并进 30s 慢档，与任务三格、
+  今日明细、直播流地址同一批（今日明细 2s 拉一次一小时 9MB，同样是白烧）。
 - **姿态角**：`attitudeRoll` → 翻滚角、`attitudeHead` → 偏航角，一位小数 + °，
   对齐 V2 详情面板那两行。**不归一化到 0~360**：`attitudeHead` 是 −180~180，
   负值（实测 −93、−151）本身是合法航向，V2 也原样打；归一化会变成 267°/209°，
   同一方向两个数字，跟 V2 并排核对时互相打架。
-- **「今日任务」数字与 V2 不一致是必然的：两边不是同一个后端。**
-  V2 的任务统计（`UIDroneTaskStatistics`）读 `{url}/flight/taskView`，
-  `DroneAPIHelper.url = https://v2.smart-build.cn/ynlkUavApi`（另一个平台，账号
-  `18800010001`、`Project-Code` 取自 `getUserInfo` 的 `ynlkAuths[0].projectCode`），
-  口径是「当天 `Receivers` 条数」+「status==2 为成功 / ==3 为失败」。
-  我们读的是 keehang `/dashboard/task/list/record`（`taskCount / finishedCount / failedCount`）。
-  两个库的任务名能对得上（说明有同步），执行记录并不同步 —— 2026-11-16 实测：
-  keehang 当天 15 条（3 已完成 / 12 未执行），V2 面板是 23 / 4 / 0。
-  keehang 侧每日 12~15 条、条条可复核；**不要为了对齐 V2 去改 keehang 的口径**，
-  要一致只能改数据源（需要 smart-build 上向阳村项目的账号）。
+- **「今日任务」数字与 V2 的差异：V2 取数时漏了 `pid`**（2026-11-16 更正，详见本文
+  后面「MQTT 不是万能的」一节）。早先记的「两边不是同一个后端」是误判 —— 向阳村现场那台
+  V2 的进程只连 `iot.keehang.com`（`110.41.50.115:23443`）和塔机 broker，没有连
+  `47.106.219.250`（那是三元里的），也没有任何无人机 MQTT 连接。
+  真正的差异就一个参数：`/dashboard/task/list/record` 不带 `pid` → `taskCount 23`
+  （向阳村 15 + **光谷元著 8**），带 `pid` → 15。本项目照 V2 取（不传 `pid`），
+  明细也一并放开到账号口径（`fetchTodayRecords`），23 = 15 + 8 逐条对得上。
 - **状态**：**以机载遥测 `modeCode` 为主**（DJI `mode_code`：0 待机 … 18 空中 RTK 收敛），
   `status` 只在 `modeCode` 缺失时兜底 —— 映射表在 `utils/uavState.ts`。
   为什么主次是这样（2026-11-13 17:07 实测）：飞机从 69m 自动降落回库再落定，
