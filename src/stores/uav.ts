@@ -60,56 +60,39 @@ export type UavState = 'idle' | 'loading' | 'ok' | 'error'
 const RETRY_GAP = 60_000
 
 /**
- * 机载遥测的刷新间隔 —— **对齐 V2 的更新节奏**。
+ * 遥测（机载 `/1`、机库 `/2`）**没有定时节拍**，只在「进页面 / 切回标签页 / 点刷新」
+ * 时各取一次。
  *
- * ## V2 是推送，不是轮询
+ * 依据（2026-11-16 用户两次要求：「V2 里没轮询的接口，我的项目也不要」）：
  *
  * V2 客户端（`MqttDroneRealTimeInfoRequester`）连 broker `47.106.219.250:1883`，
- * 订阅 `/prod/thing/product/{sn}/osd`，一条 OSD 到就更新界面并触发
- * `E_DroneRealTimeInfoUpdated`，页面立刻跟着变；`droneOfflineTimeoutSeconds = 3`，
- * 3 秒收不到消息才判离线。飞控 OSD 本身约 1Hz。**机库那一路（`/telemetry/{id}/2`）
- * V2 也是从同一条 OSD 推送里拿的，它没有单独高频请求过这个接口**
+ * 订阅 `/prod/thing/product/{sn}/osd`，一条 OSD 到就更新界面；机库读数
+ * （`EnvPosNetStorageSideData` → `DroneDataCenter.Updatecabinstatus`）也在这条推送里。
+ * **V2 从来没有请求过 `/dashboard/device/cache/telemetry/{id}/1` 或 `/2`**
  * （三元里源码全量 grep 无 `cache/telemetry`；向阳村 V2 进程也没有无人机 broker 连接）。
+ * 我们之前按 2s / 30s 打这两个接口，属于给浏览器补一套 V2 没有的轮询。
  *
- * ## 浏览器只能近似
+ * 那层推送浏览器接不了（broker 裸端口 1883 / WS 8083 在 HTTPS 页面下被混合内容拦，
+ * Pages 更没有反代），所以现在的口径是：**不假装实时**，读数带时间戳、可手动刷新。
+ * 直播画面不受影响 —— HTTP-FLV 本身是真实时流。
  *
- * 那层推送浏览器接不了：broker 裸端口（1883 / WS 8083）在 HTTPS 页面下会被
- * 混合内容拦掉，GitHub Pages 更没有反代。所以退成轮询 ——
- * **2 秒一轮**是最接近的近似：实测服务端遥测缓存就是秒级
- * （每 2s 采样一次，翻滚角 / 水平速度 / 航向每次都在变）。
- * 这一档**只拉飞机**。机库那一路（`/telemetry/{id}/2`）**不在任何定时节拍里** ——
- * 见 `DOCK_GAP`。
- *
- * 成本：机载 1.5KB/轮，2s 一轮约 2.7MB/小时。页面不可见时整轮跳过
- * （见 `startLive`），后台不烧流量。
+ * 下面这个 3 秒只是「同一进页面动作内的去重」（mount 与 auth watch 会连着调
+ * `load()`），不是刷新节拍。
  */
-const LIVE_GAP = 2_000
+const ENTRY_DEDUPE = 3_000
 
 /**
- * 机库读数的取数窗口：**不进定时循环**，只在进页面 / 点重试时取一次，
- * 5 分钟内复用。
- *
- * 为什么不轮询（2026-11-16 用户第二次追问后定案）：V2 的机库读数
- * （`EnvPosNetStorageSideData` → `DroneDataCenter.Updatecabinstatus`）是跟着
- * `/thing/product/{sn}/osd` 的 OSD 消息来的，**V2 从来没有请求过
- * `/dashboard/device/cache/telemetry/{id}/2`**（三元里源码全量 grep 无 `cache/telemetry`；
- * 向阳村 V2 进程也没有无人机 broker 连接）。那个接口是本项目从 OpenAPI 里挖出来
- * 给机库页签补读数的自选动作，不该装成「和 V2 一样」去按节拍打。
- *
- * 但也不能整个删掉：浏览器接不了 OSD 推送（keehang 无 WSS），它是机库那 5 行
- * （在库 / 充电 / 舱温 / 湿度 / 网络）**唯一可达的来源**，删了这半屏就全是「—」，
- * 而 V2 那边是有数的。所以保留成「进页面取一次」的快照，不跟节拍。
+ * 机库读数的复用窗口：比机载那一路长，因为舱温 / 湿度 / 雨量 / 网络都是分钟级
+ * 变化的静态环境量，反复取同值没有意义。
  */
 const DOCK_GAP = 5 * 60_000
 
 /**
  * 「慢变」数据的节拍：两路直播流地址 + 任务三格 + 今日明细。
  *
- * 这几样都不跟 2s 走：直播地址只在开播 / 关播时变，任务记录一条要跑十几分钟。
- * 今日明细十几条记录、几 KB，2s 拉一次一小时就是 9MB —— 白烧流量换不来任何观感。
- * 30s 足够让「任务飞完」在页面上及时翻过来。
- *
- * 机库读数**不在这里**（见 `DOCK_GAP`）。
+ * 这一档**保留定时器**：任务飞完那三格要自己翻过来（2026-11-13 用户明确要求），
+ * 直播地址也要在开播 / 关播时自己变。它不打遥测接口，跟「不轮询遥测」不冲突。
+ * 30s 足够：任务记录一条要跑十几分钟。
  */
 const SLOW_GAP = 30_000
 
@@ -474,9 +457,10 @@ export const useUavStore = defineStore('uav', () => {
    * 失败只让自己的格子写「—」，不该把整页判成失败。
    */
   async function load(force = false): Promise<void> {
-    // 机库读数不在任何定时节拍里，重进页面时按 `DOCK_GAP` 补一次。
+    // 遥测两路都不在任何定时节拍里（见 `ENTRY_DEDUPE`）：进页面各补一次。
     // 必须放在两个早退**之前**：`state` 已是 ok 时也要补，否则读数会冻在本次会话
-    // 第一个快照上（用户看到的会是几小时前的舱温）。
+    // 第一个快照上（用户看到的会是几小时前的舱温 / 姿态）。
+    if (Date.now() - telemetryAt > ENTRY_DEDUPE) void refreshTelemetry()
     if (Date.now() - dockAt > DOCK_GAP) void refreshDock()
 
     if (inflight) return inflight
@@ -485,17 +469,15 @@ export const useUavStore = defineStore('uav', () => {
 
     state.value = 'loading'
     inflight = (async () => {
-      const [list, s, tel, rt, fly, dockFly] = await Promise.allSettled([
+      const [list, s, rt, fly, dockFly] = await Promise.allSettled([
         fetchTodayRecords({ start: dayKey(0), end: dayKey(1) }),
         fetchTaskStat(),
-        fetchTelemetry(),
         fetchRoutes(),
         fetchLiveStream(KH_IDS.droneDeviceId),
         fetchLiveStream(KH_IDS.dockDeviceId),
       ])
 
       if (s.status === 'fulfilled') stat.value = s.value
-      if (tel.status === 'fulfilled') telemetry.value = tel.value
       if (rt.status === 'fulfilled') routes.value = rt.value
       // 直播流取不到就当「没有这一路」，页面写「未开播」；不保留上一轮的旧地址，
       // 免得停播后仍拿旧 url 连（连上去是黑的，比明说未开播更糟）
@@ -569,26 +551,27 @@ export const useUavStore = defineStore('uav', () => {
 
   /* ---------------- 实时刷新（子页「实时监控」） ---------------- */
 
-  let liveTimer: number | null = null
   let slowTimer: number | null = null
   const liveOwners = new Set<string>()
-  /** 上一轮遥测还没回来就跳过这一拍 —— 2s 可能比一次请求还短，别把请求堆起来 */
-  let telemetryBusy = false
+  /** 遥测上次取到的时间（进页面去重，见 `ENTRY_DEDUPE`） */
+  let telemetryAt = 0
   /** 机库读数上次取到的时间（见 `DOCK_GAP`） */
   let dockAt = 0
 
 /**
- * 刷一轮**机载读数**（2s 节拍）：只有飞机那一路 GET。
+ * 刷一轮**机载读数**（无节拍：进页面 / 切回标签页 / 点刷新时各一次）。
  *
- * 机库（`/telemetry/23452/2`）**既不在 2s 档也不在 30s 档**，只在进页面时取一次，
- * 见 `DOCK_GAP`。V2 的机库读数是 OSD 推送来的，按节拍打这个接口等于自己造一套
- * V2 没有的轮询。
+ * 机库（`/telemetry/23452/2`）同理，只是复用窗口更长（见 `DOCK_GAP`）。
+ * V2 的读数都是 OSD 推送来的，按节拍打这两个接口等于自己造一套 V2 没有的轮询
+ * —— 理由写在 `ENTRY_DEDUPE` 上方。
  *
  * 失败一律保留旧值、不把页面清空：刷新失败不等于「飞机没了」。
  */
 async function refreshTelemetry(): Promise<void> {
   try {
     telemetry.value = await fetchTelemetry()
+    telemetryAt = Date.now()
+    updatedAt.value = stamp()
   } catch {
     // 保留旧值（读数自带时间戳，页面照常显示）
   }
@@ -631,35 +614,35 @@ async function refreshSlow(): Promise<void> {
     if (running.value) void loadEstimates()
   }
 
-  /** 整页刷一轮：进页面、切回标签页时用，两档节拍都走一遍 */
+  /**
+   * 整页刷一轮：切回标签页、点「刷新」时用。
+   *
+   * 从 2026-11-16 起这是**唯一**会再取遥测的入口（没有定时器了，见 `ENTRY_DEDUPE`）。
+   */
   async function refreshLive(): Promise<void> {
     await Promise.all([refreshTelemetry(), refreshSlow()])
+    telemetryAt = Date.now()
   }
 
-  /** 页面可见性变化：切回来立刻补一轮，不用干等下一个 2 秒 */
+  /** 页面可见性变化：切回来补一轮 */
   function onVisible(): void {
     if (document.visibilityState === 'visible') void refreshLive()
   }
 
   /**
-   * 登记一个「正在看实时读数」的页面。
+   * 登记一个「正在看这一页」的页面。
    *
    * 按 owner 名登记而不是计数：组件重复挂载/卸载不会把计数弄歪。
+   *
+   * 这里**只挂可见性监听 + 30s 慢档**（任务三格 / 今日明细 / 直播地址）。
+   * 遥测那两个接口没有节拍 —— V2 是 OSD 推送，我们不再自造一套 V2 没有的轮询
+   * （见 `ENTRY_DEDUPE`）。
    */
   function startLive(owner: string): void {
     if (liveOwners.has(owner)) return
     liveOwners.add(owner)
-    if (liveTimer !== null) return
+    if (slowTimer !== null) return
     document.addEventListener('visibilitychange', onVisible)
-    // 2s 档：只打两路遥测。页面在后台就整轮跳过 —— 2s 的节拍不在后台烧流量
-    liveTimer = window.setInterval(() => {
-      if (document.visibilityState === 'hidden') return
-      if (telemetryBusy) return
-      telemetryBusy = true
-      void refreshTelemetry().finally(() => {
-        telemetryBusy = false
-      })
-    }, LIVE_GAP)
     slowTimer = window.setInterval(() => {
       if (document.visibilityState === 'hidden') return
       void refreshSlow()
@@ -669,9 +652,7 @@ async function refreshSlow(): Promise<void> {
   function stopLive(owner: string): void {
     if (!liveOwners.delete(owner)) return
     if (liveOwners.size) return
-    if (liveTimer !== null) window.clearInterval(liveTimer)
     if (slowTimer !== null) window.clearInterval(slowTimer)
-    liveTimer = null
     slowTimer = null
     document.removeEventListener('visibilitychange', onVisible)
   }
@@ -725,6 +706,7 @@ async function refreshSlow(): Promise<void> {
     lastFailAt = 0
     estimates.value = {}
     estimatesAt = 0
+    telemetryAt = 0
     dockAt = 0
     clearSession()
   }

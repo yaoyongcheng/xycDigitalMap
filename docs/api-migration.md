@@ -764,23 +764,19 @@ GET /live/stream/list?deviceId=23498          ← keehang 业务服务
 
 三处口径要说清：
 
-- **刷新节拍：机载遥测 2s / 其余 30s**（`stores/uav.ts` 的 `LIVE_GAP` / `SLOW_GAP`）。
-  V2 根本不轮询 —— `MqttDroneRealTimeInfoRequester` 连 broker `47.106.219.250:1883`
-  订阅 `/prod/thing/product/{sn}/osd`，一条 OSD 到就刷界面，`droneOfflineTimeoutSeconds = 3`
-  判离线，飞控 OSD 本身约 1Hz。浏览器接不了那层推送（broker 裸端口在 HTTPS 页面下被
-  混合内容拦，Pages 更没有反代），只能轮询；2s 是最接近的近似 —— 实测服务端缓存就是
-  秒级（每 2s 采样，翻滚角 / 水平速度 / 航向每次都在变）。2s 档**只拉飞机**
-  （1.5KB/轮 ≈ 2.7MB/小时），页面不可见时整轮跳过。
-- **机库读数（`/telemetry/23452/2`）不进任何定时节拍**（2026-11-16 用户第二次要求后定案）。
-  V2 的机库读数（`MqttDroneRealTimeInfoRequester.EnvPosNetStorageSideData` →
-  `DroneDataCenter.Updatecabinstatus`）来自同一条 OSD 推送，**从来没有请求过这个接口**
-  （三元里源码全量 grep 无 `cache/telemetry`；向阳村 V2 进程也没有无人机 broker 连接）。
-  按节拍打等于自己造一套 V2 没有的轮询 → 已从 2s 档、随后从 30s 档全部摘除
-  （`stores/uav.ts` 的 `DOCK_GAP`）。
-  **保留而不是删除**：浏览器接不了 OSD 推送（keehang 无 WSS），它是机库页签那 5 行
-  （在库 / 充电 / 舱温 / 湿度 / 网络速率）唯一可达的来源，删了这半屏全是「—」而 V2 那边有数。
-  现在只在**进页面 / 点重试**时取一次（0.8KB），5 分钟窗口内复用；重进页面、切回标签页都不重打。
-  代价说清楚：停在页面上时这 5 行是进页面那一刻的快照，不会自己变。
+- **遥测两路（机载 `/23498/1`、机库 `/23452/2`）都不轮询**（2026-11-16 用户两次要求后定案）。
+  V2 的读数全部来自 MQTT OSD 推送 —— `MqttDroneRealTimeInfoRequester` 订阅
+  `/prod/thing/product/{sn}/osd`（`droneOfflineTimeoutSeconds = 3`，飞控 OSD 约 1Hz），
+  机库的 `EnvPosNetStorageSideData` 也走这条推送（`DroneDataCenter.Updatecabinstatus`）。
+  **V2 从未请求过 `cache/telemetry`**（三元里源码全量 grep 无此路径；向阳村 V2 进程
+  也没有无人机 broker 连接）。之前按 2s / 30s 打这两个接口，是给浏览器补一套 V2 没有的轮询，
+  已全部摘除（`stores/uav.ts` 的 `ENTRY_DEDUPE` / `DOCK_GAP`）。
+  - 取数时机：**进页面 / 切回标签页 / 点「刷新」**各一次；机库那一路 5 分钟内复用。
+  - 页面在读数下方明写「读数时间 HH:mm」+ 刷新按钮 —— 不假装实时。停在这一页时
+    这七格 / 五格不会自己变，不说清楚就会被当成「卡住了」。
+  - 直播画面不受影响：HTTP-FLV 本身是真实时流，这一块仍是实时的唯一来源。
+- **30s 慢档仍在**：任务三格 + 今日明细 + 两路直播流地址。这一档不打遥测接口，
+  保留是因为 2026-11-13 的要求（任务飞完三格要自己翻过来）+ 开播/关播地址会变。
 - **姿态角**：`attitudeRoll` → 翻滚角、`attitudeHead` → 偏航角，一位小数 + °，
   对齐 V2 详情面板那两行。**不归一化到 0~360**：`attitudeHead` 是 −180~180，
   负值（实测 −93、−151）本身是合法航向，V2 也原样打；归一化会变成 267°/209°，
@@ -2161,8 +2157,12 @@ V2 源码 `MqttDroneRealTimeInfoRequester.cs` 里写死：
 另测塔机那台 `115.159.67.12:1883`（`#` 通配 30 秒）：8 个活跃主题全是塔机
 （`/P000000076/towercranedataservice/pushRealTimeInfo` 12 帧）与挖机，**无无人机主题**。
 
-> 结论：**2 秒轮询就是本项目的上限**。向阳村 V2 也一样是轮询（见下），
-> 双方同源同接口，频率上不存在「V2 有而我们没有」的推送通道。
+> 结论：**浏览器侧拿不到向阳村无人机的推送通道**。「V2 有推送、我们没有」这句话
+> 在无人机这一块是假的 —— 那台 broker 上全是广东的机库，武汉一台没有。
+> 但 V2 用的是 keehang 的 OSD 推送（**从未请求过 `cache/telemetry`**），
+> 我们拿不到推送，之前的 2s 轮询只是自己补的近似。2026-11-16 用户明确要求
+> 「V2 没轮询的接口本项目也不要」→ 遥测已改为**进页面 / 切回标签页 / 点刷新**
+> 各取一次（见 §「刷新节拍」一节），不再定时打。
 
 顺带解决一个悬案：机库 OSD 里 `rainfall = 0`，而同一天的 keehang 遥测
 `rainfall = 1`。两台**不同机库**的设备，两边数值本就不该相同，

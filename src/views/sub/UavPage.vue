@@ -56,9 +56,21 @@ const auth = useAuthStore()
 /** 画面来源：无人机实拍 / 机库 */
 const tab = ref<'fly' | 'dock'>('fly')
 
-/** 进度条要「随时间走」，30s 刷一次（同时遥测也在刷） */
+/** 进度条要「随时间走」，30s 推一次当前时间（只是本地时钟，不请求接口） */
 const now = ref(Date.now())
 let ticker: number | null = null
+
+/** 手动刷新遥测（V2 是推送，我们这条链路没有节拍，见 stores/uav.ts 的 ENTRY_DEDUPE） */
+const refreshing = ref(false)
+async function refreshNow(): Promise<void> {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await uav.refreshLive()
+  } finally {
+    refreshing.value = false
+  }
+}
 
 onMounted(() => {
   void uav.load()
@@ -314,6 +326,18 @@ function retry(): void {
         <div><span>环境湿度</span><b>{{ uav.dockLive.humidity !== null ? `${uav.dockLive.humidity}%` : DASH }}</b></div>
         <div><span>网络速率</span><b>{{ netRate }}</b></div>
       </div>
+
+      <!--
+        遥测**没有定时刷新**（V2 的读数是 OSD 推送来的，浏览器接不了那层推送，
+        见 stores/uav.ts 的 ENTRY_DEDUPE）。所以把快照时间和刷新入口摆在读数下面 ——
+        停在这一页时数字不会自己变，不说清楚就会被当成「卡住了」。
+      -->
+      <p class="uav-snap">
+        <span>读数时间 {{ uav.updatedAt || DASH }}</span>
+        <button type="button" class="uav-snap-btn" :disabled="refreshing" @click="refreshNow">
+          {{ refreshing ? '刷新中…' : '刷新' }}
+        </button>
+      </p>
     </section>
 
     <!-- ② 任务管理 -->
