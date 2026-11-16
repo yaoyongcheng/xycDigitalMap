@@ -105,6 +105,14 @@ export interface DroneTaskRecord {
   status: number
   /** 是否排班任务 */
   scheduled: boolean
+  /**
+   * 所属项目 id。
+   *
+   * 2026-11-16 起「今日任务」按账号口径取（三格 23 = 向阳村 15 + 光谷元著 8），
+   * 列表里会同时出现别的项目的记录，页面靠它区分「这条是不是本项目的」
+   * （`当前巡检` 只认本项目 —— 实时遥测是向阳村那台机库的）。
+   */
+  pid: number | null
 }
 
 /** 任务执行记录分页 */
@@ -405,6 +413,8 @@ export function applySession(s: KhSession | null): void {
 /** 清会话（登出 / 换账号时调用） */
 export function clearSession(): void {
   session = null
+  // 项目清单跟着账号走：登出/换账号后必须重取，否则会把上一个账号的项目 id 带进来
+  resetProjectIds()
 }
 
 /** 带业务令牌的 GET */
@@ -458,6 +468,7 @@ export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
       end: str(o.end),
       status: num(o.status) ?? 0,
       scheduled: o.scheduled === true,
+      pid: num(o.pid),
     })
   }
   return out
@@ -562,6 +573,111 @@ export async function fetchTaskRecords(
 }
 
 /**
+ * 账号下所有有设备的项目 id。
+ *
+ * ## 为什么要它
+ *
+ * 「今日任务」三格（`fetchTaskStat` 不传 `pid`）算的是**整个账号**，
+ * 所以明细也必须跨项目取，否则 23 与列表条数对不上（见 `fetchTodayRecords`）。
+ * 而 `/task/exec/list/record` **必须带 pid**，只能先拿到项目清单再逐个取。
+ *
+ * ## 来源
+ *
+ * `GET /dashboard/device/list?page=1&size=100` —— 这是唯一一个**不传 pid**
+ * 就能列出账号全部设备的端点，顺带就列出了全部项目。实测该账号 5 台设备 / 2 个项目：
+ * 向阳村 `193640872670213`（无人机 2 + 机库 1）、光谷元著 `231070463906821`（各 1）。
+ *
+ * 本项目永远排第一位；请求失败只回本项目 —— 少列一个项目顶多少几条明细，
+ * 编一个 pid 会拉回别人的数据。
+ */
+let projectIdsCache: number[] | null = null
+
+/** 清掉项目清单缓存（登出时调；换账号后项目集可能不同） */
+export function resetProjectIds(): void {
+  projectIdsCache = null
+}
+
+export async function fetchProjectIds(): Promise<number[]> {
+  if (projectIdsCache) return projectIdsCache
+  const own = [KH_PROJECT_ID]
+  try {
+    const raw = await khAuthGet<unknown>('/dashboard/device/list?page=1&size=100')
+    const list = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : []
+    const ids: number[] = []
+    for (const row of list) {
+      const dev = (row?.deviceInfo ?? row) as Record<string, unknown> | undefined
+      const pid = num(dev?.pid)
+      if (pid !== null && !ids.includes(pid)) ids.push(pid)
+    }
+    // 本项目排第一：合并后同一时刻起飞的两条能稳定排在本项目之后
+    const merged = [...own, ...ids.filter((id) => id !== KH_PROJECT_ID)]
+    projectIdsCache = merged
+    return merged
+  } catch {
+    return own
+  }
+}
+
+/**
+ * 「今日任务」明细 —— **账号口径，与三格同源**。
+ *
+ * ## 为什么不是一次请求
+ *
+ * `/task/exec/list/record` 不带 `pid` 实测返回 **0 条**（2026-11-16 09:57），
+ * 所以账号口径只能「先取项目清单，再逐个取，最后合并」。
+ *
+ * ## 与三格的关系（2026-11-16 逐条核对）
+ *
+ * | 项目 | 今日执行记录 |
+ * |---|---|
+ * | 向阳村 | 15 |
+ * | 光谷元著 | 8 |
+ * | **合计** | **23** = `/dashboard/task/list/record` 的 `taskCount` |
+ *
+ * 也就是说三格那个 23 逐条摊开，就是这张清单。用户 2026-11-16 要求
+ * 「今日任务把 23 条都放开」，指的就是让明细跟三格对齐。
+ *
+ * ## 失败策略
+ *
+ * 逐项目 `allSettled`：某个项目挂了仍返回其它项目的记录（宁可少列，整页不塌）；
+ * **全部失败才抛**，让页面写「加载失败」而不是「今日暂无任务」。
+ *
+ * 注意 `end` 不含当天（查今天要传明天）；服务端会把明天的排班一起返回，
+ * 调用方按 `start` 的日期再滤一次（store 的 `todayRecords` 负责）。
+ */
+export async function fetchTodayRecords(
+  opts: { start: string; end: string; pids?: number[] },
+): Promise<DroneTaskRecord[]> {
+  const ids = opts.pids?.length ? opts.pids : await fetchProjectIds()
+  const pages = await Promise.allSettled(
+    ids.map((pid) => fetchTaskRecords({ pid, size: 200, start: opts.start, end: opts.end })),
+  )
+  const rows: DroneTaskRecord[] = []
+  let ok = 0
+  let firstError: unknown = null
+  for (const p of pages) {
+    if (p.status !== 'fulfilled') {
+      firstError ??= p.reason
+      continue
+    }
+    ok++
+    rows.push(...p.value.rows)
+  }
+  if (ok === 0) {
+    // 把服务端原文往上抛（页面直接显示它），比统一文案更好定位
+    throw firstError instanceof Error ? firstError : new ApiError(0, '无人机任务列表加载失败')
+  }
+  // 按 uuid 去重（不同项目不会撞，防的是同一项目跨页重复取到）
+  const seen = new Set<string>()
+  return rows.filter((r) => {
+    const key = r.uuid || String(r.id)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/**
  * 今日任务统计（三格：今日任务 / 已完成 / 失败次数）。
  *
  * 这个接口**只算今天**（传 start/end 也被忽略），历史统计没有对应端点 ——
@@ -585,10 +701,9 @@ export async function fetchTaskRecords(
  * 因此这里**默认复刻 V2 的无 pid 口径**。要回到只算本项目，传 `{ pid }` 即可
  * （`KH_PROJECT_ID`），不必改这里。
  *
- * 注意 `fetchTaskRecords`（今日明细列表）仍带 `pid`：那是逐条列出任务名的，
- * 带上光谷元著的记录会在「向阳村」页面上直接露出别人的项目名，视觉上更糟。
- * 所以会出现「三格合计 23、明细只列向阳村」的差异 —— 这是两个不同来源的口径差，
- * 不是某一处算错。
+ * 注意 `fetchTaskRecords`（今日明细列表）**必须带 `pid`**：不带会返回 0 条
+ * （实测 2026-11-16）。账号口径的明细走 `fetchTodayRecords` —— 它先取项目清单
+ * 再逐个 pid 取，合并后的条数与这里的 `taskCount` 一致（23 = 15 + 8）。
  */
 export async function fetchTaskStat(opts: { pid?: number } = {}): Promise<DroneTaskStat> {
   // 不传 pid 就是 V2 的口径；显式给了才过滤

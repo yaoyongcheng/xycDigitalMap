@@ -24,11 +24,14 @@ import {
   fetchRoutes,
   fetchTaskRecords,
   fetchTaskStat,
+  fetchTodayRecords,
+  fetchProjectIds,
   fetchTelemetry,
   toDock,
   toLiveStream,
   toTaskRecords,
   toTaskStat,
+  type DroneTaskRecord,
   toTelemetry,
 } from '@/api/drone'
 import { usePatrolStore } from '@/stores/patrol'
@@ -789,6 +792,139 @@ describe('patrol store 巡检照片', () => {
     expect(s.sizeText(2048)).toBe('2KB')
     expect(s.sizeText(5_378_048)).toBe('5.1MB')
     expect(s.sizeText(0)).toBe('')
+  })
+})
+
+describe('账号口径的今日任务（2026-11-16：23 条都放开）', () => {
+  /** 本项目（向阳村） */
+  const OWN = 193640872670213
+  /** 同账号下的另一个项目（光谷元著） */
+  const OTHER = 231070463906821
+  const START = '2026-11-16'
+  const END = '2026-11-17'
+
+  /** 一条执行记录（服务端 start 是 ISO 串） */
+  function rec(over: Record<string, unknown>): Record<string, unknown> {
+    const start = `${START}T08:00:00`
+    return {
+      id: 1,
+      uuid: 'u-1',
+      taskName: '向阳村-安全巡检',
+      taskId: 4912,
+      lineId: 12,
+      dockId: 23452,
+      start,
+      end: start,
+      status: 2,
+      scheduled: true,
+      pid: OWN,
+      ...over,
+    }
+  }
+
+  /** 按 pid 分发执行记录；`failPid` 用来模拟某个项目挂掉 */
+  function pidRoute(opts: { pids: number[]; rows: Record<string, unknown>[]; failPid?: number }) {
+    const cas = casResponses()
+    return vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/cas/auth/login')) return khResponse(cas.login)
+      if (u.includes('/cas/auth/validate')) return khResponse(cas.validate)
+      if (u.includes('/dashboard/device/list')) {
+        return khResponse({ code: 200, data: opts.pids.map((pid) => ({ deviceInfo: { pid } })) })
+      }
+      if (u.includes('/task/exec/list/record')) {
+        const pid = Number(new URL(u).searchParams.get('pid'))
+        if (pid === opts.failPid) return khResponse({ code: 500, msg: '该项目的任务服务挂了' }, 500)
+        return khResponse({ code: 200, data: opts.rows.filter((r) => r.pid === pid) })
+      }
+      return khResponse({ code: 404, msg: 'not found' }, 404)
+    })
+  }
+
+  it('项目清单来自设备列表，本项目永远排第一', async () => {
+    // 设备列表按 id 升序，光谷元著那条在前 —— 输出仍应让本项目打头
+    vi.stubGlobal('fetch', pidRoute({ pids: [OTHER, OWN, OWN], rows: [] }))
+    expect(await fetchProjectIds()).toEqual([OWN, OTHER])
+  })
+
+  it('设备列表取不到 → 只回本项目，不编 pid', async () => {
+    const cas = casResponses()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(cas.login)
+        if (u.includes('/cas/auth/validate')) return khResponse(cas.validate)
+        return khResponse({ code: 500, msg: '设备服务挂了' }, 500)
+      }),
+    )
+    expect(await fetchProjectIds()).toEqual([OWN])
+  })
+
+  it('逐个 pid 取完合并：向阳村 1 + 光谷元著 1 = 2 条', async () => {
+    vi.stubGlobal(
+      'fetch',
+      pidRoute({
+        pids: [OWN, OTHER],
+        rows: [
+          rec({ id: 1, uuid: 'u-1' }),
+          rec({ id: 2, uuid: 'o-1', taskName: '光谷元著-安全巡检', pid: OTHER }),
+        ],
+      }),
+    )
+    const rows = await fetchTodayRecords({ start: START, end: END })
+    expect(rows.map((r) => r.uuid).sort()).toEqual(['o-1', 'u-1'])
+    // 明细也带上 pid，页面才能区分是不是本项目
+    expect(rows.find((r) => r.uuid === 'o-1')?.pid).toBe(OTHER)
+  })
+
+  it('同一 uuid 只留一条（跨项目/跨页重复取到也不重复计数）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      pidRoute({
+        pids: [OWN, OTHER],
+        rows: [rec({ uuid: 'dup' }), rec({ uuid: 'dup', pid: OTHER })],
+      }),
+    )
+    const rows = await fetchTodayRecords({ start: START, end: END })
+    expect(rows).toHaveLength(1)
+  })
+
+  it('某个项目挂了仍返回其它项目（宁可少列，整页不塌）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      pidRoute({
+        pids: [OWN, OTHER],
+        failPid: OTHER,
+        rows: [rec({ id: 1, uuid: 'u-1', pid: OWN })],
+      }),
+    )
+    const rows = await fetchTodayRecords({ start: START, end: END })
+    expect(rows.map((r) => r.uuid)).toEqual(['u-1'])
+  })
+
+  it('全部项目都挂 → 抛服务端原文（页面据此写加载失败）', async () => {
+    vi.stubGlobal('fetch', pidRoute({ pids: [OWN], failPid: OWN, rows: [] }))
+    await expect(fetchTodayRecords({ start: START, end: END })).rejects.toThrow('该项目的任务服务挂了')
+  })
+
+  it('store：今日列表放开到全账号，当前巡检仍只认本项目', () => {
+    const s = useUavStore()
+    s.apply([
+      rec({ id: 1, uuid: 'u-1', taskName: '向阳村-安全巡检', status: 1 }) as unknown as DroneTaskRecord,
+      rec({ id: 2, uuid: 'o-1', taskName: '光谷元著-安全巡检', pid: OTHER, status: 1 }) as unknown as DroneTaskRecord,
+    ])
+    expect(s.todayTasks).toHaveLength(2)
+    expect(s.todayHasOthers).toBe(true)
+    // 两条都在执行中，只认本项目那条 —— 遥测是向阳村机库的
+    expect(s.running?.name).toBe('向阳村-安全巡检')
+  })
+
+  it('store：只有别的项目在执行时不给「当前巡检」（不张冠李戴）', () => {
+    const s = useUavStore()
+    s.apply([rec({ uuid: 'o-1', taskName: '光谷元著-安全巡检', pid: OTHER, status: 1 }) as never])
+    expect(s.todayHasOthers).toBe(true)
+    expect(s.running).toBeNull()
   })
 })
 

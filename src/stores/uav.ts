@@ -10,6 +10,7 @@ import {
   fetchRoutes,
   fetchTaskRecords,
   fetchTaskStat,
+  fetchTodayRecords,
   fetchTelemetry,
   type DroneDock,
   type DroneLiveStream,
@@ -147,6 +148,14 @@ export interface UavTaskView {
    * 计划结束时间，所以进度条的分母另走历史实测（`runningEstimate`）。
    */
   startAt: number | null
+  /**
+   * 是否本项目的任务。
+   *
+   * 2026-11-16 起「今日任务」按账号口径取（三格 23 = 向阳村 15 + 光谷元著 8），
+   * 列表里会混进别的项目的记录。`当前巡检` 与进度条只认本项目的 ——
+   * 实时遥测来自向阳村那台机库，拿别的项目的任务去配它等于张冠李戴。
+   */
+  own: boolean
 }
 
 /** 起飞条件的一项 */
@@ -200,6 +209,9 @@ export const useUavStore = defineStore('uav', () => {
    * 请求已经带 `start=今天&end=明天`，这里仍按日期本地再滤一次：`end` 是
    * **不含当天**的区间语义，一旦服务端按含端点解释就会把昨天最后一条串进来，
    * 而「今日」这个标签不该被这种边界差异影响。
+   *
+   * 2026-11-16 起是**账号口径**（`fetchTodayRecords` 合并了账号下各项目），
+   * 条数与三格 `taskCount` 对齐（23 = 15 + 8）。
    */
   const todayRecords = computed<DroneTaskRecord[]>(() => {
     const key = dayKey(0)
@@ -220,13 +232,23 @@ export const useUavStore = defineStore('uav', () => {
         state: stateText(r.status),
         stateClass: stateClass(r.status),
         startAt: Number.isFinite(a) ? a : null,
+        // pid 缺失（老数据）按本项目算，不确定时不要凭空扣掉一条
+        own: r.pid === null || r.pid === KH_IDS.pid,
       }
     }),
   )
 
-  /** 执行中的任务（页面用它显示「当前巡检」） */
+  /** 今日列表里是否有别的项目的任务（有才在弹层底部加一句说明） */
+  const todayHasOthers = computed(() => todayTasks.value.some((t) => !t.own))
+
+  /**
+   * 执行中的任务（页面用它显示「当前巡检」）。
+   *
+   * 只认本项目：遥测是向阳村那台机库的，挂上光谷元著的航线会给出错误的
+   * 「已飞多久 / 预计多久」。别的项目在执行中的任务仍在今日列表里照常显示。
+   */
   const running = computed<UavTaskView | null>(
-    () => todayTasks.value.find((t) => t.stateClass === 'is-ok') ?? null,
+    () => todayTasks.value.find((t) => t.own && t.stateClass === 'is-ok') ?? null,
   )
 
   /** 当前巡检的预计时长（同任务历史实测中位数）；这个任务没跑完过就是 null */
@@ -436,7 +458,7 @@ export const useUavStore = defineStore('uav', () => {
     state.value = 'loading'
     inflight = (async () => {
       const [list, s, tel, dk, rt, fly, dockFly] = await Promise.allSettled([
-        fetchTaskRecords({ start: dayKey(0), end: dayKey(1) }),
+        fetchTodayRecords({ start: dayKey(0), end: dayKey(1) }),
         fetchTaskStat(),
         fetchTelemetry(),
         fetchDockTelemetry(),
@@ -455,7 +477,7 @@ export const useUavStore = defineStore('uav', () => {
       if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
 
       if (list.status === 'fulfilled') {
-        records.value = list.value.rows
+        records.value = list.value
         state.value = 'ok'
         error.value = ''
         updatedAt.value = stamp()
@@ -487,8 +509,9 @@ export const useUavStore = defineStore('uav', () => {
     if (Date.now() - estimatesFailAt < ESTIMATE_RETRY) return
     estimatesInflight = (async () => {
       try {
-        // `end` 不含当天，所以要传明天；`start` 取 6 天前 = 近 7 天
-        const page = await fetchTaskRecords({ start: dayKey(-6), end: dayKey(1) })
+        // `end` 不含当天，所以要传明天；`start` 取 6 天前 = 近 7 天。
+        // 只取本项目：分母是给「当前巡检」用的，而它只认本项目任务
+        const page = await fetchTaskRecords({ start: dayKey(-6), end: dayKey(1), pid: KH_IDS.pid })
         estimates.value = estimateByTask(page.rows)
         estimatesAt = Date.now()
       } catch {
@@ -548,13 +571,13 @@ export const useUavStore = defineStore('uav', () => {
       fetchLiveStream(KH_IDS.droneDeviceId),
       fetchLiveStream(KH_IDS.dockDeviceId),
       fetchTaskStat(),
-      fetchTaskRecords({ start: dayKey(0), end: dayKey(1) }),
+      fetchTodayRecords({ start: dayKey(0), end: dayKey(1) }),
     ])
     // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
     if (fly.status === 'fulfilled') droneStream.value = fly.value
     if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
     if (s.status === 'fulfilled') stat.value = s.value
-    if (list.status === 'fulfilled') records.value = list.value.rows
+    if (list.status === 'fulfilled') records.value = list.value
     // 任务刚起飞（进页面时还没跑）：这时才去补历史时长，补到就出进度条
     if (running.value) void loadEstimates()
   }
@@ -669,6 +692,7 @@ export const useUavStore = defineStore('uav', () => {
     updatedAt,
     todayRecords,
     todayTasks,
+    todayHasOthers,
     running,
     runningEstimate,
     taskTotal,

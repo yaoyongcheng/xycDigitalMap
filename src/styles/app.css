@@ -8802,6 +8802,15 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .uav-log em.is-ok { color: var(--ok-dark); }
 
+/* 口径小注：今日任务按账号统计，含同账号其它项目（有才出现，见 UavTodaySheet） */
+.uav-log-note {
+  margin: 0;
+  padding: 0 2px;
+  font-size: var(--fs-11);
+  line-height: 1.5;
+  color: var(--ink-3-dark);
+}
+
 /* ---------- 设备信息 / 历史数据（弹层内） ---------- */
 
 .dev-info {

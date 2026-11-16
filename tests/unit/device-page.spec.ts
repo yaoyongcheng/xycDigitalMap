@@ -17,6 +17,7 @@ import {
   liftGatewayUnreachable,
 } from '@/api/lift'
 import SheetHost from '@/components/overlays/SheetHost.vue'
+import UavTodaySheet from '@/components/sheets/UavTodaySheet.vue'
 import SubPage from '@/components/overlays/SubPage.vue'
 import CountUp from '@/components/ui/CountUp.vue'
 import LivePlayer from '@/components/ui/LivePlayer.vue'
@@ -533,6 +534,7 @@ describe('智控面板（真实台账）', () => {
         end: `${past}T09:20:00`,
         status: 2,
         scheduled: true,
+        pid: 193640872670213,
       },
     ])
 
@@ -1426,9 +1428,37 @@ describe('无人机页', () => {
       end: start,
       status: 1,
       scheduled: true,
+      pid: 193640872670213,
       ...over,
     }
   }
+
+  /** 今日任务弹层：列表按账号口径放开后，有别的项目时补一句说明 */
+  it('今日任务弹层：含其它项目时补口径小注，只有本项目时不出现', async () => {
+    const s = useUavStore()
+    s.apply([todayRecord()])
+    const only = mount(UavTodaySheet)
+    await nextTick()
+    expect(only.findAll('.uav-log-row')).toHaveLength(1)
+    expect(only.text()).not.toContain('含同账号其它项目的任务')
+    only.unmount()
+
+    s.apply([
+      todayRecord(),
+      todayRecord({
+        id: 147745,
+        uuid: 'u-147745',
+        taskName: '光谷元著-安全巡检',
+        pid: 231070463906821,
+      }),
+    ])
+    const mixed = mount(UavTodaySheet)
+    await nextTick()
+    expect(mixed.findAll('.uav-log-row')).toHaveLength(2)
+    expect(mixed.text()).toContain('光谷元著-安全巡检')
+    expect(mixed.text()).toContain('含同账号其它项目的任务')
+    mixed.unmount()
+  })
 
   /** Date → 服务端原样的 'YYYY-MM-DDTHH:mm:ss' */
   function isoOf(d: Date): string {
@@ -1452,6 +1482,7 @@ describe('无人机页', () => {
       end: isoOf(new Date(s.getTime() + minutes * 60_000)),
       status: 2,
       scheduled: true,
+      pid: 193640872670213,
     }
   }
 
