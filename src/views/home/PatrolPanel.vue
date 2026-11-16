@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import Skel from '@/components/ui/Skel.vue'
-import { PATROL_CATS, PATROL_CAT_UNKNOWN, catOfTask } from '@/data/config'
+import { PATROL_CATS, catOfTask } from '@/data/config'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { usePatrolStore } from '@/stores/patrol'
 import { useSlowLoading } from '@/utils/slowLoading'
@@ -10,26 +10,26 @@ import { useSlowLoading } from '@/utils/slowLoading'
 /**
  * 首页 · 智眸面板（现场快照・实景核验）
  *
- * 2026-11 阶段 8 起照片改接 keehang 平台的真实航拍媒体（见 `stores/patrol.ts`）。
+ * 照片来自 keehang 真实航拍媒体（见 `stores/patrol.ts`）。
  *
- * ## 分类（2026-11 第四轮：按设计稿恢复六个分类）
+ * ## 分类：设计稿的六类，固定两行（2026-11-16 用户要求）
  *
- * 设计稿 `renderProgress()`（原 app.js:657-684）把「最新照片」分成六个分类：
- * 项目全景 / 基坑区域 / 作业面 / 施工装备 / 材料堆场 / 现场场布。原版把分类
- * 直接写在照片数据上（`patrolPhotos[i].cat`），而**服务端没有这个字段** ——
- * 上一轮因此把分类整组删掉、改成平铺。
+ * 项目全景 / 基坑区域 / 作业面 / 施工装备 / 材料堆场 / 现场场布 —— 3 列 × 2 行，
+ * 位置固定（某一类 0 张也占位，否则一有数据就换行错位），不做横向滑动。
  *
- * 现在按设计稿把分类作为展示维度恢复：归属由任务名关键词推导（`catOfTask`，
- * 规则见 `data/config.ts` 的 PATROL_CATS）。推导不出来的照片不会被藏起来 ——
- * 归入「未分类」，且这个分类只在真有照片时才出现在网格里。
+ * ⚠️ **服务端没有分类字段**（keehang 媒体接口只有文件名/大小/链接/缩略图；
+ * 万联后端的 devDroneMedia 表也没有分类列；15 条航线的 taskType 全是 AIRLINE）。
+ * 所以归类只能在客户端按**航线名**做，规则写在 `data/config.ts`：
+ * 显式登记表 → 关键词 → 兜底类，三者必有结果，因此**没有「未分类」这一项**。
  *
  * 默认选中「第一个真有照片的分类」，而不是设计稿写死的「项目全景」：现场如果
  * 没有全景航线，一进来就是「这个分类下还没有照片」，等于把页面做成空白。
  *
- * ## 为什么缩略图不自动加载
+ * ## 缩略图
  *
- * 真实 DJI 原图单张 5~8MB（实测 5378048 字节）。列表里直接 `<img src>` 会把
- * 流量吃光，手机上更卡。这里只显示任务名与体积摘要，**点开大图时才加载原图**。
+ * 媒体接口同时返回 `thumbnail`（约 440KB，原图 6MB）。卡片用它 + `loading="lazy"`，
+ * 滚动到才加载；点开大图才请求原图。缩略图缺失或加载失败时回退成文字占位，
+ * 不留破图。
  */
 const sheet = useBottomSheetStore()
 const patrol = usePatrolStore()
@@ -38,9 +38,9 @@ const patrol = usePatrolStore()
  * 面板挂载即取一次。
  *
  * 首页切换「智巡 / 智眸 / 智控」标签时面板是真的卸载再挂载（`HomeSheet` 的
- * `.home-panels` 带 `:key="home.homeMod"`），所以这里同时是「切回智眸」的入口：
- * 走 `refresh()` 才会在已有数据时也重新拉一次航拍任务，否则切回来永远是
- * 首次进首页那批照片。失败冷却由 `refresh` 内部控制。
+ * `.home-panels` 带 `:key="home.homeMod"`），所以这里同时是「切回智眸」的入口。
+ * 一分钟内的重复进入由 store 的 `refresh()` 直接复用上一批（媒体接口有限流，
+ * 每次刷新都要串行扫十几条请求，见 `stores/patrol.ts` 的 `PROBE_GAP`）。
  */
 onMounted(() => {
   void patrol.refresh()
@@ -50,7 +50,7 @@ onMounted(() => {
 const syncing = computed(() => patrol.state === 'loading' && !patrol.photos.length)
 const showSkel = useSlowLoading(() => syncing.value)
 
-/** 每张照片带上推导出的分类 id（`patrol.list` 已按时间倒序） */
+/** 每张照片带上归属分类（`patrol.list` 已按时间倒序） */
 const tagged = computed(() => patrol.list.map((p) => ({ ...p, cat: catOfTask(p.taskName) })))
 
 /** 分类 id → 该分类下的照片（保持时间倒序） */
@@ -64,15 +64,10 @@ const groups = computed(() => {
   return map
 })
 
-/**
- * 分类按钮：六个分类恒定显示（即使 0 张，位置也要在，否则一有数据就换行错位），
- * 「未分类」只在真有推不出来的照片时追加。
- */
-const chips = computed(() => {
-  const base = PATROL_CATS.map((c) => ({ id: c.id, name: c.name, count: (groups.value.get(c.id) ?? []).length }))
-  const other = groups.value.get(PATROL_CAT_UNKNOWN.id) ?? []
-  return other.length ? [...base, { id: PATROL_CAT_UNKNOWN.id, name: PATROL_CAT_UNKNOWN.name, count: other.length }] : base
-})
+/** 六个分类恒定显示（0 张也占位，保住 3×2 的版式） */
+const chips = computed(() =>
+  PATROL_CATS.map((c) => ({ id: c.id, name: c.name, count: (groups.value.get(c.id) ?? []).length })),
+)
 
 /** 手动选中的分类（空串 = 还没点过，跟随默认） */
 const picked = ref('')
@@ -80,21 +75,21 @@ const picked = ref('')
 /** 默认落点：第一个真有照片的分类，全空时退回设计稿的「项目全景」 */
 const defaultCat = computed(() => chips.value.find((c) => c.count > 0)?.id ?? PATROL_CATS[0].id)
 
-/**
- * 当前生效的分类。
- *
- * 这里必须校验 `picked` 还在候选里：刷新后若「未分类」那组变空，它的按钮会消失，
- * 而 `picked` 还停在 `'other'` —— 结果是所有按钮都没有高亮、内容区却写着
- * 「这个分类下还没有照片」，而此刻其实有照片。回落到默认分类即可自愈。
- */
-const activeCat = computed(() => {
-  if (picked.value && chips.value.some((c) => c.id === picked.value)) return picked.value
-  return defaultCat.value
-})
+/** 当前生效的分类（`picked` 失效时自动回落到默认，刷新后不会停在空分类上） */
+const activeCat = computed(() =>
+  picked.value && chips.value.some((c) => c.id === picked.value) ? picked.value : defaultCat.value,
+)
 
 const shown = computed(() => groups.value.get(activeCat.value) ?? [])
 
 const activeName = computed(() => chips.value.find((c) => c.id === activeCat.value)?.name ?? '')
+
+/** 缩略图加载失败的 id 集合（失败的卡片回退成文字占位，不留破图） */
+const broken = ref<Record<string, boolean>>({})
+
+function markBroken(id: string): void {
+  broken.value = { ...broken.value, [id]: true }
+}
 
 function retry(): void {
   void patrol.load(true)
@@ -108,7 +103,7 @@ function retry(): void {
       <em>{{ shown.length }} 张</em>
     </div>
 
-    <!-- 分类：3 列网格（设计稿 .patrol-cats），0 张的分类照旧显示位置 -->
+    <!-- 分类：3 列 × 2 行固定版式（设计稿 .patrol-cats），0 张的分类照旧占位 -->
     <div v-if="patrol.list.length" class="patrol-cats" role="group" aria-label="照片分类">
       <button
         v-for="c in chips"
@@ -118,7 +113,7 @@ function retry(): void {
         :aria-pressed="activeCat === c.id"
         @click="picked = c.id"
       >
-        {{ c.name }}
+        {{ c.name }}<i v-if="c.count">{{ c.count }}</i>
       </button>
     </div>
 
@@ -148,20 +143,32 @@ function retry(): void {
         :key="p.id"
         class="patrol-card"
         type="button"
-        :aria-label="`${p.taskName}，${p.time}，${activeName}，查看大图`"
+        :aria-label="`${p.taskName}，${p.time.slice(0, 16).replace('T', ' ')}，${activeName}，查看大图`"
         @click="sheet.openPatrol(p.id)"
       >
         <div class="patrol-thumb">
+          <img
+            v-if="p.thumbnail && !broken[p.id]"
+            :src="p.thumbnail"
+            alt=""
+            loading="lazy"
+            decoding="async"
+            referrerpolicy="no-referrer"
+            @error="markBroken(p.id)"
+          />
+          <span v-else class="patrol-thumb-hint">点击查看原图 · {{ patrol.sizeText(p.size) }}</span>
           <span class="patrol-thumb-tag">航拍原图</span>
-          <span class="patrol-thumb-hint">点击查看原图 · {{ patrol.sizeText(p.size) }}</span>
+          <span v-if="p.thumbnail && !broken[p.id]" class="patrol-thumb-size">
+            {{ patrol.sizeText(p.size) }}
+          </span>
         </div>
         <div class="patrol-card-ft">
           <div class="patrol-card-name">
+            <!-- 标题是真实航线名，徽标是归类 —— 两个都留着，归错类时一眼能看出是哪条航线 -->
             <strong>{{ p.taskName }}</strong>
             <em>{{ p.time.slice(0, 16).replace('T', ' ') }}</em>
           </div>
           <div class="patrol-tags">
-            <!-- 分类徽标与「来源」徽标并排（设计稿 .patrol-card-ft 的两枚 tag） -->
             <span class="patrol-tag">{{ activeName }}</span>
             <span class="alarm-src alarm-src-drone">无人机</span>
           </div>

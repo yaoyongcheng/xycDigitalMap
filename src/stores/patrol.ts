@@ -2,53 +2,63 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import { fetchMediaJobs, fetchTaskRecords, type DroneMedia } from '@/api/drone'
+import { ApiError } from '@/api/http'
 
 /**
- * 巡检照片（2026-11 阶段 8：改真实航拍图）
+ * 巡检照片（2026-11 阶段 8：改真实航拍图；2026-11-16 重构取数与分类）
  *
- * 原先这个数据有两份写死的常量：
+ * ## 数据链（与 V2 / keehang 的结构一致）
  *
- *   `data/config.ts: patrolPhotos` —— 17 张设计稿静态图（9 个 WebP 反复复用），
- *     分类靠 `patrolCats` 的六个手工分类（项目全景 / 基坑区域 / 作业面 …）；
- *   `data/config.ts: airImgs / airTimes / airPos` —— 无人机航拍，
- *     10 个固定时刻（07:22 / 08:15 …）轮着配两张图。
+ * 平台的组织层级就是「项目 → 任务（航线）→ 执行记录 → 媒体文件」，照片天然挂在
+ * 某一次飞行上，所以：
  *
- * 两份都是假的，但**看起来像真的**—— 尤其航拍照片，会被当成现场证据看。
+ *   `GET /task/exec/list/record`（本项目 pid + 日期窗口）→ 执行记录
+ *   `GET /media/task/job/{执行记录id}` → 该次飞行的照片（OSS 签名直链 + 缩略图）
  *
- * 现在改接 keehang 平台的真实媒体：
- *   `GET /task/exec/list/record`（本项目 pid）→ 执行记录，每条有 id / 任务名 / 时间；
- *   `GET /media/task/job/{执行记录id}` → 该次飞行的真实照片（OSS 签名直链）。
+ * 没有「照片分类」接口，也没有分类字段 —— 数据库设计文档里媒体表只有
+ * `LinkId / RecordId / MediaType / Url / LimitUrl / Thumbnail / Name / Size`。
+ * 因此**分类 = 所属任务**（`taskId` / `taskName`），不是靠关键词猜画面内容。
  *
- * 实测本项目有真实 DJI 航拍图（`DJI_20260715093839_0001_V.jpeg`，约 5.4MB）。
+ * ⚠️ 早先版本按任务名关键词猜「项目全景 / 基坑区域 / …」六类，现场 15 条航线
+ * 里有 9 条一个词都不命中，全掉进「未分类」—— 那 7 个按钮里有 2 个是猜出来的。
+ * 2026-11-16 用户要求去掉「未分类」：改成按任务归组后，每张照片必属于某次飞行，
+ * 这个兜底分类自然不存在了。
  *
- * ## 关于分类
+ * ## 三个必须知道的接口行为（实测）
  *
- * 原版的六个分类是**人工归类的**，服务端不提供分类字段。所以这里不再按分类
- * 过滤 —— 分类是设计稿的展示维度，不是数据维度。真实照片按**拍摄时间倒序**
- * 铺开，页面上标注任务名与时间，让人自己判断。
+ * 1. **`size` 参数不生效**：带 `start/end` 时返回区间内全部记录（近 30 天约 458 条），
+ *    不带日期按开始时间**升序**回全部 1663 条。所以「最新照片」不能靠 `page=1`，
+ *    必须自己按 `start` 倒序。
+ * 2. **记录里混着未来排班**：`end` 已经排到 11-23，这些记录 `status=2` 但媒体为 0。
+ *    必须用 `start <= 现在` 过滤掉，否则一直取到「今天下午 5 点」这种还没飞的班。
+ * 3. **媒体只能逐条取**（`/media/task/job/{id}`，`job/list` 之类端点不存在），
+ *    所以按倒序最多试 `MAX_PROBE` 条，够 `MAX_JOBS` 个任务就收手。
  *
  * ## 关于图片体积
  *
- * 单张 5~8MB，直接在列表里 `<img src>` 会把流量吃光。这里只展示文件名与
- * 大小摘要，**不自动加载缩略图**；点开大图时才加载原图（用户主动行为，
- * 走 `utils/albumSave.ts` 的预转机制）。
+ * 原图单张 5~8MB；媒体接口同时给了 `thumbnail`（约 440KB，实测全部有值）。
+ * 列表用缩略图 + `loading="lazy"`，点开大图才加载原图。
  */
 
 /** 一张真实航拍照片 */
 export interface PatrolPhotoReal {
-  /** 唯一 id：`{jobId}-{序号}` */
+  /** 唯一 id：`{jobId}-{文件名}` */
   id: string
   /** 文件名 */
   name: string
-  /** OSS 直链 */
+  /** OSS 原图直链（带签名，有有效期） */
   url: string
-  /** 所属任务名 */
+  /** OSS 缩略图直链（约 440KB）；空串表示该文件没有缩略图 */
+  thumbnail: string
+  /** 所属任务名（同时也是它的分类名） */
   taskName: string
+  /** 所属任务 id（同一条航线的每次执行都相同） */
+  taskId: number | null
   /** 所属任务的执行记录 id（媒体 job） */
   jobId: number
   /** 拍摄/上传时间 */
   time: string
-  /** 文件大小（字节） */
+  /** 文件大小（字节，原图） */
   size: number
   /** MIME 类型 */
   mediaType: string
@@ -57,21 +67,104 @@ export interface PatrolPhotoReal {
 /** 状态：idle / loading / ok / error */
 export type PatrolState = 'idle' | 'loading' | 'ok' | 'error'
 
-/** 最多拉多少条执行记录（每条都可能带照片，太多会拖慢首屏） */
-const MAX_RECORDS = 12
-/** 最多取多少个任务的媒体（每个任务一次请求） */
-const MAX_JOBS = 8
+/**
+ * 取数窗口（天）。先取近 30 天；一条照片都没有再退到近 180 天。
+ *
+ * 现场每天都在飞，30 天足够；退到 180 天是为了「停飞一段时间后进来看看」这种
+ * 场景不至于一片空白 —— 但只多试一次，不做无限回溯。
+ */
+const WINDOWS = [30, 180] as const
+
+/** 按时间倒序最多试多少条执行记录（每条一次请求，控制首屏时间） */
+const MAX_PROBE = 16
+/**
+ * 最多收多少个任务的照片。
+ *
+ * 取 10 是因为分类是固定六类：任务数太少时「基坑区域 / 作业面 / 材料堆场」容易
+ * 一条航线都轮不到，六格里空一半（实测 8 个任务时基坑区域空着，而昨天刚飞过土方）。
+ */
+const MAX_JOBS = 10
+/**
+ * **每个任务**最多收多少张。
+ *
+ * 不能设成全局总张数：一次「正射」就有 108 张、「三维」几百张，先扫到的任务
+ * 会把配额吃光，后面的任务连按钮都出不来（实测全局 120 张时只剩 5 个分类，
+ * 正射 / 全景 / 全局定点直接消失）。按任务配额后，8 个任务每个都有代表照片，
+ * 想细看某一张点开大图即可。
+ */
+const MAX_PER_TASK = 24
+
+/**
+ * 媒体接口是**串行 + 有间隔**发的。
+ *
+ * `GET /media/task/job/{id}` 有服务端限流：连续请求会返回
+ * `{code: 42901, msg: "查询过于频繁，请2秒后再试！"}`。2026-11-16 实测标定：
+ *
+ * | 请求间隔 | 结果 |
+ * |---|---|
+ * | 4 路并发 | 第一轮能过，之后全拒（页面 0 张） |
+ * | 600ms | 14 次全被拒 |
+ * | 1200ms | 13 / 14 成功 |
+ *
+ * 所以取 900ms（比 600ms 明显安全、比 1200ms 快），被限流就等 `THROTTLE_WAIT`
+ * 重试一次。代价是「扫满 8 个任务要十几秒」—— 因此照片是**边探边上屏**的
+ * （见 `probe` 里写入 `photos` 的位置），不是等全部探完才显示。
+ */
+const PROBE_GAP = 900
+/** 被限流后的等待（服务端提示 2 秒） */
+const THROTTLE_WAIT = 2_200
+/** keehang 的限流业务码 */
+const THROTTLE_CODE = 42901
+
+/**
+ * 切回智眸面板的刷新节流。
+ *
+ * 首页三个标签来回切会反复触发 `refresh()`，每次都扫一遍媒体必然撞限流。
+ * 一分钟内的重复进入直接复用上一批照片（现场照片不会秒级变化）。
+ */
+const REFRESH_GAP = 60_000
+
+/** `YYYY-MM-DD`，offset 为天 */
+function dayKey(offset = 0): string {
+  const d = new Date()
+  d.setDate(d.getDate() + offset)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 毫秒等待（串行请求之间的间隔 / 被限流后的退避） */
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/** 本地当前时刻，格式与服务端 `start` 一致（`YYYY-MM-DDTHH:mm:ss`） */
+function nowKey(): string {
+  const d = new Date()
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/**
+ * 一张照片的分类 key = 它所属的任务。
+ *
+ * 有任务 id 用 id（任务改名不会把分类拆成两个），拿不到才退回任务名。
+ * 页面筛选与 store 的 `cats` 必须用同一个算法，所以放在这里导出。
+ */
+export function patrolCatKey(p: Pick<PatrolPhotoReal, 'taskId' | 'taskName'>): string {
+  return p.taskId === null ? `name:${p.taskName}` : `task:${p.taskId}`
+}
 
 export const usePatrolStore = defineStore('patrol', () => {
   /** 真实照片 */
   const photos = ref<PatrolPhotoReal[]>([])
-  /** 同步到的执行记录条数（页面显示「已同步 N 次飞行」） */
+  /** 本次同步扫过的飞行次数（页面可显示「已同步 N 次飞行」） */
   const flightCount = ref(0)
 
   const state = ref<PatrolState>('idle')
   const error = ref('')
 
   let lastFailAt = 0
+  let lastOkAt = 0
   let inflight: Promise<void> | null = null
 
   /** 照片按时间倒序（最新在前） */
@@ -90,10 +183,100 @@ export const usePatrolStore = defineStore('patrol', () => {
   }
 
   /**
+   * 一条执行记录 → 照片。没有图片媒体（视频 / 空目录）时返回空数组。
+   *
+   * 视频（`mediaType: video/*`，如「环绕视频」航线）不进照片墙 —— 这张墙是
+   * 「看现场拍成了什么样」的静态证据，混进视频会让「点击查看原图」变得不可预期。
+   */
+  function toPhotos(rec: { id: number; taskId: number | null; taskName: string; start: string }, media: DroneMedia[]): PatrolPhotoReal[] {
+    const out: PatrolPhotoReal[] = []
+    for (const m of media) {
+      if (!m.mediaType.startsWith('image/')) continue
+      out.push({
+        id: `${rec.id}-${m.name}`,
+        name: m.name,
+        url: m.url,
+        thumbnail: m.thumbnail,
+        taskName: rec.taskName,
+        taskId: rec.taskId,
+        jobId: rec.id,
+        time: m.lastModified || rec.start,
+        size: m.size,
+        mediaType: m.mediaType,
+      })
+    }
+    return out
+  }
+
+  /**
+   * 取一次某次飞行的媒体，带限流重试。
+   *
+   * 失败返回 null（调用方跳过这条记录），**不抛** —— 一条记录取不到不该让整页失败。
+   * 但被限流（42901）时要等 2 秒重试一次，否则会白丢照片。
+   */
+  async function mediaOf(jobId: number): Promise<DroneMedia[] | null> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await fetchMediaJobs(jobId)
+      } catch (e) {
+        const code = e instanceof ApiError ? e.code : 0
+        if (code === THROTTLE_CODE && attempt === 0) {
+          await sleep(THROTTLE_WAIT)
+          continue
+        }
+        return null
+      }
+    }
+  }
+
+  /**
+   * 在一个窗口内按时间倒序探媒体（**串行**，见 `PROBE_GAP` 上的说明）。
+   *
+   * 三条规则：
+   *   · 同一任务只取**最近一次有照片的飞行** —— 一条航线一天可能飞 20 次，
+   *     逐次取会把请求数打爆，而 24 张代表照片已经够看；
+   *   · 每个任务最多 `MAX_PER_TASK` 张（一次正射可能 100+ 张）；
+   *   · 收满 `MAX_JOBS` 个任务、或探满 `MAX_PROBE` 条记录就停。
+   *
+   * **边探边上屏**：每拿到一个任务的照片就写进 `photos`，页面立刻多一个分类。
+   * 全部探完要十几秒（限流所致），等齐了再显示会让用户对着骨架干等。
+   */
+  async function probe(rows: { id: number; taskId: number | null; taskName: string; start: string }[]): Promise<PatrolPhotoReal[]> {
+    /** 已收过照片的任务（key 见 `patrolCatKey`） */
+    const done = new Set<string>()
+
+    for (const rec of rows.slice(0, MAX_PROBE)) {
+      if (done.size >= MAX_JOBS) break
+      const key = patrolCatKey(rec)
+      if (done.has(key)) continue
+
+      const media = await mediaOf(rec.id)
+      if (media) {
+        const got = toPhotos(rec, media).slice(0, MAX_PER_TASK)
+        if (got.length) {
+          done.add(key)
+          photos.value = [...photos.value, ...got]
+          flightCount.value = done.size
+          // 第一批照片一到就把骨架换掉（剩下的继续在后台补）
+          if (state.value === 'loading') {
+            state.value = 'ok'
+            error.value = ''
+          }
+        }
+      }
+      // 每次请求之间留间隔，避免撞 42901
+      await sleep(PROBE_GAP)
+    }
+
+    // 「同步到几个任务」比「扫过多少条记录」对现场有意义
+    flightCount.value = done.size
+    return photos.value
+  }
+
+  /**
    * 拉真实航拍照片。
    *
-   * 两步：先取执行记录，再对最近几个记录取媒体。
-   * 媒体是**按需**的 —— 每个任务一次请求，不可能对 4621 条记录全拉一遍。
+   * 失败不清空已有照片：网络抖一下就把现场照片墙清空，比显示旧照片难受得多。
    */
   async function load(force = false): Promise<void> {
     if (inflight) return inflight
@@ -103,42 +286,38 @@ export const usePatrolStore = defineStore('patrol', () => {
     state.value = 'loading'
     inflight = (async () => {
       try {
-        const page = await fetchTaskRecords({ page: 1, size: MAX_RECORDS })
-        flightCount.value = page.rows.length
+        const now = nowKey()
+        let lastErr: unknown = null
+        // 增量写入（`probe` 拿到一个任务就 push 一批），所以先清空
+        photos.value = []
+        flightCount.value = 0
 
-        // 最近的记录优先；空数组的任务（无媒体）跳过
-        const recent = page.rows.slice(0, MAX_JOBS)
-        const collected: PatrolPhotoReal[] = []
-        for (const rec of recent) {
-          let media: DroneMedia[]
+        for (const days of WINDOWS) {
+          let rows
           try {
-            media = await fetchMediaJobs(rec.id)
-          } catch {
-            continue
+            const page = await fetchTaskRecords({ page: 1, size: 100, start: dayKey(-days), end: dayKey(1) })
+            rows = page.rows
+          } catch (e) {
+            lastErr = e
+            break
           }
-          for (const m of media) {
-            if (!m.mediaType.startsWith('image/')) continue
-            collected.push({
-              id: `${rec.id}-${m.name}`,
-              name: m.name,
-              url: m.url,
-              taskName: rec.taskName,
-              jobId: rec.id,
-              time: m.lastModified || rec.start,
-              size: m.size,
-              mediaType: m.mediaType,
-            })
-          }
+          // 未来排班没有媒体，先剔掉；再按开始时间倒序（接口是升序）
+          const started = rows.filter((r) => !r.start || r.start <= now)
+          const desc = started.slice().sort((a, b) => b.start.localeCompare(a.start))
+          await probe(desc)
+          if (photos.value.length) break
         }
 
-        photos.value = collected
+        if (!photos.value.length && lastErr) throw lastErr
+
         state.value = 'ok'
         error.value = ''
         lastFailAt = 0
+        lastOkAt = Date.now()
       } catch (e) {
         state.value = 'error'
         error.value = e instanceof Error ? e.message : '巡检照片加载失败'
-        photos.value = []
+        // 已有照片保留（见上，探测阶段可能已经上屏一批）
         lastFailAt = Date.now()
       } finally {
         inflight = null
@@ -150,21 +329,27 @@ export const usePatrolStore = defineStore('patrol', () => {
   /**
    * 切回智眸面板时的刷新（首页标签切换会调用）。
    *
-   * 与 `load(true)` 的区别：**失败冷却仍生效** —— 连点标签时不该把注定失败的
-   * 请求反复打出去（keehang 那串要两步 CAS 登录，失败一次代价不小）；
-   * 页面上的「重试」按钮才走 force。成功过的也重拉：航拍任务随时在新增。
+   * 两道闸：
+   *   · 失败冷却（60 秒）—— 连点标签时不该把注定失败的请求反复打出去
+   *     （keehang 那串要两步 CAS 登录，失败一次代价不小）；
+   *   · 成功节流（`REFRESH_GAP`）—— 每次刷新要串行扫十几条媒体请求，
+   *     来回复用标签会直接撞上服务端限流。一分钟内的重进直接用上一批照片。
+   *
+   * 页面上的「重试」按钮走 `load(true)`，绕过这两道闸。
    */
   async function refresh(): Promise<void> {
     if (state.value === 'error' && Date.now() - lastFailAt < 60_000) return
+    if (state.value === 'ok' && Date.now() - lastOkAt < REFRESH_GAP) return
     return load(true)
   }
 
-  /** 测试接线点：直接灌数据 */
-  function apply(list: PatrolPhotoReal[]): void {
-    photos.value = list
-    flightCount.value = list.length
+  /** 测试接线点：直接灌数据（等价于「刚刚同步完」，不会触发再次拉取） */
+  function apply(listIn: PatrolPhotoReal[]): void {
+    photos.value = listIn
+    flightCount.value = listIn.length
     state.value = 'ok'
     error.value = ''
+    lastOkAt = Date.now()
   }
 
   function reset(): void {
@@ -173,6 +358,7 @@ export const usePatrolStore = defineStore('patrol', () => {
     state.value = 'idle'
     error.value = ''
     lastFailAt = 0
+    lastOkAt = 0
   }
 
   return {

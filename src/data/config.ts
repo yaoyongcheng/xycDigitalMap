@@ -135,41 +135,88 @@ export const hazardKindList = ['安全防护', '文明施工', '用电隐患', '
 /**
  * 智眸「最新照片」的六个分类（设计稿 app.js:613-619 的 patrolCats）。
  *
- * ## 为什么分类回来了，但判定方式换了
+ * ## 服务端有没有这个分类？
  *
- * 原版的分类是**写在照片数据上**的（`patrolPhotos[i].cat`），服务端没有这个
- * 字段 —— 2026-11 阶段 8 因此把分类整组删掉，改成按时间倒序平铺。
+ * **没有。** 两处都查过：
+ *   · keehang 媒体接口 `GET /media/task/job/{id}` 只返回
+ *     `name / path / mediaType / url / limitUrl / thumbnail / size / lastModified`；
+ *   · 万联后端《数据库设计文档》的媒体文件表（devDroneMedia）字段是
+ *     `LinkId / CreatedTime / RecordId / MediaType / Url / LimitUrl / Thumbnail / Name / Size`
+ *     —— 没有分类列；
+ *   · 航线接口 `/task/list` 里 15 条任务的 `taskType` 全是 `AIRLINE`、
+ *     `resourceType` 全是 `AIR_LINE`，也没有「正射 / 三维 / 巡检」这类可用维度。
  *
- * 现在按设计稿把分类作为**展示维度**恢复，但归属不能凭空指定：真实照片只带
- * `taskName`（所属航线/任务名），所以分类由任务名关键词推导（`catOfTask`）。
- * 这条规则是透明可核对的 —— 现场看到照片归错类，改的是这张表，不是数据。
- * 推导不出来的照片不会被丢掉，归到「未分类」，该分类只在真有照片时出现。
+ * 所以 V2 也拿不到这六类 —— 设计稿那 17 张图是**人工归类**的。要在真实照片上
+ * 显示这六类，只能在客户端按**航线名**映射。下面这张表就是这么来的：把现场
+ * 真有的 15 条航线逐条登记到六类里（2026-11-16 用 `/task/list` 核对过）。
+ *
+ * ## 为什么不会再有「未分类」
+ *
+ * 每张照片必属于某次飞行，只要每条航线都有归属，就不存在落不进六类的照片。
+ * 未登记的**新**航线依次走：显式表 → 关键词 → 兜底类。三者必有结果，
+ * 所以页面上不需要「未分类」这个按钮。
  */
 export interface PatrolCat {
   id: string
   name: string
-  /** 任务名命中即归入本类（自上而下先命中先得） */
+  /** 未登记的航线按名字兜底（自上而下先命中先得） */
   pattern: RegExp
 }
 
 export const PATROL_CATS: readonly PatrolCat[] = [
   // `全场|场区` 曾被写进 pano 规则，但它们描述的是「范围」不是「拍的什么」：
-  // 「场区道路巡检」「场区材料堆场」「场区基坑支护」会全部被第一类吃掉，
-  // 后面五类的关键词永远轮不到。所以 pano 只认真正说明画面的词。
-  { id: 'pano', name: '项目全景', pattern: /全景|鸟瞰/ },
-  { id: 'pit', name: '基坑区域', pattern: /基坑|坑边|边坡|支护/ },
+  // 「场区道路巡检」「场区材料堆场」「场区基坑支护」会全部被第一类吃掉。
+  { id: 'pano', name: '项目全景', pattern: /全景|鸟瞰|正射|三维|倾斜/ },
+  { id: 'pit', name: '基坑区域', pattern: /基坑|坑边|边坡|支护|土方/ },
   { id: 'face', name: '作业面', pattern: /作业面|主体|楼面|外架|悬挑|楼层/ },
-  { id: 'equip', name: '施工装备', pattern: /塔机|塔吊|电梯|装备|机械/ },
+  { id: 'equip', name: '施工装备', pattern: /塔机|塔吊|电梯|装备|机械|环绕/ },
   { id: 'yard', name: '材料堆场', pattern: /堆场|材料|钢筋|模板|加工棚/ },
-  { id: 'layout', name: '现场场布', pattern: /场布|道路|围挡|配电|大门|临建/ },
+  { id: 'layout', name: '现场场布', pattern: /场布|道路|围挡|配电|大门|临建|巡检|拍照|定点/ },
 ]
 
-/** 推导不出来的照片归这里（不是六个分类之一，只在有照片时展示） */
-export const PATROL_CAT_UNKNOWN = { id: 'other', name: '未分类' } as const
-
-/** 任务名 → 分类 id；一个都不命中返回 `PATROL_CAT_UNKNOWN.id` */
-export function catOfTask(taskName: string): string {
-  const name = String(taskName ?? '')
-  for (const c of PATROL_CATS) if (c.pattern.test(name)) return c.id
-  return PATROL_CAT_UNKNOWN.id
+/**
+ * 现场真实航线 → 分类的**显式登记表**（2026-11-16 按 `/task/list` 的 15 条航线逐条对过）。
+ *
+ * 名字必须与航线名完全一致。现场新开航线时在这里加一行即可，不用改别的代码；
+ * 忘了加也不会丢照片 —— 会走关键词兜底。
+ */
+export const PATROL_TASK_CAT: Readonly<Record<string, string>> = {
+  // 俯视全场：全景 / 正射 / 三维建模，画面都是整片场地
+  测试: 'pano',
+  测试全景: 'pano',
+  '向阳村-全景': 'pano',
+  '向阳村-正射': 'pano',
+  '向阳村-三维（飞前请检查）': 'pano',
+  '向阳村-三维（新）': 'pano',
+  '向阳村-三维（加密）': 'pano',
+  // 土方开挖 → 基坑
+  '向阳村-土方1': 'pit',
+  // 塔吊巡查
+  '向阳村-塔吊定点': 'equip',
+  // 现场布设与巡检：道路 / 配电箱 / 各区定点 / 安全巡检
+  '向阳村-道路垃圾和杂草生长': 'layout',
+  '向阳村-配电箱定点拍照': 'layout',
+  '向阳村-全局定点拍照': 'layout',
+  '向阳村-分区定点拍照': 'layout',
+  '向阳村-安全巡检': 'layout',
+  // 视频航线（媒体是 mp4，不进照片墙；登记着以免哪天截图进来掉到兜底）
+  '向阳村-环绕视频': 'equip',
 }
+
+/**
+ * 兜底分类：显式表和关键词都没命中的新航线归这里。
+ *
+ * 选「现场场布」是因为它语义最宽（现场各处的定点拍摄都算）。卡片上仍然写
+ * **真实航线名**，所以归类只是筛选维度，不会让人误以为这条航线叫「现场场布」。
+ */
+const PATROL_CAT_FALLBACK = 'layout'
+
+/** 航线名 → 六个分类 id 之一（一定命中，所以没有「未分类」） */
+export function catOfTask(taskName: string): string {
+  const name = String(taskName ?? '').trim()
+  const fixed = PATROL_TASK_CAT[name]
+  if (fixed) return fixed
+  for (const c of PATROL_CATS) if (c.pattern.test(name)) return c.id
+  return PATROL_CAT_FALLBACK
+}
+

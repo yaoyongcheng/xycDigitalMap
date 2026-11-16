@@ -7659,17 +7659,22 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 /* ---------- 分类：三列网格，两行 ---------- */
 
 /*
- * 用网格而不是横向滚动：六个分类正好排成 3×2，一眼全见，不需要滑。
+ * 用网格而不是横向滚动：六个分类正好排成 3×2，一眼全见，不需要滑
+ * （2026-11-16 用户明确要求「固定两行显示，不要左右滑」）。
  * 药丸形状（--r-pill）+ 30px 高：与抽屉里其它小控件的点击热区一致。
  */
 .patrol-cats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 10px;
 }
 
 .patrol-cats button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   height: 30px;
   padding: 0 4px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -7678,13 +7683,27 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   color: var(--ink-3-dark);
   font-size: var(--fs-12);
   font-weight: 650;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+/* 计数：比名字低一级，不抢视线；0 张时不渲染（省得六格都挂个 0） */
+.patrol-cats button i {
+  font-style: normal;
+  font-size: var(--fs-10);
+  font-weight: 600;
+  color: var(--ink-4-dark);
 }
 
 .patrol-cats button.on {
   border-color: rgba(76, 159, 255, 0.55);
   background: rgba(47, 124, 255, 0.18);
   color: var(--blue-2);
+}
+
+.patrol-cats button.on i {
+  color: var(--blue-2);
+  opacity: 0.7;
 }
 
 /* ---------- 照片卡：两列，单张时占满 ---------- */
@@ -7714,12 +7733,12 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /*
- * 缩略图占位（96px）
+ * 缩略图（96px）
  *
- * 真实 DJI 原图单张 5~8MB，列表里**不自动加载**（见 PatrolPanel 注释），但
- * 版面必须保住 96px —— 否则骨架（`Skel h="96px"`）回填时整卡会从 ~120px 塌到
- * ~40px，正是本项目一直在防的版式跳动。这里用一块深色底 + 一行提示，说明
- * 「点开才加载原图」，比放一张占位图诚实。
+ * 2026-11-16 起真的显示照片：媒体接口给了 `thumbnail`（约 440KB，原图 6MB），
+ * 用 `loading="lazy"` 滚动到才加载。高度必须钉死 96px —— 否则骨架
+ * （`Skel h="96px"`）回填时整卡会从 ~120px 塌到 ~40px，正是本项目一直在防的
+ * 版式跳动。缩略图缺失 / 加载失败时回退成文字提示，不留破图。
  */
 .patrol-thumb {
   position: relative;
@@ -7727,8 +7746,16 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   align-items: center;
   justify-content: center;
   height: 96px;
+  overflow: hidden;
   border-bottom: 1px solid var(--line-dark);
   background: var(--bg-2);
+}
+
+.patrol-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 /* 左上角「航拍原图」角标：与 .patrol-tag 同款胶囊，只是定位在图内 */
@@ -7739,8 +7766,24 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   height: 16px;
   padding: 0 5px;
   border-radius: var(--r-4);
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--ink-2-dark);
+  /* 压在照片上要用深底，白底 10% 在亮天空上会看不见 */
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: var(--fs-10);
+  font-weight: 650;
+  line-height: 16px;
+}
+
+/* 右下角原图体积：照片显示出来后，「多大」不该再占一整行 */
+.patrol-thumb-size {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-4);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.86);
   font-size: var(--fs-10);
   font-weight: 650;
   line-height: 16px;

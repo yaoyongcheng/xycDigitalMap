@@ -277,6 +277,14 @@ export interface DroneMedia {
   name: string
   /** OSS 直链（带签名，有有效期） */
   url: string
+  /**
+   * 缩略图直链（`oss.keehang.com:19090/thumbnail/iot/...`）。
+   *
+   * 实测单张 **约 440KB**，原图 6MB —— 列表里用它可以真的把照片显示出来，
+   * 而不只是一个「点击查看原图」的灰块（2026-11-16 实测全部有值）。
+   * 缺字段时是空串，页面回退到文字占位。
+   */
+  thumbnail: string
   /** MIME 类型 */
   mediaType: string
   /** 文件大小（字节） */
@@ -805,6 +813,7 @@ export async function fetchMediaJobs(jobId: number): Promise<DroneMedia[]> {
     out.push({
       name,
       url,
+      thumbnail: str(o.thumbnail),
       mediaType: str(o.mediaType),
       size: num(o.size) ?? 0,
       lastModified: str(o.lastModified),
