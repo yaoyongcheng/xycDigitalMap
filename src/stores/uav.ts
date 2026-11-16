@@ -77,21 +77,39 @@ const RETRY_GAP = 60_000
  * 混合内容拦掉，GitHub Pages 更没有反代。所以退成轮询 ——
  * **2 秒一轮**是最接近的近似：实测服务端遥测缓存就是秒级
  * （每 2s 采样一次，翻滚角 / 水平速度 / 航向每次都在变）。
- * 这一档**只拉飞机**；机库读数按分钟级变化，走 30s 那档（见 `refreshSlow`）。
+ * 这一档**只拉飞机**。机库那一路（`/telemetry/{id}/2`）**不在任何定时节拍里** ——
+ * 见 `DOCK_GAP`。
  *
- * 成本：机载 1.5KB/轮，2s 一轮约 2.7MB/小时（2026-11-16 起机库那一路不再跟 2s，
- * 见表下的 `refreshSlow`）。页面不可见时整轮跳过（见 `startLive`），后台不烧流量。
+ * 成本：机载 1.5KB/轮，2s 一轮约 2.7MB/小时。页面不可见时整轮跳过
+ * （见 `startLive`），后台不烧流量。
  */
 const LIVE_GAP = 2_000
 
 /**
- * 「慢变」数据的节拍：两路直播流地址 + **机库读数** + 任务三格 + 今日明细。
+ * 机库读数的取数窗口：**不进定时循环**，只在进页面 / 点重试时取一次，
+ * 5 分钟内复用。
  *
- * 这几样都不跟 2s 走：直播地址只在开播 / 关播时变，任务记录一条要跑十几分钟，
- * 机库的舱温 / 湿度 / 雨量 / 网络是分钟级变化（V2 那边这些字段随 OSD 推送来，
- * 也不按 2s 单独拉）。
+ * 为什么不轮询（2026-11-16 用户第二次追问后定案）：V2 的机库读数
+ * （`EnvPosNetStorageSideData` → `DroneDataCenter.Updatecabinstatus`）是跟着
+ * `/thing/product/{sn}/osd` 的 OSD 消息来的，**V2 从来没有请求过
+ * `/dashboard/device/cache/telemetry/{id}/2`**（三元里源码全量 grep 无 `cache/telemetry`；
+ * 向阳村 V2 进程也没有无人机 broker 连接）。那个接口是本项目从 OpenAPI 里挖出来
+ * 给机库页签补读数的自选动作，不该装成「和 V2 一样」去按节拍打。
+ *
+ * 但也不能整个删掉：浏览器接不了 OSD 推送（keehang 无 WSS），它是机库那 5 行
+ * （在库 / 充电 / 舱温 / 湿度 / 网络）**唯一可达的来源**，删了这半屏就全是「—」，
+ * 而 V2 那边是有数的。所以保留成「进页面取一次」的快照，不跟节拍。
+ */
+const DOCK_GAP = 5 * 60_000
+
+/**
+ * 「慢变」数据的节拍：两路直播流地址 + 任务三格 + 今日明细。
+ *
+ * 这几样都不跟 2s 走：直播地址只在开播 / 关播时变，任务记录一条要跑十几分钟。
  * 今日明细十几条记录、几 KB，2s 拉一次一小时就是 9MB —— 白烧流量换不来任何观感。
  * 30s 足够让「任务飞完」在页面上及时翻过来。
+ *
+ * 机库读数**不在这里**（见 `DOCK_GAP`）。
  */
 const SLOW_GAP = 30_000
 
@@ -456,17 +474,21 @@ export const useUavStore = defineStore('uav', () => {
    * 失败只让自己的格子写「—」，不该把整页判成失败。
    */
   async function load(force = false): Promise<void> {
+    // 机库读数不在任何定时节拍里，重进页面时按 `DOCK_GAP` 补一次。
+    // 必须放在两个早退**之前**：`state` 已是 ok 时也要补，否则读数会冻在本次会话
+    // 第一个快照上（用户看到的会是几小时前的舱温）。
+    if (Date.now() - dockAt > DOCK_GAP) void refreshDock()
+
     if (inflight) return inflight
     if (!force && state.value === 'ok') return
     if (!force && state.value === 'error' && Date.now() - lastFailAt < RETRY_GAP) return
 
     state.value = 'loading'
     inflight = (async () => {
-      const [list, s, tel, dk, rt, fly, dockFly] = await Promise.allSettled([
+      const [list, s, tel, rt, fly, dockFly] = await Promise.allSettled([
         fetchTodayRecords({ start: dayKey(0), end: dayKey(1) }),
         fetchTaskStat(),
         fetchTelemetry(),
-        fetchDockTelemetry(),
         fetchRoutes(),
         fetchLiveStream(KH_IDS.droneDeviceId),
         fetchLiveStream(KH_IDS.dockDeviceId),
@@ -474,7 +496,6 @@ export const useUavStore = defineStore('uav', () => {
 
       if (s.status === 'fulfilled') stat.value = s.value
       if (tel.status === 'fulfilled') telemetry.value = tel.value
-      if (dk.status === 'fulfilled') dock.value = dk.value
       if (rt.status === 'fulfilled') routes.value = rt.value
       // 直播流取不到就当「没有这一路」，页面写「未开播」；不保留上一轮的旧地址，
       // 免得停播后仍拿旧 url 连（连上去是黑的，比明说未开播更糟）
@@ -553,13 +574,15 @@ export const useUavStore = defineStore('uav', () => {
   const liveOwners = new Set<string>()
   /** 上一轮遥测还没回来就跳过这一拍 —— 2s 可能比一次请求还短，别把请求堆起来 */
   let telemetryBusy = false
+  /** 机库读数上次取到的时间（见 `DOCK_GAP`） */
+  let dockAt = 0
 
 /**
  * 刷一轮**机载读数**（2s 节拍）：只有飞机那一路 GET。
  *
- * 机库（`/telemetry/23452/2`）**不在这一档**（2026-11-16 用户问「V2 也这样轮询吗」后调整）：
- * V2 的机库读数是跟着 OSD 推送来的，而且舱温 / 湿度 / 雨量 / 网络都是分钟级变化，
- * 2s 拉一次纯属白烧（0.8KB × 1800 次/小时 ≈ 1.4MB/h）。现在它跟 30s 那档一起刷。
+ * 机库（`/telemetry/23452/2`）**既不在 2s 档也不在 30s 档**，只在进页面时取一次，
+ * 见 `DOCK_GAP`。V2 的机库读数是 OSD 推送来的，按节拍打这个接口等于自己造一套
+ * V2 没有的轮询。
  *
  * 失败一律保留旧值、不把页面清空：刷新失败不等于「飞机没了」。
  */
@@ -572,23 +595,36 @@ async function refreshTelemetry(): Promise<void> {
 }
 
 /**
- * 刷一轮**慢变数据**（30s 节拍）：两路直播流 + 机库读数 + 任务三格 + 今日明细。
+ * 取一次机库读数（`/telemetry/{dockId}/2`，0.8KB）。
+ *
+ * 只在 `load()` 里按 `DOCK_GAP` 触发 —— 不在任何定时器里（理由见 `DOCK_GAP`）。
+ * 失败保留旧值：机库读数自带时间戳，比清成「—」诚实。
+ */
+async function refreshDock(): Promise<void> {
+  try {
+    dock.value = await fetchDockTelemetry()
+    dockAt = Date.now()
+  } catch {
+    // 保留旧值；dockAt 不推进，下次进页面会再试
+  }
+}
+
+/**
+ * 刷一轮**慢变数据**（30s 节拍）：两路直播流 + 任务三格 + 今日明细。
  *
  * 任务统计为什么也要刷（2026-11-13 用户要求）：早先只刷遥测，任务飞完、
  * 执行记录变「已完成」，页面那三格还停在起飞前的样子，得退出子页再进来才更新。
  */
 async function refreshSlow(): Promise<void> {
-  const [fly, dockFly, s, list, dk] = await Promise.allSettled([
+  const [fly, dockFly, s, list] = await Promise.allSettled([
     fetchLiveStream(KH_IDS.droneDeviceId),
     fetchLiveStream(KH_IDS.dockDeviceId),
     fetchTaskStat(),
     fetchTodayRecords({ start: dayKey(0), end: dayKey(1) }),
-    fetchDockTelemetry(),
   ])
   // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
   if (fly.status === 'fulfilled') droneStream.value = fly.value
   if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
-  if (dk.status === 'fulfilled') dock.value = dk.value
   if (s.status === 'fulfilled') stat.value = s.value
     if (list.status === 'fulfilled') records.value = list.value
     // 任务刚起飞（进页面时还没跑）：这时才去补历史时长，补到就出进度条
@@ -689,6 +725,7 @@ async function refreshSlow(): Promise<void> {
     lastFailAt = 0
     estimates.value = {}
     estimatesAt = 0
+    dockAt = 0
     clearSession()
   }
 

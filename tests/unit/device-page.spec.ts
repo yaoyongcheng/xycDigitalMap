@@ -1824,11 +1824,12 @@ describe('无人机页', () => {
     w.unmount()
   })
 
-  it('刷新分两档：机载遥测 2s 一轮（对齐 V2 的 OSD 节奏），机库/任务/直播地址 30s', async () => {
+  it('刷新分两档：机载遥测 2s 一轮（对齐 V2 的 OSD 节奏），机库读数不进任何定时节拍', async () => {
     // V2 是 MQTT 推送（OSD 约 1Hz，3s 无消息判离线），浏览器接不了那层推送，
-    // 只能轮询 —— 2s 是最接近的近似。但机库读数（舱温/湿度/雨量/网络）是分钟级变化，
-    // 任务记录一条要跑十几分钟、直播地址只在开播/关播时变，跟着 2s 跑纯属白烧流量
-    // （今日明细 2s 一次 ≈ 9MB/小时、机库 2s 一次 ≈ 1.4MB/小时）。
+    // 只能轮询 —— 2s 是最接近的近似。任务记录一条要跑十几分钟、直播地址只在
+    // 开播/关播时变，跟着 2s 跑纯属白烧流量（今日明细 2s 一次 ≈ 9MB/小时）。
+    // 机库读数（/telemetry/{id}/2）V2 根本没请求过（它是 OSD 推送里的字段），
+    // 所以它**不进任何档**：只在进页面时取一次（用户 2026-11-16 要求）。
     vi.useFakeTimers()
     try {
       stubRecords = [todayRecord()]
@@ -1851,6 +1852,9 @@ describe('无人机页', () => {
       const rec = hits('/task/exec/list/record')
       const stream = hits('/live/stream/list')
 
+      // 进页面时取过机库读数（否则机库页签那 5 行全是「—」）
+      expect(dock).toBe(1)
+
       // 过 2 秒：只有机载那一路走一轮
       await vi.advanceTimersByTimeAsync(2_000)
       await nextTick()
@@ -1860,12 +1864,56 @@ describe('无人机页', () => {
       expect(hits('/task/exec/list/record')).toBe(rec)
       expect(hits('/live/stream/list')).toBe(stream)
 
-      // 满 30 秒：慢变那一档才动（机库读数也在这一档）
+      // 满 30 秒：慢变那一档才动；机库读数**仍然不动**（它不在这一档）
       await vi.advanceTimersByTimeAsync(28_000)
       await nextTick()
       expect(hits('/task/exec/list/record')).toBeGreaterThan(rec)
       expect(hits('/live/stream/list')).toBeGreaterThan(stream)
-      expect(hits('/telemetry/23452/2')).toBeGreaterThan(dock)
+      expect(hits('/telemetry/23452/2')).toBe(dock)
+
+      w.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('机库读数按 5 分钟窗口取：窗口内重进页面/切回标签页都不重打，过期才补一次', async () => {
+    // 用户 2026-11-16：「V2 里没轮询这个接口，我的项目也不需要」。
+    // 摘掉定时节拍后，取数点只剩「进页面」这一处，靠 DOCK_GAP 限流。
+    vi.useFakeTimers()
+    try {
+      stubRecords = [todayRecord()]
+      stubDock = { networkRate: 620 }
+
+      const sub = useSubpageStore()
+      sub.openUav()
+      const w = mount(Host)
+      await vi.advanceTimersByTimeAsync(0)
+      await nextTick()
+
+      const hits = (frag: string): number =>
+        (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
+          String(c[0]).includes(frag),
+        ).length
+      const DOCK = '/telemetry/23452/2'
+
+      const dock = hits(DOCK)
+      expect(dock).toBe(1)
+
+      // 重进页面：state 已是 ok，会走早退那条路 —— 窗口内不该重打
+      await useUavStore().load()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(hits(DOCK)).toBe(dock)
+
+      // 切回标签页触发的整页刷新也不碰机库
+      await useUavStore().refreshLive()
+      expect(hits(DOCK)).toBe(dock)
+
+      // 过了 5 分钟窗口：再进页面补一次
+      await vi.advanceTimersByTimeAsync(5 * 60_000 + 1_000)
+      await useUavStore().load()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(hits(DOCK)).toBe(dock + 1)
 
       w.unmount()
     } finally {
