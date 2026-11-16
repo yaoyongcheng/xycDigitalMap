@@ -693,6 +693,8 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 | 飞行距离（累计里程） | `totalFlightDistance` | 机载遥测 `/1`（V2 面板同名项） |
 | 剩余续航 | `batteryInfo.remainFlightTime` | 机载遥测 `/1` |
 | 累计架次 | `totalFlightSorties` | 机载遥测 `/1` |
+| 翻滚角 | `attitudeRoll` | 机载遥测 `/1`（V2 面板「无人机翻滚角」，°） |
+| 偏航角 | `attitudeHead` | 机载遥测 `/1`（V2 面板「无人机偏航角」，°；−180~180 原样收，**不归一化**到 0~360 —— V2 也不归一化，两边并排核对时同一方向不能出现两个数字） |
 
 注意机库遥测的**类型段是 2**（`/telemetry/{机库id}/2`），用 1 查只会拿到一屏 null。
 
@@ -755,13 +757,35 @@ GET /live/stream/list?deviceId=23498          ← keehang 业务服务
 
 | 区块 | 设计稿 | 数据 |
 |---|---|---|
-| 实时监控 | 无人机 / 机库 两页签 + 画面 + 五格 | **画面已接入**（HTTP-FLV，见 §6）：无人机页签＝机载画面 + 机载遥测（状态/海拔/飞行距离/水平速度/垂直速度）；机库页签＝机库摄像头 + 机库遥测（在库/充电/舱温/湿度/网络速率）。机库未推流时明说「机库画面未开播」，**不拿无人机画面顶替** |
-| 任务管理 | 今日任务 / 已完成 / 失败次数 + 当前巡检进度（`62%` + 进度条 + 「已飞 X 分钟 · 预计 Y 分钟」） | `/dashboard/task/list/record` 的 `taskCount / finishedCount / failedCount`；**进度分母 = 同一 `taskId` 近 7 天已完成执行的时长中位数**（见下：服务端没有计划时长），`pct = (now − start) / 中位数`、封顶 99（还在执行中就不画成 100%）。中位数取不到时**不画条、不写预计**，只写已飞时长。三格与今日明细都并入 30s 实时刷（`refreshLive`），任务飞完不用退出子页 |
+| 实时监控 | 无人机 / 机库 两页签 + 画面 + 七格/五格 | **画面已接入**（HTTP-FLV，见 §6）：无人机页签＝机载画面 + 机载遥测（状态/海拔/飞行距离/水平速度/垂直速度/翻滚角/偏航角，后两格对齐 V2 详情面板）；机库页签＝机库摄像头 + 机库遥测（在库/充电/舱温/湿度/网络速率）。机库未推流时明说「机库画面未开播」，**不拿无人机画面顶替** |
+| 任务管理 | 今日任务 / 已完成 / 失败次数 + 当前巡检进度（`62%` + 进度条 + 「已飞 X 分钟 · 预计 Y 分钟」） | `/dashboard/task/list/record` 的 `taskCount / finishedCount / failedCount`；**进度分母 = 同一 `taskId` 近 7 天已完成执行的时长中位数**（见下：服务端没有计划时长），`pct = (now − start) / 中位数`、封顶 99（还在执行中就不画成 100%）。中位数取不到时**不画条、不写预计**，只写已飞时长。三格与今日明细按 30s 慢档刷（`refreshSlow`），任务飞完不用退出子页 |
 | 设备参数 | 状态/电量/距机库/续航/风速/网络质量/网络速率/电池温度 | 机载 + 机库遥测，**八格全部有源** |
 | 任务下发 | **二期**，当前只有一句「接入中，敬请期待」 | 平台没有下发端点（keehang `/task/start` 404，原厂是网页控制台）。条件校验那套（`canDispatch / dispatchNote / risks`）留在 store 里给二期用，但**不摆 UI**：disabled 的「选择航线」看起来点得动，点了没反应会被当 bug |
 
 三处口径要说清：
 
+- **刷新节拍：遥测 2s、任务与直播地址 30s**（`stores/uav.ts` 的 `LIVE_GAP` / `SLOW_GAP`）。
+  V2 根本不轮询 —— `MqttDroneRealTimeInfoRequester` 连 broker `47.106.219.250:1883`
+  订阅 `/prod/thing/product/{sn}/osd`，一条 OSD 到就刷界面，`droneOfflineTimeoutSeconds = 3`
+  判离线，飞控 OSD 本身约 1Hz。浏览器接不了那层推送（broker 裸端口在 HTTPS 页面下被
+  混合内容拦，Pages 更没有反代），只能轮询；2s 是最接近的近似 —— 实测服务端缓存就是
+  秒级（每 2s 采样，翻滚角 / 水平速度 / 航向每次都在变）。轮询成本 2.3KB/轮（机载 1.5KB
+  + 机库 0.8KB）≈ 4MB/小时，页面不可见时整轮跳过。任务三格、今日明细、直播流地址
+  变化慢，走 30s 慢档（今日明细 2s 拉一次一小时 9MB，白烧流量换不来观感）。
+- **姿态角**：`attitudeRoll` → 翻滚角、`attitudeHead` → 偏航角，一位小数 + °，
+  对齐 V2 详情面板那两行。**不归一化到 0~360**：`attitudeHead` 是 −180~180，
+  负值（实测 −93、−151）本身是合法航向，V2 也原样打；归一化会变成 267°/209°，
+  同一方向两个数字，跟 V2 并排核对时互相打架。
+- **「今日任务」数字与 V2 不一致是必然的：两边不是同一个后端。**
+  V2 的任务统计（`UIDroneTaskStatistics`）读 `{url}/flight/taskView`，
+  `DroneAPIHelper.url = https://v2.smart-build.cn/ynlkUavApi`（另一个平台，账号
+  `18800010001`、`Project-Code` 取自 `getUserInfo` 的 `ynlkAuths[0].projectCode`），
+  口径是「当天 `Receivers` 条数」+「status==2 为成功 / ==3 为失败」。
+  我们读的是 keehang `/dashboard/task/list/record`（`taskCount / finishedCount / failedCount`）。
+  两个库的任务名能对得上（说明有同步），执行记录并不同步 —— 2026-11-16 实测：
+  keehang 当天 15 条（3 已完成 / 12 未执行），V2 面板是 23 / 4 / 0。
+  keehang 侧每日 12~15 条、条条可复核；**不要为了对齐 V2 去改 keehang 的口径**，
+  要一致只能改数据源（需要 smart-build 上向阳村项目的账号）。
 - **状态**：**以机载遥测 `modeCode` 为主**（DJI `mode_code`：0 待机 … 18 空中 RTK 收敛），
   `status` 只在 `modeCode` 缺失时兜底 —— 映射表在 `utils/uavState.ts`。
   为什么主次是这样（2026-11-13 17:07 实测）：飞机从 69m 自动降落回库再落定，
@@ -2076,3 +2100,87 @@ V2 **只有单日**（一个 `date` 参数 + 一个日期选择器，无周报�
    代理签名：前端调 `/proxy/yzw/*`，私钥只留在服务器（`server/serve.mjs` 加路由即可）。
 2. **站点协议**。A/C/D 组接口多为 HTTP 或自签证书；站点若走 HTTPS 会被混合内容拦掉。
    当前用自托管 HTTP 部署规避，长期正解仍是「站点 HTTPS + 同域反代」。
+
+---
+
+## 六、MQTT 不是万能的：三条实测否证（2026-11-16）
+
+「把轮询换成订阅 MQTT」这个方向被问过三次（无人机、电梯、塔机）。塔机确实该走
+MQTT（已在跑，见 13(14)），但**无人机和电梯都不行**，理由各自不同，都实测过。
+
+### 1. 无人机那台 broker 是**三元里**的，不是向阳村的
+
+V2 源码 `MqttDroneRealTimeInfoRequester.cs` 里写死：
+
+| 项 | 值 | 备注 |
+|---|---|---|
+| broker | `47.106.219.250:1883` | |
+| 账号 | `AzmSylUser` / `Azm2025@` | 与 smart-build 账号密码同源 |
+| 无人机主题 | `/prod/thing/product/1581F6Q8X251800G040D/osd` | QoS 1 |
+| 机库主题 | `/prod/thing/product/7CTXN3500B07ME/osd` | QoS 1 |
+| 离线判定 | 3s 收不到即判离线 | 飞控 OSD 约 1Hz |
+
+**实测（本机 TCP 直连，非浏览器）**：CONNACK 0 成功，20 秒收到 49 帧机库 OSD，
+无人机主题 **0 帧**。原因有三个，每个都足以否掉「接过来」：
+
+1. **不是本项目的数据**。抓到的机库 OSD 里 `latitude 23.166839` /
+   `longitude 113.256794` —— **广州**。向阳村在武汉（`30.5326 / 114.2463`，
+   keehang 机库遥测实测值）。机库 sn `7CTXN3500B07ME` 也不同于本项目机库
+   `origin_sn 7CTDM7R00B1498`。接上去等于把三元里的飞机画进向阳村。
+2. **飞机主题 0 帧是因为飞机在关机**。机库 OSD 的
+   `sub_device.device_online_status = 0`（0 关机 / 1 开机）、`drone_in_dock = 1`。
+   DJI Cloud API 在飞行器关机时不推 `{drone_sn}/osd`，不是链路坏了。
+3. **keehang 侧没有 MQTT 端口**。`iot.keehang.com` 的 1883 / 8083 / 8084 / 9001
+   全部不通（只有 23443 HTTPS）。向阳村的无人机数据只存在于 keehang 的
+   HTTP 接口里，没有可订阅的推送通道。
+
+> 结论：**2 秒轮询就是本项目的上限**。想真达到 1Hz 只能让厂家开放推送，
+> 或者让服务端去连（`server/mqttBridge.mjs` 那套已经现成，把
+> `attachMqttBridge` 再挂一条 `/mqtt-uav` 指向 `47.106.219.250:1883` 即可），
+> 但**前提是数据属于本项目** —— 现在不属于。
+
+顺带解决一个悬案：机库 OSD 里 `rainfall = 0`，而同一天的 keehang 遥测
+`rainfall = 1`。两台**不同机库**的设备，两边数值本就不该相同，
+所以此前「`rainfall=1` 到底是雨量还是雨强」的口径疑问在这里没有对照价值，
+仍以 keehang 那侧为准、起飞条件按未知处理。
+
+### 2. V2 的智能电梯**不是** MQTT，是 HTTP 拉取
+
+在三元里源码包里全量搜索，`new MqttClient(...)` **只出现一次**，在
+`Network/无人机/MqttDroneRealTimeInfoRequester.cs`。电梯模块（`ElevatorRequester`、
+`ElevatorIotModel`、`UIPanelElevator`）走的是 C 组 IOT 网关的
+`/api/data/v1/tsdb/queryRealTimeDataV2` 与 `/queryEvent`，且 `FetchWorkCycleAsync`
+是 async 状态机（IL 实证），即**主动拉取**，不是订阅。
+
+所以电梯的 10 秒一轮刷新与 V2 同构，**没有「该改成 MQTT」这回事**。
+它真正的问题是 换令牌那一跳缺 CORS（于是有了 `/iot-api` 同源反代），
+与协议无关。
+
+### 3. 任务数对不上：两套平台、两个项目，不存在同一份数
+
+| | 本项目（向阳村） | V2 客户端 |
+|---|---|---|
+| 平台 | keehang `iot.keehang.com:23443` | smart-build `v2.smart-build.cn/ynlkUavApi` |
+| 账号 | `fanwbZJSJXYC`（项目级服务凭据） | `18800010001` / `Azm2025@`（硬编码） |
+| 项目 | pid `193640872670213` | `ZXKJ2474232810`(三元里) / `ZGJZ1777442905549`(2025P04) |
+| 任务名 | 「向阳村-正射」「向阳村-安全巡检」… | 「2026-10-26任务092024」「一期二期航拍」 |
+
+实测三件事：
+
+1. **`xiangyangcun` / `ZJWF2025` 在 smart-build 上登不进去** —— 原文
+   `{"code":500,"msg":"号码非内部账号，无权登录"}`。这对账号是 `:8081`
+   业务平台（大屏/移动端）的，不是无人机平台的。
+2. `18800010001` 的 `ynlkAuths` 只有三元里与 2025P04，**没有向阳村**。
+3. 这两个项目近 31 天的 `taskView` 任务数分别是
+   三元里 `10-19=2, 10-26=10, 10-31=4`（其余 0）、2025P04 每天恒 1 条。
+   **没有任何一天等于 23**。
+
+所以 V2 界面上的 23 不可能来自以上任一可得数据源。要么它跑在别的
+smart-build 账号（向阳村若在该平台注册过），要么那张截图对应别的项目部署。
+**在拿到向阳村的 smart-build 账号 / Project-Code 之前，「两边一致」无法实现**，
+硬凑只会违反「不编数」红线。
+
+> keehang 侧今日口径（2026-11-16 09:30 实测）供对照：
+> `/dashboard/task/list/record` → `taskCount 15 = finishedCount 3 + planCount 12`；
+> `/task/exec/list/record`（当天）→ **30 条**执行记录（3 已完成、27 未执行）。
+> 近 11 天每日记录数在 18~30 之间浮动，也没有 23。

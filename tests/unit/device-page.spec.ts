@@ -1683,6 +1683,9 @@ describe('无人机页', () => {
       horizontalSpeed: 4.2,
       verticalSpeed: 0.3,
       windSpeed: 2.4,
+      // 姿态角：V2 面板「无人机翻滚角 0.3° / 无人机偏航角 119.0°」
+      attitudeRoll: 0.3,
+      attitudeHead: 119,
     }
     stubDock = {
       droneOnlineStatus: 1,
@@ -1698,7 +1701,7 @@ describe('无人机页', () => {
     await flushPromises()
     await nextTick()
 
-    // 无人机页签：设计稿五格
+    // 无人机页签：设计稿五格 + V2 的两格姿态角
     let fly = w.find('.uav-fly')
     expect(fly.text()).toContain('海拔')
     expect(fly.text()).toContain('12.4m')
@@ -1708,6 +1711,13 @@ describe('无人机页', () => {
     expect(fly.text()).toContain('10809.1km')
     expect(fly.text()).not.toContain('距起飞点')
     expect(fly.text()).toContain('4.2m/s')
+    expect(fly.text()).toContain('0.3m/s')
+    // 姿态角：字段与 V2 一致（attitudeRoll / attitudeHead），一位小数 + °
+    expect(fly.text()).toContain('翻滚角')
+    expect(fly.text()).toContain('0.3°')
+    expect(fly.text()).toContain('偏航角')
+    expect(fly.text()).toContain('119.0°')
+    // 翻滚角与垂直速度的 0.3 撞值，靠「°」区分单位 —— 别把 m/s 写成 °
     expect(fly.text()).toContain('0.3m/s')
 
     // 机库页签：切过去要看到机库自己的读数，而不是同一套飞行参数
@@ -1781,6 +1791,53 @@ describe('无人机页', () => {
     expect(stats[6].text()).toContain('441kbps') // 网络速率
     expect(stats[7].text()).toContain('26.4℃') // 电池温度
     w.unmount()
+  })
+
+  it('刷新分两档：遥测 2s 一轮（对齐 V2 的 OSD 节奏），任务与直播地址仍 30s', async () => {
+    // V2 是 MQTT 推送（OSD 约 1Hz，3s 无消息判离线），浏览器接不了那层推送，
+    // 只能轮询 —— 2s 是最接近的近似。但任务记录一条要跑十几分钟、直播地址只在
+    // 开播/关播时变，跟着 2s 跑纯属白烧流量（今日明细 2s 一次 ≈ 9MB/小时）。
+    vi.useFakeTimers()
+    try {
+      stubRecords = [todayRecord()]
+      stubTelemetry = { status: 1, modeCode: 5 }
+      stubDock = { networkRate: 620 }
+
+      const sub = useSubpageStore()
+      sub.openUav()
+      const w = mount(Host)
+      await vi.advanceTimersByTimeAsync(0)
+      await nextTick()
+
+      const hits = (frag: string): number =>
+        (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
+          String(c[0]).includes(frag),
+        ).length
+
+      const tel = hits('/telemetry/23498/1')
+      const dock = hits('/telemetry/23452/2')
+      const rec = hits('/task/exec/list/record')
+      const stream = hits('/live/stream/list')
+
+      // 过 2 秒：两路遥测各走一轮
+      await vi.advanceTimersByTimeAsync(2_000)
+      await nextTick()
+      expect(hits('/telemetry/23498/1')).toBe(tel + 1)
+      expect(hits('/telemetry/23452/2')).toBe(dock + 1)
+      // 慢变那几样一动不动
+      expect(hits('/task/exec/list/record')).toBe(rec)
+      expect(hits('/live/stream/list')).toBe(stream)
+
+      // 满 30 秒：慢变那一档才动
+      await vi.advanceTimersByTimeAsync(28_000)
+      await nextTick()
+      expect(hits('/task/exec/list/record')).toBeGreaterThan(rec)
+      expect(hits('/live/stream/list')).toBeGreaterThan(stream)
+
+      w.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('任务飞完：实时刷新把三格与「当前巡检」卡一起更新，不用退出子页', async () => {
@@ -1907,6 +1964,11 @@ describe('无人机页', () => {
     const stats = w.findAll('.dev-block')[2].findAll('.uav-stats > div')
     // 电量 / 距机库 / 续航 / 风速 / 网络质量 / 网络速率 / 电池温度 都没有 → 全「—」
     for (const i of [1, 2, 3, 4, 5, 6, 7]) expect(stats[i].text()).toContain('—')
+    // 姿态角缺数据同样是「—」，不写「0.0°」
+    const fly = w.find('.uav-fly')
+    expect(fly.text()).toContain('翻滚角')
+    expect(fly.text()).toContain('偏航角')
+    expect(fly.text()).not.toContain('°')
     // 网络质量没数时不画五格空条（那会读成「有信号但一格都没有」）
     expect(w.find('.uav-sig').exists()).toBe(false)
     w.unmount()

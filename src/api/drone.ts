@@ -190,8 +190,16 @@ export interface DroneTelemetry {
   remainFlightTime: number | null
   /** 累计飞行架次（`totalFlightSorties`） */
   totalSorties: number | null
-  /** 航向角 */
+  /**
+   * **偏航角** °（`attitudeHead`）—— V2 详情面板「无人机偏航角」那一行。
+   *
+   * 取值原样保留，**不做 0~360 归一化**：DJI 的 `attitude_head` 是 −180~180，
+   * 负值（如实测 −151，朝西北偏西）本身就是合法航向，V2 也是原样打出来的。
+   * 归一化会变成 209°，同一方向两个数字，跟 V2 并排一看就对不上。
+   */
   heading: number | null
+  /** **翻滚角** °（`attitudeRoll`）—— V2 详情面板「无人机翻滚角」那一行 */
+  attitudeRoll: number | null
 }
 
 /**
@@ -480,6 +488,7 @@ export function toTelemetry(raw: unknown): DroneTelemetry {
     remainFlightTime: num(batt.remainFlightTime),
     totalSorties: num(o.totalFlightSorties),
     heading: num(o.attitudeHead),
+    attitudeRoll: num(o.attitudeRoll),
   }
 }
 

@@ -188,6 +188,7 @@ describe('toTelemetry 收敛', () => {
       verticalSpeed: null,
       altitude: 117,
       attitudeHead: 90,
+      attitudeRoll: -2.5,
     })
     expect(t.battery).toBe(88)
     expect(t.temp).toBe(29.3)
@@ -196,6 +197,8 @@ describe('toTelemetry 收敛', () => {
     // 旧桩写 altitude，保留兜底
     expect(t.relativeAltitude).toBe(117)
     expect(t.heading).toBe(90)
+    // 翻滚角原样收，负值不取绝对值
+    expect(t.attitudeRoll).toBe(-2.5)
   })
 
   it('相对高度读 relativeAltitude，海拔读 height（2026-11-13 修正）', () => {
@@ -235,6 +238,9 @@ describe('toTelemetry 收敛', () => {
     expect(t.battery).toBeNull()
     expect(t.temp).toBeNull()
     expect(t.lat).toBe('')
+    // 姿态角同理：没有就是 null，页面写「—」，不能是 0°
+    expect(t.attitudeRoll).toBeNull()
+    expect(t.heading).toBeNull()
   })
 
   it('容量百分比兼容顶层 batteryInfo.capacityPercent', () => {
@@ -554,6 +560,7 @@ describe('uav store', () => {
         remainFlightTime: 0,
         totalSorties: 3067,
         heading: 0,
+        attitudeRoll: 0,
       },
       { taskCount: 15, finishedCount: 11, failedCount: 0, runningCount: 0, planCount: 4, suspendedCount: 0 },
     )
@@ -608,6 +615,7 @@ describe('uav store', () => {
       remainFlightTime: 0,
       totalSorties: 0,
       heading: 0,
+      attitudeRoll: 0,
     })
 
     expect(s.risks.map((c) => c.name)).toContain('风速')
@@ -632,6 +640,7 @@ describe('uav store', () => {
       remainFlightTime: 0,
       totalSorties: 0,
       heading: 0,
+      attitudeRoll: 0,
     })
 
     const battery = s.checks.find((c) => c.name === '电量')

@@ -58,8 +58,36 @@ export type UavState = 'idle' | 'loading' | 'ok' | 'error'
 /** 失败后的冷却时间（与 overview / deviceLedger 一致） */
 const RETRY_GAP = 60_000
 
-/** 实时遥测的刷新间隔：机库+机载两个 GET，30s 够用又不费流量 */
-const LIVE_GAP = 30_000
+/**
+ * 实时遥测的刷新间隔 —— **对齐 V2 的更新节奏**。
+ *
+ * ## V2 是推送，不是轮询
+ *
+ * V2 客户端（`MqttDroneRealTimeInfoRequester`）连 broker `47.106.219.250:1883`，
+ * 订阅 `/prod/thing/product/{sn}/osd`，一条 OSD 到就更新界面并触发
+ * `E_DroneRealTimeInfoUpdated`，页面立刻跟着变；`droneOfflineTimeoutSeconds = 3`，
+ * 3 秒收不到消息才判离线。飞控 OSD 本身约 1Hz。
+ *
+ * ## 浏览器只能近似
+ *
+ * 那层推送浏览器接不了：broker 裸端口（1883 / WS 8083）在 HTTPS 页面下会被
+ * 混合内容拦掉，GitHub Pages 更没有反代。所以退成轮询 ——
+ * **2 秒一轮**是最接近的近似：实测服务端遥测缓存就是秒级
+ * （每 2s 采样一次，翻滚角 / 水平速度 / 航向每次都在变）。
+ *
+ * 成本：机载 1.5KB + 机库 0.8KB ≈ 2.3KB/轮，2s 一轮约 4MB/小时。
+ * 页面不可见时整轮跳过（见 `startLive`），后台不烧流量。
+ */
+const LIVE_GAP = 2_000
+
+/**
+ * 「慢变」数据的节拍：两路直播流地址 + 任务三格 + 今日明细。
+ *
+ * 这几样都不跟 2s 走：直播地址只在开播 / 关播时变，任务记录一条要跑十几分钟。
+ * 今日明细十几条记录、几 KB，2s 拉一次一小时就是 9MB —— 白烧流量换不来任何观感。
+ * 30s 足够让「任务飞完」在页面上及时翻过来。
+ */
+const SLOW_GAP = 30_000
 
 /** 历史时长（进度条分母）的复用期：6 小时。任务的耗时不会一天之内变样 */
 const ESTIMATE_GAP = 6 * 60 * 60 * 1000
@@ -251,8 +279,13 @@ export const useUavStore = defineStore('uav', () => {
         (t.status === -1 || t.modeCode === 0 || t.modeCode === 13 || t.modeCode === 14),
       /** 累计架次 */
       totalSorties: t?.totalSorties ?? null,
-      /** 航向角 ° */
+      /**
+       * 偏航角 °（遥测 `attitudeHead`）—— 飞行参数「偏航角」那格，对齐 V2。
+       * 负值原样保留（−180~180），见 `DroneTelemetry.heading` 的说明。
+       */
       heading: t?.heading ?? null,
+      /** 翻滚角 °（遥测 `attitudeRoll`）—— 飞行参数「翻滚角」那格 */
+      roll: t?.attitudeRoll ?? null,
       /** 经纬度 */
       lat: t?.lat || null,
       lng: t?.lng || null,
@@ -488,34 +521,35 @@ export const useUavStore = defineStore('uav', () => {
   /* ---------------- 实时刷新（子页「实时监控」） ---------------- */
 
   let liveTimer: number | null = null
+  let slowTimer: number | null = null
   const liveOwners = new Set<string>()
+  /** 上一轮遥测还没回来就跳过这一拍 —— 2s 可能比一次请求还短，别把请求堆起来 */
+  let telemetryBusy = false
 
   /**
-   * 刷一轮「实时监控」看到的东西：两路遥测 + 两路直播流 + 任务三格与今日明细。
+   * 刷一轮**遥测读数**（2s 节拍）：机载 + 机库两个 GET。
    *
-   * ## 任务统计为什么也在这里刷（2026-11-13 用户要求）
-   *
-   * 早先只刷遥测，理由是「任务统计变化慢」。实际用起来很别扭：任务飞完、
-   * 执行记录变成「已完成」，页面那三格（今日任务 / 已完成 / 失败次数）和
-   * 「当前巡检 · xxx」卡还停在起飞前的样子，得退出子页再进来才更新。
-   *
-   * 两路加起来也就十几条记录（今天全部执行记录），KB 级，和一张遥测快照差不多，
-   * 所以按同一节拍（30s）走，不另开定时器、也不做双周期节流 ——
-   * 「换个数字要等一分钟」在作业现场就是没对齐。
-   *
-   * 失败一律保留旧值、不把页面清空：刷新失败不等于「今天没有任务」。
+   * 失败一律保留旧值、不把页面清空：刷新失败不等于「飞机没了」。
    */
-  async function refreshLive(): Promise<void> {
-    const [tel, dk, fly, dockFly, s, list] = await Promise.allSettled([
-      fetchTelemetry(),
-      fetchDockTelemetry(),
+  async function refreshTelemetry(): Promise<void> {
+    const [tel, dk] = await Promise.allSettled([fetchTelemetry(), fetchDockTelemetry()])
+    if (tel.status === 'fulfilled') telemetry.value = tel.value
+    if (dk.status === 'fulfilled') dock.value = dk.value
+  }
+
+  /**
+   * 刷一轮**慢变数据**（30s 节拍）：两路直播流 + 任务三格 + 今日明细。
+   *
+   * 任务统计为什么也要刷（2026-11-13 用户要求）：早先只刷遥测，任务飞完、
+   * 执行记录变「已完成」，页面那三格还停在起飞前的样子，得退出子页再进来才更新。
+   */
+  async function refreshSlow(): Promise<void> {
+    const [fly, dockFly, s, list] = await Promise.allSettled([
       fetchLiveStream(KH_IDS.droneDeviceId),
       fetchLiveStream(KH_IDS.dockDeviceId),
       fetchTaskStat(),
       fetchTaskRecords({ start: dayKey(0), end: dayKey(1) }),
     ])
-    if (tel.status === 'fulfilled') telemetry.value = tel.value
-    if (dk.status === 'fulfilled') dock.value = dk.value
     // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
     if (fly.status === 'fulfilled') droneStream.value = fly.value
     if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
@@ -525,24 +559,49 @@ export const useUavStore = defineStore('uav', () => {
     if (running.value) void loadEstimates()
   }
 
+  /** 整页刷一轮：进页面、切回标签页时用，两档节拍都走一遍 */
+  async function refreshLive(): Promise<void> {
+    await Promise.all([refreshTelemetry(), refreshSlow()])
+  }
+
+  /** 页面可见性变化：切回来立刻补一轮，不用干等下一个 2 秒 */
+  function onVisible(): void {
+    if (document.visibilityState === 'visible') void refreshLive()
+  }
+
   /**
    * 登记一个「正在看实时读数」的页面。
    *
    * 按 owner 名登记而不是计数：组件重复挂载/卸载不会把计数弄歪。
    */
   function startLive(owner: string): void {
+    if (liveOwners.has(owner)) return
     liveOwners.add(owner)
     if (liveTimer !== null) return
+    document.addEventListener('visibilitychange', onVisible)
+    // 2s 档：只打两路遥测。页面在后台就整轮跳过 —— 2s 的节拍不在后台烧流量
     liveTimer = window.setInterval(() => {
-      void refreshLive()
+      if (document.visibilityState === 'hidden') return
+      if (telemetryBusy) return
+      telemetryBusy = true
+      void refreshTelemetry().finally(() => {
+        telemetryBusy = false
+      })
     }, LIVE_GAP)
+    slowTimer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      void refreshSlow()
+    }, SLOW_GAP)
   }
 
   function stopLive(owner: string): void {
-    liveOwners.delete(owner)
-    if (liveOwners.size || liveTimer === null) return
-    window.clearInterval(liveTimer)
+    if (!liveOwners.delete(owner)) return
+    if (liveOwners.size) return
+    if (liveTimer !== null) window.clearInterval(liveTimer)
+    if (slowTimer !== null) window.clearInterval(slowTimer)
     liveTimer = null
+    slowTimer = null
+    document.removeEventListener('visibilitychange', onVisible)
   }
 
   /**

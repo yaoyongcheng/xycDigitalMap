@@ -117,6 +117,16 @@ function speed(v: number | null): string {
 }
 
 /**
+ * 姿态角 → `xx.x°`（翻滚角 / 偏航角）
+ *
+ * 不做 0~360 归一化：`attitudeHead` 是 −180~180，负值本身是合法航向，
+ * V2 面板也原样显示，两边并排核对时才不会被 209° / −151° 这种差异误导。
+ */
+function deg(v: number | null): string {
+  return v === null ? DASH : `${v.toFixed(1)}°`
+}
+
+/**
  * 「续航」为什么常看到「—」—— 给一句解释，别让人以为数据没接上。
  *
  * 飞控的 `remainFlightTime` 在**地面恒为 0**（实测：库里关机时电量 80%、
@@ -288,6 +298,9 @@ function retry(): void {
         <div><span>飞行距离</span><b>{{ dist(uav.live.flightDistance) }}</b></div>
         <div><span>水平速度</span><b>{{ speed(uav.live.speed) }}</b></div>
         <div><span>垂直速度</span><b>{{ speed(uav.live.verticalSpeed) }}</b></div>
+        <!-- 姿态两行对齐 V2 详情面板的「无人机翻滚角 / 无人机偏航角」 -->
+        <div><span>翻滚角</span><b>{{ deg(uav.live.roll) }}</b></div>
+        <div><span>偏航角</span><b>{{ deg(uav.live.heading) }}</b></div>
       </div>
 
       <!--
