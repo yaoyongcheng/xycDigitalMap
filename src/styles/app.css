@@ -8561,37 +8561,6 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /*
- * 读数快照行：遥测没有定时刷新，所以把「取数时间 + 刷新」摆在读数正下方。
- * 不写「实时」两个字 —— 停在这一页时数字不会自己变，说了就得站得住。
- */
-.uav-snap {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 8px 0 0;
-  font-size: var(--fs-10);
-  line-height: 1.5;
-  color: var(--ink-3-dark);
-}
-
-.uav-snap-btn {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--blue-2);
-  font-size: var(--fs-11);
-  font-weight: 650;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.uav-snap-btn:disabled {
-  color: var(--ink-3-dark);
-  cursor: default;
-}
-
-/*
  * 网络质量画成四格信号（照 V2 底部栏的 signalSprites），比写「良好」两个字更快读。
  * 高度撑到与旁边数字同一行高（22px）再底对齐，否则这一格的标签会比别格高一档。
  */
