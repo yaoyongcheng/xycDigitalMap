@@ -348,16 +348,19 @@ export const useUavStore = defineStore('uav', () => {
   })
 
   /**
-   * 风速（m/s）：机载优先，机库兜底。
+   * 风速（m/s）：**只取机库**那一份。
    *
-   * 两个都对同一片空域——机载是飞机自己测的，机库是地面站测的；
-   * 飞机在地面时机载读数可能为 0，这时用机库的值更有意义。
+   * 为什么不是「机载优先、机库兜底」（2026-11-16 用户指出与 V2 对不上）：
+   *
+   * V2 无人机弹层显示的正是机库那一侧 —— `UIDronePop.cs:189`
+   * `txtWindSpeed.text = dockNet.wind_speed + "m/s"`，`dockNet` 是机库
+   * `EnvPosNetStorageSideData`。飞机自己那份 `windSpeed` V2 从来没往面板上打过。
+   *
+   * 两个数值实测确实不同（同一时刻机载 2 / 2.6 / 2.4，机库 2.6 / 2.2 / 1.6）——
+   * 一个是机上气流计、一个是机库气象站，本来就不是一个量。要跟 V2 对得上，
+   * 就只能取机库这一份。
    */
-  const windSpeed = computed<number | null>(() => {
-    const d = telemetry.value?.windSpeed
-    if (d !== null && d !== undefined) return d
-    return dock.value?.windSpeed ?? null
-  })
+  const windSpeed = computed<number | null>(() => dock.value?.windSpeed ?? null)
 
   /**
    * 起飞条件校验。
@@ -555,30 +558,39 @@ export const useUavStore = defineStore('uav', () => {
   let telemetryBusy = false
 
 /**
- * 刷一轮**机载读数**（2s 节拍）：只有飞机那一路 GET。
+ * 刷一轮**遥测**（2s 节拍）：机载 `/1` + 机库 `/2` 两路 GET。
  *
- * 机库（`/telemetry/23452/2`）**不在这一档**（2026-11-16 用户问「V2 也这样轮询吗」后调整）：
- * V2 的机库读数是跟着 OSD 推送来的，而且舱温 / 湿度 / 雨量 / 网络都是分钟级变化，
- * 2s 拉一次纯属白烧（0.8KB × 1800 次/小时 ≈ 1.4MB/h）。现在它跟 30s 那档一起刷。
+ * 机库为什么也放进 2s 档（2026-11-16 用户要求）：
+ * 设备参数里「风速」与「网络速率 / 网络质量」三项**都取自机库**（风速尤其，
+ * V2 面板 `txtWindSpeed` 打的就是 `dockNet.wind_speed`）。早先机库只跟 30s 那档，
+ * 结果风速 2 秒动一次、网络速率半分钟才动一次，同一屏两格节奏不一样，
+ * 看着像网络那格卡住了。两路同频后它们一起跳。
+ *
+ * 代价是机库这套（约 0.8KB）从 120 次/小时 变成 1800 次/小时；单价可忽略，
+ * 而「同一屏读数同频」是可读性问题，优先。
  *
  * 失败一律保留旧值、不把页面清空：刷新失败不等于「飞机没了」。
  */
 async function refreshTelemetry(): Promise<void> {
-  try {
-    telemetry.value = await fetchTelemetry()
-  } catch {
-    // 保留旧值（读数自带时间戳，页面照常显示）
-  }
+  // 机载与机库**同一个节拍**（2026-11-16 用户要求：网络速率的刷新频率要跟风速一致）。
+  // 风速按 V2 口径只取机库那一份，网络质量 / 网络速率也来自机库 —— 三者同源同频，
+  // 页面上的风速和网络速率才会一起动，不会一个 2 秒跳、一个 30 秒才跳。
+  // 两路并发、各失败各的：机库挂了不该让机载那几格一起停。
+  const [t, d] = await Promise.allSettled([fetchTelemetry(), fetchDockTelemetry()])
+  if (t.status === 'fulfilled') telemetry.value = t.value
+  if (d.status === 'fulfilled') dock.value = d.value
 }
 
 /**
- * 刷一轮**慢变数据**（30s 节拍）：两路直播流 + 机库读数 + 任务三格 + 今日明细。
+ * 刷一轮**慢变数据**（30s 节拍）：两路直播流 + 任务三格 + 今日明细。
+ *
+ * 机库读数**不在这里**了 —— 它跟机载一起走 2s 档（见 `refreshTelemetry`）。
  *
  * 任务统计为什么也要刷（2026-11-13 用户要求）：早先只刷遥测，任务飞完、
  * 执行记录变「已完成」，页面那三格还停在起飞前的样子，得退出子页再进来才更新。
  */
 async function refreshSlow(): Promise<void> {
-  const [fly, dockFly, s, list, dk] = await Promise.allSettled([
+  const [fly, dockFly, s, list] = await Promise.allSettled([
     fetchLiveStream(KH_IDS.droneDeviceId),
     fetchLiveStream(KH_IDS.dockDeviceId),
     fetchTaskStat(),
@@ -588,7 +600,6 @@ async function refreshSlow(): Promise<void> {
   // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
   if (fly.status === 'fulfilled') droneStream.value = fly.value
   if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
-  if (dk.status === 'fulfilled') dock.value = dk.value
   if (s.status === 'fulfilled') stat.value = s.value
     if (list.status === 'fulfilled') records.value = list.value
     // 任务刚起飞（进页面时还没跑）：这时才去补历史时长，补到就出进度条

@@ -1796,9 +1796,11 @@ describe('无人机页', () => {
       batteryInfo: { batteries: [{ capacityPercent: 88, temperature: 26.4 }], remainFlightTime: 1520 },
       horizontalSpeed: 4.2,
       verticalSpeed: 0.3,
+      // 机载风速与机库风速本来就不是一个量（实测同一时刻 2.4 vs 2.6），
+      // V2 面板打的是机库那份，所以这里故意给两个不同值来守住来源
       windSpeed: 2.4,
     }
-    stubDock = { networkRate: 441, networkQuality: 1, cabinTemperature: 18.1 }
+    stubDock = { networkRate: 441, networkQuality: 1, cabinTemperature: 18.1, windSpeed: 2.6 }
 
     const sub = useSubpageStore()
     sub.openUav()
@@ -1811,7 +1813,9 @@ describe('无人机页', () => {
     expect(stats[1].text()).toContain('88%') // 电量
     expect(stats[2].text()).toContain('126m') // 距机库
     expect(stats[3].text()).toContain('25分') // 续航（1520s）
-    expect(stats[4].text()).toContain('2.4m/s') // 风速
+    // 风速取机库那份（2.6）并按 V2 渲染成整数，不是机载的 2.4
+    expect(stats[4].text()).toContain('3m/s')
+    expect(stats[4].text()).not.toContain('2.4')
     // 网络质量画五格递增信号，亮几格由**速率**分档（441kbps → 三格），
     // 不读恒为 1 的 `networkQuality`，也不写「偏低」两字
     const sig = stats[5].findAll('.uav-sig i')
@@ -1824,11 +1828,12 @@ describe('无人机页', () => {
     w.unmount()
   })
 
-  it('刷新分两档：机载遥测 2s 一轮（对齐 V2 的 OSD 节奏），机库/任务/直播地址 30s', async () => {
-    // V2 是 MQTT 推送（OSD 约 1Hz，3s 无消息判离线），浏览器接不了那层推送，
-    // 只能轮询 —— 2s 是最接近的近似。但机库读数（舱温/湿度/雨量/网络）是分钟级变化，
-    // 任务记录一条要跑十几分钟、直播地址只在开播/关播时变，跟着 2s 跑纯属白烧流量
-    // （今日明细 2s 一次 ≈ 9MB/小时、机库 2s 一次 ≈ 1.4MB/小时）。
+  it('刷新分两档：两路遥测（机载 + 机库）同为 2s，任务/直播地址 30s', async () => {
+    // V2 是 MQTT 推送（OSD 约 1Hz，3s 无消息判离线），浏览器接不了那层推送，只能轮询。
+    // 机库那一路也必须跟机载同频（2026-11-16 用户要求）：设备参数里的「风速 / 网络质量 /
+    // 网络速率」三项都取自机库，早先机库只在 30s 档 → 风速 2 秒动、网络速率半分钟才动，
+    // 同一屏两格节奏不一样。任务记录一条要跑十几分钟、直播地址只在开播/关播时变，
+    // 这两样留在 30s 档。
     vi.useFakeTimers()
     try {
       stubRecords = [todayRecord()]
@@ -1851,21 +1856,20 @@ describe('无人机页', () => {
       const rec = hits('/task/exec/list/record')
       const stream = hits('/live/stream/list')
 
-      // 过 2 秒：只有机载那一路走一轮
+      // 过 2 秒：机载与机库各走一轮（同频才谈得上「风速和网络一起动」）
       await vi.advanceTimersByTimeAsync(2_000)
       await nextTick()
       expect(hits('/telemetry/23498/1')).toBe(tel + 1)
-      expect(hits('/telemetry/23452/2')).toBe(dock)
+      expect(hits('/telemetry/23452/2')).toBe(dock + 1)
       // 慢变那几样一动不动
       expect(hits('/task/exec/list/record')).toBe(rec)
       expect(hits('/live/stream/list')).toBe(stream)
 
-      // 满 30 秒：慢变那一档才动（机库读数也在这一档）
+      // 满 30 秒：慢变那一档才动
       await vi.advanceTimersByTimeAsync(28_000)
       await nextTick()
       expect(hits('/task/exec/list/record')).toBeGreaterThan(rec)
       expect(hits('/live/stream/list')).toBeGreaterThan(stream)
-      expect(hits('/telemetry/23452/2')).toBeGreaterThan(dock)
 
       w.unmount()
     } finally {

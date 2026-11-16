@@ -638,11 +638,34 @@ describe('uav store', () => {
       height: 12,
       homeDistance: 0,
       totalFlightDistance: 0,
-      windSpeed: 9.6,
+      // 机载风速故意给个安全值：风速只认机库那一份（V2 面板同口径），
+      // 机载这个数不该影响判定 —— 拿它顶上去就说明来源又写错了
+      windSpeed: 0.5,
       remainFlightTime: 0,
       totalSorties: 0,
       heading: 0,
       attitudeRoll: 0,
+    })
+    s.applyDock({
+      status: 1,
+      hatchStatus: 0,
+      putterState: 0,
+      droneOnline: true,
+      droneLocation: 1,
+      chargeState: 0,
+      cabinTemp: 20,
+      envTemp: 20,
+      humidity: 60,
+      rainfall: 0,
+      windSpeed: 9.6,
+      networkQuality: 1,
+      networkRate: 720,
+      storageTotal: 76,
+      storageUsed: 3,
+      alarmState: false,
+      lat: '',
+      lng: '',
+      height: 12,
     })
 
     expect(s.risks.map((c) => c.name)).toContain('风速')

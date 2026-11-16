@@ -117,6 +117,20 @@ function speed(v: number | null): string {
 }
 
 /**
+ * 风速 → `Nm/s`（**整数**，与 V2 一致）
+ *
+ * V2 弹层那句是 `txtWindSpeed.text = dockNet.wind_speed + "m/s"`
+ * （`UIDronePop.cs:189`），而 `wind_speed` 在它的模型里声明成 `int`
+ * —— 所以 V2 面板上从来没有小数位。我们这边天气站给的是 2.6 / 1.2 这种，
+ * 写一位小数并排一看就「对不齐」，这里按 V2 的渲染取整。
+ *
+ * 水平 / 垂直速度仍保留一位小数（那是飞控的速度，V2 面板也带小数）。
+ */
+function wind(v: number | null): string {
+  return v === null ? DASH : `${Math.round(v)}m/s`
+}
+
+/**
  * 姿态角 → `xx.x°`（翻滚角 / 偏航角）
  *
  * 不做 0~360 归一化：`attitudeHead` 是 −180~180，负值本身是合法航向，
@@ -373,7 +387,7 @@ function retry(): void {
         <div><b :class="toneOf(pct(uav.live.battery), '电量')">{{ pct(uav.live.battery) }}</b><span>电量</span></div>
         <div><b>{{ dist(uav.live.homeDistance) }}</b><span>距机库</span></div>
         <div><b>{{ remain(uav.live.remainFlight) }}</b><span>续航</span></div>
-        <div><b :class="toneOf(speed(uav.windSpeed), '风速')">{{ speed(uav.windSpeed) }}</b><span>风速</span></div>
+        <div><b :class="toneOf(wind(uav.windSpeed), '风速')">{{ wind(uav.windSpeed) }}</b><span>风速</span></div>
         <div>
           <b
             v-if="netBars !== null"
