@@ -591,6 +591,7 @@ onBeforeUnmount(() => {
       :alt="props.alt || ''"
       :style="imgStyle"
       v-on="flatHandlers"
+      @load="$emit('ready')"
       @error="$emit('error')"
     />
     <template v-else>

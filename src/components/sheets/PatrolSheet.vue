@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import PanoViewer from '@/components/ui/PanoViewer.vue'
 import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
@@ -77,12 +77,18 @@ const panoProject = computed(() => {
  * 一样的「先看预览，要看细节再看高清」。两张都是 2:1 等距圆柱，球面不用变。
  */
 const panoHd = ref(false)
-/** 点了高清但还没上屏（按钮文案用），贴图没到位前旧图继续显示，不闪 */
+/** 高清已切过去、但贴图还没上屏（解码 / 上传中），贴图没到位前旧图继续显示，不闪 */
 const panoHdWait = ref(false)
+/** 高清那张的本地 objectURL（下载完成后才有；拉不到时为空，退回直链） */
+const panoHdUrl = ref('')
+/** 高清下载进度 0~100（服务端没给长度时停在 0，按钮显示「高清加载中」） */
+const panoHdPct = ref(0)
+const panoHdBusy = ref(false)
 const panoSrc = computed(() => {
   const p = patrol.pano
   if (!p) return ''
-  return panoHd.value && p.full ? p.full : p.preview
+  if (panoHd.value) return panoHdUrl.value || p.full || p.preview
+  return p.preview
 })
 
 /** 图彻底拉不开（多半是 OSS 签名过期），提示重取 */
@@ -99,8 +105,7 @@ const panoUnsupported = ref(false)
 function onPanoError(): void {
   if (panoHd.value) {
     // 高清那张挂了：退回预览，别把整块画面留在纯色上
-    panoHd.value = false
-    panoHdWait.value = false
+    releasePanoHd()
     shell.showToast('高清全景加载失败，已退回预览', 'warn')
     return
   }
@@ -112,37 +117,140 @@ function onPanoReady(): void {
   panoBroken.value = false
 }
 
-function onPanoHd(): void {
-  if (panoHd.value || panoHdWait.value || !patrol.pano?.full) return
-  panoHdWait.value = true
-  panoHd.value = true
+/* ---------- 全景 · 看高清（带真实字节进度） ---------- */
+
+/** 高清那张的 objectURL / 在途请求 / 序号（换图或关弹层后，回来的一律作废） */
+let panoObjUrl = ''
+let panoCtrl: AbortController | null = null
+let panoSeq = 0
+
+/** 收掉高清那一层：revoke 掉 objectURL、中止在途下载、状态回落到预览 */
+function releasePanoHd(): void {
+  panoSeq += 1
+  panoCtrl?.abort()
+  panoCtrl = null
+  if (panoObjUrl) URL.revokeObjectURL(panoObjUrl)
+  panoObjUrl = ''
+  panoHdUrl.value = ''
+  panoHd.value = false
+  panoHdWait.value = false
+  panoHdBusy.value = false
+  panoHdPct.value = 0
 }
 
+/**
+ * 看高清：**先把 13MB 拉下来（带进度），再换源**。
+ *
+ * 之前是直接把 `p.full` 塞给 `<img>` —— 预览图不动声色地挂了十几秒，用户
+ * 完全不知道是在下还是卡了。现在走 `fetchBlobWithProgress`，进度条的宽度
+ * 是「已收字节 / Content-Length」，与照片弹层里「查看原图」那条是同一套
+ * （用户要求：效果参考基坑区域里的图片加载效果）。
+ *
+ * 拉不到（OSS 不回 ACAO / 断网 / 中途关掉）就退回直链：慢，但图还是会出来。
+ */
+async function onPanoHd(): Promise<void> {
+  const p = patrol.pano
+  if (!p?.full || panoHd.value || panoHdBusy.value) return
+  const key = panoSeq
+  panoHdBusy.value = true
+  panoHdPct.value = 0
+  panoCtrl = new AbortController()
+  try {
+    const blob = await fetchBlobWithProgress(
+      p.full,
+      (loaded, total) => {
+        if (key !== panoSeq) return
+        panoHdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
+      },
+      panoCtrl.signal,
+    )
+    const url = URL.createObjectURL(blob)
+    // 先解码再换源：避免切过去那一瞬间空一帧（上万像素的图解码要几百毫秒）
+    await preload(url)
+    if (key !== panoSeq) {
+      URL.revokeObjectURL(url)
+      return
+    }
+    if (panoObjUrl) URL.revokeObjectURL(panoObjUrl)
+    panoObjUrl = url
+    panoHdUrl.value = url
+  } catch {
+    if (key === panoSeq) panoHdUrl.value = ''
+  } finally {
+    if (key === panoSeq) {
+      panoCtrl = null
+      panoHdBusy.value = false
+      panoHdPct.value = 0
+      panoHdWait.value = true
+      panoHd.value = true
+    }
+  }
+}
+
+/** 按钮文案：看高清 / 高清 42% / 高清加载中 / 已是高清（体积在下方的 meta 里） */
 const panoHdLabel = computed(() => {
-  if (panoHd.value) return '已是高清'
-  if (panoHdWait.value) return '高清加载中'
-  return `看高清 · ${panoSize.value}`
+  if (panoHdBusy.value) return panoHdPct.value ? `高清 ${panoHdPct.value}%` : '高清加载中'
+  if (!panoHd.value) return '看高清'
+  return panoHdWait.value ? '高清加载中' : '已是高清'
 })
+
+/* ---------- 全景 · 横屏 ---------- */
+
+const panoLand = ref(false)
+const stageEl = ref<HTMLElement | null>(null)
+
+/**
+ * 横屏查看：铺满视口 + 尽量锁横屏。
+ *
+ * 两种 API 都可能没有 —— iOS Safari 不支持 `Element.requestFullscreen`，
+ * `screen.orientation.lock` 还要求先处于全屏。所以两段都 try/catch，
+ * 拿不到就只保留「铺满视口」这一层（用户自己把手机横过来照样能看）。
+ */
+async function toggleLand(): Promise<void> {
+  if (panoLand.value) {
+    await exitLand()
+    return
+  }
+  panoLand.value = true
+  try {
+    await stageEl.value?.requestFullscreen?.({ navigationUI: 'hide' })
+  } catch {
+    /* 不支持 / 被拒绝：留在铺满视口的形态 */
+  }
+  try {
+    await (
+      screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }
+    )?.lock?.('landscape')
+  } catch {
+    /* iOS / 未全屏：改不了方向就算了 */
+  }
+}
+
+async function exitLand(): Promise<void> {
+  panoLand.value = false
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen()
+  } catch {
+    /* 忽略 */
+  }
+  try {
+    await (screen.orientation as ScreenOrientation & { unlock?: () => void })?.unlock?.()
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 用系统手势退出全屏（安卓返回 / 桌面 Esc）时，把布局状态同步回来 */
+function onFullscreenChange(): void {
+  if (!document.fullscreenElement && panoLand.value) panoLand.value = false
+}
 
 /** 签名过期后重取一次（store 会换一组新直链，弹层里的图跟着换） */
 async function onPanoRetry(): Promise<void> {
   panoBroken.value = false
+  releasePanoHd()
   await patrol.loadPano(true)
   if (!patrol.pano) shell.showToast('暂时取不到项目全景', 'warn')
-}
-
-/** 存进手机相册的是**高清那张**（预览只是列表用的低清） */
-async function onPanoDownload(): Promise<void> {
-  const p = patrol.pano
-  if (!p) return
-  const name = (p.name || p.taskName).replace(/\.[^.]+$/, '')
-  try {
-    const res = await savePhoto(p.full || p.preview, name)
-    if (res === 'album') shell.showToast('已保存到相册', 'success')
-    else if (res === 'download') shell.showToast('已开始下载', 'success')
-  } catch {
-    shell.showToast('保存失败', 'warn')
-  }
 }
 
 /**
@@ -154,8 +262,8 @@ async function onPanoDownload(): Promise<void> {
  * 最新的向阳村全景，结果还是几小时前那张）。两个入口都指向这里。
  */
 function enterPano(): void {
-  panoHd.value = false
-  panoHdWait.value = false
+  releasePanoHd()
+  if (panoLand.value) void exitLand()
   panoBroken.value = false
   panoUnsupported.value = false
   void patrol.loadPano(true)
@@ -368,40 +476,98 @@ const timeText = computed(() => {
   return t.slice(0, 16).replace('T', ' ')
 })
 
-onBeforeUnmount(dropHd)
+onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
+
+onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  // 横屏全屏状态下被关掉弹层：不退出全屏的话，页面会冻在一块空黑屏里
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
+  releasePanoHd()
+  dropHd()
+})
 </script>
 
 <template>
   <div v-if="isPanoView || photo">
     <!-- 项目全景：平台拼好的等距圆柱成果，贴到球面内壁环视（手机 / 电脑同一套手势） -->
     <template v-if="isPanoView">
-      <figure class="pano-stage">
-        <PanoViewer
-          ref="panoRef"
-          :src="panoSrc"
-          :alt="`${patrol.pano?.taskName ?? ''} 项目全景`"
-          @unsupported="panoUnsupported = true"
-          @error="onPanoError"
-          @ready="onPanoReady"
-        />
-        <span class="patrol-view-tag is-pano">{{ panoHd ? '全景 · 高清' : '全景 · 可环视' }}</span>
-        <button
-          v-if="!panoUnsupported"
-          class="pano-reset"
-          type="button"
-          aria-label="复位视角"
-          @click="panoRef?.reset()"
-        >
-          复位
-        </button>
-        <p class="pano-hint">
-          {{
-            panoUnsupported
-              ? '当前环境不支持全景渲染，已切换为平面查看'
-              : '拖动环视 · 双指或滚轮缩放'
-          }}
-        </p>
-      </figure>
+      <!--
+        横屏时整块画布 Teleport 到 body：弹层面板带 transform（popRise 的
+        translateY 收尾态会留下 matrix），position:fixed 会被它当成包含块，
+        铺不满视口。Teleport 只挪 DOM，PanoViewer 的实例 / 贴图 / 视角都保留，
+        所以进出横屏不会重新下载 13MB、也不会把看到一半的角度丢掉。
+      -->
+      <Teleport to="body" :disabled="!panoLand">
+        <figure ref="stageEl" class="pano-stage" :class="{ 'is-land': panoLand }">
+          <PanoViewer
+            ref="panoRef"
+            :src="panoSrc"
+            :alt="`${patrol.pano?.taskName ?? ''} 项目全景`"
+            @unsupported="panoUnsupported = true"
+            @error="onPanoError"
+            @ready="onPanoReady"
+          />
+          <span class="patrol-view-tag is-pano">{{ panoHd ? '全景 · 高清' : '全景 · 可环视' }}</span>
+
+          <!-- 画布右上角工具条：复位 / 看高清 / 横屏（同一套胶囊样式） -->
+          <div class="pano-tools">
+            <button
+              v-if="!panoUnsupported"
+              class="pano-tool"
+              type="button"
+              aria-label="复位视角"
+              @click="panoRef?.reset()"
+            >
+              复位
+            </button>
+            <button
+              class="pano-tool"
+              type="button"
+              :disabled="panoHd || panoHdBusy"
+              :aria-label="`看高清，原图 ${panoSize}`"
+              @click="onPanoHd"
+            >
+              {{ panoHdLabel }}
+            </button>
+            <button
+              class="pano-tool"
+              type="button"
+              :aria-pressed="panoLand"
+              :aria-label="panoLand ? '退出横屏' : '横屏查看'"
+              @click="toggleLand"
+            >
+              {{ panoLand ? '竖屏' : '横屏' }}
+            </button>
+          </div>
+
+          <!--
+            高清的字节进度：与照片弹层「查看原图」同一条 .hd-progress（宽度是
+            已收字节 / Content-Length，不是估算）。压在画布底边而不是画布下方：
+            不占版面高度，横屏全屏时也还在视野里。
+          -->
+          <div
+            v-if="panoHdBusy"
+            class="hd-progress is-in-stage"
+            role="progressbar"
+            :aria-valuenow="panoHdPct"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="`高清全景加载 ${panoHdPct}%`"
+          >
+            <i :style="{ width: `${panoHdPct}%` }"></i>
+          </div>
+
+          <p class="pano-hint">
+            {{
+              panoUnsupported
+                ? '当前环境不支持全景渲染，已切换为平面查看'
+                : panoLand
+                  ? '拖动环视 · 双指缩放 · 点「竖屏」退出'
+                  : '拖动环视 · 双指或滚轮缩放'
+            }}
+          </p>
+        </figure>
+      </Teleport>
 
       <!-- 签名过期（OSS 预签名 2 小时）：给一个明确的重取入口，而不是干瞪黑屏 -->
       <div v-if="panoBroken" class="pano-expired">
@@ -410,8 +576,7 @@ onBeforeUnmount(dropHd)
       </div>
 
       <div class="patrol-meta">
-        <!-- 全景**不按项目筛**（照 V2：全平台最新），所以项目名必须写出来，
-             否则用户会以为这张是向阳村自己拍的 -->
+        <!-- 项目名必须写出来：全景按本项目 pid 过滤，但用户仍要知道这是哪片工地 -->
         <div><span>项目</span><b>{{ panoProject }}</b></div>
         <div><span>时间</span><b>{{ panoTime || '—' }}</b></div>
         <div><span>大小</span><b>{{ panoSize || '—' }}</b></div>
@@ -419,13 +584,6 @@ onBeforeUnmount(dropHd)
           <span>来源</span>
           <span class="alarm-src alarm-src-drone">无人机</span>
         </div>
-      </div>
-
-      <div class="photo-actions">
-        <button class="photo-btn" type="button" :disabled="panoHd || panoHdWait" @click="onPanoHd">
-          {{ panoHdLabel }}
-        </button>
-        <button class="photo-btn" type="button" @click="onPanoDownload">下载</button>
       </div>
     </template>
 
@@ -441,7 +599,7 @@ onBeforeUnmount(dropHd)
       <span class="patrol-view-tag is-pano">全景 · 可环视</span>
       <button
         v-if="!panoUnsupported"
-        class="pano-reset"
+        class="pano-tool pano-reset"
         type="button"
         aria-label="复位视角"
         @click="panoRef?.reset()"

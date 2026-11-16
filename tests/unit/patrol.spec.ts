@@ -818,3 +818,143 @@ describe('智眸面板 · 项目全景卡片', () => {
     w.unmount()
   })
 })
+
+/**
+ * 全景弹层的工具条（2026-11-16 用户要求）
+ *
+ * 「看高清 / 下载」原本在图片下方那一行按钮里，用户要求：看高清挪到画布上、
+ * 与「复位」并排且同样式，下载那颗改成「横屏」。所以这里钉住三件事：
+ *   1. 工具条在画布上，只剩 复位 / 看高清 / 横屏，**下载下线**；
+ *   2. 点看高清是「先带进度拉流、下完再换源」，不是把 13MB 直接塞给 img；
+ *   3. 点横屏能把画布搬到 body 铺满视口，再点回得去。
+ */
+describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 横屏）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    offline()
+  })
+
+  afterEach(async () => {
+    await flushPromises()
+    clearSession()
+    vi.unstubAllGlobals()
+  })
+
+  function withPano(): void {
+    const patrol = usePatrolStore()
+    patrol.apply([])
+    patrol.pano = {
+      id: 103180,
+      secret: 'b3uT22dX',
+      recordId: 181616,
+      projectId: 193640872670213,
+      projectName: '中建三局-向阳村项目',
+      taskName: '向阳村-全景_202611151130181616',
+      name: '向阳村-全景_202611151130181616_0.jpg',
+      time: '2026-11-15 12:10:54',
+      preview: 'https://oss.keehang.com:19090/thumbnail/model/103180/thumbnail.jpg',
+      full: 'https://moss.keehang.com:9443/models/103180/origin.jpg',
+      size: 13_688_984,
+    }
+  }
+
+  /** 打开全景弹层（走卡片点击，与真实入口一致；挂到 body 上，横屏那条要查 document） */
+  async function openPano(): Promise<ReturnType<typeof mount>> {
+    const w = mount(Host, { attachTo: document.body })
+    await nextTick()
+    await w.find('.patrol-card.is-pano').trigger('click')
+    await nextTick()
+    return w
+  }
+
+  it('工具条在画布上：看高清与复位并排，下载改成横屏', async () => {
+    withPano()
+    const w = await openPano()
+
+    const tools = w.find('.pano-tools')
+    expect(tools.exists()).toBe(true)
+    const labels = tools.findAll('.pano-tool').map((b) => b.text())
+    expect(labels).toContain('看高清')
+    expect(labels).toContain('横屏')
+    // 原来的「下载」整颗下线（全景要存相册走长按图片 / 系统菜单）
+    expect(w.find('.photo-actions').exists()).toBe(false)
+    expect(tools.text()).not.toContain('下载')
+    // 体积不再挤在按钮上（弹层下方 meta 的「大小」已经写了 13.1MB）
+    expect(tools.text()).not.toContain('13.1MB')
+    w.unmount()
+  })
+
+  it('点「看高清」先拉流显示进度条，下完才换源', async () => {
+    withPano()
+    const w = await openPano()
+    expect(w.find('.pano-stage img').attributes('src')).toContain('thumbnail')
+
+    const bytes = 13_688_984
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (!String(url).includes('origin.jpg')) {
+          return { ok: false, status: 500, json: async () => ({ code: 500 }) }
+        }
+        await gate
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (k: string) => (k.toLowerCase() === 'content-length' ? String(bytes) : null),
+          },
+          blob: async () => new Blob([new Uint8Array(8)], { type: 'image/jpeg' }),
+        }
+      }),
+    )
+
+    const btn = w.findAll('.pano-tool').find((b) => b.text().includes('看高清'))
+    expect(btn).toBeTruthy()
+    await btn!.trigger('click')
+    await nextTick()
+
+    // 下载中：画布底边有真进度条（宽度来自已收字节，不是估算），按钮变成加载态
+    expect(w.find('.hd-progress.is-in-stage').exists()).toBe(true)
+    expect(w.findAll('.pano-tool').some((b) => b.text().includes('高清'))).toBe(true)
+
+    release!()
+    // 等解码兜底（happy-dom 不解码图片，走 preload 的 1.2s 超时）
+    await new Promise((r) => setTimeout(r, 1400))
+    await flushPromises()
+
+    expect(w.find('.hd-progress.is-in-stage').exists()).toBe(false)
+    expect(w.find('.pano-stage img').attributes('src')).not.toContain('thumbnail')
+    w.unmount()
+  })
+
+  it('点「横屏」把画布搬到 body 铺满视口，再点「竖屏」回弹层', async () => {
+    withPano()
+    const w = await openPano()
+
+    const stage = (): Element | null => document.body.querySelector('.pano-stage')
+    const landBtn = (): HTMLButtonElement =>
+      [...document.body.querySelectorAll('.pano-tool')].find((b) =>
+        /横屏|竖屏/.test(b.textContent ?? ''),
+      ) as HTMLButtonElement
+
+    expect(stage()?.classList.contains('is-land')).toBe(false)
+
+    landBtn().click()
+    await nextTick()
+    expect(stage()?.classList.contains('is-land')).toBe(true)
+    // 弹层面板带 transform（popRise 收尾态），position:fixed 会被它当包含块 ——
+    // 所以必须 Teleport 到 body 才能真正铺满视口
+    expect(document.querySelector('.pop-panel .pano-stage')).toBeNull()
+    expect(landBtn().textContent).toContain('竖屏')
+
+    landBtn().click()
+    await nextTick()
+    expect(stage()?.classList.contains('is-land')).toBe(false)
+    expect(document.querySelector('.pop-panel .pano-stage')).toBeTruthy()
+    w.unmount()
+  })
+})
