@@ -676,6 +676,54 @@ describe('项目全景（平台拼好的重建成果）', () => {
     expect(first).toContain('/models/103180/origin.jpg')
     expect(patrol.pano?.full).toContain('X-Amz-Signature=NEW')
   })
+
+  it('重取期间不翻 loading、旧图继续在屏上（打开就重取，不能每次都闪骨架）', async () => {
+    vi.stubGlobal('fetch', panoFetch())
+    const patrol = usePatrolStore()
+    await patrol.load()
+    expect(patrol.panoState).toBe('ok')
+    const first = patrol.pano
+
+    // 把重取卡在半路，观察这中间的状态
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const inner = panoFetch()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        await gate
+        return (inner as unknown as (u: string) => Promise<unknown>)(url)
+      }),
+    )
+    const task = patrol.loadPano(true)
+    await Promise.resolve()
+
+    // 关键：没有翻成 loading，也没有把旧图清掉
+    expect(patrol.panoState).toBe('ok')
+    expect(patrol.pano).toBe(first)
+
+    release!()
+    await task
+    expect(patrol.panoState).toBe('ok')
+  })
+
+  it('静默重取失败时保留旧图（不把已经能看的图撤掉）', async () => {
+    vi.stubGlobal('fetch', panoFetch())
+    const patrol = usePatrolStore()
+    await patrol.load()
+    const first = patrol.pano
+
+    vi.stubGlobal(
+      'fetch',
+      panoFetch({ recreate: { ok: false, status: 500, json: async () => ({ code: 500 }), body: null } as unknown }),
+    )
+    await patrol.loadPano(true)
+
+    expect(patrol.pano).toBe(first)
+    expect(patrol.panoState).toBe('ok')
+  })
 })
 
 describe('智眸面板 · 项目全景卡片', () => {
@@ -733,6 +781,29 @@ describe('智眸面板 · 项目全景卡片', () => {
     await w.find('.patrol-card.is-pano').trigger('click')
     expect(sheet.kind).toBe('patrol')
     expect(sheet.id).toBe(PANO_SHEET_ID)
+    w.unmount()
+  })
+
+  it('每次打开全景弹层都重新取一次（用户要求「每次看都是最新那张」）', async () => {
+    withPano()
+    let recreateCalls = 0
+    const inner = panoFetch()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).includes('/dashboard/recreate/getProjectRecreateInfo')) recreateCalls += 1
+        return (inner as unknown as (u: string) => Promise<unknown>)(url)
+      }),
+    )
+    const w = mount(Host)
+    await nextTick()
+    expect(recreateCalls).toBe(0)
+
+    await w.find('.patrol-card.is-pano').trigger('click')
+    await flushPromises()
+
+    // 弹层是单实例，切换只改 props.id；「打开时取一次」必须挂在 id 变化上
+    expect(recreateCalls).toBe(1)
     w.unmount()
   })
 

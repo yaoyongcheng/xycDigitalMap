@@ -88,6 +88,14 @@ const panoSrc = computed(() => {
 /** 图彻底拉不开（多半是 OSS 签名过期），提示重取 */
 const panoBroken = ref(false)
 
+/**
+ * 环境不支持 WebGL（已退成平面）。
+ *
+ * 声明必须放在 `enterPano()` 之前 —— 那个函数在 setup 期间就会被调用
+ * （打开的就是全景时），`const` 在初始化前访问会抛 TDZ 错误。
+ */
+const panoUnsupported = ref(false)
+
 function onPanoError(): void {
   if (panoHd.value) {
     // 高清那张挂了：退回预览，别把整块画面留在纯色上
@@ -137,18 +145,28 @@ async function onPanoDownload(): Promise<void> {
   }
 }
 
-/** 打开即取一次（store 已有就不重复发，签名过期时上面另有入口） */
-if (isPanoView.value) void patrol.loadPano()
+/**
+ * 进入全景视图：复位高清状态 + **每次重新取一次最新成果**。
+ *
+ * 弹层是单实例（`SheetHost` 里 `<PatrolSheet v-if="sheet.kind === 'patrol'">`），
+ * 从照片换到全景只改 `props.id`、组件不重建，所以「打开时取一次」不能只写在
+ * setup 里 —— 那样第二次点开就再也不取了，永远停在内存里那张（用户实测：想看
+ * 最新的向阳村全景，结果还是几小时前那张）。两个入口都指向这里。
+ */
+function enterPano(): void {
+  panoHd.value = false
+  panoHdWait.value = false
+  panoBroken.value = false
+  panoUnsupported.value = false
+  void patrol.loadPano(true)
+}
 
-/** 换到全景时复位高清状态 */
+if (props.id === PANO_SHEET_ID) enterPano()
+
 watch(
   () => props.id,
   (id) => {
-    if (id !== PANO_SHEET_ID) return
-    panoHd.value = false
-    panoHdWait.value = false
-    panoBroken.value = false
-    panoUnsupported.value = false
+    if (id === PANO_SHEET_ID) enterPano()
   },
 )
 
@@ -296,8 +314,6 @@ const {
 /** 原图尺寸（判断是不是 2:1 全景用；列表里加载过就有缓存） */
 const dims = ref<{ w: number; h: number } | null>(null)
 const panoRef = ref<InstanceType<typeof PanoViewer> | null>(null)
-/** 环境不支持 WebGL（已退成平面） */
-const panoUnsupported = ref(false)
 
 const isPano = computed(() => isEquirect(dims.value?.w ?? 0, dims.value?.h ?? 0))
 

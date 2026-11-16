@@ -291,17 +291,24 @@ export const usePatrolStore = defineStore('patrol', () => {
    * 只有服务端明确回「一条都没有」才清空。失败**不抛** —— 全景是附加内容。
    *
    * 成果直链是 OSS 预签名（2 小时过期），所以 `force` 重取是常态：
-   * 页面上的「重新获取」走它。
+   * **每次打开全景弹层都重取一次**（用户要求「每次看都是最新那张」），
+   * 页面上的「重新获取」也走它。
+   *
+   * 已有图时 `force` 走**静默刷新**：不翻 `loading`，旧图继续显示到新数据回来。
+   * 否则每次点开都先闪一下骨架，而这正是「刷新不该改 state」那条老规矩
+   * （电梯实时刷新踩过同样的坑）。
    */
   async function loadPano(force = false): Promise<void> {
     if (!force && (panoState.value === 'loading' || pano.value)) return
-    panoState.value = 'loading'
+    const silent = force && Boolean(pano.value)
+    if (!silent) panoState.value = 'loading'
     try {
       const p = await fetchLatestPano()
       pano.value = p
       panoState.value = 'ok'
     } catch {
-      panoState.value = 'error'
+      // 静默刷新失败就继续用旧图（签名过期时弹层会自己报「链接已过期」）
+      if (!silent) panoState.value = 'error'
     }
   }
 
