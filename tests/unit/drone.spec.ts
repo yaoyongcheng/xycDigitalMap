@@ -322,6 +322,30 @@ describe('今日统计 / 机库遥测 接口', () => {
     vi.stubGlobal('fetch', khRoute({ '/dashboard/task/list/record': { hello: 1 } }))
     await expect(fetchTaskStat()).rejects.toThrow('无人机任务统计返回异常')
   })
+
+  /**
+   * 口径守卫（2026-11-16 用户要求「V2 咋获取的我就咋获取」）。
+   *
+   * 不传 `pid` → 该账号下所有项目的今日任务（实测 23 = 向阳村 15 + 光谷元著 8），
+   * 这正是 V2 那一格显示的数值。别「顺手加回 pid」：
+   * 加了就变回 15，与 V2 对不上，用户会认为是 bug。
+   */
+  it('统计默认不带 pid（V2 口径），显式传了才过滤项目', async () => {
+    const f = khRoute({
+      '/dashboard/task/list/record': { taskCount: 23, finishedCount: 5, failedCount: 0 },
+    })
+    vi.stubGlobal('fetch', f)
+
+    await fetchTaskStat()
+    await fetchTaskStat({ pid: 193640872670213 })
+
+    const statUrls = f.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes('/dashboard/task/list/record'))
+    expect(statUrls).toHaveLength(2)
+    expect(statUrls[0]).not.toContain('pid=')
+    expect(statUrls[1]).toContain('pid=193640872670213')
+  })
 })
 
 describe('直播流（与 V2 同一路 HTTP-FLV）', () => {

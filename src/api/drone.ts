@@ -566,10 +566,34 @@ export async function fetchTaskRecords(
  *
  * 这个接口**只算今天**（传 start/end 也被忽略），历史统计没有对应端点 ——
  * 设计稿那三格本来也是「今日」。
+ *
+ * ## 口径：**默认不传 `pid`，与 V2 完全一致**（2026-11-16 用户要求）
+ *
+ * 实测同一时刻对同一端点取两次（2026-11-16 09:45）：
+ *
+ * | 请求 | taskCount | 列表里出现的 pid |
+ * |---|---|---|
+ * | `?pid=193640872670213` | **15** | 只有向阳村 |
+ * | 不传 `pid` | **23** | 向阳村 ×7 + **光谷元著 ×3** |
+ *
+ * 也就是说 23 = 15（向阳村）+ 8（同账号下的光谷元著项目）。V2 取这一格时没带
+ * 项目过滤，拿到的是**该账号下所有项目**的今日任务数；向阳村现场那台 V2 的无人机
+ * 同样连 keehang（进程实测只连 `110.41.50.115:23443` 与本项目同一个网关），
+ * 所以它显示的 23 正是这个未过滤的值。
+ *
+ * 用户 2026-11-16 明确要求「V2 咋获取的我就咋获取，先不管是不是向阳村」，
+ * 因此这里**默认复刻 V2 的无 pid 口径**。要回到只算本项目，传 `{ pid }` 即可
+ * （`KH_PROJECT_ID`），不必改这里。
+ *
+ * 注意 `fetchTaskRecords`（今日明细列表）仍带 `pid`：那是逐条列出任务名的，
+ * 带上光谷元著的记录会在「向阳村」页面上直接露出别人的项目名，视觉上更糟。
+ * 所以会出现「三格合计 23、明细只列向阳村」的差异 —— 这是两个不同来源的口径差，
+ * 不是某一处算错。
  */
 export async function fetchTaskStat(opts: { pid?: number } = {}): Promise<DroneTaskStat> {
-  const { pid = KH_PROJECT_ID } = opts
-  const raw = await khAuthGet<Record<string, unknown>>(`/dashboard/task/list/record?pid=${pid}`)
+  // 不传 pid 就是 V2 的口径；显式给了才过滤
+  const q = opts.pid ? `?pid=${opts.pid}` : ''
+  const raw = await khAuthGet<Record<string, unknown>>(`/dashboard/task/list/record${q}`)
   // 缺 `taskCount` 说明拿到的不是统计（比如被别的网关拦了返回一个空信封）。
   // 抛出去比「当 0 条」安全：0 会被读成「今天一架次都没飞」。
   if (!raw || typeof raw !== 'object' || !('taskCount' in raw)) {
