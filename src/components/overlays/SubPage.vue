@@ -4,7 +4,8 @@ import { computed, nextTick, onUnmounted, watch } from 'vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { mineNotes } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
-import { useSubpageStore } from '@/stores/subpage'
+import { titleOf, useSubpageStore, type SubView } from '@/stores/subpage'
+import { takeSilentBack } from '@/utils/backAction'
 import AlarmDetail from '@/views/sub/AlarmDetail.vue'
 import AlarmHist from '@/views/sub/AlarmHist.vue'
 import ClimbPage from '@/views/sub/ClimbPage.vue'
@@ -54,22 +55,24 @@ const placeholderName = computed(() => (sub.view.kind === 'placeholder' ? sub.vi
 const placeholderNote = computed(() => mineNotes[placeholderName.value] ?? '')
 
 /**
- * 右滑返回时要露出的「上一层」。
+ * 右滑返回 / 点返回滑出时要露出的「上一层」。
  *
- * 子页栈是同一个 .subpage 容器换内容（v-if），不是真正的多页叠加 ——
- * 所以详情页跟手右移时，露出来的是容器下面的 .pages（消息页 / 首页），
- * 与「点返回键会到巡检列表」的实际行为不一致，看起来就是「闪一下消息页」。
+ * 子页栈是同一个 .subpage 容器换内容（v-if），不是真正的多页叠加 —— 位移当前层
+ * 时，露出来的是容器下面的 .pages（首页 / 消息页）。所以只要「上一层也是子页」，
+ * 就必须把那一层只读地垫在下面，否则两段转场都会露出首页：
+ *   · 进入：页面从 translateX(100%) 滑入，起点那一瞬整屏都是垫底内容；
+ *   · 返回：页面滑出 0.22s，滑出的空当同理。
+ * 现场反馈的「报警预警 ↔ 预警详情 切换时闪一下首页」就是这么来的。
  *
- * 只有「详情页且上一层是巡检列表」这一种情况需要垫底图：
- *   · 从巡检列表进详情 → 上一层是列表，需要垫
- *   · 从首页轮播进详情 → 上一层是首页，露出 .pages 本就正确
- *   · 列表页 / 占位页 → 上一层就是 tab 页，同理
+ * 这里取 `sub.back` 本身，而不是再写死某一种视图：
+ *   · 巡检列表 → 详情：垫巡检列表（2026-10 的实现，只覆盖了这一种）
+ *   · 报警预警历史 → 详情：垫历史页（2026-11 gx2 新增入口时漏了，
+ *     于是进/出详情时露出首页 —— 本次修复的点）
+ *   · 首页轮播 / 消息页 → 详情：back 为 null，不垫 —— 露出 .pages 本就正确
  */
-const underKind = computed(() =>
-  sub.view.kind === 'alarm-detail' && sub.back?.kind === 'inspect-list' ? 'inspect-list' : null,
-)
+const under = computed<SubView | null>(() => (sub.isOpen ? sub.back : null))
 
-const underTitle = computed(() => (underKind.value === 'inspect-list' ? '巡检预警' : ''))
+const underTitle = computed(() => (under.value ? titleOf(under.value) : ''))
 
 /** 视图标识：kind / 具体预警 id / 设备类型变化都算「换页」，要播进入动画 */
 const viewKey = computed(() => {
@@ -90,10 +93,35 @@ watch(
   { flush: 'post' },
 )
 
+/** 清掉手势留下的内联位移（不播动画的那几条路径也要清，否则元素会停在偏移位） */
+function resetInline(el: HTMLElement): void {
+  el.style.transition = ''
+  el.style.transform = ''
+}
+
+/**
+ * 该层是否已被手势推到屏幕外（右滑松手后交给手势层收尾）。
+ *
+ * 用实际几何位置判断，而不是 `el.style.transform` 有没有值：手势被浏览器接管时
+ * 会留下一份「拖到一半」的内联位移（例如 66px），那不是「已经滑出去了」，
+ * 按旧写法会让之后每一次点返回都瞬关、且不进动画。
+ */
+function isSwipedOut(el: HTMLElement): boolean {
+  const r = el.getBoundingClientRect()
+  return r.left > (el.clientWidth || 1) / 2
+}
+
 function playEnter(): void {
   const el = pageNode()
   if (!el) return
   el.classList.remove('is-entering', 'is-leaving')
+  /*
+   * 必须清掉内联位移：手势滑到一半被浏览器接管时（只剩 popstate、没有
+   * pointerup），这里会残留一份 translate3d(66px…)。animation 优先级高于内联
+   * style，所以进入动画播的时候看不出来 —— 动画一结束元素「啪」地跳回 66px，
+   * 页面就像卡住不动了。这就是「右滑返回后第二次进详情卡住」的成因。
+   */
+  resetInline(el)
   // 强制重排：连续两次下钻（列表 → 详情 A → 详情 B）也能重新播放
   void el.offsetWidth
   el.classList.add('is-entering')
@@ -120,8 +148,27 @@ function closeNow(): void {
 function onBack(): void {
   const el = pageNode()
 
-  // 右滑手势已经把该层移到屏幕外：这里只落状态，动画由手势层负责
-  if (el?.style.transform) {
+  /*
+   * 浏览器返回（popstate）引起的关闭：**当场落状态，不再补一段滑出**。
+   *
+   * 这时浏览器已经把整页推走过一遍（Safari / 微信内置浏览器的边缘侧滑都有
+   * 自己的转场），再播 0.22s 的结果是「页面还停在详情，闪一下才变成报警预警」。
+   * 应用内手势与返回箭头不走这里，仍然播同一段动画。
+   */
+  if (takeSilentBack()) {
+    window.clearTimeout(leaveTimer)
+    leaving = false
+    sub.leaving = false
+    if (el) resetInline(el)
+    closeNow()
+    nextTick(() => markSwipeBack(false))
+    return
+  }
+
+  // 兜底：该层已经停在屏幕外（浏览器接管后残留的位移），再滑出一次只会看到
+  // 一片空白，直接落状态。正常路径下手势层会先清掉位移，走不到这里。
+  if (el && isSwipedOut(el)) {
+    resetInline(el)
     closeNow()
     return
   }
@@ -133,6 +180,7 @@ function onBack(): void {
   if (leaving) return
 
   if (!el || prefersReduced()) {
+    if (el) resetInline(el)
     closeNow()
     return
   }
@@ -140,8 +188,22 @@ function onBack(): void {
   // 先滑出再改状态：滑出过程中露出的是真实上一页（垫底层 / .pages），
   // 落点与右滑手势完全一致
   leaving = true
-  sub.leaving = true
-  markSwipeBack(true)
+  /*
+   * 只有「返回一级页面」才提前把外壳切成目标形态（状态栏透明、底栏露出来、
+   * theme-color 转首页深色）。上一层仍是子页时不能切：
+   *
+   *   目标页面的顶部是白色导航栏，提前把 theme-color 切成首页深色后，
+   *   手机浏览器会把地址栏 / 系统状态栏刷成一条黑带；同时 is-swipe-back 会
+   *   放出首页底栏（home-mode 下是深蓝 #0B1626），底部露出一块灰面。
+   *   这两处都不是页面内容，转场结束又瞬间变回白色 —— 现场看到的就是
+   *   「返回时顶上黑一条、底下灰一块」。子页 → 子页本就是白顶浅底，形态不变。
+   */
+  if (!sub.back) {
+    sub.leaving = true
+    markSwipeBack(true)
+  }
+  // 手势残留的位移先清掉，滑出动画才会从 0 起播（否则起点是被拖到的位置）
+  resetInline(el)
   el.classList.remove('is-entering')
   el.classList.add('is-leaving')
   leaveTimer = window.setTimeout(() => {
@@ -163,7 +225,9 @@ watch(
     leaving = false
     sub.leaving = false
     markSwipeBack(false)
-    pageNode()?.classList.remove('is-leaving', 'is-entering')
+    const node = pageNode()
+    node?.classList.remove('is-leaving', 'is-entering')
+    if (node) resetInline(node)
   },
 )
 
@@ -178,8 +242,11 @@ onUnmounted(() => {
     上一层（只读垫底）。刻意复用 .subpage 的布局类，保证右滑露出时
     导航栏 / 内边距与真实返回目标完全一致；pointer-events 已由 CSS 关掉，
     返回箭头用 <span> 而不是 <button>，不参与键盘与点击。
+
+    新增「可被下钻的页面」时，记得在这里补一条 decorative 分支：漏了不会报错，
+    只会在这个页面的转场空当里露出一片空白（比露首页好认，但一样是 bug）。
   -->
-  <section v-if="underKind" class="subpage subpage-under open" aria-hidden="true">
+  <section v-if="under" class="subpage subpage-under open" aria-hidden="true">
     <nav class="navbar">
       <div class="nav-side">
         <span class="nav-btn"><SvgIcon name="back" /></span>
@@ -188,7 +255,8 @@ onUnmounted(() => {
       <div class="nav-side right"></div>
     </nav>
     <div class="subpage-body">
-      <InspectList v-if="underKind === 'inspect-list'" decorative />
+      <InspectList v-if="under.kind === 'inspect-list'" decorative />
+      <AlarmHist v-else-if="under.kind === 'alarm-hist'" decorative />
     </div>
   </section>
 

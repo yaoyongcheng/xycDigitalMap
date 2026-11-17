@@ -54,9 +54,50 @@ export const ALARM_FEED_SHOW = 3
  */
 export const ALARM_SRC = {
   drone: { tag: '无人机', name: '自动巡航无人机', sub: 'UAV-25638583' },
-  cam: { tag: '视频监控', name: '视频监控抓拍', sub: 'CAM-2#塔吊' },
+  // sub 留空：视频监控的角标是「CAM-2#材料堆场」这种**按通道现算**的文案
+  // （见 utils/videoAlarm.ts 的 camTagOf）。原来写死「CAM-2#塔吊」，12:39:06
+  // 那条通道 2 的报警在地点是材料堆场时就会自相矛盾。
+  cam: { tag: '视频监控', name: '视频监控抓拍', sub: '' },
   snap: { tag: '随手拍', name: '管理人员随手拍', sub: '张工 安全员' },
 } as const
+
+/**
+ * 视频通道号 → 报警地点（点位名）。
+ *
+ * **与 V2 完全同构：写死在客户端，接口不返回。**（2026-11-17 反编译核实）
+ *
+ * V2 是 Unity 客户端（`向阳村-万联装备集群作业系统V2`），报警详情由
+ * `AIAlarmDetail.Init(AlarmNoticeData, AlarmNoticeItem)` 渲染，模型里只有
+ * `channelNo`，地点靠静态字典 `AlarmCatalog.PosDescMap` 翻：
+ *
+ *   · 类 `AlarmCatalog` 有三个字段：`Unknown` / `TypeDescMap` / `PosDescMap`，
+ *     方法 `GetTypeDesc` / `GetPosDesc`；
+ *   · 该字典在其 `.cctor`（静态构造）里用 `ldstr` 逐对写入，IL 里就是
+ *     `"2" → "材料堆场"`、`"3" → "安全讲台"` —— **只有这两对**，没有更多；
+ *   · 同一份 `.cctor` 还写了 49 对报警类型码（5 烟火检测 … 382 手套检测），
+ *     就是 `utils/videoAlarm.ts` 的 `ALERT_TYPE_NAME` 的来源。
+ *
+ * V2 的报警数据也来自同一个接口 `/api/video/alarms?page=…&sceneCode=`
+ * （反编译出的常量），而该接口的行里只有 `deviceNo` / `channelNo`，
+ * `/api/video/cameras` 对本项目（P000000076）是 0 条 —— 所以 V2 也只能写死。
+ *
+ * 校对依据（V2 详情页逐条对齐本项目接口里的同一时刻）：
+ *   · `2026-11-17 12:39:06` 安全帽检测 → 通道 `2`，V2 显示「报警地点：材料堆场」；
+ *   · `2026-11-17 13:58:24` 安全帽检测 → 通道 `3`，V2 显示「报警地点：安全讲台」。
+ * 本项目 `:8085 /api/video/alarms` 里出现的通道只有 2 与 3，所以这两条就是全量。
+ *
+ * ⚠️ 不要拿慧眼（`/alarms/hjhy`）的 `camera_name` 来填：那套的通道编号是另一套
+ * （慧眼 ch2 = 现场大门内、ch3 = 宣讲台），与万方这边不同源，混用会张冠李戴。
+ * 也不要拿 V2 的 `MonitorData.json`（CDN）来填：那是 20 个摄像头 + RTSP 地址，
+ * 里面没有通道号，且顺序与本项目 `channelNo` 对不上。
+ *
+ * 换项目 / 加摄像头要改这里；没有映射的通道宁可在界面上写「N号通道」，
+ * 也不许编一个地名（现场会照着它去现场找人）。
+ */
+export const CAM_PLACE: Record<number, string> = {
+  2: '材料堆场',
+  3: '安全讲台',
+}
 
 /** 原 alarmSrc(a)（app.js:261-263）—— 未知来源回退到无人机 */
 export function alarmSrcOf(src: Alarm['src']): (typeof ALARM_SRC)[Alarm['src']] {
@@ -219,4 +260,3 @@ export function catOfTask(taskName: string): string {
   for (const c of PATROL_CATS) if (c.pattern.test(name)) return c.id
   return PATROL_CAT_FALLBACK
 }
-

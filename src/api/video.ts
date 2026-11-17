@@ -39,6 +39,13 @@ export interface VideoAlarm {
   handleStatus: number
   /** 通道号（摄像头），用于「现场快照」定位是哪个点位 */
   channelNo: number
+  /**
+   * 设备序列号（NVR / 分析盒）。
+   *
+   * 详情页「设备编号」直接展示它 —— 这是服务端下发的**真实**编号，
+   * 比起原来那行写死的「项目名称 / 任务名称」有用得多。
+   */
+  deviceNo: string
 }
 
 /** 列表结果 */
@@ -97,6 +104,7 @@ export function parseVideoAlarms(payload: unknown): VideoAlarmPage {
       captureTime: str(pick(r, 'CaptureTime', 'captureTime', 'createTime')),
       handleStatus: num(pick(r, 'HandleStatus', 'handleStatus')),
       channelNo: num(pick(r, 'ChannelNo', 'channelNo')),
+      deviceNo: str(pick(r, 'DeviceNo', 'deviceNo')),
     })
   }
 

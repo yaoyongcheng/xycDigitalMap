@@ -819,13 +819,27 @@ describe('patrol store 巡检照片', () => {
   })
 })
 
-describe('账号口径的今日任务（2026-11-16：23 条都放开）', () => {
+describe('账号口径的今日任务（2026-11-16 起：23 条都放开）', () => {
   /** 本项目（向阳村） */
   const OWN = 193640872670213
   /** 同账号下的另一个项目（光谷元著） */
   const OTHER = 231070463906821
-  const START = '2026-11-16'
-  const END = '2026-11-17'
+  /**
+   * 今天 / 明天（`end` 不含当天）。
+   *
+   * **必须是运行时算的，不能写死日期**：store 的 `todayRecords` 拿真实
+   * `new Date()` 取当天 key 再过滤，夹具若钉在某一天，过了那天记录就成了
+   * 「昨天」，`todayTasks` 恒为空 —— 用例会在跨天后无缘无故挂掉
+   * （2026-11-17 就是这么挂的，一开始误以为是业务代码写死了日期）。
+   */
+  function dayKey(offset: number): string {
+    const d = new Date()
+    d.setDate(d.getDate() + offset)
+    const p = (n: number): string => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  }
+  const START = dayKey(0)
+  const END = dayKey(1)
 
   /** 一条执行记录（服务端 start 是 ISO 串） */
   function rec(over: Record<string, unknown>): Record<string, unknown> {
@@ -990,6 +1004,8 @@ describe('pickLatestPano（重建成果里挑全景）', () => {
     taskType: 2,
     status: 2,
     createTime: '2026-11-15 12:10:54',
+    endTime: '2026-11-15 12:18:29',
+    updateTime: '2026-11-15 12:18:29',
     resultRecordDTOList: [
       pano(103181, 'LsM8Eppu', 'pano_1.jpg'),
       pano(103180, 'b3uT22dX', 'pano_0.jpg'),
@@ -1025,6 +1041,18 @@ describe('pickLatestPano（重建成果里挑全景）', () => {
     })
     expect(p?.preview).toContain('/thumbnail/')
     expect(p?.full).toBe(p?.preview)
+  })
+
+  it('时间取**完成时刻**（endTime），不是重建开始时刻（createTime）', () => {
+    // 现场实测 2026-11-17：createTime 11:58:40 / endTime 12:07:30。
+    // V2 的重建成果列表显示的是 12:07:30，同一张图在两处必须一致。
+    const p = pickLatestPano({ list: [task()] })
+    expect(p?.time).toBe('2026-11-15 12:18:29')
+  })
+
+  it('老记录没有 endTime 时退 updateTime，再退 createTime（不显示空）', () => {
+    expect(pickLatestPano({ list: [task({ endTime: undefined })] })?.time).toBe('2026-11-15 12:18:29')
+    expect(pickLatestPano({ list: [task({ endTime: undefined, updateTime: undefined })] })?.time).toBe('2026-11-15 12:10:54')
   })
 
   it('成果为空 / 只有切片没有等距圆柱图 → null（宁可不显示，也不给个空壳）', () => {

@@ -216,7 +216,7 @@ describe('stores', () => {
     it('点位来自真实报警通道，不挂演示示意图', () => {
       const cam = useCamStore()
       expect(cam.cameras.map((c) => c.id)).toEqual(['ch-2', 'ch-3'])
-      expect(cam.cameras.map((c) => c.name)).toEqual(['2号通道', '3号通道'])
+      expect(cam.cameras.map((c) => c.name)).toEqual(['材料堆场', '安全讲台'])
       expect(cam.cameras.every((c) => c.group === '视频监控')).toBe(true)
       expect(cam.cameras.every((c) => c.img === '')).toBe(true)
     })
@@ -237,7 +237,7 @@ describe('stores', () => {
     it('切换点位后 currentCam 跟随', () => {
       const cam = useCamStore()
       cam.camId = 'ch-3'
-      expect(cam.currentCam.name).toBe('3号通道')
+      expect(cam.currentCam.name).toBe('安全讲台')
     })
 
     it('camId 指向不存在的点位时回退到首个', () => {

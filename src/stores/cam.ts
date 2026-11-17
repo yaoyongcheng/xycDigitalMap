@@ -2,6 +2,7 @@ import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { fetchAlarmPicture } from '@/api/video'
+import { CAM_PLACE } from '@/data/config'
 import { addDays, dateKey, dayOffsetOf, startOfDay } from '@/utils/date'
 import { remoteIdOf } from '@/utils/videoAlarm'
 import { useAirHazardStore } from './airHazard'
@@ -91,8 +92,10 @@ export const useCamStore = defineStore('cam', () => {
   }
 
   /**
-   * 真实点位。channelNo 是唯一可靠的标识 —— 服务端不下发点位名称，
-   * 所以只能叫「N号通道」，不编「1#门监控」这种名字。
+   * 真实点位。channelNo 是唯一可靠的标识，点位名按 `CAM_PLACE` 还原
+   * （与报警详情同源，见 data/config.ts）。没有映射的通道仍叫「N号通道」，
+   * 不编「1#门监控」这种名字 —— 点位名必须与详情页「报警地点」逐字一致，
+   * 同一个通道在两个页面各叫一个名字，现场对不上。
    */
   const cameras = computed<Camera[]>(() =>
     [...channelCounts.value.keys()]
@@ -101,7 +104,7 @@ export const useCamStore = defineStore('cam', () => {
         const latest = latestByChannel.value.get(ch)
         return {
           id: `ch-${ch}`,
-          name: `${ch}号通道`,
+          name: CAM_PLACE[ch] || `${ch}号通道`,
           group: '视频监控' as const,
           channelNo: ch,
           img: latest ? imgOf(remoteIdOf(latest)) : '',

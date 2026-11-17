@@ -311,6 +311,29 @@ describe('第二轮体验优化回归', () => {
       expect(sub![1]).toMatch(/inset:[^;]*var\(--tabbar-h\)/)
     })
 
+    it('返回时状态栏让出透明（白底规则必须主动让位）', () => {
+      const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+      // 揭示态的定义
+      expect(css).toMatch(
+        /\.phone-screen:has\(\.app\.home-mode\.is-swipe-back\)\s+\.status-bar\s*\{[^}]*transparent/,
+      )
+      /*
+       * 真实事故（2026-11）：上面那条一直在，但「子页白底」那条权重更高
+       * （0,7,0 vs 0,5,0），于是点返回后状态栏在整个 0.22s 滑出里仍是纯白、
+       * 压在已经露出的首页地图上 —— 现场就是「首页顶端闪出一条白条」。
+       * 白底 / 深色底几条必须自己带 :not 让位，光加一条透明规则没用。
+       */
+      expect(css).toMatch(
+        /\.phone-screen:has\(\.subpage\.open\):not\(:has\(\.subpage\.is-alarm\.open\)\):not\(:has\(\.app\.is-swipe-back\)\)\s+\.status-bar/,
+      )
+      expect(css).toMatch(
+        /\.phone-screen:has\(\.subpage\.is-dark\.open\):not\(:has\(\.subpage\.is-alarm\.open\)\):not\(:has\(\.app\.is-swipe-back\)\)\s+\.status-bar/,
+      )
+      expect(css).toMatch(
+        /\.phone-screen:has\(\.subpage\.is-alarm\.open\):not\(:has\(\.app\.is-swipe-back\)\)\s+\.status-bar/,
+      )
+    })
+
     it('子页内容底部留出安全区（底栏不在，不能被 Home Indicator 咬住）', () => {
       const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
       const body = css.match(/\.subpage-body\s*\{([^}]*)\}/)

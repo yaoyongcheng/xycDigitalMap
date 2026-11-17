@@ -19,7 +19,9 @@ import PeopleDist from './parts/PeopleDist.vue'
  * 对应原 js/app.js:368-411 renderSafety()。
  * 两块内容：预警（统计 + 趋势 + 轮播）与人员（概况 + 区域分布 + 出勤）。
  *
- * 2026-11 设计稿 gx2：人员块为「人员总览 / 人员分布 / 今日分时人数 / 今日班组出勤」。
+ * 2026-11 设计稿 gx2：人员块为「人员总览 / 人员分布 / 今日分时人数 / 今日出勤工种 /
+ * 今日班组出勤」。工种卡 2026-11-17 重新上线 —— 数据来自花名册 `POST /person/page`
+ * 的 `typeWork` + `presentStatus` 筛选（接口没有聚合能力，逐个工种问 total）。
  *
  * **2026-11 数据口径收口（本轮）**：本面板内的数字与曲线**全部来自接口**，
  * 取不到就显示空态，不再用 `data/config.ts` 的演示值顶替 —— 演示数字与现场
@@ -64,6 +66,21 @@ const showAlarmSkel = useSlowLoading(() => !alarm.hasLive && alarm.liveState ===
 const showCrewSkel = useSlowLoading(() => !overview.hasLive && overview.loading)
 const showHourSkel = useSlowLoading(() => !overview.hourLive && overview.loading)
 const showTeamSkel = useSlowLoading(() => !overview.teamRows.length && overview.loading)
+const showTradeSkel = useSlowLoading(() => !overview.tradeRows.length && overview.loading)
+
+/**
+ * 工种卡只放前 10 行（与设计稿一致：设计稿就是 10 行条形）。
+ *
+ * 现场目前有 20 多个工种，全铺开会让这张卡长到两三屏；条形宽度是相对最大值
+ * 折算的，后面的小工种本来也只剩一两个像素。
+ */
+const tradeTop = computed(() => overview.tradeRows.slice(0, 10))
+
+/** 条宽 = 人数 / 第一名，最短 6%（0 人不会出现，接口已过滤） */
+function tradePct(n: number): string {
+  const max = tradeTop.value[0]?.[1] ?? 1
+  return `${Math.max((n / max) * 100, 6).toFixed(1)}%`
+}
 
 /**
  * 面板挂载即取一次。
@@ -251,6 +268,29 @@ function onAlarmOpen(id: string): void {
           <Skel w="100%" h="148px" r="var(--r-8)" />
         </div>
         <div v-else class="chart-empty">暂无分时人数数据</div>
+      </div>
+
+      <div class="home-chart-card trade-card">
+        <div class="people-hour-hd">
+          <span class="home-card-lab">今日出勤工种</span>
+          <span class="trade-cap">在场人数</span>
+        </div>
+        <div v-if="tradeTop.length" class="trade-list">
+          <div v-for="[name, n] in tradeTop" :key="name" class="trade-row">
+            <b>{{ name }}</b>
+            <div class="trade-bar"><i :style="{ width: tradePct(n) }"></i></div>
+            <em>{{ n }}</em>
+          </div>
+        </div>
+        <!-- 慢请求：10 行灰条（行结构 = 名称 + 8px 条 + 数字），与真表同高 -->
+        <div v-else-if="showTradeSkel" class="trade-list" aria-hidden="true">
+          <div v-for="i in 10" :key="i" class="trade-row">
+            <Skel class="skel-flex" w="3.6em" h="12px" />
+            <Skel class="skel-flex" w="100%" h="8px" r="var(--r-pill)" />
+            <Skel w="16px" h="12px" />
+          </div>
+        </div>
+        <div v-else class="chart-empty">暂无工种出勤数据</div>
       </div>
 
       <div class="home-chart-card squad-card">

@@ -117,3 +117,34 @@ export async function openGet<T>(
     window.clearTimeout(timer)
   }
 }
+
+/**
+ * 只读 POST（部分接口只认 POST）。
+ *
+ * **2026-11-17 踩过的坑**：`dw.yzw.cn/open` 网关对「路径存在但方法不对」的请求
+ * 回的是 `57007 接口权限未获取`，而不是 405 —— 于是 `/person/page`（花名册）
+ * 用 GET 试时看起来像「没权限」，换成 POST 立刻返回 `total=713`。
+ * 以后遇到 57007，先怀疑方法，再怀疑权限。
+ *
+ * 参数放 JSON body，签名仍在 query 上（与 `GetTargetUrl` 一致）。
+ */
+export async function openPost<T>(apiPath: string, body: Record<string, unknown> = {}): Promise<T> {
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), TIMEOUT)
+  try {
+    const res = await fetch(signedUrl(apiPath), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const envelope = (await res.json()) as OpenEnvelope<T>
+    if (envelope.statusCode !== 20000) {
+      throw new Error(envelope.message || `接口返回 ${envelope.statusCode ?? '未知'} `)
+    }
+    return envelope.data as T
+  } finally {
+    window.clearTimeout(timer)
+  }
+}

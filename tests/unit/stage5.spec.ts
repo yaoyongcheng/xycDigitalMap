@@ -72,8 +72,8 @@ describe('阶段 5 · 真实数据', () => {
 
       useAlarmStore().liveAlarms = camAlarmFixtures()
       expect(cam.cameras.map((c) => [c.id, c.name])).toEqual([
-        ['ch-2', '2号通道'],
-        ['ch-3', '3号通道'],
+        ['ch-2', '材料堆场'],
+        ['ch-3', '安全讲台'],
       ])
       expect(cam.grouped.map((g) => g.name)).toEqual(['视频监控'])
     })

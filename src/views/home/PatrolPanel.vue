@@ -109,7 +109,7 @@ const hasContent = computed(
   () => shown.value.length > 0 || (activeCat.value === 'pano' && Boolean(patrol.pano)),
 )
 
-/** 全景的生成时间（服务端是 `YYYY-MM-DDTHH:mm:ss`，截到分钟） */
+/** 全景的**拼接完成**时间（`endTime`，与 V2 重建成果列表一致，见 `api/drone.ts`） */
 const panoTime = computed(() => (patrol.pano?.time ?? '').slice(0, 16).replace('T', ' '))
 
 /** 缩略图加载失败的 id 集合（失败的卡片回退成文字占位，不留破图） */

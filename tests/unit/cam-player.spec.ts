@@ -209,13 +209,14 @@ describe('components/overlays/CamPlayer', () => {
       expect(groups).toHaveLength(1)
       expect(wrapper.findAll('.cam-chip')).toHaveLength(2)
       expect(groups.map((g) => g.find('h5').text())).toEqual(['视频监控2'])
-      expect(wrapper.findAll('.cam-chip').map((c) => c.text())).toEqual(['2号通道', '3号通道'])
+      // 点位名与报警详情「报警地点」同源（CAM_PLACE），不再叫「N号通道」
+      expect(wrapper.findAll('.cam-chip').map((c) => c.text())).toEqual(['材料堆场', '安全讲台'])
     })
 
     it('当前点位芯片带 on 高亮', async () => {
       await mountPlayer()
       await setOpen(true)
-      expect(wrapper.find('.cam-chip.on').text()).toBe('2号通道')
+      expect(wrapper.find('.cam-chip.on').text()).toBe('材料堆场')
     })
 
     it('没有实时流时不挂示意图，显示明确空态', async () => {
@@ -339,7 +340,7 @@ describe('components/overlays/CamPlayer', () => {
       cam.showCamMode('shots')
       cam.openShotPop(0)
       await nextTick()
-      expect(wrapper.find('#camShotMeta').text()).toBe('2号通道  今天  08:12:00')
+      expect(wrapper.find('#camShotMeta').text()).toBe('材料堆场  今天  08:12:00')
     })
   })
 

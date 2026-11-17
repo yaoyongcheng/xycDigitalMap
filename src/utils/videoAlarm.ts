@@ -1,5 +1,6 @@
 import type { VideoAlarm } from '@/api/video'
 import type { Alarm } from '@/types'
+import { CAM_PLACE } from '@/data/config'
 import { formatMD, protoToday, sameDay, startOfDay } from '@/utils/date'
 
 /**
@@ -141,6 +142,31 @@ export function relTime(at: string, now: Date = new Date()): string {
   return `${formatMD(day)} ${hm}`
 }
 
+/**
+ * 报警地点文案（详情页「报警地点」、列表副标题共用）。
+ *
+ * 服务端只有通道号，点位名来自 `CAM_PLACE`（与 V2 同源的客户端配置）。
+ * 没有映射时退到「N号通道」而不是「—」：通道号是服务端真实下发的，
+ * 界面上有个能对得上的编号，比一行空白或者编一个地名都强。
+ */
+export function placeOf(a: Pick<Alarm, 'place' | 'channelNo'>): string {
+  const p = (a.place || '').trim()
+  if (p) return p
+  return a.channelNo && a.channelNo > 0 ? `${a.channelNo}号通道` : '—'
+}
+
+/**
+ * 详情页大图角标副标题：`CAM-2#材料堆场`。
+ *
+ * 与 `ALARM_SRC.cam.sub` 的区别是它**按这条报警自己的通道现算** —— 原来那句
+ * 写死的「CAM-2#塔吊」会让通道 3 的报警也顶着 2 号机位。
+ */
+export function camTagOf(a: Pick<Alarm, 'place' | 'channelNo'>): string {
+  if (!a.channelNo || a.channelNo <= 0) return '现场摄像头'
+  const p = (a.place || '').trim()
+  return p ? `CAM-${a.channelNo}#${p}` : `CAM-${a.channelNo}`
+}
+
 /** 一条视频报警 → Alarm（时间为空时返回 null，由调用方丢弃） */
 export function toAlarm(v: VideoAlarm, now: Date = new Date()): Alarm | null {
   const at = normalizeTime(v.captureTime)
@@ -150,6 +176,8 @@ export function toAlarm(v: VideoAlarm, now: Date = new Date()): Alarm | null {
   const kind = CLASSIFY.find((c) => c.re.test(name))?.kind
   const style = kind ? STYLE[kind] : FALLBACK
   const ch = v.channelNo > 0 ? `${v.channelNo}号通道` : '现场摄像头'
+  // 点位名（报警地点）来自客户端通道映射，服务端不下发
+  const place = CAM_PLACE[v.channelNo] || ''
 
   return {
     id: `va-${v.id}`,
@@ -158,8 +186,8 @@ export function toAlarm(v: VideoAlarm, now: Date = new Date()): Alarm | null {
     // 具体报警名（详情页「识别类型」用），分类名放在 title
     type: name,
     title: style.title,
-    // 轮播卡只给一行高度：具体类型 + 通道，比「AI 视频识别」有信息量
-    desc: `${name} · ${ch}抓拍`,
+    // 轮播卡只给一行高度：具体类型 + 点位（没有点位名时用通道号）
+    desc: `${name} · ${place || ch}抓拍`,
     img: style.img,
     rel: relTime(at, now),
     at,
@@ -167,6 +195,9 @@ export function toAlarm(v: VideoAlarm, now: Date = new Date()): Alarm | null {
     geo: '',
     // 阶段 5：监控点位按真实通道号分组；0 视为「没标通道」
     channelNo: v.channelNo > 0 ? v.channelNo : undefined,
+    // 详情页「报警地点」与「设备编号」：都是服务端真实字段（点位名见 CAM_PLACE）
+    place,
+    deviceNo: v.deviceNo,
     // 服务端已读状态透传：消息未读数、未读红点都靠它，不能丢（0=未读，1=已读）
     handleStatus: v.handleStatus,
   }

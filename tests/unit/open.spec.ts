@@ -142,11 +142,11 @@ describe('overview store', () => {
     const s = useOverviewStore()
     await s.load()
     await s.load()
-    // 一次 load 会并发打三个接口（人员总览 / 班组出勤 / 分时人数），冷却期内不该再打
-    expect(f).toHaveBeenCalledTimes(3)
+    // 一次 load 会并发打四个接口（人员总览 / 班组出勤 / 分时人数 / 在场工种），冷却期内不该再打
+    expect(f).toHaveBeenCalledTimes(4)
 
     await s.load(true)
-    expect(f).toHaveBeenCalledTimes(6)
+    expect(f).toHaveBeenCalledTimes(8)
   })
 })
 
@@ -325,5 +325,55 @@ describe('首页人员块 store 换源', () => {
     expect(s.teamRows).toEqual([])
     expect(s.teamsState).toBe('error')
     expect(s.hourLive).toBeUndefined()
+  })
+})
+
+describe('今日出勤工种（在场人员按工种分组）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('从在场人员清单落成 [工种, 人数] 并降序', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('personCurLocation')) {
+          return jsonResponse({
+            statusCode: 20000,
+            data: { stayPersonPageVos: [{ personTypeWork: '木工' }, { personTypeWork: '木工' }, { personTypeWork: '管理人员' }] },
+          })
+        }
+        if (u.includes('personOverall')) return jsonResponse({ statusCode: 20000, data: { managedNum: 160 } })
+        if (u.includes('todayTeamsAtteStat')) return jsonResponse({ statusCode: 20000, data: [] })
+        if (u.includes('todayPersonHourStat')) return jsonResponse({ statusCode: 20000, data: { manager: [], worker: [] } })
+        return jsonResponse({}, 500)
+      }),
+    )
+    const s = useOverviewStore()
+    await s.load()
+
+    expect(s.tradeRows).toEqual([
+      ['木工', 2],
+      ['管理人员', 1],
+    ])
+    expect(s.tradesState).toBe('ok')
+  })
+
+  it('定位接口失败时给空列表（卡片显示「暂无」，不拿演示值补）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).includes('personOverall')) return jsonResponse({ statusCode: 20000, data: { managedNum: 160 } })
+        return jsonResponse({ statusCode: 57007, message: '接口权限未获取' })
+      }),
+    )
+    const s = useOverviewStore()
+    await s.load()
+
+    expect(s.tradeRows).toEqual([])
+    expect(s.tradesState).toBe('error')
   })
 })

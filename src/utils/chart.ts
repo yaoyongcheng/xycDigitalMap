@@ -234,13 +234,20 @@ export interface HourLiveData {
 
 /** 共用绘制参数：把「刻度 / 数据 / 上限」抽出来，演示版与真实版只差这三样 */
 interface HourChartSpec {
-  /** 横轴数值小时（判定「未到时段」用） */
+  /** 横轴数值小时，按下标对应 x 位置（全天轴时就是 0..23） */
   hourNums: number[]
-  workersAll: number[]
-  managersAll: number[]
-  nowHour: number
+  /** 各刻度的工人数；null = 该刻度不画点、不连线（未到时段 / 接口没给这一格） */
+  workersAll: (number | null)[]
+  managersAll: (number | null)[]
   /** 纵轴上限 */
   maxY: number
+  /**
+   * 未到时段是否**画在 0 线上**（V2「今日人员分布」的画法，2026-11-17 对齐）。
+   *
+   * 只改几何：`series.values` / `ys` 仍是 null，触控气泡对没到的时刻显示「—」，
+   * 不把「还没到」说成「0 个人」。
+   */
+  tailToZero?: boolean
   /** 该下标是否显示刻度文案 */
   pickLabel: (i: number, n: number) => boolean
 }
@@ -248,13 +255,16 @@ interface HourChartSpec {
 /**
  * 分时人数折线图（整点在场人数）。演示数据版与真实数据版共用这一份几何，
  * 保证两种数据源画出来的图形观感一致。
+ *
+ * 数据里允许 null：null = 「这一格没有真实值」。画不画由 `tailToZero` 决定：
+ *   · 演示基线 / 默认：null 处断线留白；
+ *   · 接真实数据（`peopleHourModel` 的 live 分支）：**尾部贴 0**，与 V2 的
+ *     「今日人员分布」画面一致 —— 曲线一路铺到 23:00，未到的时段压在 0 线上。
+ *     但 `series` / `ys` 仍留 null，触控气泡对没到的时刻显示「—」，不当成 0 人。
  */
 function hourChart(spec: HourChartSpec): LineModel {
-  const { hourNums, workersAll, managersAll, nowHour, maxY, pickLabel } = spec
+  const { hourNums, workersAll, managersAll, maxY, pickLabel, tailToZero } = spec
   const hours = hourNums.map((h) => h + ':00')
-  const liveN = hourNums.reduce((n, h, i) => (h <= nowHour ? i + 1 : n), 0)
-  const workers = workersAll.slice(0, liveN)
-  const managers = managersAll.slice(0, liveN)
   const w = 320
   const h = 148
   const pl = 28
@@ -266,14 +276,41 @@ function hourChart(spec: HourChartSpec): LineModel {
   const span = Math.max(ticksN - 1, 1)
   const xAt = (i: number): number => pl + (i / span) * (w - pl - pr)
   const yAt = (v: number): number => pt + (1 - v / maxY) * (h - pt - pb)
-  const wPts: Pt[] = workers.map((v, i) => [xAt(i), yAt(v)])
-  const mPts: Pt[] = managers.map((v, i) => [xAt(i), yAt(v)])
-  const wLine = wPts.length ? smoothPath(wPts) : ''
-  const mLine = mPts.length ? smoothPath(mPts) : ''
-  const last = Math.max(workers.length - 1, 0)
+  /** 最后一条有值的下标（-1 = 一条都没有）；右侧未到时段靠它淡化刻度 */
+  const lastIdx = ((): number => {
+    let k = -1
+    const n = Math.max(workersAll.length, managersAll.length)
+    for (let i = 0; i < n; i += 1) if (workersAll[i] != null || managersAll[i] != null) k = i
+    return k
+  })()
+  const ptOf = (i: number, v: number | null): Pt | null => (v == null ? null : [xAt(i), yAt(v)])
+  /** null 处断线：连续非空的点各自成段，合成一个 path 的多个子路径 */
+  const segmentsOf = (vals: (number | null)[]): Pt[][] => {
+    const out: Pt[][] = []
+    let cur: Pt[] = []
+    for (let i = 0; i < vals.length; i += 1) {
+      const p = ptOf(i, vals[i])
+      if (p) cur.push(p)
+      else if (cur.length) {
+        out.push(cur)
+        cur = []
+      }
+    }
+    if (cur.length) out.push(cur)
+    return out
+  }
+  /* 尾部贴 0：几何上补齐（V2 的画面），但 series/ys 仍是 null（见 tailToZero） */
+  const drawW = tailToZero ? workersAll.map((v) => v ?? 0) : workersAll
+  const drawM = tailToZero ? managersAll.map((v) => v ?? 0) : managersAll
+  const wSegs = segmentsOf(drawW)
+  const mSegs = segmentsOf(drawM)
+  const wLine = wSegs.map(smoothPath).join(' ')
+  const mLine = mSegs.map(smoothPath).join(' ')
   const base = yAt(0).toFixed(1)
-  const area = wPts.length
-    ? `${wLine} L${xAt(last).toFixed(1)},${base} L${xAt(0).toFixed(1)},${base} Z`
+  /* 面积只填第一段（从 0 点到此刻，实测数据连续；中间断格时不硬连过去） */
+  const first = wSegs[0]
+  const area = first
+    ? `${smoothPath(first)} L${first[first.length - 1][0].toFixed(1)},${base} L${first[0][0].toFixed(1)},${base} Z`
     : ''
   /* 四条等分网格线：上限 40 时正好是 0/10/20/30/40，与原先写死的刻度一致 */
   const grids = Array.from({ length: 5 }, (_, k) => Math.round((maxY * k) / 4))
@@ -283,22 +320,15 @@ function hourChart(spec: HourChartSpec): LineModel {
     })
     .join('')
   /*
-   * 刻度标签：每 3 个取一个 + 末点。
-   *
-   * 原先是 i%2（隔一个取一个），在 320 宽的图上步长只有 25px，
-   * 而「21:00」这种标签本身约 30px 宽 —— 最后三个标签（17:00 / 21:00 / 23:00）
-   * 里 21:00 是中点锚、23:00 是终点锚，实测横向压在一起，渲染成
-   * 「173:00 213:00 2300」，像坏掉的坐标轴。
-   *
-   * 改成 i%3：1:00 / 7:00 / 13:00 / 19:00 / 23:00，步长 69px（末段 50px），
-   * 任何两个标签之间都留得下空气。末点必须保留 —— 它是「现在」的锚。
-   * 真实数据（0..17 整点共 18 个刻度）由调用方传 pickLabel 换成四等分。
+   * 刻度标签文案：由调用方挑（演示 12 格挑 i%3，真实 24 格挑 i%4），这里的
+   * 通用规则是「首、末必留」——末点是「现在」或「23:00」的锚，丢了轴就不完整。
+   * 未到的刻度淡化（opacity .35），不画假数据但也不让轴突然断掉。
    */
   const labels = hours
     .map((_d, i) => {
       if (!pickLabel(i, ticksN)) return ''
       const anchor = i === 0 ? 'start' : i === ticksN - 1 ? 'end' : 'middle'
-      const dim = i >= liveN ? ` opacity="0.35"` : ''
+      const dim = i > lastIdx ? ` opacity="0.35"` : ''
       return `<text x="${xAt(i).toFixed(1)}" y="${h - 4}" text-anchor="${anchor}"${dim}>${hourNums[i]}:00</text>`
     })
     .join('')
@@ -308,23 +338,34 @@ function hourChart(spec: HourChartSpec): LineModel {
    * 这张卡是全宽的大图，字号 9px 下 6 个汉字放得下，标出峰值比让用户自己
    * 找最高点有用；而首页那张 170px 宽的迷你图就不标 —— 7 个日期标签已经
    * 挤到约 7px 渲染宽度，再加文字只会糊成一团。
-   * wPts 为空（凌晨未到第一个时段）时整段跳过。
+   * 一条有效数据都没有（凌晨未到第一个时段）时整段跳过。
    */
   const peak = ((): string => {
-    if (!wPts.length) return ''
-    let mi = 0
-    workers.forEach((v, i) => {
-      if (v > workers[mi]) mi = i
+    let mi = -1
+    workersAll.forEach((v, i) => {
+      if (v == null) return
+      if (mi < 0 || v > (workersAll[mi] as number)) mi = i
     })
-    const [px, py] = wPts[mi]
-    return `<text class="peak-lab" x="${px.toFixed(1)}" y="${(py - 7).toFixed(1)}" text-anchor="middle">峰值 ${workers[mi]}人</text>`
+    if (mi < 0) return ''
+    const px = xAt(mi).toFixed(1)
+    const py = (yAt(workersAll[mi] as number) - 7).toFixed(1)
+    return `<text class="peak-lab" x="${px}" y="${py}" text-anchor="middle">峰值 ${workersAll[mi]}人</text>`
   })()
+  /*
+   * 末点光晕标在**最后一个真实有值**的整点（不是贴 0 的尾部）：尾段是补齐的
+   * 0 线，把「此刻」的光点画到 23:00 上会指错时间。
+   */
   const live = ((): string => {
-    if (!wPts.length) return ''
-    const [lx, ly] = wPts[wPts.length - 1]
-    return `<circle class="alarm-live-halo live-worker" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="7"/><circle class="alarm-live live-worker" cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.8"/>`
+    let li = -1
+    workersAll.forEach((v, i) => {
+      if (v != null) li = i
+    })
+    if (li < 0) return ''
+    const lx = xAt(li).toFixed(1)
+    const ly = yAt(workersAll[li] as number).toFixed(1)
+    return `<circle class="alarm-live-halo live-worker" cx="${lx}" cy="${ly}" r="7"/><circle class="alarm-live live-worker" cx="${lx}" cy="${ly}" r="2.8"/>`
   })()
-  const glow = wPts.length
+  const glow = wSegs.length
     ? `<path class="dl-glow" d="${wLine}" fill="none" stroke="#3DDC97" stroke-width="6" stroke-opacity="0.14" stroke-linejoin="round"/>`
     : ''
   const svg = `<svg class="people-hour-svg" viewBox="0 0 ${w} ${h}">
@@ -343,9 +384,6 @@ function hourChart(spec: HourChartSpec): LineModel {
       ${peak}
       <g class="alarm-x">${labels}</g>
     </svg>`
-  /** 未到时段填 null（交互层显示 —，线本身照旧只画到当前小时） */
-  const pad = (arr: number[]): (number | null)[] => arr.map((v, i) => (i < liveN ? v : null))
-  const yOf = (v: number | null): number | null => (v == null ? null : yAt(v))
   return {
     svg,
     w,
@@ -353,62 +391,108 @@ function hourChart(spec: HourChartSpec): LineModel {
     ticks: hours,
     xs: hourNums.map((_, i) => xAt(i)),
     series: [
-      { name: '工人', color: '#3DDC97', values: pad(workersAll) },
-      { name: '管理', color: '#4C9FFF', values: pad(managersAll) },
+      { name: '工人', color: '#3DDC97', values: workersAll },
+      { name: '管理', color: '#4C9FFF', values: managersAll },
     ],
-    ys: [pad(workersAll).map(yOf), pad(managersAll).map(yOf)],
+    ys: [
+      workersAll.map((v) => (v == null ? null : yAt(v))),
+      managersAll.map((v) => (v == null ? null : yAt(v))),
+    ],
   }
 }
 
 /**
+ * V2「今日人员分布」的横轴口径 —— 2026-11-17 逐帧核对后照搬（详见
+ * `docs/api-migration.md` 的「分时人数的横轴 V2 右移一小时」）。
+ *
+ * 接口 `hours` 是 **0 基点**（数组里 0 点…现在这个整点都在，实测 16 点回 0/0），
+ * 但 V2 的横轴从 1:00 起、把第 i 个数据点直接摆在第 i 格 —— 于是 **接口 11 点的值
+ * 画在 12:00 刻度上**，曲线和气泡数字一起右移一小时。现场对得上：
+ * V2 气泡「12:00 工人 18 / 管理 6」，接口 11 点正是 18/6；V2 曲线在 7:00 才 4 人，
+ * 接口 7 点已是 23 人（它把接口 6 点的 4 人画在 7:00）。
+ *
+ * 这里照它的画法对齐：刻度、曲线、气泡三处同时右移，同一刻度两边显示同一个数。
+ * **要回到「刻度 = 接口小时」的正确口径，把它改成 0 即可**（只有这一处依赖它）。
+ */
+const V2_HOUR_SHIFT = 1
+
+/**
  * 原 js/app.js:192-244 peopleHourSvg() 的模型版。
  * 按时段的人员在场曲线（工人在职绿线 + 管理人员蓝线）。
- * 只画到当前小时为止，未到的时段标签淡化处理。
  *
- * 传入 `live` 时改用接口真实数据（`todayPersonHourStat`）：刻度按接口返回的
- * 小时数走、纵轴上限按实际峰值放大，其余几何与演示版共用同一份绘制代码。
- * 不传则维持原版的演示曲线（1:1 复刻基线，单测锁住了这份输出）。
+ * 演示数据按 1/3/5…23 的 12 个刻度画；传 `live` 时改用接口真实数据
+ * （`todayPersonHourStat`），横轴换成 V2 那根 **1:00→23:00 固定轴**、未到时段尾部
+ * 贴 0，并且每个点按 V2 的口径右移一格（见 `V2_HOUR_SHIFT`）—— 这样同一刻度上
+ * 两边的曲线高度、气泡数字都一致。纵轴同样是 0/10/20/30/40。
+ *
+ * 纵轴上限按实际峰值向上取整到 10 的倍数（现状峰值 31 → 40，与 V2 的 0/10/20/30/40
+ * 刻度恰好一致）。
  */
 export function peopleHourModel(nowHour: number, live?: HourLiveData): LineModel {
   if (live && live.hours.length > 1 && live.workers.length && live.managers.length) {
     /*
-     * 掐掉「当前整点」这个还没结算完的点。
-     *
-     * 现场接口是按时段累加在场人次的：18 点查 17:00 这一格必然是 0（这一小时
-     * 刚开始，还没有人「在场满」）。原样画出来会让曲线在最右边垂直跳水，
-     * 看着像「人都走光了」，与事实相反。只在 hour >= 当前小时 且两条线都是 0
-     * 时才掐，历史时段里真正的 0（比如凌晨）不受影响。
+     * 位置 i 的刻度是 `(i + V2_HOUR_SHIFT):00`，装的是接口 hours = i 的数。
+     * 23 格（1:00→23:00）是这个口径下能摆下的全部位置，接口的 23 点无处可放 ——
+     * V2 同样会把它挤出轴外，现场那个点恒为 0，不影响画面。
      */
-    let end = live.hours.length
-    while (
-      end > 2 &&
-      live.workers[end - 1] === 0 &&
-      live.managers[end - 1] === 0 &&
-      live.hours[end - 1] >= nowHour
-    ) {
-      end -= 1
+    const labels = Array.from({ length: 24 - V2_HOUR_SHIFT }, (_, i) => i + V2_HOUR_SHIFT)
+    const wMap = new Map(live.hours.map((hh, i) => [hh, live.workers[i]]))
+    const mMap = new Map(live.hours.map((hh, i) => [hh, live.managers[i]]))
+    /*
+     * 两件事分开处理：
+     *   · 还没到的时段（hours > nowHour）→ null，几何上由 tailToZero 贴到 0 线（V2 的画面），
+     *     但气泡显示「—」，不把「还没到」说成「0 个人」；
+     *   · 接口没给这一格 → 同样 null。
+     * 当前整点另算：现场接口按时段累加，这一小时刚开头必然是 0，原样画出来会让
+     * 曲线在最右边垂直跳水，看着像「人都走光了」，所以也留白。
+     */
+    const pick = (map: Map<number, number>, hh: number): number | null => {
+      if (hh > nowHour) return null
+      const v = map.get(hh)
+      if (v === undefined) return null
+      // v 可能是 0（凌晨真没人），只有「当前整点且两条线都是 0」才当未结算
+      return v
     }
-    const hs = live.hours.slice(0, end)
-    const ws = live.workers.slice(0, end)
-    const ms = live.managers.slice(0, end)
-    const peak = Math.max(...ws, ...ms, 1)
+    const ws = labels.map((_, i) => pick(wMap, i))
+    const ms = labels.map((_, i) => pick(mMap, i))
+    /* 当前整点：接口按时段累加，这一小时刚开头必然是 0，原样画会让末点垂直跳水 */
+    if (nowHour >= 0 && nowHour < labels.length && ws[nowHour] === 0 && ms[nowHour] === 0) {
+      ws[nowHour] = null
+      ms[nowHour] = null
+    }
+    const vals = [...ws, ...ms].filter((v): v is number => v != null)
+    const peak = Math.max(...vals, 1)
     return hourChart({
-      hourNums: hs,
+      hourNums: labels,
       workersAll: ws,
       managersAll: ms,
-      nowHour,
-      // 向上取整到 10 的整数倍，峰值不会顶到边框
-      maxY: Math.max(10, Math.ceil(peak / 10) * 10),
-      // 18 个刻度按 i%3 会挤成 7 个标签（约 46px 一个），改成四等分只剩 4 个
-      pickLabel: (i, n) => i === 0 || i === n - 1 || i === Math.round((n - 1) / 3) || i === Math.round(((n - 1) * 2) / 3),
+      /*
+       * 纵轴与 V2 同一起点：0/10/20/30/40 四条网格，峰值 31 落在 30 与 40 之间，
+       * 和 V2 图上那条绿线的位置一致（它峰顶基本压在 30 刻度线上）。
+       * 现场真超过 40 人时按 10 的倍数放大，宁可刻度变多也不让峰值顶出画布。
+       */
+      maxY: Math.max(40, Math.ceil(peak / 10) * 10),
+      /* 未到时段画在 0 线上（V2 的画法），见 HourChartSpec.tailToZero */
+      tailToZero: true,
+      /*
+       * 刻度标签与 V2 同一套点位。V2 在 1080 宽的大屏上标 1:00/3:00/…/21:00（12 个，
+       * 23:00 那格被屏宽挤到画外），手机卡片只有约 320 个 viewBox 单位、字号 11px
+       * （「21:00」本身约 28px 宽），12 个必然互相压字。这里取同一集合里隔一个的
+       * 1/5/9/13/17/**21**：间距 50px，窗口也正好落在 V2 可见的 1:00→21:00 区间。
+       * 不再标 23:00 —— 21:00 与它只隔 25px，两个四位数会直接压在一起；轴右端仍有
+       * 曲线贴底走过，只是不再挂一个叠字标签。
+       */
+      pickLabel: (i) => i % 4 === 0 && i <= 20,
     })
   }
 
+  const demoHours = [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
+  /** 未到时段不画（演示基线靠这个保住：等价于原先「只画到当前小时」） */
+  const mask = (arr: number[]): (number | null)[] => arr.map((v, i) => (demoHours[i] <= nowHour ? v : null))
   return hourChart({
-    hourNums: [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23],
-    workersAll: [2, 2, 2, 8, 36, 33, 18, 24, 27, 12, 4, 2],
-    managersAll: [2, 2, 2, 2, 7, 19, 3, 5, 10, 6, 2, 2],
-    nowHour,
+    hourNums: demoHours,
+    workersAll: mask([2, 2, 2, 8, 36, 33, 18, 24, 27, 12, 4, 2]),
+    managersAll: mask([2, 2, 2, 2, 7, 19, 3, 5, 10, 6, 2, 2]),
     maxY: 40,
     pickLabel: (i, n) => i === 0 || i === n - 1 || i % 3 === 0,
   })

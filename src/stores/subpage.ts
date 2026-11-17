@@ -35,6 +35,35 @@ export type SubView =
   /** 账号登录（2026-11 新增，「我的」入口，真实接口鉴权） */
   | { kind: 'login' }
 
+/**
+ * 视图 → 导航栏标题。
+ *
+ * 抽成函数而不是只做 computed：垫底层（右滑返回时露出的只读上一页）渲染的是
+ * **另一个**视图，也要按同一套规则取标题，否则两处各写一份必然写歪。
+ */
+export function titleOf(v: SubView): string {
+  switch (v.kind) {
+    case 'inspect-list':
+      return '巡检预警'
+    case 'alarm-detail':
+      return '预警详情'
+    case 'placeholder':
+      return v.name
+    case 'device':
+      return v.device === 'crane' ? '5G塔机' : '智能电梯'
+    case 'uav':
+      return '无人机'
+    case 'climb':
+      return '智能爬架'
+    case 'alarm-hist':
+      return '报警预警'
+    case 'login':
+      return '账号登录'
+    default:
+      return ''
+  }
+}
+
 export const useSubpageStore = defineStore('subpage', () => {
   const alarm = useAlarmStore()
 
@@ -83,28 +112,7 @@ export const useSubpageStore = defineStore('subpage', () => {
   const isOpen = computed(() => view.value.kind !== 'none')
 
   /** 原 subTitle.textContent */
-  const title = computed(() => {
-    switch (view.value.kind) {
-      case 'inspect-list':
-        return '巡检预警'
-      case 'alarm-detail':
-        return '预警详情'
-      case 'placeholder':
-        return view.value.name
-      case 'device':
-        return view.value.device === 'crane' ? '5G塔机' : '智能电梯'
-      case 'uav':
-        return '无人机'
-      case 'climb':
-        return '智能爬架'
-      case 'alarm-hist':
-        return '报警预警'
-      case 'login':
-        return '账号登录'
-      default:
-        return ''
-    }
-  })
+  const title = computed(() => titleOf(view.value))
 
   /**
    * 深色子页（.subpage.is-dark）。

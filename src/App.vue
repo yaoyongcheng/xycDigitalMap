@@ -7,6 +7,7 @@ import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { setThemeColor, THEME_COLORS } from '@/utils/themeColor'
+import { useHistoryBack } from '@/utils/historyBack'
 import { useSwipeBack } from '@/utils/swipeBack'
 import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
@@ -51,6 +52,14 @@ const auth = useAuthStore()
 
 /** 全局右滑返回手势（微信式）：见 utils/swipeBack.ts 的约束说明 */
 useSwipeBack()
+
+/**
+ * 接管浏览器 / 系统导航的返回（2026-11）。
+ *
+ * 手机上的边缘侧滑是浏览器级手势，页面拦不住 —— 不接管时右滑会直接退出当前
+ * 地址，用户以为「应用内返回没生效」。这里让返回落到同一套返回动作上。
+ */
+useHistoryBack()
 
 /**
  * 启动时检查登录态（2026-11 新增）。

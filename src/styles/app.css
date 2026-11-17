@@ -380,8 +380,15 @@ button, input, textarea { font-family: inherit; color: inherit; }
   background: transparent;
 }
 
-/* 子页（非预警详情）：白底 */
-.phone-screen:has(.subpage.open):not(:has(.subpage.is-alarm.open)) .status-bar {
+/*
+ * 子页（非预警详情）：白底。
+ *
+ * `:not(:has(.app.is-swipe-back))` 是必需的：返回一级页面时 `.subpage` 还在
+ * 播 0.22s 滑出，状态栏若继续白着，就压在已经露出的首页地图上 —— 现场看到的
+ * 是「点返回后首页顶端闪出一条白条」。同一件事下面的透明规则也写了一遍，但
+ * 那条权重（0,5,0）压不过这里（0,7,0），所以必须在这几条上主动让位。
+ */
+.phone-screen:has(.subpage.open):not(:has(.subpage.is-alarm.open)):not(:has(.app.is-swipe-back)) .status-bar {
   background: #fff;
 }
 
@@ -391,21 +398,27 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 选择器必须带上 :not(:has(.subpage.is-alarm.open)) 才够权重 —— 上面那条
  * 白底规则用的就是这套结构（0,7,0），少一个 :not 就会被它压回白色。
  */
-.phone-screen:has(.subpage.is-dark.open):not(:has(.subpage.is-alarm.open)) .status-bar {
+.phone-screen:has(.subpage.is-dark.open):not(:has(.subpage.is-alarm.open)):not(:has(.app.is-swipe-back)) .status-bar {
   background: var(--bg-2);
 }
 
-/* 各全屏覆盖层打开时：白底 */
-.phone-screen:has(.cam-player.open) .status-bar,
-.phone-screen:has(.air-player.open) .status-bar,
-.phone-screen:has(.hazard-page.open) .status-bar,
-.phone-screen:has(.subpage.is-alarm.open) .status-bar {
+/* 各全屏覆盖层打开时：白底（同样要在返回揭示态让位，理由见上一条） */
+.phone-screen:has(.cam-player.open):not(:has(.app.is-swipe-back)) .status-bar,
+.phone-screen:has(.air-player.open):not(:has(.app.is-swipe-back)) .status-bar,
+.phone-screen:has(.hazard-page.open):not(:has(.app.is-swipe-back)) .status-bar,
+.phone-screen:has(.subpage.is-alarm.open):not(:has(.app.is-swipe-back)) .status-bar {
   background: #fff;
 }
 
 /*
- * 子页右滑返回首页时，状态栏立刻让出透明（露出首页深色地图）。
- * 否则子页滑出的 220ms 里标题栏仍是白底 —— 就是用户看到的「顶部白条」。
+ * 子页 / 覆盖层返回首页时，状态栏立刻让出透明（露出首页深色地图）。
+ * 否则滑出的这 220ms 里它仍是白底、压在首页上 —— 现场就是「首页顶端一条白条」。
+ *
+ * 只限 home-mode：其它 tab（工作台 / 消息 / 我的）返回时目标页本来就是白顶，
+ * 状态栏留白才是无缝的。
+ *
+ * 注意：这条只是「揭示态」的定义，光靠它不够 —— 上面那些白底规则的权重都
+ * 更高（0,7,0），所以它们各自带上了 :not(:has(.app.is-swipe-back)) 主动让位。
  */
 .phone-screen:has(.app.home-mode.is-swipe-back) .status-bar {
   background: transparent;
@@ -3068,18 +3081,21 @@ button, input, textarea { font-family: inherit; color: inherit; }
   color: var(--text);
 }
 
-.alarm-kv b {
+.alarm-kv b,
+.alarm-kv i {
   flex-shrink: 0;
   margin-left: auto;
   font-weight: 500;
   color: var(--muted);
 }
 
-.alarm-kv i {
-  flex-shrink: 0;
-  font-style: normal;
-  font-weight: 700;
-  color: var(--danger-dark);
+/*
+ * 报警地点：现场最先要看的是「在哪」，比其它行重一档。
+ * 「自动 / 0级」那两个 b / i 已经随字段收口删掉了（服务端没有这两项），
+ * 规则留着是因为 .alarm-kv 的其它位置还可能有强调标签。
+ */
+.alarm-place {
+  font-weight: 600;
 }
 
 .alarm-geo {
@@ -3337,12 +3353,72 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 /* ---------- 今日班组出勤（2026-11 对齐设计稿 gx2） ---------- */
 
+/* ---------- 今日出勤工种（2026-11-17 重新上线：数据来自花名册 typeWork） ---------- */
+
 /*
- * 原「今日出勤工种」卡片的 .trade-* 样式已随卡片一并移除：
- * 全项目四套后端都没有「按工种取数」的接口，这张卡在接入真实数据时换成了
- * 「今日分时人数」（复用上面的 .people-hour），留着样式只会变成又一组无人
- * 消费的死代码。
+ * 曾因「四套后端都没有按工种取数的接口」在阶段 2 下线、阶段 5 删样式。
+ * 2026-11-17 查明花名册 `POST /person/page` 支持 `typeWork` + `presentStatus`
+ * 两个筛选、且 `total` 就是该工种在场人数，这张卡才按设计稿原样恢复。
  */
+
+.trade-card { padding: 8px 10px 10px; }
+
+.trade-card .people-hour-hd { margin-bottom: 8px; }
+
+/* 右侧小注：说明这一列数的口径是「此刻在场」，不是「今日打卡」 */
+.trade-cap {
+  flex-shrink: 0;
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+}
+
+.trade-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.trade-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trade-row b {
+  width: 4.2em;
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink-2-dark);
+}
+
+.trade-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.trade-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--blue-dark));
+}
+
+.trade-row em {
+  width: 22px;
+  flex: none;
+  text-align: right;
+  font-style: normal;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
 
 .squad-card { padding: 8px 10px 10px; }
 

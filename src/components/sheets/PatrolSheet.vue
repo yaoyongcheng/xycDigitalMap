@@ -52,7 +52,10 @@ const photo = computed(() => patrol.photos.find((p) => p.id === props.id))
  */
 const isPanoView = computed(() => props.id === PANO_SHEET_ID && Boolean(patrol.pano))
 
-/** 全景的拍摄/生成时间（服务端给 `YYYY-MM-DDTHH:mm:ss`，截到分钟） */
+/**
+ * 全景的**拼接完成**时间（任务的 `endTime`，不是 `createTime`，见 `api/drone.ts`
+ * 的 `DronePano.time`）。V2 的重建成果列表显示的也是这个时刻。
+ */
 const panoTime = computed(() => (patrol.pano?.time ?? '').slice(0, 16).replace('T', ' '))
 
 /** 全景原图体积（真实字节数） */

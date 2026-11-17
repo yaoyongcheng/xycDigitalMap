@@ -248,11 +248,32 @@ describe('peopleHourModel 接真实数据', () => {
     managers: [1, 5, 6, 6, 4],
   }
 
-  it('刻度用接口的小时数，系列值原样上屏', () => {
+  it('横轴是 V2 那根 1:00→23:00 固定轴（23 格，无 0 点）', () => {
     const m = peopleHourModel(12, live)
-    expect(m.ticks).toEqual(['8:00', '9:00', '10:00', '11:00', '12:00'])
-    expect(m.series[0].values).toEqual([2, 18, 18, 15, 14])
-    expect(m.series[1].values).toEqual([1, 5, 6, 6, 4])
+    expect(m.ticks).toHaveLength(23)
+    expect(m.ticks[0]).toBe('1:00')
+    expect(m.ticks[22]).toBe('23:00')
+    expect(m.xs).toHaveLength(23)
+  })
+
+  it('每个点按 V2 口径右移一格：接口 11 点的 18 人落在 12:00 刻度上', () => {
+    const m = peopleHourModel(11, { hours: [10, 11, 12], workers: [23, 18, 30], managers: [12, 6, 6] })
+    const i12 = m.ticks.indexOf('12:00')
+    expect(m.series[0].values[i12]).toBe(18)
+    expect(m.series[1].values[i12]).toBe(6)
+    // 11:00 刻度上是接口 10 点的数（V2 气泡「11:00 24/12」同款口径）
+    const i11 = m.ticks.indexOf('11:00')
+    expect(m.series[0].values[i11]).toBe(23)
+  })
+
+  it('系列值按接口小时落位，未到时段是 null（不补 0 冒充没人）', () => {
+    const m = peopleHourModel(12, live)
+    // 接口给的是 8..12 点，落在第 8..12 格（刻度 9:00..13:00）
+    expect(m.series[0].values.slice(8, 13)).toEqual([2, 18, 18, 15, 14])
+    expect(m.series[1].values.slice(8, 13)).toEqual([1, 5, 6, 6, 4])
+    // 前 8 格没数据、13 点之后还没到 → 一律 null
+    expect(m.series[0].values.slice(0, 8).every((v) => v === null)).toBe(true)
+    expect(m.series[0].values.slice(13).every((v) => v === null)).toBe(true)
   })
 
   it('纵轴上限按实际峰值放大到 10 的整数倍', () => {
@@ -263,15 +284,41 @@ describe('peopleHourModel 接真实数据', () => {
     expect(top).toBeLessThan(148 - 22)
   })
 
-  it('未结算的当前整点不画成 0（否则右端会垂直跳水）', () => {
-    const m = peopleHourModel(12, { ...live, hours: [8, 9, 10, 11, 12], workers: [2, 18, 18, 15, 0], managers: [1, 5, 6, 6, 0] })
-    expect(m.ticks).not.toContain('12:00')
-    expect(m.series[0].values).toEqual([2, 18, 18, 15])
+  it('当前整点未结算（两线都是 0）时留白，不画成 0（否则右端垂直跳水）', () => {
+    const m = peopleHourModel(12, { ...live, workers: [2, 18, 18, 15, 0], managers: [1, 5, 6, 6, 0] })
+    // 轴上的刻度照常在（12 点这一格对应 13:00 标签），只是这一格没有点
+    expect(m.ticks[12]).toBe('13:00')
+    expect(m.series[0].values[12]).toBeNull()
+    expect(m.series[0].values[11]).toBe(15)
   })
 
   it('历史时段里真正的 0 保留，不会被误掐', () => {
     const m = peopleHourModel(12, { hours: [6, 7, 8], workers: [0, 0, 5], managers: [0, 0, 2] })
-    expect(m.series[0].values).toEqual([0, 0, 5])
+    expect(m.series[0].values.slice(6, 9)).toEqual([0, 0, 5])
+  })
+
+  it('未到时段在**画面**上贴底 0（V2 画法），但气泡里的值仍是 null', () => {
+    const m = peopleHourModel(12, live)
+    // 曲线一路画到轴右端（x=304 是 23:00，y=126 是 0 线），与 V2 画面一致
+    expect(m.svg).toContain('304.0,126.0')
+    // 交互层不把「还没到」说成「0 个人」
+    expect(m.series[0].values[22]).toBeNull()
+    expect(m.ys[0][22]).toBeNull()
+  })
+
+  it('横轴标签两两不遮挡（11px 字号下「21:00」约 28px 宽）', () => {
+    const m = peopleHourModel(15, {
+      hours: Array.from({ length: 17 }, (_, i) => i),
+      workers: [0, 0, 0, 0, 0, 0, 4, 23, 22, 22, 23, 18, 30, 31, 27, 27, 0],
+      managers: [5, 5, 5, 5, 5, 5, 5, 5, 6, 15, 12, 6, 6, 6, 7, 11, 0],
+    })
+    const texts = [...m.svg.matchAll(/<text x="([\d.]+)" y="144"[^>]*>([^<]+)<\/text>/g)]
+    const xs = texts.map((g) => Number(g[1]))
+    expect(xs.length).toBeGreaterThan(3)
+    for (let i = 1; i < xs.length; i += 1) expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(30)
+    // 末标签是 21:00（与 V2 大屏可见区间一致），23:00 不再挂标签以免与它压字
+    expect(texts.map((g) => g[2])).toContain('21:00')
+    expect(texts.map((g) => g[2])).not.toContain('23:00')
   })
 
   it('数据不足两个整点时回落演示曲线', () => {

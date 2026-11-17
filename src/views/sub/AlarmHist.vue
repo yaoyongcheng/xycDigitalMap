@@ -28,11 +28,22 @@ const alarm = useAlarmStore()
 const auth = useAuthStore()
 const subpage = useSubpageStore()
 
+const props = defineProps<{
+  /**
+   * 垫底层（右滑返回时露出的只读副本）。
+   *
+   * 不带这个开关会有两个后果：① 未登录时的登录守卫会在这里再弹一次登录页
+   * （垫底层是被动渲染的，不该有自己的导航行为）；② 双份实例各自跑挂载副作用。
+   */
+  decorative?: boolean
+}>()
+
 /**
  * 登录守卫（2026-11，支付宝式）：报警历史同样要求 Bearer。
  * 未登录进页面 → 直接去登录，登录成功后回到历史页。
  */
 onMounted(() => {
+  if (props.decorative) return
   if (!auth.isLoggedIn) subpage.openLogin('登录后可查看报警预警历史', { kind: 'alarm-hist' })
 })
 

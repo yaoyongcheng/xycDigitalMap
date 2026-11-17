@@ -6,6 +6,7 @@
   "description": "工地数字地图移动端标准版 · 向阳村项目智能建造管理平台",
   "scripts": {
     "dev": "vite",
+    "dev:host": "vite --host",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "serve:http": "node server/serve.mjs",

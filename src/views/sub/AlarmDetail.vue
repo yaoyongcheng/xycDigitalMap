@@ -6,15 +6,22 @@ import Skel from '@/components/ui/Skel.vue'
 import type { Alarm } from '@/types'
 import { alarmSrcOf } from '@/data/config'
 import { useAuthStore } from '@/stores/auth'
-import { remoteIdOf } from '@/utils/videoAlarm'
+import { camTagOf, placeOf, remoteIdOf } from '@/utils/videoAlarm'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
  * 预警详情（子页内容）
  *
  * 对应原 js/app.js:780-799 renderAlarmDetail(a)。
- * 注意「项目名称 / 任务名称 / 地址」三项在原版是硬编码常量，
- * 不来自预警数据 —— 1:1 复刻下如实保留。
+ *
+ * 2026-11 字段收口（对齐 V2 的 AI 报警详情）：
+ *   · 「项目名称 / 任务名称 / 地址」三项在原版与 V1 都是**写死的常量**，
+ *     其中「地址」干脆是一串和本项目无关的市政地址。现在整块换成 V2 的
+ *     「报警类型 / 报警地点 / 报警时间」三行 —— 这三样都能从
+ *     `:8085 /api/video/alarms` 与通道映射里取到真值。
+ *   · 「自动 / 0级」也删了：服务端没有识别方式与等级字段，硬写就是假数据。
+ *   · 补上三条真实字段：视频通道（`channelNo`）、设备编号（`deviceNo`）、
+ *     处理状态（`handleStatus`）。详情页从此没有一行是编的。
  *
  * 2026-10 新增：现场大图支持双指捏合 / 双击 / 滚轮缩放与拖动平移。
  * 隐患照片的判读点往往在很小的区域，不能放大等于看不了。
@@ -26,6 +33,28 @@ import { useImageZoom } from '@/utils/zoom'
 const props = defineProps<{ alarm: Alarm }>()
 
 const src = computed(() => alarmSrcOf(props.alarm.src))
+
+/**
+ * 大图角标副标题。
+ *
+ * 视频监控是 `CAM-2#材料堆场` 这种**按本条报警的通道现算**的写法；其它来源
+ * （无人机 / 随手拍）用配置里的固定编号。原来一律写死「CAM-2#塔吊」，
+ * 通道 3 的报警也顶着 2 号机位。
+ */
+const tagSub = computed(() =>
+  props.alarm.src === 'cam' ? camTagOf(props.alarm) : src.value.sub,
+)
+
+/** 报警地点：点位名（CAM_PLACE）→ 没有映射就写「N号通道」，都没有写「—」 */
+const place = computed(() => placeOf(props.alarm))
+
+/** 视频通道：服务端 channelNo，没有就「—」 */
+const channelText = computed(() =>
+  props.alarm.channelNo && props.alarm.channelNo > 0 ? `${props.alarm.channelNo}号通道` : '—',
+)
+
+/** 处理状态：服务端 handleStatus（0 未处理 / 1 已处理） */
+const handleText = computed(() => (props.alarm.handleStatus === 1 ? '已处理' : '未处理'))
 
 const { zoomed, label, imgStyle, animating, handlers, reset } = useImageZoom()
 
@@ -102,18 +131,17 @@ const heroSrc = computed(() => remoteShot.value)
     <span v-if="zoomed" class="zoom-badge">{{ label }}</span>
     <div class="alarm-hero-tag">
       <strong>{{ src.name }}</strong>
-      <span>{{ src.sub }}</span>
+      <span>{{ tagSub }}</span>
     </div>
   </div>
   <div class="alarm-info">
     <h4>基础信息</h4>
-    <div class="alarm-kv"><span>项目名称</span><em>中建三局-向阳村项目</em></div>
-    <div class="alarm-kv"><span>任务名称</span><em>向阳村-三维(加密)</em></div>
-    <div class="alarm-kv"><span>检测时间</span><em>{{ alarm.at }}</em></div>
-    <div class="alarm-kv"><span>预警来源</span><em>{{ src.tag }}</em></div>
-    <h4>识别结果</h4>
-    <div class="alarm-kv"><span>识别类型</span><em>{{ alarm.type }}</em><b>自动</b><i>0级</i></div>
-    <div class="alarm-kv"><span>地址</span><em>湖北省武汉市汉阳区江堤街道江永堤路铉龙城</em></div>
-    <div class="alarm-kv"><span>经纬度</span><em class="alarm-geo">{{ alarm.geo || '—' }}</em></div>
+    <div class="alarm-kv"><span>报警类型</span><em>{{ alarm.type }}</em></div>
+    <div class="alarm-kv"><span>报警地点</span><em class="alarm-place">{{ place }}</em></div>
+    <div class="alarm-kv"><span>报警时间</span><em>{{ alarm.at }}</em></div>
+    <h4>设备信息</h4>
+    <div class="alarm-kv"><span>视频通道</span><em>{{ channelText }}</em></div>
+    <div class="alarm-kv"><span>设备编号</span><em class="alarm-geo">{{ alarm.deviceNo || '—' }}</em></div>
+    <div class="alarm-kv"><span>处理状态</span><em>{{ handleText }}</em></div>
   </div>
 </template>

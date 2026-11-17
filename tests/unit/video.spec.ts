@@ -13,6 +13,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearPictureCache, fetchAlarmPicture, fetchVideoAlarms, parseVideoAlarms } from '@/api/video'
+import { camTagOf, placeOf } from '@/utils/videoAlarm'
 import { useAlarmStore } from '@/stores/alarm'
 import { alarmTone } from '@/utils/alarmTone'
 import { normalizeTime, relTime, remoteIdOf, toAlarms } from '@/utils/videoAlarm'
@@ -56,6 +57,7 @@ describe('parseVideoAlarms', () => {
       captureTime: '2026-11-11 08:12:30',
       handleStatus: 0,
       channelNo: 7,
+      deviceNo: '',
     })
   })
 
@@ -111,6 +113,7 @@ describe('parseVideoAlarms', () => {
       captureTime: '2026-11-11 08:37:00',
       handleStatus: 0,
       channelNo: 3,
+      deviceNo: '06d0680610086',
     })
   })
 })
@@ -164,6 +167,7 @@ describe('toAlarms', () => {
     captureTime: time,
     handleStatus: 0,
     channelNo: 3,
+    deviceNo: '06d0680610086',
   })
 
   it('按时间倒序，并区分今日 / 历史', () => {
@@ -195,7 +199,32 @@ describe('toAlarms', () => {
     // 反光衣 → 防护类配图与风险色
     expect(a.title).toBe('防护报警')
     expect(a.img).toBe('img/alarm-net.webp')
-    expect(a.desc).toBe('反光衣检测 · 3号通道抓拍')
+    // 通道 3 有点位名（安全讲台），副标题用点位名而不是「3号通道」
+    expect(a.desc).toBe('反光衣检测 · 安全讲台抓拍')
+  })
+
+  /*
+   * 报警地点（2026-11 字段收口）：服务端只给通道号，点位名来自 CAM_PLACE。
+   * 有映射时列表副标题与详情页都用点位名，没有映射不能编 —— 退到通道号。
+   */
+  it('通道 2 的报警地点是「材料堆场」，副标题同步换成点位名', () => {
+    const [a] = toAlarms([{ ...mk(1, '', '2026-11-11 08:37:00'), alertType: 11, channelNo: 2 }])
+    expect(a.place).toBe('材料堆场')
+    expect(a.desc).toBe('安全帽检测 · 材料堆场抓拍')
+    expect(placeOf(a)).toBe('材料堆场')
+    expect(camTagOf(a)).toBe('CAM-2#材料堆场')
+  })
+
+  it('没有点位映射的通道：地点退到「N号通道」，角标只写 CAM-N', () => {
+    const [a] = toAlarms([{ ...mk(1, '', '2026-11-11 08:37:00'), alertType: 11, channelNo: 9 }])
+    expect(a.place).toBe('')
+    expect(placeOf(a)).toBe('9号通道')
+    expect(camTagOf(a)).toBe('CAM-9')
+  })
+
+  it('完全没有通道号时地点给「—」，角标给中性文案', () => {
+    expect(placeOf({})).toBe('—')
+    expect(camTagOf({})).toBe('现场摄像头')
   })
 
   it('名与类型码都取不到时给中性名，不丢行也不留空', () => {

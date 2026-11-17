@@ -14,6 +14,7 @@ import { alarmFixtures } from '../fixtures/alarms'
 import { useAuthStore } from '@/stores/auth'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
+import { markSilentBack, resetBackSlot } from '@/utils/backAction'
 import MinePage from '@/views/MinePage.vue'
 import SafetyPanel from '@/views/home/SafetyPanel.vue'
 import WorkPage from '@/views/WorkPage.vue'
@@ -108,7 +109,13 @@ describe('交互优化回归', () => {
       const sub = useSubpageStore()
       const alarm = useAlarmStore()
 
-      await w.find('.alarm-feed-item').trigger('click')
+      /*
+       * 选择器排除 `[data-clone]`：轮播首尾各有一张副本页做无缝循环
+       * （见 AlarmFeed.vue 的 `slides` 注释），DOM 里第一张 `.alarm-feed-page`
+       * 是**末页副本**，拿它当"第一页"会选到末页的条目。
+       * 断言的是「点第一条报警进它的详情」，所以这里必须锁定真实第一页。
+       */
+      await w.find('.alarm-feed-page:not([data-clone]) .alarm-feed-item').trigger('click')
       expect(sub.view).toEqual({ kind: 'alarm-detail', id: alarm.latest[0].id })
       /*
        * 返回键回首页，不回巡检列表：用户是从首页安全面板点进来的，
@@ -123,6 +130,116 @@ describe('交互优化回归', () => {
       sub.openAlarmDetail('no-such-id')
       expect(sub.view).toEqual({ kind: 'none' })
       expect(w.exists()).toBe(true)
+    })
+  })
+
+  /**
+   * 预警轮播的双向循环（2026-11 修复）
+   *
+   * 旧实现只在轨道末尾补了一张首页副本：往后翻能绕回开头，往前翻到第一页就
+   * 被 `target < 0 → go(0)` 夹住，手指继续右滑毫无反应 —— 这就是现场反馈的
+   * 「卡在某一页滑不动」。这组用例按「手指在屏幕上真实滑动」的顺序派发指针事件，
+   * 断言圆点与轨道位置在**两个方向上都能一直滑下去且不跑偏**。
+   */
+  describe('预警轮播双向循环', () => {
+    /** happy-dom 没有指针捕获实现，桩掉（组件只拿它兜住"手指划出边界"） */
+    function stubCapture(): void {
+      const proto = HTMLElement.prototype as unknown as Record<string, unknown>
+      proto.setPointerCapture ??= () => {}
+      proto.releasePointerCapture ??= () => {}
+      proto.hasPointerCapture ??= () => true
+    }
+
+    /**
+     * 一次完整的滑动手势：按下 → 移动 → 抬起（dx 为正 = 手指右滑 = 回上一页）。
+     *
+     * 末尾 `await nextTick()`：翻页只改 `idx` 与轨道内联样式，圆点是模板里
+     * 按 `dotOf(idx)` 算出来的，不等 Vue 刷新就读 DOM 会读到上一帧。
+     */
+    async function swipe(win: Element, from: number, to: number): Promise<void> {
+      for (const [type, x] of [
+        ['pointerdown', from],
+        ['pointermove', to],
+        ['pointerup', to],
+      ] as const) {
+        const e = new Event(type, { bubbles: true })
+        Object.assign(e, { clientX: x, clientY: 200, pointerId: 1 })
+        win.dispatchEvent(e)
+      }
+      await nextTick()
+    }
+
+    /** 当前激活的圆点序号（-1 = 一个都没亮，即状态失配） */
+    function activeDot(w: ReturnType<typeof mount>): number {
+      return w.findAll('.alarm-feed-dot').findIndex((d) => d.classes().includes('on'))
+    }
+
+    function trackStyle(w: ReturnType<typeof mount>): string {
+      return w.find('.alarm-feed-track').attributes('style') ?? ''
+    }
+
+    beforeEach(() => {
+      stubCapture()
+    })
+
+    it('第一页继续右滑会接上最后一页，而不是顶死不动', async () => {
+      signIn()
+      const w = mount(SafetyPanel)
+      await nextTick()
+      // 夹具 4 条今日报警 ÷ 3 条一页 = 2 页，起始停在真实第 1 页
+      expect(w.findAll('.alarm-feed-page').length).toBe(4) // 2 真实 + 2 副本
+      expect(activeDot(w)).toBe(0)
+
+      const win = w.find('.alarm-feed-win').element
+      await swipe(win, 200, 300)
+      // 右滑一页 → 落到「末页副本」上，圆点换算成最后一页
+      expect(activeDot(w)).toBe(1)
+
+      // 吸附动画播完 + 回卷到等价的真实末页：圆点不变，轨道落在真实下标 2 上
+      vi.advanceTimersByTime(500)
+      await nextTick()
+      expect(activeDot(w)).toBe(1)
+      expect(trackStyle(w)).toContain('translateX(-50%)') // 2 / 4 页
+
+      // 再右滑一页回到第一页 —— 证明「往回滑」这条路是通的
+      await swipe(win, 200, 300)
+      expect(activeDot(w)).toBe(0)
+      expect(trackStyle(w)).toContain('translateX(-25%)') // 1 / 4 页
+    })
+
+    it('最后一页继续左滑会绕回第一页，并且不会滑进空白', async () => {
+      signIn()
+      const w = mount(SafetyPanel)
+      await nextTick()
+
+      const win = w.find('.alarm-feed-win').element
+      await swipe(win, 300, 200)
+      expect(activeDot(w)).toBe(1) // 第 2 页
+      vi.advanceTimersByTime(500)
+      await nextTick()
+
+      // 末页再左滑 → 停在「首页副本」，圆点已换算成第 1 页
+      await swipe(win, 300, 200)
+      expect(activeDot(w)).toBe(0)
+      vi.advanceTimersByTime(500)
+      await nextTick()
+      // 关键：回卷后必须停在真实首页（下标 1），而不是留在副本（下标 3）
+      expect(trackStyle(w)).toContain('translateX(-25%)')
+
+      // 回卷后继续左滑仍然正常翻页 —— 旧实现正是在这一步滑进不存在的下标
+      await swipe(win, 300, 200)
+      expect(activeDot(w)).toBe(1)
+    })
+
+    it('位移不足阈值时回弹，不翻页也不改变轨道位置', async () => {
+      signIn()
+      const w = mount(SafetyPanel)
+      await nextTick()
+
+      const win = w.find('.alarm-feed-win').element
+      await swipe(win, 200, 205) // 5px < CLICK_SLOP，按点击处理
+      expect(activeDot(w)).toBe(0)
+      expect(trackStyle(w)).toContain('translateX(-25%)')
     })
   })
 
@@ -179,6 +296,39 @@ describe('交互优化回归', () => {
       const w = mount(SubPage)
       expect(w.find('.subpage-under').exists()).toBe(false)
     })
+
+    /*
+     * 2026-11：报警预警历史页也能进详情（AlarmHist.vue 的 onItemOpen）。
+     * 垫底层当时只认 inspect-list，这条路径的上一层没垫 —— 转场途中露出的是
+     * .pages（首页），现场看到的就是「列表 ↔ 详情 切换闪一下首页」。
+     */
+    it('详情页 + 上一层是报警预警历史 → 也要垫一层只读历史页', () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openAlarmHist('today')
+      sub.openAlarmDetail(alarm.latest[0].id, { kind: 'alarm-hist' })
+
+      const w = mount(SubPage)
+      const under = w.find('.subpage-under')
+      expect(under.exists()).toBe(true)
+      expect(under.find('.nav-title').text()).toBe('报警预警')
+      // 垫的确实是历史页本身，不只是个空壳
+      expect(under.find('.alarm-hist-page').exists()).toBe(true)
+      // 只读副本：没有返回按钮，也不参与键盘
+      expect(under.find('[data-back]').exists()).toBe(false)
+      expect(under.attributes('aria-hidden')).toBe('true')
+    })
+
+    it('未登录时垫底层不触发登录守卫（只有当前层能导航）', () => {
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openAlarmHist('today')
+      sub.openAlarmDetail(alarm.latest[0].id, { kind: 'alarm-hist' })
+
+      mount(SubPage)
+      // AlarmHist 的 onMounted 守卫若在垫底层里生效，会把视图改成 login
+      expect(sub.view.kind).toBe('alarm-detail')
+    })
   })
 
   /*
@@ -209,13 +359,59 @@ describe('交互优化回归', () => {
       expect(w.find('#subpage').classes()).toContain('is-leaving')
       // 滑出过程中仍是详情页（露出垫底的列表）
       expect(sub.view.kind).toBe('alarm-detail')
-      // App 的 theme-color 靠它提前切到目标页面（iPhone 系统状态栏只认 theme-color）
-      expect(sub.leaving).toBe(true)
+      /*
+       * 详情 → 列表是「子页 → 子页」：目标页面顶部仍是白色导航栏，外壳不能
+       * 提前切到一级页面形态，否则 theme-color 转深、首页底栏被放出来，
+       * 手机上就是顶上一条黑、底下一块灰（2026-11 现场反馈）。
+       */
+      expect(sub.leaving).toBe(false)
 
       vi.advanceTimersByTime(220)
       await nextTick()
       expect(sub.view.kind).toBe('inspect-list')
       expect(w.find('#subpage').classes()).not.toContain('is-leaving')
+      expect(sub.leaving).toBe(false)
+    })
+
+    it('浏览器返回（popstate）引起时立即落状态，不再补一段滑出', async () => {
+      /*
+       * 真机现场：详情页右滑 → 浏览器自己先演一遍转场 → 我们再把详情页滑出
+       * 一次，看起来就是「页面还停在详情，闪一下才变成报警预警」。
+       * 所以这条来源不补动画，其余（返回箭头 / 应用内手势）照旧。
+       */
+      signIn()
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openInspectList('today')
+      sub.openAlarmDetail(alarm.latest[0].id, true)
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      resetBackSlot()
+      markSilentBack()
+      await w.find('#btnBack').trigger('click')
+      expect(w.find('#subpage').classes()).not.toContain('is-leaving')
+      await nextTick()
+      expect(sub.view.kind).toBe('inspect-list')
+    })
+
+    it('详情返回一级页面（上一级是首页）时才提前切外壳形态', async () => {
+      signIn()
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      // from=false：从首页轮播直进详情，返回目标是一级页面
+      sub.openAlarmDetail(alarm.latest[0].id, false)
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      await w.find('#btnBack').trigger('click')
+      expect(w.find('#subpage').classes()).toContain('is-leaving')
+      // 这套形态由 App.vue 的 theme-color 与 app.css 的 is-swipe-back 规则消费
+      expect(sub.leaving).toBe(true)
+
+      vi.advanceTimersByTime(220)
+      await nextTick()
+      expect(sub.isOpen).toBe(false)
       expect(sub.leaving).toBe(false)
     })
 
@@ -235,15 +431,15 @@ describe('交互优化回归', () => {
     })
 
     /*
-     * 滑出期间必须提前把底栏与状态栏切到「目标页面」形态，
+     * 返回一级页面时，滑出期间必须提前把底栏与状态栏切到「目标页面」形态，
      * 否则首页会看到上下白条闪一下（底部是 tabbar 隐藏后露出的浅色底、
      * 顶部是子页白色状态栏）。
      */
-    it('返回过渡期间给 .app 加 is-swipe-back，结束后撤掉', async () => {
+    it('返回一级页面期间给 .app 加 is-swipe-back，结束后撤掉', async () => {
       const sub = useSubpageStore()
       const alarm = useAlarmStore()
-      sub.openInspectList('today')
-      sub.openAlarmDetail(alarm.latest[0].id, true)
+      // from=false：上一层是首页，返回目标是一级页面
+      sub.openAlarmDetail(alarm.latest[0].id, false)
 
       const app = document.createElement('div')
       app.className = 'app home-mode'
@@ -259,6 +455,108 @@ describe('交互优化回归', () => {
       await nextTick()
       await nextTick()
       expect(app.classList.contains('is-swipe-back')).toBe(false)
+    })
+
+    /*
+     * 子页 → 子页（详情回列表 / 回报警预警）不能切这套形态：目标页顶部仍是
+     * 白色导航栏，切了 theme-color 变深、首页底栏放出来，手机上就是
+     * 「顶上一条黑、底下一块灰」闪一下（2026-11 现场反馈）。
+     */
+    it('详情返回列表（上一层仍是子页）不加 is-swipe-back', async () => {
+      signIn()
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openInspectList('today')
+      sub.openAlarmDetail(alarm.latest[0].id, true)
+
+      const app = document.createElement('div')
+      app.className = 'app home-mode'
+      document.body.appendChild(app)
+
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      await w.find('#btnBack').trigger('click')
+      expect(app.classList.contains('is-swipe-back')).toBe(false)
+      expect(sub.leaving).toBe(false)
+    })
+
+    /*
+     * 2026-11 现场问题：「右滑返回之后，第二次进入报警详情页会卡住」。
+     *
+     * 手机边缘侧滑被浏览器认领时只来一个 popstate，没有 pointerup —— 应用内
+     * 手势已经把层位移过了，那份内联 transform 就永远留在 .subpage 上。
+     * animation 优先级高于内联样式，所以进入动画播的时候看不出异常；动画一
+     * 结束元素「啪」地跳回偏移位置，页面看起来就卡住不动了。
+     */
+    it('进入下一层时清掉手势残留的内联位移（否则动画结束会跳回偏移位）', async () => {
+      signIn()
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openAlarmHist('today')
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      const el = w.find('#subpage').element as HTMLElement
+      // 模拟「手势被浏览器接管后」留下的半截位移
+      el.style.transition = 'none'
+      el.style.transform = 'translate3d(66px, 0, 0)'
+
+      sub.openAlarmDetail(alarm.latest[0].id, { kind: 'alarm-hist' })
+      await nextTick()
+      await nextTick()
+
+      expect(el.style.transform).toBe('')
+      expect(el.style.transition).toBe('')
+      // 进入动画照样要播
+      expect(el.classList.contains('is-entering')).toBe(true)
+    })
+
+    /*
+     * 同一场景的返回方向：位移只有 66px（没过半屏）时，那只是「拖到一半被
+     * 打断」，不能当成「已经滑出去」直接瞬关 —— 否则这条路径上点返回永远没动画。
+     */
+    it('层只被拖到一半就点返回：仍播滑出动画，并清掉残留位移', async () => {
+      signIn()
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openAlarmHist('today')
+      sub.openAlarmDetail(alarm.latest[0].id, { kind: 'alarm-hist' })
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      const el = w.find('#subpage').element as HTMLElement
+      el.style.transition = 'none'
+      el.style.transform = 'translate3d(66px, 0, 0)'
+
+      await w.find('#btnBack').trigger('click')
+      expect(el.classList.contains('is-leaving')).toBe(true)
+      expect(el.style.transform).toBe('')
+      expect(sub.view.kind).toBe('alarm-detail')
+    })
+
+    it('层已被手势推到屏幕外时，返回只落状态、不重复播动画', async () => {
+      signIn()
+      const sub = useSubpageStore()
+      const alarm = useAlarmStore()
+      sub.openAlarmHist('today')
+      sub.openAlarmDetail(alarm.latest[0].id, { kind: 'alarm-hist' })
+      const w = mount(SubPage, { attachTo: document.body })
+      await nextTick()
+
+      const el = w.find('#subpage').element as HTMLElement
+      // happy-dom 不做布局：把「已滑出」的几何位置补上，判断才走得通
+      Object.defineProperty(el, 'clientWidth', { configurable: true, value: 390 })
+      el.getBoundingClientRect = () =>
+        ({ left: 390, top: 0, right: 780, bottom: 844, width: 390, height: 844, x: 390, y: 0 }) as DOMRect
+      // 手势层滑出后置的是 100%（整层已在屏幕外）
+      el.style.transition = 'none'
+      el.style.transform = 'translate3d(100%, 0, 0)'
+
+      await w.find('#btnBack').trigger('click')
+      expect(el.classList.contains('is-leaving')).toBe(false)
+      expect(el.style.transform).toBe('')
+      expect(sub.view.kind).toBe('alarm-hist')
     })
   })
 
@@ -432,7 +730,8 @@ describe('交互优化回归', () => {
       await nextTick()
       const sub = useSubpageStore()
       const alarm = useAlarmStore()
-      await panel.find('.alarm-feed-item').trigger('keydown', { key: 'Enter' })
+      // 排除 `[data-clone]` 的原因同上：副本页排在真实页之前
+      await panel.find('.alarm-feed-page:not([data-clone]) .alarm-feed-item').trigger('keydown', { key: 'Enter' })
       expect(sub.view).toEqual({ kind: 'alarm-detail', id: alarm.latest[0].id })
     })
   })

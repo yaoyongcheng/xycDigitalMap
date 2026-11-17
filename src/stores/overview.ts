@@ -9,7 +9,7 @@
  *   · 取不到就 `null`，页面上显示「—」并给出「暂无数据」提示；
  *   · 每个数据块各自记录状态（idle / ok / error），互不牵连。
  *
- * 三个接口各自独立成败：人员总览挂了不影响班组出勤，反之亦然。所以取数用
+ * 四个接口各自独立成败：人员总览挂了不影响班组出勤，反之亦然。所以取数用
  * `Promise.allSettled`，绝不用 `Promise.all` —— 后者一个失败就整组丢结果。
  */
 
@@ -18,6 +18,7 @@ import { defineStore } from 'pinia'
 
 import { fetchPersonHour, fetchTeamsAtte, type PersonHour, type TeamAtte } from '@/api/home'
 import { fetchPersonOverall, type PersonOverall } from '@/api/overview'
+import { fetchTradeAtte, type TradeAtte } from '@/api/person'
 import type { HourLiveData, TrendPoint } from '@/utils/chart'
 
 /** 一次取数到失败后的冷却时间：避免每次进首页都打一遍失败请求 */
@@ -48,6 +49,9 @@ export const useOverviewStore = defineStore('overview', () => {
   /** 今日分时人数；null = 没取到 */
   const hours = ref<PersonHour | null>(null)
 
+  /** 今日在场工种（按人数降序，空数组 = 没取到或确实一个人都没有） */
+  const trades = ref<TradeAtte[]>([])
+
   const loading = ref(false)
   const error = ref('')
 
@@ -55,6 +59,7 @@ export const useOverviewStore = defineStore('overview', () => {
   const overallState = ref<BlockState>('idle')
   const teamsState = ref<BlockState>('idle')
   const hoursState = ref<BlockState>('idle')
+  const tradesState = ref<BlockState>('idle')
 
   /** 成功取数的时刻（HH:mm），用于「更新于」 */
   const updatedAt = ref('')
@@ -93,6 +98,14 @@ export const useOverviewStore = defineStore('overview', () => {
   const teamRows = computed<[string, number, string][]>(() =>
     teams.value.map((t) => [t.organName, t.atteNum, `${t.atteRate.toFixed(2)}%`]),
   )
+
+  /**
+   * 今日出勤工种：`[工种名, 在场人数]`，已经按人数降序。
+   *
+   * 工种是**逐个问**出来的（每个工种一次 `/person/page` 的 total），接口没有
+   * 聚合能力，见 `api/person.ts` 的说明。没人则空数组，页面显示空态。
+   */
+  const tradeRows = computed<[string, number][]>(() => trades.value.map((t) => [t.name, t.count]))
 
   /**
    * 分时人数曲线的入参；数据不足两个整点时为 undefined（页面显示空态）。
@@ -134,7 +147,12 @@ export const useOverviewStore = defineStore('overview', () => {
     loading.value = true
     inflight = (async () => {
       // allSettled 而不是 all：一个接口 403 不该把另外两块的真实数据一起丢掉
-      const [o, t, h] = await Promise.allSettled([fetchPersonOverall(), fetchTeamsAtte(), fetchPersonHour()])
+      const [o, t, h, w] = await Promise.allSettled([
+        fetchPersonOverall(),
+        fetchTeamsAtte(),
+        fetchPersonHour(),
+        fetchTradeAtte(),
+      ])
 
       if (o.status === 'fulfilled') {
         overall.value = o.value
@@ -158,6 +176,12 @@ export const useOverviewStore = defineStore('overview', () => {
         hoursState.value = 'ok'
       } else {
         hoursState.value = 'error'
+      }
+      if (w.status === 'fulfilled') {
+        trades.value = w.value
+        tradesState.value = 'ok'
+      } else {
+        tradesState.value = 'error'
       }
 
       loading.value = false
@@ -186,9 +210,11 @@ export const useOverviewStore = defineStore('overview', () => {
     overall.value = null
     teams.value = []
     hours.value = null
+    trades.value = []
     overallState.value = 'idle'
     teamsState.value = 'idle'
     hoursState.value = 'idle'
+    tradesState.value = 'idle'
     error.value = ''
     updatedAt.value = ''
     lastFailAt = 0
@@ -198,15 +224,18 @@ export const useOverviewStore = defineStore('overview', () => {
     overall,
     teams,
     hours,
+    trades,
     loading,
     error,
     overallState,
     teamsState,
     hoursState,
+    tradesState,
     updatedAt,
     hasLive,
     kpis,
     teamRows,
+    tradeRows,
     hourLive,
     weekTrend,
     load,

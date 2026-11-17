@@ -873,7 +873,13 @@ export interface DronePano {
   taskName: string
   /** 成果文件名（`…_0.jpg`，存盘时用） */
   name: string
-  /** 成果生成时间 `YYYY-MM-DD HH:mm:ss` */
+  /**
+   * 成果**拼接完成**时间 `YYYY-MM-DD HH:mm:ss`（任务的 `endTime`）。
+   *
+   * ⚠️ 不是 `createTime`：那是「重建开始」的时刻（11-17 本次 11:58:40），
+   * 跑完要几分钟（12:07:30）。V2 列表（`#/control` 的重建成果）显示的是完成
+   * 时刻，这里跟它对齐 —— 同一张图在两处文案一致，别让人误以为取到了旧图。
+   */
   time: string
   /** 预览图（等距圆柱，约 185KB）—— 首屏 / 列表卡片都用它 */
   preview: string
@@ -927,6 +933,10 @@ function toAchievement(raw: unknown): DroneAchievement | null {
  * 优先取 `taskType === 2 && status === 2`（已完成的全景），按 `createTime` 倒序；
  * 一条成果都没有（只有 pano.json、没有等距圆柱图）就接着往下挑，不硬顶第一条。
  *
+ * 注意两个时间不是一回事：`createTime` 是**重建开始**（11-17 那次 11:58:40），
+ * `endTime` 是**拼接完成**（12:07:30）。排序用 `createTime`（和服务端列表一致），
+ * 展示的 `time` 用 `endTime`（和 V2 列表一致，见 `DronePano.time`）。
+ *
  * 一次飞行会产出**多个**全景点（向阳村实测 3 个、光谷元著 5 个），按名字排序
  * 取第一个 —— 用户要求（2026-11-16）「只存最新的一张」，对应 V2 截图里那张
  * `向阳村-全景_202611151130181616_0.jpg`（13.05MB）。
@@ -967,7 +977,8 @@ export function pickLatestPano(raw: unknown, projectId?: number): DronePano | nu
       projectName: str(t.projectName),
       taskName: str(t.taskName) || str(t.lineName),
       name: first.name,
-      time: str(t.createTime),
+      // 完成时刻优先，缺了才退 updateTime / createTime（老记录可能没 endTime）
+      time: str(t.endTime) || str(t.updateTime) || str(t.createTime),
       preview: first.thumbnail || first.download,
       full: first.download || first.thumbnail,
       size: first.size,

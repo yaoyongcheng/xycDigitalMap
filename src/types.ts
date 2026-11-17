@@ -82,6 +82,15 @@ export interface Alarm {
    */
   channelNo?: number
   /**
+   * 报警地点（点位名），如「材料堆场」。
+   *
+   * 服务端只给通道号，点位名按 `CAM_PLACE`（与 V2 同源的客户端配置）还原；
+   * 没有映射时留空，由详情页退到「N号通道」—— 绝不编一个地名出来。
+   */
+  place?: string
+  /** 设备序列号（服务端 `deviceNo`）；测试夹具可以不填 */
+  deviceNo?: string
+  /**
    * 服务端已读/处理状态（`handleStatus`）：0 = 未读/待处理，1 = 已读/已处理。
    *
    * 这是**唯一权威**的已读来源（参考 Unity 端 `AIAlarmMessage.AlarmStatus` ←
