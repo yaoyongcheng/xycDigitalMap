@@ -174,50 +174,12 @@ describe('stores · alarm / home / subpage', () => {
       expect(useHomeStore().homeMod).toBe('safety')
     })
 
-    it('阶段 5：人员树来自真实区域台账，人数一律为 null（不拿 0 冒充没人）', () => {
-      const home = useHomeStore()
-      // 台账未加载时是空列表，不再是 5 个写死区域
-      expect(home.peopleTree).toEqual([])
-
-      useDeviceLedgerStore().applyAreas([
-        { id: 175, project_id: 'P000000076', area_name: '智能电梯2', principal: '未设置' },
-        { id: 132, project_id: 'P000000076', area_name: '酒店', principal: '未设置' },
-      ])
-      expect(home.peopleTree.map((n) => n.id)).toEqual(['area-175', 'area-132'])
-      expect(home.peopleTree.map((n) => n.name)).toEqual(['智能电梯2', '酒店'])
-      expect(home.peopleTree.every((n) => n.count === null)).toBe(true)
-      expect(home.peopleTree.every((n) => !n.children)).toBe(true)
-    })
-
-    describe('peopleChildren', () => {
-      it('未下钻时返回真实区域列表', () => {
-        const home = useHomeStore()
-        useDeviceLedgerStore().applyAreas([
-          { id: 175, project_id: 'P000000076', area_name: '智能电梯2', principal: '' },
-        ])
-        expect(home.peopleChildren().map((n) => n.name)).toEqual(['智能电梯2'])
-      })
-
-      it('下钻到有子节点的节点时返回其子节点（楼层接口开放后的形态）', () => {
-        const home = useHomeStore()
-        home.peopleNode = {
-          id: 'b2',
-          name: '2#楼',
-          count: null,
-          children: [{ id: 'b2-1', name: '1F', count: null }],
-        }
-        expect(home.peopleChildren().map((c) => c.name)).toEqual(['1F'])
-      })
-
-      it('下钻到无子节点的真实区域返回空数组', () => {
-        const home = useHomeStore()
-        useDeviceLedgerStore().applyAreas([
-          { id: 175, project_id: 'P000000076', area_name: '智能电梯2', principal: '' },
-        ])
-        home.peopleNode = home.peopleTree[0]
-        expect(home.peopleChildren()).toEqual([])
-      })
-    })
+    /*
+     * 人员分布的下钻状态在 2026-11-18 挪进了 PeopleDist 组件自己（数据源换成
+     * `/location/personCurLocation/v2` 的区域人数），store 里不再有
+     * peopleTree / peopleNode —— 这里只保留「区域台账仍可独立加载」的覆盖，
+     * 见 stage5.spec.ts 的 loadAreas 用例。
+     */
 
     it('九张卡恒定存在（入口不消失）：前四类台数来自台账，后五类是静态入口', () => {
       const home = useHomeStore()

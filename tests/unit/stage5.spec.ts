@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import { clearPictureCache } from '@/api/video'
+import { buildScenes, type SceneAtte } from '@/api/person'
 import MsgPage from '@/views/MsgPage.vue'
 import PeopleDist from '@/views/home/parts/PeopleDist.vue'
 import WorkPage from '@/views/WorkPage.vue'
@@ -12,6 +13,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useMsgStore } from '@/stores/msg'
+import { useOverviewStore } from '@/stores/overview'
 import { useSubpageStore } from '@/stores/subpage'
 import { camAlarmFixtures } from '../fixtures/camAlarms'
 
@@ -223,58 +225,140 @@ describe('阶段 5 · 真实数据', () => {
     })
   })
 
-  describe('人员分布：真实区域台账 + 人数空态', () => {
-    it('面板挂载即拉 :8084 区域清单，人数显示「—」而不是 0 人', async () => {
-      signIn()
-      const w = mount(PeopleDist)
-      // 关键：人员面板自己触发取数，不能等用户先点开智控/设备页
-      expect(fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/data/areas'),
-        expect.anything(),
+  describe('人员分布：V2 三场景 + 人员姓名', () => {
+    /**
+     * 人员行照接口真实字段裁剪：`alive` 才是「此刻在场」，
+     * 离线的人（areaName 为空、alive false）不计入任何区域。
+     */
+    const PEOPLE = [
+      { personName: '何功纯', personTypeWork: '钢筋工', areaName: '智能钢筋加工区', alive: true, enterpriseName: '湖北瀚海星泊建设有限公司' },
+      { personName: '雷承林', personTypeWork: '木工', areaName: '管理区域', alive: true, enterpriseName: '湖北瀚海星泊建设有限公司' },
+      { personName: '王五', personTypeWork: '瓦工', areaName: '2#楼1F管控区', alive: true, enterpriseName: '中建三局' },
+      { personName: '赵六', personTypeWork: '管理人员', areaName: 'B1管理区域', alive: true, enterpriseName: '中建三局' },
+      { personName: '牟其兵', personTypeWork: '木工', areaName: null, alive: false, enterpriseName: '湖北瀚海星泊建设有限公司' },
+    ]
+
+    /** 兜底路径的输入：接口只给区域人数、没有人员名单 */
+    const COUNTS = [
+      { areaId: '1', areaName: '管理区域', onlinePersonNum: '33' },
+      { areaId: '2', areaName: '智能钢筋加工区', onlinePersonNum: '2' },
+      { areaId: '4', areaName: '2#楼4F管控区', onlinePersonNum: '0' },
+      { areaId: '5', areaName: '2#楼1F管控区', onlinePersonNum: '4' },
+      { areaId: '6', areaName: 'B1管理区域', onlinePersonNum: '2' },
+      { areaId: '-1', areaName: '全部', onlinePersonNum: '41' },
+    ]
+
+    function seed(scenes: SceneAtte[], total: number | null): void {
+      const ov = useOverviewStore()
+      ov.scenes = scenes
+      ov.sceneTotal = total
+      ov.loading = false
+    }
+
+    it('管控区按 V2 地图归到三个场景，只算 alive 的人', () => {
+      const { scenes, total } = buildScenes(PEOPLE, [])
+      expect(scenes.map((s) => s.name)).toEqual(['场布图', '2#住宅楼', '地下室'])
+      // 场布图 = 管理区域(雷承林) + 智能钢筋加工区(何功纯)
+      expect(scenes[0].count).toBe(2)
+      expect(scenes[1].count).toBe(1)
+      expect(scenes[2].count).toBe(1)
+      // 离线的牟其兵（areaName 为空 / alive false）不进任何区域
+      expect(total).toBe(4)
+      expect(scenes.flatMap((s) => s.areas.flatMap((a) => a.members.map((m) => m.name)))).not.toContain('牟其兵')
+    })
+
+    it('每个管控区带人员姓名与工种（人数 = 名单条数，不会对不上）', () => {
+      const { scenes } = buildScenes(PEOPLE, [])
+      const zb = scenes[0].areas.find((a) => a.name === '智能钢筋加工区')
+      expect(zb?.members).toEqual([
+        { name: '何功纯', trade: '钢筋工', company: '湖北瀚海星泊建设有限公司' },
+      ])
+      for (const s of scenes) {
+        for (const a of s.areas) expect(a.count).toBe(a.members.length)
+        expect(s.count).toBe(s.areas.reduce((n, a) => n + a.count, 0))
+      }
+    })
+
+    it('接口没给 alive 时退回区域人数（名单为空但数字仍是真的）', () => {
+      const { scenes, total } = buildScenes(
+        [{ personName: '无名', personTypeWork: '木工', areaName: '管理区域', alive: false }],
+        COUNTS,
       )
-      await flushPromises()
+      expect(total).toBe(41)
+      expect(scenes[0].count).toBe(35)
+      expect(scenes[0].areas[0].members).toEqual([])
+    })
+
+    it('三个场景都渲染，0 人的场景也明写「0人」', async () => {
+      signIn()
+      seed(buildScenes(PEOPLE, []).scenes, 4)
+      const w = mount(PeopleDist)
       await nextTick()
 
-      expect(w.findAll('.people-zone')).toHaveLength(2)
-      expect(w.text()).toContain('智能电梯2')
-      expect(w.text()).toContain('人员实时定位接口未开放')
-      expect(w.text()).not.toContain('0人')
-      expect(w.text()).toContain('—')
+      const rows = w.findAll('.people-scene')
+      expect(rows).toHaveLength(3)
+      expect(rows[0].text()).toContain('场布图')
+      expect(rows[0].text()).toContain('2')
+      expect(rows[1].text()).toContain('2#住宅楼')
+      expect(rows[2].text()).toContain('地下室')
+      expect(w.text()).not.toContain('—')
       w.unmount()
     })
 
-    it('加载中不说「暂无」，慢请求灰条与真实卡片同构', async () => {
+    it('点场景下钻，能看到管控区和人员姓名', async () => {
       signIn()
-      let release: ((r: unknown) => void) | undefined
-      vi.stubGlobal('fetch', vi.fn(() => new Promise((res) => { release = res })))
+      seed(buildScenes(PEOPLE, []).scenes, 4)
       const w = mount(PeopleDist)
       await nextTick()
 
-      expect(w.find('[data-skel="people-dist"].people-zones').exists()).toBe(true)
+      await w.findAll('.people-scene')[0].trigger('click')
+      await nextTick()
+      expect(w.find('[data-people="areas"]').exists()).toBe(true)
+      expect(w.text()).toContain('管理区域')
+      // 姓名 + 工种都在
+      expect(w.findAll('.people-members .pm-name').map((n) => n.text())).toEqual(['雷承林', '何功纯'])
+      expect(w.findAll('.people-members .pm-trade').map((n) => n.text())).toEqual(['木工', '钢筋工'])
+
+      await w.find('[data-people="back"]').trigger('click')
+      await nextTick()
+      expect(w.find('[data-people="scenes"]').exists()).toBe(true)
+      w.unmount()
+    })
+
+    it('加载中给同构骨架，不先说「暂无」', async () => {
+      signIn()
+      const ov = useOverviewStore()
+      ov.scenes = []
+      ov.loading = true
+      const w = mount(PeopleDist)
+      await nextTick()
+
+      expect(w.find('[data-skel="people-dist"].people-scenes').exists()).toBe(true)
       expect(w.find('[data-empty="people-dist"]').exists()).toBe(false)
-
-      release?.(jsonResponse({ code: 200, data: { list: AREA_ROWS, total: 2 } }))
-      await flushPromises()
-      await nextTick()
-      expect(w.find('[data-skel="people-dist"]').exists()).toBe(false)
-      expect(w.findAll('.people-zone')).toHaveLength(2)
+      expect(w.text()).not.toContain('0人')
       w.unmount()
     })
 
-    it('区域接口没有数据时给空态，不用设计稿的 5 个区域顶上', async () => {
+    it('接口没给区域口径时给空态，不拿 0 人冒充「没人」', async () => {
       signIn()
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async () => jsonResponse({ code: 200, data: { list: [], total: 0 } })),
-      )
+      seed([], null)
       const w = mount(PeopleDist)
-      await flushPromises()
-      expect(w.find('[data-empty="people-dist"]').text()).toContain('暂无项目区域数据')
-      expect(w.findAll('.people-zone')).toHaveLength(0)
+      await nextTick()
+      expect(w.find('[data-empty="people-dist"]').text()).toContain('暂无人员区域数据')
+      expect(w.findAll('.people-scene')).toHaveLength(0)
+      expect(w.text()).not.toContain('0人')
       w.unmount()
     })
 
-    it('loadAreas 失败只影响区域这一块，不把设备台账一起判失败', async () => {
+    it('未登录时引导去登录', async () => {
+      seed([], null)
+      const w = mount(PeopleDist)
+      await nextTick()
+      expect(w.find('[data-empty="people-dist"]').text()).toContain('登录')
+      w.unmount()
+    })
+
+    it('loadAreas 失败只影响区域台账，不把设备台账一起判失败', async () => {
       signIn()
       vi.stubGlobal(
         'fetch',

@@ -638,35 +638,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   background-position: center center;
 }
 
-.home-gutter-mask {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 40%;
-  bottom: 0;
-  z-index: 2;
-  pointer-events: none;
-  transition: top 0.32s ease;
-}
-
-.home-gutter-mask::before,
-.home-gutter-mask::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 12px;
-  background: linear-gradient(180deg,
-    rgb(5, 10, 21) 0%,
-    rgb(18, 26, 45) 12%,
-    rgb(58, 68, 90) 24%,
-    rgb(140, 160, 184) 34%,
-    rgb(223, 232, 241) 40%,
-    rgb(223, 232, 241) 100%);
-}
-
-.home-gutter-mask::before { left: 0; }
-.home-gutter-mask::after { right: 0; }
+/*
+ * 抽屉两侧的「缝」在 2026-11 被去掉（.home-sheet 改成左右贴边），
+ * 原本用来把这两条 12px 缝从地图渐变到抽屉底色的 .home-gutter-mask 随之删除：
+ * 缝没了，它只会在地图上留下两条 22px 宽的竖直暗柱。
+ */
 
 .home-top {
   position: absolute;
@@ -1168,8 +1144,10 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .home-sheet {
   position: absolute;
-  left: 12px;
-  right: 12px;
+  /* 左右贴屏幕边（2026-11）：原本留 12px 缝，缝隙里能看见地图和两侧的渐隐遮罩，
+     观感像「浮在屏幕中间的一张卡」。首页抽屉是全宽的底部面板，直接贴边更干净。 */
+  left: 0;
+  right: 0;
   top: 42%;
   bottom: 0;
   z-index: 3;
@@ -1253,10 +1231,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
  */
 #page-home.is-sheet-up .home-sheet {
   top: var(--sheet-up-top, 118px);
-}
-
-#page-home.is-sheet-up .home-gutter-mask {
-  top: calc(var(--sheet-up-top, 118px) - 96px);
 }
 
 .home-mods {
@@ -3150,61 +3124,229 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .people-dist { padding: 8px 12px 10px 10px; }
 
-.people-zones {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 8px;
-}
-
-.people-zone {
-  position: relative;
+/*
+ * 人员分布（2026-11-18 对齐 V2 浮层）
+ *
+ * 原来是「3 列 × 2 行」的方格卡（区域名上下堆人数），现在改成 V2 那种
+ * **纵向行列表**：一行一个区域，左边区域名、右边「N人」。三个场景（场布图 /
+ * 2#住宅楼 / 地下室）行高一致，0 人也照样占一行 —— V2 浮层里「2#住宅楼 0人」
+ * 就是明写的，藏起来反而看不出是真的没人还是没取到。
+ */
+.people-scenes {
   display: flex;
   flex-direction: column;
+}
+
+.people-scene {
+  position: relative;
+  display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   gap: 8px;
-  min-height: 76px;
-  padding: 12px 4px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: var(--r-10);
-  background: rgba(47, 124, 255, 0.1);
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 2px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: none;
   color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: default;
 }
 
-.people-zone.drill {
-  cursor: pointer;
-  background: rgba(47, 124, 255, 0.18);
-  border-color: rgba(76, 159, 255, 0.28);
+/* 最后一行不留分隔线，卡片下沿已经有一条了 */
+.people-scene:last-child { border-bottom: 0; }
+
+.people-scene.drill { cursor: pointer; }
+
+/* 可下钻的行给一个指向右侧的暗示（与报警卡的箭头同一套语言） */
+.people-scene.drill::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-right: 1.5px solid var(--ink-4-dark);
+  border-bottom: 1.5px solid var(--ink-4-dark);
+  transform: rotate(-45deg);
+  flex: none;
 }
 
-.people-zone span {
-  font-size: var(--fs-12);
+.people-scene:active.drill { background: rgba(47, 124, 255, 0.12); }
+
+.people-scene span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-13);
   font-weight: 600;
-  color: var(--ink-3-dark);
+  color: var(--ink-2-dark);
+}
+
+/* 0 人不是「异常」，只是没人 —— 名字降一档灰，数字仍要可读 */
+.people-scene.empty span { color: var(--ink-3-dark); }
+
+.people-scene b {
+  font-size: var(--fs-16);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink-1-dark);
   white-space: nowrap;
 }
 
-.people-zone b {
-  font-size: var(--fs-20);
-  font-weight: 700;
-  line-height: 1;
-  color: var(--ink-1-dark);
+/*
+ * 下钻：管控区分组 + 人员姓名
+ *
+ * 一个场景能有三四十人（场布图 38 人），整块铺开会把首页抽屉拉成两屏，
+ * 所以限高 320px 内部滚动 —— 和 V2 那个浮层一样，名单在框里翻。
+ *
+ * 2026-11-18 滚动交互：
+ *   · `overscroll-behavior-y: auto`（原来是 contain）—— 名单滚到顶/底后继续
+ *     滑，滚动链交给外层 `.home-sheet`，抽屉跟着滚。原来写 contain 等于让这块
+ *     把手势吃干净，滚到底怎么划都不动，像被粘住。抽屉自己仍是 contain，
+ *     所以链条止于抽屉，不会再把整页拖起来。
+ *   · 不加 `-webkit-overflow-scrolling: touch` —— 它把这块变成独立滚动层，
+ *     老 iOS 上正是它导致内层滚到底不往父级传；现代内核本来就有惯性。
+ *   · 触摸端不再用 JS 接管（`preventDefault` 会杀掉松手后的滑行惯性），
+ *     滚轮端由 `utils/scrollChain.ts` 做余量接力。
+ */
+.people-scroll {
+  position: relative;
+  margin: 0 -2px;
 }
 
-.people-zone b em {
-  margin-left: 1px;
+.people-groups {
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  /* 纵向手势归滚动容器，别被任何祖先的 touch-action 抢走 */
+  touch-action: pan-y;
+  padding: 0 2px;
+  /* 内滚条在移动端只会盖住姓名，边缘渐隐已经能表达「还能滚」 */
+  scrollbar-width: none;
+}
+
+.people-groups::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/*
+ * 两侧渐隐 = 「这个方向还有内容」的唯一提示。
+ * 层叠在名单之上（z-index 2）、不接收事件；`can-up / can-down` 由组件按
+ * scrollTop 切换 —— 到边就淡出，用户能立刻意识到「再滑就是外层在动了」。
+ */
+.people-scroll::before,
+.people-scroll::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 18px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.16s linear;
+}
+
+.people-scroll::before {
+  top: 0;
+  background: linear-gradient(180deg, rgba(4, 10, 20, 0.62), rgba(4, 10, 20, 0));
+}
+
+.people-scroll::after {
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(4, 10, 20, 0.62), rgba(4, 10, 20, 0));
+}
+
+.people-scroll.can-up::before,
+.people-scroll.can-down::after {
+  opacity: 1;
+}
+
+.people-group + .people-group { border-top: 1px solid rgba(255, 255, 255, 0.07); }
+
+.people-group-hd {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 2px 5px;
+  background: var(--bg-2);
   font-size: var(--fs-11);
-  font-style: normal;
+  color: var(--ink-3-dark);
+}
+
+.people-group-hd span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
 }
 
-.people-zone i {
-  position: absolute;
-  top: 4px;
-  right: 8px;
+.people-group-hd b {
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink-2-dark);
+  white-space: nowrap;
+}
+
+.people-group-hd b em {
+  margin-left: 1px;
+  font-size: var(--fs-10);
   font-style: normal;
-  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--ink-4-dark);
+}
+
+.people-members {
+  margin: 0;
+  padding: 0 0 4px;
+  list-style: none;
+}
+
+.people-members li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  padding: 4px 2px 4px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.people-members li:last-child { border-bottom: 0; }
+
+.pm-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--ink-1-dark);
+}
+
+.pm-trade {
+  flex: none;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+}
+
+.people-no-member {
+  padding: 6px 8px 10px;
+  font-size: var(--fs-11);
   color: var(--ink-4-dark);
 }
 
@@ -3255,53 +3397,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
   margin: -2px 2px 8px;
   font-size: var(--fs-11);
   color: var(--ink-3-dark);
-}
-
-.people-floor-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 6px;
-  max-height: 228px;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.people-floor {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  min-height: 40px;
-  padding: 5px 2px 4px;
-  border-radius: var(--r-8);
-  background: rgba(47, 124, 255, 0.2);
-  border: 1px solid rgba(76, 159, 255, 0.32);
-}
-
-.people-floor span {
-  font-size: var(--fs-10);
-  font-weight: 600;
-  color: #A8B8CC;
-  line-height: 1;
-}
-
-.people-floor b {
-  font-size: var(--fs-13);
-  font-weight: 700;
-  color: var(--blue-dark);
-  line-height: 1.2;
-}
-
-.people-floor.empty {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.04);
-}
-
-.people-floor.empty span,
-.people-floor.empty b {
-  color: #5C6E86;
-  font-weight: 600;
 }
 
 .people-hour { padding: 8px 10px 8px; }
@@ -5390,36 +5485,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   bottom: calc(var(--safe-bot) + 10px);
 }
 
-#page-home .home-gutter-mask {
-  top: calc(42% - 96px);
-}
-
-#page-home .home-gutter-mask::before,
-#page-home .home-gutter-mask::after {
-  width: 22px;
-  background: linear-gradient(180deg,
-    rgba(11, 22, 38, 0) 0%,
-    rgba(11, 22, 38, 0.05) 32%,
-    rgba(11, 22, 38, 0.16) 55%,
-    rgba(11, 22, 38, 0.38) 74%,
-    rgba(11, 22, 38, 0.72) 90%,
-    var(--bg-2) 100%);
-}
-
-#page-home .home-gutter-mask::before {
-  -webkit-mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.7) 38%, transparent 100%);
-  mask-image: linear-gradient(90deg, #000 0%, rgba(0, 0, 0, 0.7) 38%, transparent 100%);
-}
-
-#page-home .home-gutter-mask::after {
-  -webkit-mask-image: linear-gradient(270deg, #000 0%, rgba(0, 0, 0, 0.7) 38%, transparent 100%);
-  mask-image: linear-gradient(270deg, #000 0%, rgba(0, 0, 0, 0.7) 38%, transparent 100%);
-}
-
 #page-home .home-sheet {
   background: var(--bg-2);
-  border: 1px solid rgba(110, 168, 255, 0.2);
-  border-bottom: 0;
+  /* 左右已经贴边，只留顶边那根高光线；左右描边留着会在屏幕边缘各露一条 1px 蓝线 */
+  border: 0;
+  border-top: 1px solid rgba(110, 168, 255, 0.2);
   box-shadow:
     0 -6px 20px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(180, 210, 255, 0.12);
@@ -7087,8 +7157,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   letter-spacing: -0.015em;
 }
 
-.eq-count-item b,
-.people-zone b {
+.eq-count-item b {
   font-size: var(--fs-22);
   letter-spacing: -0.015em;
 }
@@ -7108,7 +7177,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 /* 单位：统一小两档 + muted + 与数字留 2px，避免「160人」粘成一团 */
 .crew-kpi b em,
 .eq-count-item b em,
-.people-zone b em {
+.people-scene b em {
   margin-left: 2px;
   font-size: var(--num-unit);
   font-weight: 600;

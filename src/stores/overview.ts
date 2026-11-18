@@ -18,7 +18,7 @@ import { defineStore } from 'pinia'
 
 import { fetchPersonHour, fetchTeamsAtte, type PersonHour, type TeamAtte } from '@/api/home'
 import { fetchPersonOverall, type PersonOverall } from '@/api/overview'
-import { fetchTradeAtte, type TradeAtte } from '@/api/person'
+import { fetchOnSitePeople, type SceneAtte, type TradeAtte } from '@/api/person'
 import type { HourLiveData, TrendPoint } from '@/utils/chart'
 
 /** 一次取数到失败后的冷却时间：避免每次进首页都打一遍失败请求 */
@@ -52,6 +52,17 @@ export const useOverviewStore = defineStore('overview', () => {
   /** 今日在场工种（按人数降序，空数组 = 没取到或确实一个人都没有） */
   const trades = ref<TradeAtte[]>([])
 
+  /**
+   * 人员分布的三个大场景（场布图 / 2#住宅楼 / 地下室）。
+   *
+   * 和工种来自**同一次** `/location/personCurLocation/v2`：那份响应里既有人员
+   * 清单（算工种），也有按管控区聚合好的在线人数（算场景）。空数组 = 没取到。
+   */
+  const scenes = ref<SceneAtte[]>([])
+
+  /** 在场总人数（接口「全部」行的在线数）；null = 没取到 */
+  const sceneTotal = ref<number | null>(null)
+
   const loading = ref(false)
   const error = ref('')
 
@@ -60,6 +71,8 @@ export const useOverviewStore = defineStore('overview', () => {
   const teamsState = ref<BlockState>('idle')
   const hoursState = ref<BlockState>('idle')
   const tradesState = ref<BlockState>('idle')
+  /** 人员分布与工种同源，状态一起变（便于页面区分「加载中」与「确实没人」） */
+  const scenesState = ref<BlockState>('idle')
 
   /** 成功取数的时刻（HH:mm），用于「更新于」 */
   const updatedAt = ref('')
@@ -102,8 +115,9 @@ export const useOverviewStore = defineStore('overview', () => {
   /**
    * 今日出勤工种：`[工种名, 在场人数]`，已经按人数降序。
    *
-   * 工种是**逐个问**出来的（每个工种一次 `/person/page` 的 total），接口没有
-   * 聚合能力，见 `api/person.ts` 的说明。没人则空数组，页面显示空态。
+   * 工种是从在场人员清单里按 `personTypeWork` 端上分组的 —— 接口没有
+   * 「按工种计数」的聚合能力，但清单本身只有几十条，端上分组比分几十次请求准得多。
+   * 没人则空数组，页面显示空态。
    */
   const tradeRows = computed<[string, number][]>(() => trades.value.map((t) => [t.name, t.count]))
 
@@ -151,7 +165,7 @@ export const useOverviewStore = defineStore('overview', () => {
         fetchPersonOverall(),
         fetchTeamsAtte(),
         fetchPersonHour(),
-        fetchTradeAtte(),
+        fetchOnSitePeople(),
       ])
 
       if (o.status === 'fulfilled') {
@@ -178,10 +192,15 @@ export const useOverviewStore = defineStore('overview', () => {
         hoursState.value = 'error'
       }
       if (w.status === 'fulfilled') {
-        trades.value = w.value
+        trades.value = w.value.trades
         tradesState.value = 'ok'
+        scenes.value = w.value.scenes
+        // -1 = 接口没给区域口径，别把「没这个数据」显示成「0 人」
+        sceneTotal.value = w.value.total >= 0 ? w.value.total : null
+        scenesState.value = 'ok'
       } else {
         tradesState.value = 'error'
+        scenesState.value = 'error'
       }
 
       loading.value = false
@@ -211,10 +230,13 @@ export const useOverviewStore = defineStore('overview', () => {
     teams.value = []
     hours.value = null
     trades.value = []
+    scenes.value = []
+    sceneTotal.value = null
     overallState.value = 'idle'
     teamsState.value = 'idle'
     hoursState.value = 'idle'
     tradesState.value = 'idle'
+    scenesState.value = 'idle'
     error.value = ''
     updatedAt.value = ''
     lastFailAt = 0
@@ -225,12 +247,15 @@ export const useOverviewStore = defineStore('overview', () => {
     teams,
     hours,
     trades,
+    scenes,
+    sceneTotal,
     loading,
     error,
     overallState,
     teamsState,
     hoursState,
     tradesState,
+    scenesState,
     updatedAt,
     hasLive,
     kpis,

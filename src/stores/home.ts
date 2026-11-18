@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { ROBOT_CARDS } from '@/utils/deviceLedger'
-import type { Equip, HomeMod, PeopleNode } from '@/types'
+import type { Equip, HomeMod } from '@/types'
 
 /**
  * 首页
@@ -33,24 +33,6 @@ export const useHomeStore = defineStore('home', () => {
   /** 原 js/app.js:60 —— 当前面板。被 switchTab(L70) 读取以决定是否启预警轮播 */
   const homeMod = ref<HomeMod>('safety')
 
-  /** 原 js/app.js:334 —— 人员分布下钻到的节点，null 表示区域列表 */
-  const peopleNode = ref<PeopleNode | null>(null)
-
-  /**
-   * 人员分布（2026-11 阶段 5：改真实区域台账）。
-   *
-   * 原先是 5 个手写区域 + 三栋楼各 5 层人数（`b*Occupied` 稀疏表），全是
-   * 设计稿示意值。现在只列 `:8084 /api/data/areas` 返回的真实区域（现场 9 条）。
-   *
-   * **人数没有数据源**：大屏 open 的 `location/*` 返回 57007 无权限，
-   * `:8084` 的 Swagger 里 20 个路由全是区域/楼栋/设备/房间的 CRUD，
-   * 没有任何人员定位或人数接口。所以 `count` 一律 `null`，页面渲「—」
-   * 并说明原因 —— 0 是个结论，此刻没资格下。
-   */
-  const peopleTree = computed<PeopleNode[]>(() =>
-    ledger.areas.map((a) => ({ id: `area-${a.id}`, name: a.area_name, count: null })),
-  )
-
   /**
    * 智控九卡（原 js/app.js:851-909）。
    *
@@ -64,11 +46,6 @@ export const useHomeStore = defineStore('home', () => {
    */
   const siteEquip = computed<Equip[]>(() => [...ledger.equip, ...ROBOT_CARDS])
 
-  /** 原 js/app.js:336-338 peopleChildren() */
-  function peopleChildren(): PeopleNode[] {
-    return peopleNode.value ? peopleNode.value.children || [] : peopleTree.value
-  }
-
   /**
    * 原 js/app.js:562-566 equipCount(d)
    * st 的三个取值 "off" / "warn" / "on" 会被拼进 CSS class，不可改名。
@@ -81,10 +58,7 @@ export const useHomeStore = defineStore('home', () => {
 
   return {
     homeMod,
-    peopleNode,
-    peopleTree,
     siteEquip,
-    peopleChildren,
     equipCount,
   }
 })

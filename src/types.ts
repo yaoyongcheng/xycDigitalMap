@@ -261,15 +261,6 @@ export interface CraneDayStats {
   weight: number | null
 }
 
-/** 人员分布节点（对应原 peopleTree） */
-export interface PeopleNode {
-  id: string
-  name: string
-  /** 人数；`null` = 没有定位数据源（不许拿 0 冒充「没人」） */
-  count: number | null
-  children?: PeopleNode[]
-}
-
 /** 日历单元格 */
 export interface CalCell {
   /** 日号，空串表示补位空格 */

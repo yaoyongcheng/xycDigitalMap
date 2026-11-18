@@ -376,4 +376,41 @@ describe('今日出勤工种（在场人员按工种分组）', () => {
     expect(s.tradeRows).toEqual([])
     expect(s.tradesState).toBe('error')
   })
+
+  it('同一次响应里的区域人数落成三场景（人员分布卡）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('personCurLocation')) {
+          return jsonResponse({
+            statusCode: 20000,
+            data: {
+              stayPersonPageVos: [{ personTypeWork: '木工' }],
+              stayPersonCountVos: [
+                { areaId: '1', areaName: '管理区域', onlinePersonNum: '10' },
+                { areaId: '2', areaName: '2#楼3F管控区', onlinePersonNum: '3' },
+                { areaId: '3', areaName: 'B1管理区域', onlinePersonNum: '0' },
+                { areaId: '-1', areaName: '全部', onlinePersonNum: '13' },
+              ],
+            },
+          })
+        }
+        if (u.includes('personOverall')) return jsonResponse({ statusCode: 20000, data: { managedNum: 160 } })
+        if (u.includes('todayTeamsAtteStat')) return jsonResponse({ statusCode: 20000, data: [] })
+        if (u.includes('todayPersonHourStat')) return jsonResponse({ statusCode: 20000, data: { manager: [], worker: [] } })
+        return jsonResponse({}, 500)
+      }),
+    )
+    const s = useOverviewStore()
+    await s.load()
+
+    expect(s.scenes.map((x) => [x.name, x.count])).toEqual([
+      ['场布图', 10],
+      ['2#住宅楼', 3],
+      ['地下室', 0],
+    ])
+    expect(s.sceneTotal).toBe(13)
+    expect(s.scenesState).toBe('ok')
+  })
 })

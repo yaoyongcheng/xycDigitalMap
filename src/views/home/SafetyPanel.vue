@@ -248,7 +248,10 @@ function onAlarmOpen(id: string): void {
       </div>
 
       <div class="home-chart-card people-dist">
-        <span class="home-card-lab">人员分布</span>
+        <div class="people-hour-hd">
+          <span class="home-card-lab">人员分布</span>
+          <span v-if="overview.sceneTotal !== null" class="trade-cap">在场 {{ overview.sceneTotal }} 人</span>
+        </div>
         <div id="peopleDist">
           <PeopleDist />
         </div>

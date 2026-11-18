@@ -44,7 +44,7 @@ B 的签名客户端 `src/api/open.ts`（阶段 1）、B 的班组出勤与分�
 | POST | `/api/user/auth/login` | 登录（body 为 RSA 密文） | 登录页 | ✅ 已接 |
 | GET | `/api/user/auth/me` | 当前用户 | 我的页 | ✅ 已接 |
 | GET | `/api/user/auth/me/unity-permission` | 权限菜单 | 我的页菜单项 | ✅ **可用**（返回项目→权限位映射，形如 `{"P000000076":"1",…}`；暂无消费点） |
-| GET | `/api/data/areas?page=1&page_size=100&project_id=` | 总平区域标签 | 首页·人员分布（区域清单） | ✅ **已接**（**在 8084**，阶段 5；本项目 9 条，无人数字段） |
+| GET | `/api/data/areas?page=1&page_size=100&project_id=` | 总平区域标签（**设备/工位标签，不是人员区域**） | 设备台账侧；2026-11-18 起不再用于首页人员分布 | ✅ **已接**（**在 8084**；本项目 9 条，无人数字段） |
 | GET | `/api/data/buildings` | 楼栋清单 | 进度/楼栋分布 | ✅ **客户端已备**（**在 8084**；设计稿改版后无消费点） |
 | GET | `/api/data/deviceinfos?page=1&page_size=100&project_id=` | 设备台账 | 智控设备列表/详情 | ✅ **已接**（**在 8084**，阶段 4） |
 | POST | `/api/data/v1/tsdb/queryRealTimeDataV2` | 实时数据（查询语义） | 设备实时状态页 | ⚠️ **全部端口 404**（见下） |
@@ -173,7 +173,7 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | 3 | 首页·今日分时人数（原「今日出勤工种」） | `utils/chart.ts` 演示曲线 | B `todayPersonHourStat` | ✅ 阶段 2（工种无接口，已换卡） |
 | 4 | 首页·报警预警 + 轮播 | 8085 真数据；未登录 → 登录引导（不再用常量） | 8085 `/api/video/alarms` | ✅ 阶段 3 + 数据收口 |
 | 5 | 报警历史（按日） | 全部真实，翻到更早日期按需回补 | 8085 `/api/video/alarms`（分页累积） | ✅ 阶段 3 + 数据收口 |
-| 6 | 首页·人员分布 | **真实区域台账**（`:8084` `areas`，本项目 9 条）；人数位「—」 | B `location/*`（**57007 无权限 + CloudWAF 418**）+ `organ/list` | ✅ 阶段 5（区域已接；人数仍无源） |
+| 6 | 首页·人员分布 | **V2 三场景**（场布图 / 2#住宅楼 / 地下室）+ 下钻看管控区与**人员姓名** | `POST /location/personCurLocation/v2` 的 `alive` 名单 | ✅ 2026-11-18（原先用 `:8084 areas` 设备标签冒充，已废弃） |
 | 7 | 智控·设备列表/四卡 | **真实台账**（`:8084` `deviceinfos`，8 台） | A `deviceinfos` + C `queryRealTimeData` | ✅ 阶段 4（实时数据无源） |
 | 8 | 设备详情·实时状态 | 台账字段（高度/司机/安检/质检报告） | C `queryRealTimeDataV2` + `queryEvent`（**阶段 8 确认在 C 组存活，但台账没有 sn**） | ✅ 阶段 4（作业指标空态） |
 | 9 | 塔机·吊次/工作循环 | 首页塔机卡「吊重/吊次」= 台账高度；详情页空态 | A/C `getWorkCycleInfoHis`（**路由存活，缺设备编号**） | ⚠️ 客户端已接（`api/towerCrane.ts`），无 sn → 整块跳过 |
@@ -262,6 +262,37 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 
 卡片放在「今日班组出勤」**上方**（用户指定），条形图沿用设计稿 `.trade-*` 样式，
 副标注「在场人数」以区分「今日打卡」口径；取不到时给空态，不拿演示值补。
+
+#### 人员分布（2026-11-18 上线，同一接口的 `alive` 名单）
+
+同一份 `POST /location/personCurLocation/v2` 响应里还有两块可直接用：
+
+| 字段 | 内容 |
+|---|---|
+| `stayPersonPageVos[]` | 每人带 `personName` / `personTypeWork` / `areaName` / `enterpriseName` / **`alive`**（此刻是否在线） |
+| `stayPersonCountVos[]` | 按管控区聚合：`areaName` / `onlinePersonNum` / `offlinePersonNum` / `totalPersonNum`，末行 `areaId="-1"` 是「全部」 |
+
+**口径（逐项实测过）**：`alive === true` 的人按 `areaName` 分组，
+管理区域 33 / 智能钢筋加工区 2 / 北侧钢筋加工区 3 = **38**，逐个等于
+`stayPersonCountVos` 的 `onlinePersonNum`，也等于「全部」行的 38。所以人数直接取
+名单条数 —— 名单与数字天生一致，不会出现「38 人」点开只有 30 个名字。
+`totalPersonNum` **不能**用：各管控区之间会重复计人（同一个人今日去过多个区域），
+加起来远超总人数。
+
+页面按 V2 地图归成三个场景（`src/api/person.ts: sceneOf`）：
+
+| 场景 | 纳入的管控区 |
+|---|---|
+| 场布图 | 管理区域 / 智能钢筋加工区 / 北侧钢筋加工区（总平面上的都在这里） |
+| 2#住宅楼 | `2#楼` 3F/4F/5F 等楼栋管控区 |
+| 地下室 | `B1管理区域`（先判 B1，否则会被「管理区域」抢走） |
+
+点场景下钻 → 管控区分组 + **人员姓名 + 工种**（限高 320px 内部滚动）。
+`-1`「全部」不参与归类，只用来校验总数。
+
+> 与「今日出勤工种」卡的口径差异：工种卡用**全天在场清单**（含已离场的人，
+> 对齐 V2「今日入场人员」表格）；人员分布用 **`alive` 在线**（对齐 V2 人员分布浮层）。
+> 两卡数字不同不是 bug。
 
 - 曲线会掐掉「当前整点」那个还没结算的 0，避免右端垂直跳水成「人都走光了」；
 - 单测覆盖字段收敛（`hours` 是小时数不是人数）、脏行丢弃、并集对齐补 0、空数组回落、
@@ -541,7 +572,7 @@ resumeAfterLogin()`；`api/http.ts` 的 `notifyUnauthorized()` 让 8085 这类
 | 抓拍视图 | `camShotPool` / `camShotTimes` 按「点位序号 + 日期」轮转，恒定 3 张 08:12/12:36/16:50 | 按「通道 + 真实日期」过滤报警，有几条显示几条；无记录的日期给明确空态 |
 | 抓拍图 | 同一张 webp | `/api/video/alarms/{id}/picture` 的 `data.pictureData`，按需加载 + 缓存（首屏最多 6 张，单张约 1MB），登出清缓存 |
 | 消息中心 | 2 条写死消息 + tabbar 硬编码角标 2 | 一条真实报警一条消息（最多列 20 条，角标按全部未读算），点开跳对应报警详情、按 `id` 记已读 |
-| 人员分布 | 5 个手写区域 + 三栋楼各 5 层人数（`b*Occupied` 稀疏表） | `:8084 areas` 本项目 **9 条**真实区域；**人数没有任何数据源**，数字位一律「—」并注明原因 |
+| 人员分布 | 5 个手写区域 + 三栋楼各 5 层人数（`b*Occupied` 稀疏表） | `personCurLocation/v2` 的 `alive` 名单 → 场布图 / 2#住宅楼 / 地下室三场景，下钻到管控区可见**人员姓名**（2026-11-18） |
 | `data/config.ts` | `camShotPool` / `camShotTimes` / `b1~b3Occupied` / `b2FloorCount` / `tradeRows` | 全部删除（后两者零消费点，留着只会被当成兜底） |
 
 ### 3. 接口 → 页面

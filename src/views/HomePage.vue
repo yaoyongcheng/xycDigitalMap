@@ -271,8 +271,6 @@ function onMapAlarm(id: string): void {
       </div>
     </div>
 
-    <div class="home-gutter-mask" aria-hidden="true"></div>
-
     <HomeSheet
       :drag-top="dragTop"
       :level="shell.sheetLevel"

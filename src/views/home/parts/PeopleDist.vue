@@ -1,119 +1,170 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
+import type { SceneAtte } from '@/api/person'
 import Skel from '@/components/ui/Skel.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useDeviceLedgerStore } from '@/stores/deviceLedger'
-import { useHomeStore } from '@/stores/home'
+import { useOverviewStore } from '@/stores/overview'
 import { useSubpageStore } from '@/stores/subpage'
+import { useScrollChain } from '@/utils/scrollChain'
 import { useSlowLoading } from '@/utils/slowLoading'
 
 /**
- * 人员区域分布（2026-11 阶段 5：改真实区域台账）
+ * 人员区域分布（2026-11-18 对齐 V2「人员分布」浮层）
  *
- * 原先是 5 个手写区域 + 三栋楼各 5 层人数，全部来自设计稿示意值。
- * 现在顶层列 `:8084 /api/data/areas` 的真实区域；**人数没有任何数据源**
- * （大屏 open 的 `location/*` 是 57007 无权限，`:8084` 的 Swagger 里
- * 20 个路由全是区域/楼栋/设备/房间 CRUD，没有人员定位接口），所以数字位
- * 一律显示「—」，并写明原因 —— 0 是个结论，此刻没资格下。
+ * **改造前**：列 `:8084 /api/data/areas` 的区域台账（智能电梯2 / 机器人展示区 /
+ * 5G塔机控制室…），那些是**设备标签**不是人员区域，人数一律「—」，卡片下面
+ * 还挂着一句「人员实时定位接口未开放」。一整张卡没有一个数字是真的。
  *
- * 区域清单和首页常驻，不能等用户先点开智控面板（那才是台账的触发点）：
- * 本组件挂载即单独拉 `loadAreas()`，与设备台账互不牵连。慢请求在卡片位
- * 铺同构灰条，数据到达原位替换；失败才给原因 + 重试，加载中不先说「暂无」。
+ * **现在**：数据来自 `POST /location/personCurLocation/v2` 的
+ * `stayPersonCountVos`（与「今日出勤工种」卡同一次请求），按现场管控区归到
+ * V2 地图的三个场景：
  *
- * 两级下钻的结构保留：区域台账没有楼层子数据，所以实际不会触发第二级，
- * 将来如果开放楼栋/楼层接口，往 PeopleNode.children 里灌真数据即可。
+ *   场布图   ← 管理区域 / 智能钢筋加工区 / 北侧钢筋加工区
+ *   2#住宅楼 ← 2#楼 3F/4F/5F 等管控区
+ *   地下室   ← B1 管理区域
+ *
+ * 数字取 `onlinePersonNum`（此刻在线）—— 各管控区之和正好等于「全部」行的
+ * 在线数，也就是 V2 那个浮层的口径（见 `api/person.ts` 的 groupScenes）。
+ * 点场景可以下钻看它下面的管控区明细；`count` 是真实值，0 就写 0。
+ *
+ * 取不到就空态，不许出现「0 人」这种假结论：`scenes` 为空 = 接口没给区域口径。
  */
-const home = useHomeStore()
 const auth = useAuthStore()
-const ledger = useDeviceLedgerStore()
+const overview = useOverviewStore()
 const subpage = useSubpageStore()
 
-/** 面板挂载即拉一次；store 内部按 state 去重，失败不影响设备台账 */
-onMounted(() => {
-  if (auth.token) void ledger.loadAreas(auth.token)
+/** 下钻到的场景；null = 三场景列表 */
+const drilled = ref<SceneAtte | null>(null)
+
+/**
+ * 名单的滚动接力（2026-11-18）
+ *
+ * 名单限高 320px 自身能滚，外层抽屉也能滚。`useScrollChain` 负责：内层滚到
+ * 边界后把滚轮余量交给抽屉（触摸端靠 CSS 的原生滚动链，见那个文件的注释），
+ * 顺带给出 `canUp / canDown` 让两侧显示「上面/下面还有」的渐隐。
+ */
+const listEl = ref<HTMLElement | null>(null)
+const { canUp, canDown, reset: resetScroll } = useScrollChain(listEl)
+
+/**
+ * 换一层就回到名单顶部。
+ *
+ * 不重置的话：从「场布图」滚到中间 → 返回 → 点「2#住宅楼」，容器沿用上次的
+ * scrollTop，一进去就停在名单中段，看起来像内容跳了一下。
+ */
+watch(drilled, async () => {
+  await nextTick()
+  resetScroll()
 })
 
-/** 登录态后到（首页常驻，切 tab 只切 class）必须补拉，换账号强制刷新 */
-watch(
-  () => auth.token,
-  (t) => {
-    if (t) void ledger.loadAreas(t, true)
-  },
-)
+/** 三场景（顺序固定，0 人也列出来，与 V2 一致） */
+const scenes = computed(() => overview.scenes)
 
-const showSkel = useSlowLoading(() => !ledger.areas.length && ledger.areasState === 'loading')
+/** 场景级别的数据到没到；到了就一律显示真实数字（含 0） */
+const hasData = computed(() => scenes.value.length > 0)
+
+const showSkel = useSlowLoading(() => !hasData.value && overview.loading)
 
 const emptyText = computed(() => {
-  if (!auth.isLoggedIn) return '登录后可查看项目区域台账'
-  if (ledger.areasState === 'error') return `区域台账加载失败${ledger.areasError ? '：' + ledger.areasError : ''}`
-  return '暂无项目区域数据'
+  if (!auth.isLoggedIn) return '今日人员分布需登录后查看'
+  if (overview.error) return `人员分布加载失败：${overview.error}`
+  return '暂无人员区域数据'
 })
 
-function retry(): void {
-  if (auth.token) void ledger.loadAreas(auth.token, true)
+/** 下钻里有人 / 无人的管控区数量，给副标题用 */
+const areaStats = computed(() => {
+  const list = drilled.value?.areas ?? []
+  return { live: list.filter((a) => a.count > 0).length, all: list.length }
+})
+
+function onDrill(s: SceneAtte): void {
+  if (!s.areas.length) return
+  drilled.value = s
 }
 
-const drilled = computed(() => !!(home.peopleNode && home.peopleNode.children))
-const floors = computed(() => home.peopleNode?.children ?? [])
-const liveFloors = computed(() => floors.value.filter((n) => n.count).length)
-
 function onBack(): void {
-  home.peopleNode = null
+  drilled.value = null
 }
 
 function goLogin(): void {
-  subpage.openLogin('登录后可查看项目区域台账')
+  subpage.openLogin('登录后可查看今日人员分布')
+}
+
+function retry(): void {
+  void overview.load(true)
 }
 </script>
 
 <template>
-  <!-- 下钻：楼层网格（真实区域台账目前没有楼层子数据） -->
+  <!-- 下钻：该场景下的管控区 + 人员姓名（V2 里点开区域就是这层名单） -->
   <template v-if="drilled">
     <button class="people-back" type="button" data-people="back" @click="onBack">
       <em>‹</em>
-      <strong>{{ home.peopleNode?.name }}</strong>
-      <b v-if="home.peopleNode?.count !== null">{{ home.peopleNode?.count }}<i>人</i></b>
-      <b v-else>—<i>人</i></b>
+      <strong>{{ drilled.name }}</strong>
+      <b>{{ drilled.count }}<i>人</i></b>
     </button>
-    <div class="people-sub">有人 {{ liveFloors }}层 · 共{{ floors.length }}层</div>
-    <div class="people-floor-grid">
-      <div v-for="n in floors" :key="n.id" class="people-floor" :class="{ empty: !n.count }">
-        <span>{{ n.name }}</span>
-        <b>{{ n.count ?? '—' }}</b>
+    <div class="people-sub">有人 {{ areaStats.live }} 个 · 共{{ areaStats.all }}个管控区</div>
+    <!--
+      名单限高内滚：滚到上/下边界后继续滑，滚动会接力给外层抽屉（见 useScrollChain）。
+      两侧渐隐只在那个方向「还有东西」时出现，提示手势没被吃掉。
+    -->
+    <div class="people-scroll" :class="{ 'can-up': canUp, 'can-down': canDown }">
+      <div ref="listEl" class="people-groups" data-people="areas">
+        <div v-for="a in drilled.areas" :key="a.name" class="people-group">
+          <div class="people-group-hd">
+            <span>{{ a.name }}</span>
+            <b>{{ a.count }}<em>人</em></b>
+          </div>
+          <ul v-if="a.members.length" class="people-members">
+            <li v-for="(m, i) in a.members" :key="`${m.name}-${i}`">
+              <span class="pm-name">{{ m.name }}</span>
+              <span class="pm-trade">{{ m.trade }}</span>
+            </li>
+          </ul>
+          <div v-else class="people-no-member">暂无现场名单</div>
+        </div>
       </div>
     </div>
   </template>
 
-  <!-- 顶层：真实区域清单 -->
+  <!-- 顶层：V2 的三个场景 -->
   <template v-else>
     <!--
-      慢请求：灰条与 .people-zone 同构（同一 grid、同一 76px 卡高）。
+      慢请求：3 行灰条与 .people-scene 同构（同一行高、同样的左右分栏）。
       `is-on` 之前整层 opacity: 0 —— 先占位撑住版式，快请求看不到灰条，
-      也不会在同步中先抛出「暂无项目区域数据」这个错误结论。
+      也不会在同步中先抛出「暂无人员区域数据」这个错误结论。
     -->
-    <template v-if="!ledger.areas.length && ledger.areasState === 'loading'">
-      <span class="sr-only" role="status">正在加载项目区域台账</span>
-      <div class="people-zones skel-fade" :class="{ 'is-on': showSkel }" data-skel="people-dist" aria-hidden="true">
-        <div v-for="i in 6" :key="i" class="people-zone">
-          <Skel w="56px" h="13px" />
-          <Skel w="30px" h="17px" r="var(--r-6)" />
+    <template v-if="!hasData && overview.loading">
+      <span class="sr-only" role="status">正在同步人员分布</span>
+      <div class="people-scenes skel-fade" :class="{ 'is-on': showSkel }" data-skel="people-dist" aria-hidden="true">
+        <div v-for="i in 3" :key="i" class="people-scene">
+          <Skel w="64px" h="13px" />
+          <Skel w="42px" h="17px" r="var(--r-6)" />
         </div>
       </div>
     </template>
-    <template v-else-if="home.peopleTree.length">
-      <div class="data-note">人员实时定位接口未开放，仅展示项目区域台账</div>
-      <div class="people-zones">
-        <div v-for="n in home.peopleTree" :key="n.id" class="people-zone" :data-people="n.id">
-          <span>{{ n.name }}</span>
-          <b>—<em>人</em></b>
-        </div>
+    <template v-else-if="hasData">
+      <div class="people-scenes" data-people="scenes">
+        <button
+          v-for="s in scenes"
+          :key="s.name"
+          class="people-scene"
+          :class="{ empty: !s.count, drill: s.areas.length > 0 }"
+          type="button"
+          :disabled="!s.areas.length"
+          :data-scene="s.name"
+          @click="onDrill(s)"
+        >
+          <span>{{ s.name }}</span>
+          <b>{{ s.count }}<em>人</em></b>
+        </button>
       </div>
     </template>
     <div v-else class="data-empty" data-empty="people-dist">
       <p>{{ emptyText }}</p>
       <button
-        v-if="auth.isLoggedIn && ledger.areasState === 'error'"
+        v-if="auth.isLoggedIn && overview.error"
         class="data-empty-btn"
         type="button"
         @click="retry"
