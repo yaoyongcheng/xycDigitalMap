@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import BackBar from '@/components/ui/BackBar.vue'
+import DayPickChips from '@/components/ui/DayPickChips.vue'
+import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
@@ -9,13 +11,17 @@ import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { FlvStream, type FlvState } from '@/utils/flvStream'
 import { isMobileDevice, stripRetryCount } from '@/utils/env'
+import { useLandscape } from '@/utils/landscape'
 import { useSlideOverlay } from '@/utils/slideOverlay'
+import { useImageZoom } from '@/utils/zoom'
 
 /**
  * 视频监控层（2026-11-18 按设计稿重做）
  *
  * 对应设计稿「视频监控 / 地磅全景」：上方一块画面，下面一条说明，
- * 再下面按「出入口 / 场内 / 塔吊」三组切换点位。
+ * 再下面按「设备设施 / 材料堆场 / 出入口管控」三组切换点位
+ * （2026-11-19 现场要求：设备设施置顶并合并塔吊/地磅/加工棚，出入口改名
+ * 出入口管控，新增材料堆场）。
  *
  * ## 画面区上叠了什么（2026-11-18 再按设计稿补按钮）
  *
@@ -549,21 +555,107 @@ function onRefresh(): void {
   cam.refresh()
 }
 
-/* ---------------- 历史抓拍（入口 + 展示骨架，数据待接入） ---------------- */
+/* ---------------- 历史抓拍（2026-11-19：真实快照 + 本机档案） ---------------- */
 
-/** 选中的日期（空 = 用最新一天）；数据进来后芯片点击切分组 */
-const activeDay = ref('')
-
-/** 当前要展示的照片：按选中日期过滤，没有数据就是空数组 */
-const shotList = computed(() => {
-  if (!cam.shotDays.length) return []
-  const key = activeDay.value || cam.shotDays[0].key
-  return cam.shotDays.find((d) => d.key === key)?.items ?? []
-})
-
+/** 时刻（HH:mm），详情里写「本机什么时间取得的」 */
 function hhmm(at: number): string {
   const d = new Date(at)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * 档位时刻（08:00 / 12:00 / 18:00）。
+ *
+ * 列表上标的是**这一档**而不是取图时刻：服务端一天只更新三次，我们拿到的是
+ * 「最近一次已完成的更新」，把取图时刻写上去会让人以为图是那一刻拍的。
+ * 真实的取图时刻放在详情里（「本机 09:19 取得」），两个信息都不丢。
+ */
+function slotHm(slot: number): string {
+  return `${String([8, 12, 18][slot] ?? 8).padStart(2, '0')}:00`
+}
+
+/** 详情里的标题：点位 · 日期 档位 */
+const shotTitle = computed(() => {
+  const s = cam.shotPop
+  if (!s) return ''
+  return `${cam.current.name} · ${cam.shotDateLabel} ${slotHm(s.slot)} 档`
+})
+
+/** 详情正文那句：本机取得时刻 + 体积 */
+const shotMeta = computed(() => {
+  const s = cam.shotPop
+  if (!s) return ''
+  const size = s.size >= 1024 * 1024
+    ? `${(s.size / 1024 / 1024).toFixed(1)}MB`
+    : `${Math.max(1, Math.round(s.size / 1024))}KB`
+  return `本机 ${hhmm(s.at)} 取得 · 原图 ${size}`
+})
+
+/** 详情当前显示哪一版：默认压缩预览，点「查看原图」换原图（与智眸一致） */
+const shotSrc = computed(() => {
+  const s = cam.shotPop
+  if (!s) return ''
+  return cam.shotShowFull ? s.url : s.thumb
+})
+
+/** 查看原图那颗按钮的文案（原图就在本机档案里，切换是即时的，没有进度条） */
+const shotHdLabel = computed(() => (cam.shotShowFull ? '已是原图' : '查看原图'))
+
+function onShotHd(): void {
+  cam.showShotFull()
+}
+
+/**
+ * 大图缩放（智眸那套 `useImageZoom`：双击 / 双指，单指拖动）。
+ * 换一张或关弹层时复位，否则下次打开还停在上次的放大倍数上。
+ */
+const {
+  zoomed: shotZoomed,
+  label: shotZoomLabel,
+  imgStyle: shotImgStyle,
+  animating: shotZoomAnim,
+  handlers: shotZoomHandlers,
+  reset: resetShotZoom,
+} = useImageZoom()
+
+watch(
+  () => [cam.shotPopId, cam.shotShowFull] as const,
+  () => resetShotZoom(),
+)
+
+/**
+ * 详情大图的横屏（与智眸「横屏」同一套 `useLandscape`）：
+ * `land` 为真时画布 Teleport 到 body 铺满视口，并尽力申请系统全屏 + 锁方向；
+ * iOS 拿不到那两步就只铺满视口，用户自己转手机照样能看。
+ */
+const { land: shotLand, setStage: setShotStage, toggle: toggleShotLand, exit: exitShotLand } =
+  useLandscape()
+
+/** 关弹层 / 换日期时把横屏收回来，别留一块全屏黑挂在页面上 */
+watch(
+  () => cam.shotPopId,
+  (id) => {
+    if (!id && shotLand.value) void exitShotLand()
+  },
+)
+
+function onShotClick(id: string): void {
+  cam.openShot(id)
+}
+
+/** 日期芯片：0 = 今天，1 = 昨天 */
+function onShotDay(day: number): void {
+  const d = new Date()
+  d.setDate(d.getDate() - day)
+  cam.setShotDate(d)
+}
+
+function onShotCalToggle(): void {
+  cam.toggleShotCal()
+}
+
+function onShotCalSelect(d: Date): void {
+  cam.setShotDate(d)
 }
 
 /**
@@ -573,7 +665,6 @@ function hhmm(at: number): string {
  * 所以这里只切视图，不动当前点位 —— 退回画面时还是原来那台相机。
  */
 function onShots(): void {
-  activeDay.value = ''
   cam.openShots()
 }
 
@@ -586,12 +677,17 @@ function onLandToggle(): void {
 }
 
 /**
- * 返回：历史抓拍 → 横屏 → 关层，一级一级退。
- *
- * 旧版还有「关大图 / 收日历」两级 —— 大图弹层与日历随本次重做下线（抓拍视图
- * 现在是入口 + 空态，等数据接入后再补）。
+ * 返回：大图 → 日历 → 历史抓拍 → 横屏 → 关层，一级一级退。
  */
 function onBack(): void {
+  if (cam.shotPopOpen) {
+    cam.closeShot()
+    return
+  }
+  if (cam.shotCalOpen) {
+    cam.shotCalOpen = false
+    return
+  }
   if (cam.shotsOpen) {
     cam.closeShots()
     return
@@ -791,48 +887,145 @@ function goLogin(): void {
     <!--
       历史抓拍视图（设计稿 .cam-shots-view，与画面视图互斥）。
 
-      结构照设计稿：标题条 → 日期芯片 → 三列照片网格。数据全部来自
-      `cam.shots`（store 的 `loadShots()` 是唯一接入点），所以现在没有数据时
-      走空态，数据一进来这三块自动就位，这里不需要改。
+      结构照设计稿：标题条 → 日期芯片（今天 / 昨天 / 选日期）→ 三列照片网格；
+      「选日期」展开的是全站共用那份月历（`ui/MonthCalendar.vue`，与航拍、巡检
+      历史同一个组件，样式一份）。数据来自 `cam.shots`，存取见 store 的
+      `loadShots()`（真实快照 + 本机档案），加载 / 空 / 失败三态都在这里。
     -->
     <div class="cam-shots-view" :class="{ hide: !cam.shotsOpen }" id="camShotsView">
       <div class="cam-shots">
         <div class="cam-shots-hd">
           <strong>历史抓拍</strong>
-          <span>每天 3 张，点开查看照片</span>
+          <span>{{ cam.shotsHint }}</span>
         </div>
 
         <div class="cam-shot-days" id="camShotDays">
+          <DayPickChips
+            :selected="cam.shotDate"
+            open-attr-name="data-cal-open"
+            @pick="onShotDay"
+            @open="onShotCalToggle"
+          />
+        </div>
+
+        <!-- 加载中：不摆灰方块占位（会像已经加载好的图），一句话说明在取 -->
+        <div v-if="cam.shotsState === 'loading'" class="cam-shots-tip" data-state="cam-shots-loading">
+          <i class="cam-shots-spin" aria-hidden="true"></i>
+          <span>正在读取{{ cam.shotDateLabel }}的抓拍…</span>
+        </div>
+
+        <div v-else class="cam-shot-grid" id="camShotGrid">
           <button
-            v-for="d in cam.shotDays"
-            :key="d.key"
-            class="cam-day"
-            :class="{ on: d.key === activeDay }"
+            v-for="s in cam.shots"
+            :key="s.id"
+            class="cam-shot"
             type="button"
-            :data-day="d.key"
-            :aria-pressed="d.key === activeDay"
-            @click="activeDay = d.key"
+            :data-shot="s.id"
+            :aria-label="`${cam.shotDateLabel} ${slotHm(s.slot)} 档抓拍，查看大图`"
+            @click="onShotClick(s.id)"
           >
-            {{ d.label }}
+            <img
+              :src="s.thumb"
+              :alt="`${cam.current.name} ${cam.shotDateLabel} ${slotHm(s.slot)} 档抓拍`"
+              loading="lazy"
+            />
+            <span>{{ cam.shotDateLabel }} {{ slotHm(s.slot) }}</span>
           </button>
         </div>
 
-        <div class="cam-shot-grid" id="camShotGrid">
-          <!--
-            照片网格：现在没有数据所以是空的。接入后每张自动渲染成
-            缩略图 + 时刻；点开看大图的弹层在此处扩展（把 figure 换成 button
-            并绑一个 openShot id 即可）。
-          -->
-          <figure v-for="s in shotList" :key="s.id" class="cam-shot" :data-shot="s.id">
-            <img :src="s.thumb" :alt="`${cam.current.name} 抓拍`" loading="lazy" />
-            <figcaption>{{ hhmm(s.at) }}</figcaption>
-          </figure>
+        <!--
+          空 / 失败：标题说结论，失败才给原因。
+          空态**不写长说明**（2026-11-19 按反馈去掉）：服务端不存历史这件事
+          说一次就够了，每次点进空日期都念一遍既占屏又像报错；日期范围的边界
+          交给日历与 toast 去说。
+        -->
+        <div
+          v-if="cam.shotsState === 'empty' || cam.shotsState === 'error'"
+          class="cam-shots-empty"
+          data-empty="cam-shots"
+        >
+          <strong>{{ cam.shotsState === 'error' ? '抓拍获取失败' : '这一天没有抓拍记录' }}</strong>
+          <span v-if="cam.shotsState === 'error'">{{ cam.shotsNote }}</span>
+          <button class="data-empty-btn" type="button" @click="cam.loadShots()">重新获取</button>
         </div>
 
-        <div v-if="!shotList.length" class="cam-shots-empty" data-empty="cam-shots">
-          <strong>暂无历史抓拍</strong>
-          <span>{{ cam.shotsNote }}</span>
-        </div>
+        <!-- 有图但最新一帧没取到：只在下面提一句，不挡已有的照片 -->
+        <p v-if="cam.shotsState === 'ok' && cam.shotsNote" class="cam-shots-note">
+          {{ cam.shotsNote }}
+        </p>
+      </div>
+
+      <!--
+        可选区间：今天往前 30 天（`cam.shotMinDate` / `shotMaxDate`）。
+        月历这边的禁用只是「点不到」，真正的裁决点仍在 store 的 `setShotDate()`，
+        两边同一套边界，改天数只改 `SHOT_RANGE_DAYS` 一处。
+      -->
+      <MonthCalendar
+        :month="cam.shotCalMonth"
+        :selected="cam.shotDate"
+        :min-day="cam.shotMinDate"
+        :max-day="cam.shotMaxDate"
+        :hidden="!cam.shotCalOpen"
+        @update:month="cam.setShotCalMonth"
+        @select="onShotCalSelect"
+      />
+
+      <!--
+        大图：默认压缩预览（列表那张），右上角「查看原图 / 横屏」与智眸同一套胶囊。
+        原图就在本机档案里，切换是即时的；横屏时整块画布 Teleport 到 body 铺满视口
+        （`.cam-player` 有 transform，fixed 会被当成包含块，不挪 DOM 就铺不满）。
+      -->
+      <div
+        class="cam-shot-pop"
+        id="camShotPop"
+        :class="{ open: cam.shotPopOpen }"
+        :hidden="!cam.shotPopOpen"
+        :aria-hidden="!cam.shotPopOpen"
+      >
+        <button class="cam-shot-close" id="btnShotClose" type="button" @click="cam.closeShot()">
+          关闭
+        </button>
+
+        <Teleport to="body" :disabled="!shotLand">
+          <figure class="cam-shot-stage" :class="{ 'is-land': shotLand }" :ref="setShotStage">
+            <img
+              v-if="shotSrc"
+              class="zoomable"
+              :class="{ 'is-zoomed': shotZoomed, 'is-anim': shotZoomAnim }"
+              :src="shotSrc"
+              alt=""
+              :style="shotImgStyle"
+              draggable="false"
+              v-on="shotZoomHandlers"
+            />
+            <span v-if="shotZoomed" class="zoom-badge">{{ shotZoomLabel }}</span>
+            <span class="patrol-view-tag">{{ cam.shotShowFull ? '原图' : '压缩预览' }}</span>
+
+            <div class="pano-tools">
+              <button
+                class="pano-tool"
+                type="button"
+                :disabled="cam.shotShowFull"
+                :aria-label="`查看原图，${shotMeta}`"
+                @click="onShotHd"
+              >
+                {{ shotHdLabel }}
+              </button>
+              <button
+                class="pano-tool"
+                type="button"
+                :aria-pressed="shotLand"
+                :aria-label="shotLand ? '退出横屏' : '横屏查看'"
+                @click="toggleShotLand"
+              >
+                {{ shotLand ? '竖屏' : '横屏' }}
+              </button>
+            </div>
+          </figure>
+        </Teleport>
+
+        <p class="cam-shot-meta" id="camShotMeta">{{ shotTitle }}</p>
+        <p class="cam-shot-sub">{{ shotMeta }} · 双指缩放，单指拖动</p>
       </div>
     </div>
   </div>

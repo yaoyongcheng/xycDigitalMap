@@ -822,6 +822,347 @@ export async function fetchMediaJobs(jobId: number): Promise<DroneMedia[]> {
   return out
 }
 
+/* ---------- 站点（航拍照片：V2「任务记录」里的站点名称，2026-11-19） ---------- */
+
+/**
+ * 一个「站点」。
+ *
+ * V2 的任务记录列表每行都写「站点名称：向阳村安全巡检」，但记录行本身
+ * **没有** `spotName` 之类的字段（2026-11-19 实测记录只有
+ * `id / uuid / taskId / taskName / start / end / status / pid / dockId`），
+ * 界面上那个站点名就是这条航线去掉分隔符的展示。所以这里以 `taskName`
+ * 作为站点标识：**一条航线 = 一个采集站点**，去重后就是下拉框的选项。
+ */
+export interface DroneStation {
+  /** 站点名（= 任务/航线名，如「向阳村-全局定点拍照」） */
+  name: string
+  /** 任务 id（同一条航线每次执行都一样） */
+  taskId: number | null
+  /** 最近一次已开始的执行时间（站点排序、也是「最新记录」的起点） */
+  lastStart: string
+  /** 窗口内执行了几个架次 */
+  runs: number
+}
+
+/**
+ * 站点下拉里**不展示**的航线名（2026-11-19 现场确认，两批）。
+ *
+ * 下拉的语义是「**拍照站点**」——一条航线一个站点，选它看这一班的照片。
+ * 下面这些航线要么不是拍照任务，要么是重复建图/联调产物，摆进来只会让人选错：
+ *
+ *   · `测试` / `测试全景` —— 联调时建的临时航线，没有业务含义；
+ *   · `向阳村-三维（新）` / `向阳村-三维（加密）` —— 同一片区的**重复建图**航线，
+ *     并排出现在下拉里，现场很容易选到没数据的那条；
+ *   · `向阳村-安全巡检` —— 内部巡检航线（11 分钟一圈走一圈），产出是巡检记录，
+ *     不是「站点照片」；且与「向阳村-全局定点拍照」的区域大量重叠；
+ *   · `向阳村-环绕视频` —— 视频航线，媒体是 `video/*`，本来就没有照片可看。
+ *
+ * 只作用于下拉选项（{@link toStations}），**不拦数据**：真有人按名字直接查
+ * （`loadStation`）、或者巡检模块按航线名取媒体，都照旧能取到。
+ * 比较前去掉所有空白、半角括号归到全角，避免接口里多一个空格就漏掉。
+ */
+const HIDDEN_STATIONS = [
+  '向阳村-三维（新）',
+  '向阳村-三维（加密）',
+  '向阳村-安全巡检',
+  '向阳村-环绕视频',
+  '测试',
+  '测试全景',
+]
+
+/** 归一化后判断这条航线是否要从下拉里隐藏（半角括号也归到全角，免得漏匹配） */
+function isHiddenStation(name: string): boolean {
+  const n = name
+    .replace(/\s+/g, '')
+    .replace(/\(/g, '（')
+    .replace(/\)/g, '）')
+  return HIDDEN_STATIONS.includes(n)
+}
+
+/**
+ * 把执行记录收敛成站点清单（按最近一次执行时间倒序）。
+ *
+ * 只做「分组 + 去重 + 排序」，不碰网络 —— 窗口与过滤在 `fetchRecentRecords`；
+ * 展示层的剔除见 {@link HIDDEN_STATIONS}。
+ */
+export function toStations(rows: DroneTaskRecord[]): DroneStation[] {
+  const map = new Map<string, DroneStation>()
+  for (const r of rows) {
+    const name = r.taskName.trim()
+    if (!name) continue
+    if (isHiddenStation(name)) continue
+    const cur = map.get(name)
+    if (!cur) {
+      map.set(name, { name, taskId: r.taskId, lastStart: r.start, runs: 1 })
+    } else {
+      cur.runs += 1
+      if (r.start > cur.lastStart) {
+        cur.lastStart = r.start
+        cur.taskId = r.taskId ?? cur.taskId
+      }
+    }
+  }
+  return [...map.values()].sort((a, b) => b.lastStart.localeCompare(a.lastStart))
+}
+
+/**
+ * 航拍历史窗口（天）。
+ *
+ * 两个地方必须用同一个值，否则会出现「日期能选、站点却没有」这种半截状态：
+ *   · 站点清单从这个长度的任务记录里取（下拉里才有上个月飞过的站点）；
+ *   · 日期控件的下界 = 今天往前这么多天（`stores/airHazard.ts` 的 `airMinDate`）。
+ */
+export const STATION_WINDOW_DAYS = 90
+
+/**
+ * 取航拍历史窗口内的执行记录 —— 站点名称下拉框的数据源。
+ *
+ * 口径与 V2 任务记录一致：本项目 pid、按日期区间、**只留已开始的班次**
+ * （记录里混着明天/后天的排班，`status` 还是 -1，没有媒体）。
+ *
+ * 2026-11-19：窗口从「30 天没有就退到 180 天」改成**固定**
+ * {@link STATION_WINDOW_DAYS} 天 —— 日期控件恢复后要能选更早的日子，
+ * 站点清单必须覆盖同一段区间。停飞一段时间的站点仍在列表里，
+ * 不会因为「最近 30 天没飞」就从下拉里消失。
+ *
+ * 注意 `size` 不生效（见 `fetchTaskRecords`），一次会把整段区间拉回来；
+ * 90 天实测约一千余条，会话内还缓存 5 分钟，可以接受。
+ */
+export async function fetchRecentRecords(): Promise<DroneTaskRecord[]> {
+  const now = spotNow()
+  const page = await fetchTaskRecords({
+    page: 1,
+    size: 200,
+    start: spotDay(1 - STATION_WINDOW_DAYS),
+    end: spotDay(1),
+  })
+  return page.rows
+    .filter((r) => !r.start || r.start <= now)
+    .sort((a, b) => b.start.localeCompare(a.start))
+}
+
+/** 每换一个站点，最多探几班媒体（每班一次请求，keehang 有限流） */
+const STATION_PROBE = 4
+/** 媒体被限流时的等待（服务端提示 2 秒，与 `stores/patrol.ts` 一致） */
+const STATION_THROTTLE_WAIT = 2_200
+const STATION_THROTTLE_CODE = 42901
+
+/** 取一班的媒体；被限流（42901）等 2 秒重试一次，其余失败返回 null */
+async function stationMedia(jobId: number): Promise<DroneMedia[] | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fetchMediaJobs(jobId)
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : 0
+      if (code === STATION_THROTTLE_CODE && attempt === 0) {
+        await new Promise((r) => setTimeout(r, STATION_THROTTLE_WAIT))
+        continue
+      }
+      return null
+    }
+  }
+}
+
+/**
+ * 某站点**最新一次采集**的全部照片（含采集顺序）。
+ *
+ * 「最新一次」= 该站点 `status === 2` 且已开始的班次里，按 `start` 倒序
+ * **第一个有图片媒体**的那班 —— 实测存在「已完成但 0 条媒体」的班次
+ * （2026-11-18 08:20 那班），直接取最新一条会显示空白，所以往下找。
+ *
+ * 返回**全部** `image/*`（不再截 9 张）：用户要求「该站点最新记录中的所有
+ * 采集照片」，全局定点拍照那班正好 9 张，正射那种上百张也照给，列表靠
+ * 懒加载顶住。每班混着的 1 个 `.DAT` 飞行日志不算照片。
+ *
+ * 返回 null = 这个站点近期确实没有照片。
+ */
+export async function fetchLatestGalleryOf(
+  taskName: string,
+  rows: DroneTaskRecord[],
+): Promise<DroneSpotGallery | null> {
+  const now = spotNow()
+  const jobs = rows
+    .filter((r) => r.taskName.trim() === taskName)
+    .filter((r) => r.status === 2 && (!r.start || r.start <= now))
+    .sort((a, b) => b.start.localeCompare(a.start))
+
+  return probeGallery(jobs)
+}
+
+/**
+ * 某站点在**指定日期**的采集（航拍照片恢复日期控件之后的数据源）。
+ *
+ * 不开窗口、也不翻页：服务端 `start` / `end` 是 `YYYY-MM-DD` 且 `end` 不含当天，
+ * 直接传「这一天 + 次日」就只回这一天的记录（`size` 不生效，正好一次拿全）。
+ * 因此历史任意一天都能查，与 `recordings` 那份 90 天窗口互不影响。
+ *
+ * 口径与「最新一次」一致：只认 `status === 2` 且已开始的班次，按 `start`
+ * 倒序挑第一个**有图片媒体**的 — 同一天飞了两班时给的是后一班。
+ *
+ * 返回 null = 这一天该站点没有照片（页面据此给空态，不拿别的日期凑）。
+ */
+export async function fetchStationDay(
+  taskName: string,
+  day: string,
+): Promise<DroneSpotGallery | null> {
+  const name = taskName.trim()
+  if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null
+  const page = await fetchTaskRecords({ page: 1, size: 200, start: day, end: nextDayKey(day) })
+  const now = spotNow()
+  const jobs = page.rows
+    .filter((r) => r.taskName.trim() === name)
+    .filter((r) => r.status === 2 && (!r.start || r.start <= now))
+    .filter((r) => (r.start || '').slice(0, 10) === day)
+    .sort((a, b) => b.start.localeCompare(a.start))
+
+  return probeGallery(jobs)
+}
+
+/** 在给定的班次里按新→旧探媒体，返回第一个有图片的班 */
+async function probeGallery(jobs: DroneTaskRecord[]): Promise<DroneSpotGallery | null> {
+  for (const job of jobs.slice(0, STATION_PROBE)) {
+    const media = await stationMedia(job.id)
+    if (!media) continue
+    const imgs = media
+      .filter((m) => m.mediaType.startsWith('image/'))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    if (!imgs.length) continue
+    return { jobId: job.id, start: job.start, taskId: job.taskId, taskName: job.taskName, media: imgs }
+  }
+  return null
+}
+
+/** 'YYYY-MM-DD' → 次日（服务端 `end` 不含当天） */
+function nextDayKey(day: string): string {
+  const d = new Date(`${day}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return day
+  d.setDate(d.getDate() + 1)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/* ---------- 某个站点最新一班的全景（重建成果，V2「采集数据 → 全景图片」） ---------- */
+
+/**
+ * 重建成果索引：`recordId` → 该次飞行最新的一条全景。
+ *
+ * V2 的「采集数据 → 全景图片(3)」就是按**执行记录**取这一批成果；但接口
+ * `/dashboard/recreate/getProjectRecreateInfo` **不支持按 recordId 过滤**
+ * （2026-11-19 实测：带 `recordId` / `recordIds` / `id` 参数返回值一模一样，
+ * `taskType` 也一样被忽略），只能按时间倒序翻页自己挑。
+ *
+ * 所以这里做一个会话级索引：翻过的页缓存下来（同一批成果不重复下），
+ * 每条 PANO 成果按它所属任务的 `recordId` 落表。翻页到「比目标记录更早」
+ * 就停，不会为了一个没有全景的站点把几十页翻完。
+ */
+const panoIndex = new Map<number, DronePano>()
+/** 已翻到第几页（0 = 还没翻过） */
+let panoPages = 0
+/** 已翻到的最旧一条成果的 createTime（越往后越旧） */
+let panoOldest = ''
+/** 索引建立时刻（重建成果会不断新增，过期就重来） */
+let panoIndexAt = 0
+const PANO_INDEX_TTL = 5 * 60 * 1000
+
+/** 把一页成果里属于本项目的 PANO 成果登记进索引（同一 recordId 只留最新） */
+function indexPanoPage(raw: unknown): void {
+  const list = Array.isArray((raw as { list?: unknown })?.list)
+    ? ((raw as { list: unknown[] }).list as unknown[])
+    : []
+  for (const r of list) {
+    if (!r || typeof r !== 'object') continue
+    const o = r as Record<string, unknown>
+    if (num(o.taskType) !== RECREATE_TASK_PANO) continue
+    if (num(o.status) !== RECREATE_STATUS_DONE) continue
+    if (num(o.projectId) !== KH_PROJECT_ID) continue
+
+    const recordId = num(o.recordId)
+    if (recordId === null || panoIndex.has(recordId)) continue
+    const rows = Array.isArray(o.resultRecordDTOList) ? (o.resultRecordDTOList as unknown[]) : []
+    const first = rows
+      .map(toAchievement)
+      .filter((a): a is DroneAchievement => a !== null && a.recreateType === 'PANO')
+      .sort((a, b) => a.name.localeCompare(b.name))[0]
+    if (!first) continue
+    panoIndex.set(recordId, {
+      id: first.id,
+      secret: first.secret,
+      recordId,
+      projectId: num(o.projectId) ?? 0,
+      projectName: str(o.projectName),
+      taskName: str(o.taskName) || str(o.lineName),
+      name: first.name,
+      time: str(o.endTime) || str(o.updateTime) || str(o.createTime),
+      preview: first.thumbnail || first.download,
+      full: first.download || first.thumbnail,
+      size: first.size,
+    })
+  }
+}
+
+/**
+ * 在这批执行记录里找**最新一张全景图**。
+ *
+ * 用途：航拍照片选中站点后，如果该站点有全景成果，就把它排到照片列表首位
+ * （球面环视）。`recordIds` 传该站点的全部记录 id，按新→旧找，
+ * 命中的第一张就是「最新」—— 因为索引本身按 `createTime` 倒序建立。
+ *
+ * `since` 是停止翻页的下界（一般是该站点最新一次采集的时间减几天）：
+ * 成果列表比它更旧了就没必要再翻 —— 新一班的全景最快也要十几分钟才拼完，
+ * 留几天余量正好覆盖「今天刚飞、全景还在拼」这种情况，能退到上一班的成果。
+ */
+export async function fetchRecordPano(recordIds: number[], since = ''): Promise<DronePano | null> {
+  const hit = (): DronePano | null => {
+    for (const id of recordIds) {
+      const p = panoIndex.get(id)
+      if (p) return p
+    }
+    return null
+  }
+
+  if (Date.now() - panoIndexAt > PANO_INDEX_TTL) {
+    panoIndex.clear()
+    panoPages = 0
+    panoOldest = ''
+  }
+
+  let found = hit()
+  while (!found) {
+    // 已经翻到比目标记录更早：这条航线的成果在更早的页里也不会有
+    if (since && panoOldest && panoOldest < since) break
+    if (panoPages >= PANO_MAX_PAGE) break
+
+    const page = panoPages + 1
+    let raw: unknown
+    try {
+      raw = await khAuthGet<unknown>(
+        `/dashboard/recreate/getProjectRecreateInfo?pid=${KH_PROJECT_ID}&pageNo=${page}&size=${PANO_PAGE_SIZE}`,
+      )
+    } catch {
+      // 翻页失败按「翻到底」处理：已有索引还能用，别把整块照片墙拖挂
+      break
+    }
+    panoPages = page
+    panoIndexAt = Date.now()
+    indexPanoPage(raw)
+    found = hit()
+    if (found) break
+    const rows = (raw as { list?: unknown[] })?.list
+    if (!Array.isArray(rows) || !rows.length) break
+    panoOldest = str((rows[rows.length - 1] as Record<string, unknown>)?.createTime)
+    if (rows.length < PANO_PAGE_SIZE) break
+  }
+  return found
+}
+
+/** 清掉全景索引（登出 / 换账号时；成果是按项目取的，换账号后要重取） */
+export function resetPanoIndex(): void {
+  panoIndex.clear()
+  panoPages = 0
+  panoOldest = ''
+  panoIndexAt = 0
+}
+
 /* ---------- 「全局定点拍照」最新九张（V2 任务记录 → 采集数据 同一条链） ---------- */
 
 /**

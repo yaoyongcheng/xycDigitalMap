@@ -18,8 +18,8 @@ import { CAM_POINTS } from '@/data/cams'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
-import { usePatrolStore } from '@/stores/patrol'
 import { useShellStore } from '@/stores/shell'
+import { clearShots } from '@/utils/shotArchive'
 
 import { blobUrls } from '../helpers/browser'
 
@@ -240,16 +240,24 @@ describe('stores', () => {
       auth.expiresAt = Date.now() + 3_600_000
     })
 
-    it('点位是写死的 8 个白名单，分出入口 / 场内 / 塔吊三组', () => {
+    /**
+     * 抓拍档案是进程级（IndexedDB / 内存兜底）的，用例之间必须清干净，
+     * 否则「今天已经存过一张」会漏到下一个用例里，空态断言全部失真。
+     */
+    beforeEach(async () => {
+      await clearShots()
+    })
+
+    it('点位是写死的 9 个白名单，分设备设施 / 材料堆场 / 出入口管控三组', () => {
       const cam = useCamStore()
-      expect(cam.points).toHaveLength(8)
+      expect(cam.points).toHaveLength(9)
       expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([
-        ['出入口', 4],
-        ['场内', 2],
-        ['塔吊', 2],
+        ['设备设施', 4],
+        ['材料堆场', 1],
+        ['出入口管控', 4],
       ])
-      // 默认选中第一个点位，未取图前没有画面地址
-      expect(cam.current.name).toBe('2#门监控1')
+      // 默认选中第一个点位（设备设施置顶后是 2#塔吊），未取图前没有画面地址
+      expect(cam.current.name).toBe('2#塔吊')
       expect(cam.frameUrl).toBe('')
       expect(cam.state).toBe('idle')
     })
@@ -257,7 +265,7 @@ describe('stores', () => {
     it('camId 指向不存在的通道时回退到首个点位', () => {
       const cam = useCamStore()
       cam.camId = 'nope'
-      expect(cam.current.channelId).toBe('34020000001320000003')
+      expect(cam.current.channelId).toBe(CAM_POINTS[0].channelId)
     })
 
     it('applyCam 切点位并取图；同一点位不重复请求', async () => {
@@ -312,7 +320,7 @@ describe('stores', () => {
     it('applyCam 忽略不存在的通道（不把页面切成空点位）', () => {
       const cam = useCamStore()
       cam.applyCam('unknown')
-      expect(cam.current.channelId).toBe('34020000001320000003')
+      expect(cam.current.channelId).toBe(CAM_POINTS[0].channelId)
     })
 
     it('openCam 关掉航拍与隐患、清横屏，并按登录守卫放行', () => {
@@ -329,7 +337,7 @@ describe('stores', () => {
       expect(air.hazardOpen).toBe(false)
       expect(shell.isLand).toBe(false)
       expect(cam.isOpen).toBe(true)
-      expect(cam.camId).toBe('34020000001320000003')
+      expect(cam.camId).toBe(CAM_POINTS[0].channelId)
     })
 
     it('closeCam 退出横屏并关层，但保留已取到的画面（会话内缓存）', async () => {
@@ -359,7 +367,8 @@ describe('stores', () => {
       const cam = useCamStore()
       cam.openCam()
       await flushPromises()
-      cam.applyCam('34020000001320000017')
+      // 切到一个与默认点位不同的通道，才有两张 objectURL 可撤
+      cam.applyCam('34020000001310000003')
       await flushPromises()
 
       useAuthStore().clear()
@@ -445,104 +454,284 @@ describe('stores', () => {
     })
 
     /**
-     * 历史抓拍（2026-11-18）
+     * 历史抓拍（2026-11-19：真实快照 + 本机档案）
      *
-     * 入口已通、数据待接入：`loadShots()` 现在返回空列表 + 一句说明，不编造照片。
-     * 分组逻辑按真实字段（at）算，所以接口一接上，日期芯片与照片顺序就自动成立 ——
-     * 这两条就是钉这件事。
+     * 《监控快照接口使用说明》写明服务端只回「最近一次成功更新」的那一帧，
+     * 实测也不接受 `date` / `startTime`（直接 400）、`/snapshots/history` 等全 404。
+     * 所以历史只能来自**本机档案**（`utils/shotArchive.ts`）：今天真请求一次并按
+     * 更新档存下，别的日期只读档案。这一组钉住「有就显示真的、没有就说没有」。
      */
-    it('历史抓拍：开关与空态说明（数据待接入，不塞示例照片）', async () => {
+    it('历史抓拍：今天真取一帧并落进档案，按档位出图', async () => {
       const cam = useCamStore()
       expect(cam.shotsOpen).toBe(false)
-      expect(cam.shots).toEqual([])
 
       cam.openShots()
       await flushPromises()
 
       expect(cam.shotsOpen).toBe(true)
-      expect(cam.shots).toEqual([])
+      expect(cam.shots).toHaveLength(1)
       expect(cam.shotsState).toBe('ok')
-      expect(cam.shotsNote).toContain('接口尚未接入')
+      expect(cam.shots[0].channelId).toBe(cam.camId)
+      expect(cam.shots[0].size).toBe(128)
+      expect(cam.shots[0].slot).toBeGreaterThanOrEqual(0)
+      expect(cam.shotsHint).toContain('当天 1 张')
+      // 缩略图与原图各一份 objectURL（列表用缩略图，详情才换原图）
+      expect(cam.shots[0].thumb).toMatch(/^blob:cam\//)
+      expect(cam.shots[0].url).toMatch(/^blob:cam\//)
 
       cam.closeShots()
       expect(cam.shotsOpen).toBe(false)
+      expect(cam.shots).toEqual([])
+      expect(cam.shotsState).toBe('idle')
     })
 
-    it('历史抓拍按天分组，同一天按时刻倒序（接口一接上就成立）', () => {
+    it('历史抓拍：同一更新档再取到同一张不重复存，时刻保持第一次', async () => {
       const cam = useCamStore()
-      const day = 24 * 3600 * 1000
-      const t0 = new Date(2026, 10, 18, 9, 0).getTime()
+      cam.openShots()
+      await flushPromises()
+      const firstAt = cam.shots[0].at
+      const firstId = cam.shots[0].id
 
-      cam.shots = [
-        { id: 'a', thumb: 'ta', url: 'ua', at: t0, channelId: 'c1' },
-        { id: 'b', thumb: 'tb', url: 'ub', at: t0 + day, channelId: 'c1' },
-        { id: 'c', thumb: 'tc', url: 'uc', at: t0 + 3_600_000, channelId: 'c1' },
-      ]
+      cam.openShots()
+      await flushPromises()
 
-      expect(cam.shotDays.map((d) => d.label)).toEqual(['11月18日', '11月19日'])
-      expect(cam.shotDays[0].items.map((s) => s.id)).toEqual(['c', 'a'])
+      expect(cam.shots).toHaveLength(1)
+      expect(cam.shots[0].id).toBe(firstId)
+      expect(cam.shots[0].at).toBe(firstAt)
+    })
+
+    it('历史抓拍：本机没留存的日期给空态，且不去打快照接口', async () => {
+      const cam = useCamStore()
+      cam.openShots()
+      await flushPromises()
+      const spy = fetch as unknown as ReturnType<typeof vi.fn>
+      expect(spy).toHaveBeenCalledTimes(1)
+
+      const y = new Date()
+      y.setDate(y.getDate() - 1)
+      cam.setShotDate(y)
+      await flushPromises()
+
+      expect(cam.shots).toEqual([])
+      expect(cam.shotsState).toBe('empty')
+      expect(cam.shotsNote).toContain('本机也没有留存记录')
+      // 历史日不发请求：服务端没有按日期查询这回事，别制造假动作
+      expect(spy).toHaveBeenCalledTimes(1)
+    })
+
+    it('历史抓拍：取图失败且本机无留存 → 失败态 + 说明', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: false,
+          status: 502,
+          headers: { get: () => null },
+          blob: async () => new Blob([]),
+        }) as unknown as Response),
+      )
+      const cam = useCamStore()
+      cam.openShots()
+      await flushPromises()
+
+      expect(cam.shots).toEqual([])
+      expect(cam.shotsState).toBe('error')
+      expect(cam.shotsNote).toContain('上游视频服务异常')
+    })
+
+    it('历史抓拍：日期只放行近 30 天，越界拦下并说明，当前日期不动', async () => {
+      const cam = useCamStore()
+      const shell = useShellStore()
+      cam.openShots()
+      await flushPromises()
+      const today = cam.shotDate.getTime()
+
+      // 区间两端：今天 / 今天往前 29 天（含今天正好 30 天）
+      expect(cam.shotMaxDate.getTime()).toBe(today)
+      expect(cam.shotMinDate.getTime()).toBe(today - 29 * 86400000)
+
+      // ① 未来日期：直接拦下
+      const future = new Date()
+      future.setDate(future.getDate() + 1)
+      expect(cam.setShotDate(future)).toBe(false)
+      expect(shell.toast).toContain('未来日期')
+      expect(cam.shotDate.getTime()).toBe(today)
+
+      // ② 第 30 天前（超出近 30 天）：拦下，并把边界说清楚
+      const tooOld = new Date()
+      tooOld.setDate(tooOld.getDate() - 30)
+      expect(cam.setShotDate(tooOld)).toBe(false)
+      expect(shell.toast).toContain('近 30 天')
+      expect(cam.shotDate.getTime()).toBe(today)
+
+      // ③ 边界内侧（第 29 天）：放行，且真的去查
+      const edge = new Date()
+      edge.setDate(edge.getDate() - 29)
+      expect(cam.setShotDate(edge)).toBe(true)
+      await flushPromises()
+      const edgeDay = new Date(edge)
+      edgeDay.setHours(0, 0, 0, 0)
+      expect(cam.shotDate.getTime()).toBe(edgeDay.getTime())
+      expect(cam.shotsState).toBe('empty')
+    })
+
+    it('历史抓拍：日历月份被夹在可选区间内，翻不出 30 天', async () => {
+      const cam = useCamStore()
+      cam.openShots()
+      await flushPromises()
+
+      // 往前翻 999 个月 → 夹到可选区间的当月
+      const far = new Date()
+      far.setMonth(far.getMonth() - 999, 1)
+      cam.setShotCalMonth(far)
+      const minMonth = new Date(cam.shotMinDate.getFullYear(), cam.shotMinDate.getMonth(), 1)
+      expect(cam.shotCalMonth.getTime()).toBe(minMonth.getTime())
+
+      // 往后翻 999 个月 → 夹到本月
+      far.setMonth(new Date().getMonth() + 999, 1)
+      cam.setShotCalMonth(far)
+      expect(cam.shotCalMonth.getFullYear()).toBe(new Date().getFullYear())
+      expect(cam.shotCalMonth.getMonth()).toBe(new Date().getMonth())
+    })
+
+    it('详情：默认压缩预览，点「查看原图」才切原图，关掉即复位', async () => {
+      const cam = useCamStore()
+      cam.openShots()
+      await flushPromises()
+
+      const id = cam.shots[0].id
+      cam.openShot(id)
+      expect(cam.shotPopOpen).toBe(true)
+      expect(cam.shotPop?.id).toBe(id)
+      expect(cam.shotShowFull).toBe(false)
+
+      cam.showShotFull()
+      expect(cam.shotShowFull).toBe(true)
+
+      cam.closeShot()
+      expect(cam.shotPopOpen).toBe(false)
+      expect(cam.shotShowFull).toBe(false)
     })
   })
 
   /* ============================================================ */
 
   describe('airHazard', () => {
-    describe('航拍派生（2026-11 阶段 8：改真实航拍照片）', () => {
-      /**
-       * 原先是「按日期偏移派生 8~10 张编出来的照片」，图片在两张静态 webp 间轮换、
-       * 时刻取自写死的 airTimes。现在照片来自真实媒体，按**拍摄日期**过滤 ——
-       * 日期对不上就是没有，不拿别的日期的照片冒充。
-       */
-      function seedPatrol(dates: string[]): void {
-        const patrol = usePatrolStore()
-        patrol.apply(
-          dates.map((d, i) => ({
-            id: `p${i}`,
-            name: `${d}.jpeg`,
-            url: `https://oss.keehang.com/iot-media/${d}.jpeg`,
-            thumbnail: `https://oss.keehang.com/thumbnail/iot/${d}.jpeg`,
-            taskName: '向阳村-安全巡检',
-            taskId: 4912,
-            jobId: 100 + i,
-            time: `${d} 09:00:00`,
-            size: 1024,
-            mediaType: 'image/jpeg',
-          })),
-        )
+    /**
+     * 航拍照片（2026-11-19 改「站点 + 最新一次采集」）
+     *
+     * 取数链（任务记录 → 最新一班媒体 → 该班全景成果）在
+     * `tests/unit/drone.spec.ts` 里用假响应完整跑过；这里只钉状态层自己的规矩：
+     * 全景排第一、没有全景就只铺照片、列表用缩略图不用原图。
+     *
+     * fetch 一律失败 —— 谁要是偷偷发请求，用例会自己红。
+     */
+    beforeEach(() => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            ({
+              ok: false,
+              status: 500,
+              json: async () => ({ code: 500, msg: '测试不打网络' }),
+            }) as unknown as Response,
+        ),
+      )
+    })
+
+    /** 一张真实照片（字段同 `PatrolPhotoReal`） */
+    function airPhoto(n: number): {
+      id: string
+      name: string
+      url: string
+      thumbnail: string
+      taskName: string
+      taskId: number
+      jobId: number
+      time: string
+      size: number
+      mediaType: string
+    } {
+      return {
+        id: `182577-DJI_${n}.jpeg`,
+        name: `DJI_2026111908${n}_V.jpeg`,
+        url: `https://oss.keehang.com/iot-media/${n}.jpeg`,
+        thumbnail: `https://oss.keehang.com/thumbnail/iot/${n}.jpeg`,
+        taskName: '向阳村-全局定点拍照',
+        taskId: 4916,
+        jobId: 182577,
+        time: `2026-11-19 08:2${n}:13`,
+        size: 7520256,
+        mediaType: 'image/jpeg',
       }
+    }
 
-      it('只列出拍摄日期与选中日一致的照片', () => {
-        seedPatrol(['2026-07-15', '2026-07-14'])
+    describe('航拍照片（站点 + 最新一次采集）', () => {
+      it('全景排第一，其余照片按拍摄顺序跟在后面', () => {
         const air = useAirHazardStore()
-        air.airDate = new Date(2026, 6, 15)
+        air.station = '向阳村-全景'
+        air.airState = 'ok'
+        air.airAt = '2026-11-18T11:30:00'
+        air.airPhotos = [airPhoto(1), airPhoto(2)]
+        air.airPano = {
+          id: 9001,
+          secret: 's',
+          recordId: 182493,
+          projectId: 193640872670213,
+          projectName: '中建三局-向阳村项目',
+          taskName: '向阳村-全景_202611181130182493',
+          name: '向阳村-全景_202611181130182493_0.jpg',
+          time: '2026-11-18 12:10:03',
+          preview: 'https://oss.keehang.com/thumbnail/model/pano.jpg',
+          full: 'https://oss.keehang.com/model/pano_origin.jpg',
+          size: 14299349,
+        }
 
-        expect(air.airList).toHaveLength(1)
-        expect(air.airList[0].time).toBe('09:00')
-        expect(air.airList[0].img).toContain('2026-07-15')
+        // 第一格是全景，后面才是采集照片（顺序保持文件名升序）
+        expect(air.airList).toHaveLength(3)
+        expect(air.airList[0].pano).toBe(true)
+        expect(air.airList[0].img).toContain('model/pano.jpg')
+        expect(air.airList.slice(1).map((s) => s.photoId)).toEqual([
+          '182577-DJI_1.jpeg',
+          '182577-DJI_2.jpeg',
+        ])
+        expect(air.airHint).toContain('含全景')
+        expect(air.airHint).toContain('11/18 11:30')
       })
 
-      it('日期对不上时为空，不回落任何演示图', () => {
-        seedPatrol(['2026-07-15'])
+      it('没有全景的站点只展示采集照片（不拿项目全景凑）', () => {
         const air = useAirHazardStore()
-        air.airDate = new Date(2026, 6, 1)
+        air.station = '向阳村-全局定点拍照'
+        air.airState = 'ok'
+        air.airPhotos = [airPhoto(1)]
+        air.airPano = null
 
-        expect(air.airList).toHaveLength(0)
+        expect(air.airList).toHaveLength(1)
+        expect(air.airList[0].pano).toBeUndefined()
+        expect(air.airHint).not.toContain('含全景')
       })
 
-      it('没有任何真实照片时为空（不编造数量）', () => {
+      it('列表用缩略图（原图 7MB，列表里不下）', () => {
         const air = useAirHazardStore()
-        expect(air.airList).toHaveLength(0)
+        air.airPhotos = [airPhoto(1)]
+        expect(air.airList[0].img).toBe('https://oss.keehang.com/thumbnail/iot/1.jpeg')
       })
 
-      it('airList 随选中日期变化', () => {
-        seedPatrol(['2026-07-15', '2026-07-14'])
+      it('切站点会先清空上一站的照片与全景，再进加载态', async () => {
         const air = useAirHazardStore()
-        air.airDate = new Date(2026, 6, 15)
-        expect(air.airList).toHaveLength(1)
+        air.airState = 'ok'
+        air.airPhotos = [airPhoto(1)]
+        air.airPopOpen = true
+        air.airPopIdx = 1
 
-        air.airDate = new Date(2026, 6, 14)
-        expect(air.airList).toHaveLength(1)
-        expect(air.airList[0].img).toContain('2026-07-14')
+        const p = air.loadStation('向阳村-安全巡检')
+        // 同步阶段就已经清干净，不会「点了新站点还看到旧图」
+        expect(air.airPhotos).toEqual([])
+        expect(air.airPano).toBeNull()
+        expect(air.airPopOpen).toBe(false)
+        expect(air.airPopIdx).toBe(0)
+        expect(air.airState).toBe('loading')
+        await p
       })
     })
 
@@ -639,18 +828,16 @@ describe('stores', () => {
     })
 
     describe('覆盖层互斥', () => {
-      it('openAir 关掉监控与隐患上报并复位日期视图', () => {
+      it('openAir 关掉监控与隐患上报，并收起大图', () => {
         const cam = useCamStore()
         const air = useAirHazardStore()
         cam.isOpen = true
         air.hazardOpen = true
-        air.airCalOpen = true
         air.airPopOpen = true
 
         air.openAir()
         expect(cam.isOpen).toBe(false)
         expect(air.hazardOpen).toBe(false)
-        expect(air.airCalOpen).toBe(false)
         expect(air.airPopOpen).toBe(false)
         expect(air.isOpen).toBe(true)
       })
@@ -673,10 +860,9 @@ describe('stores', () => {
       it('closeAir / closeHazard 复位各自标记', () => {
         const air = useAirHazardStore()
         air.isOpen = true
-        air.airCalOpen = true
         air.airPopOpen = true
         air.closeAir()
-        expect([air.isOpen, air.airCalOpen, air.airPopOpen]).toEqual([false, false, false])
+        expect([air.isOpen, air.airPopOpen]).toEqual([false, false])
 
         air.hazardOpen = true
         air.addHazardFiles([pngFile()])

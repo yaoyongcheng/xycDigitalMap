@@ -33,7 +33,6 @@ function localAlarms(n: number, from = 0): Alarm[] {
       type: '反光衣检测',
       title: '防护报警',
       desc: '反光衣检测 · 2号通道抓拍',
-      img: '',
       rel: '',
       at: `${dateKey(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`,
       geo: '',

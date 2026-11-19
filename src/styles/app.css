@@ -4211,6 +4211,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .cam-shots-hd span {
   font-size: var(--fs-11);
   color: var(--muted);
+  text-align: right;
 }
 
 .cam-shot-days {
@@ -4288,6 +4289,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-size: var(--fs-12);
   line-height: 1.5;
   color: var(--muted);
+}
+
+/* 空态只有标题时（不写说明行），按钮别贴着标题 */
+.cam-shots-empty .data-empty-btn {
+  margin-top: 8px;
 }
 
 .phone.is-landscape .cam-player.open {
@@ -4502,6 +4508,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .cam-shots-hd span {
   font-size: var(--fs-11);
   color: var(--muted);
+  text-align: right;
 }
 
 .cam-shot-days {
@@ -4635,7 +4642,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .cam-shot-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -4707,6 +4714,111 @@ button, input, textarea { font-family: inherit; color: inherit; }
   cursor: pointer;
 }
 
+/* =====================================================================
+ * 历史抓拍：加载 / 空 / 失败三态与详情大图（2026-11-19）
+ *
+ * 数据是真快照（`/api/video/snapshots`）+ 本机档案（utils/shotArchive.ts）：
+ * 列表只挂压缩预览（长边 480 的 WebP），详情默认同一张预览，点「查看原图」
+ * 才换成档案里的原始字节 —— 与智眸「先看预览，要看细节再看原图」同一套。
+ * ===================================================================== */
+
+/* 加载中：一句话 + 转圈，不摆灰方块（灰方块看着像已经加载好的图） */
+.cam-shots-tip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 4px;
+  color: var(--muted);
+  font-size: var(--fs-12);
+}
+
+.cam-shots-spin {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: camShotsSpin 0.8s linear infinite;
+}
+
+@keyframes camShotsSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* 有图但最新一帧没取到：在网格下面提一句，不挡已有的照片 */
+.cam-shots-note {
+  margin: 12px 2px 0;
+  font-size: var(--fs-11);
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.cam-shots-empty .data-empty-btn { margin-top: 10px; }
+
+/* 详情大图里的图片区（空白区域可点，图片按 contain 装进去） */
+.cam-shot-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.cam-shot-pop .cam-shot-stage img {
+  width: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--r-8);
+  /* 预览与原图尺寸不同，换源时不跳版 */
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/*
+ * 横屏：画布 Teleport 到 body 后铺满视口。
+ *
+ * 层级必须高于监控层本身（`.cam-player` 是 90）—— 智眸那边画布长在弹层（45）里，
+ * 48 就够；这里若照抄 48，铺满的画布会被整层监控（90）压在下面，横屏后只剩黑屏。
+ * 96 让它在监控层之上、又在系统全屏里，转屏回来照常落回弹层内部。
+ */
+.cam-shot-stage.is-land {
+  position: fixed;
+  inset: 0;
+  z-index: 96;
+  margin: 0;
+  border-radius: 0;
+  background: #000;
+}
+
+.cam-shot-stage.is-land img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 0;
+  background: none;
+}
+
+.cam-shot-pop .cam-shot-meta {
+  flex: none;
+  margin: 12px 0 0;
+  padding: 0 4px;
+  font-size: var(--fs-13);
+  color: rgba(255, 255, 255, 0.88);
+  text-align: center;
+}
+
+.cam-shot-pop .cam-shot-sub {
+  flex: none;
+  margin: 4px 0 0;
+  padding: 0 4px;
+  font-size: var(--fs-11);
+  color: rgba(255, 255, 255, 0.55);
+  text-align: center;
+}
+
 .air-player {
   display: none;
   position: absolute;
@@ -4718,18 +4830,249 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .air-player.open { display: flex; }
 
-.air-days {
+/*
+ * 顶部筛选区：站点下拉 + 日期芯片（同一块，flex-wrap 自适应）
+ *
+ * 为什么两行而不是硬挤一行：375 宽的屏减去两侧 12px 只剩 351，
+ * 日期三颗芯片本身就要 ~226px，留给站点下拉 117px —— 站点名（「向阳村-
+ * 全局定点拍照」）会被截成三四个字，比换行更难认。所以窄屏折两行、
+ * 宽屏（横屏 / 平板 ≥ 420）自动并成一行，只有一套布局代码。
+ *
+ * 行距比列距大一档（10 / 8）：折成两行时，站点点位与日期是「两组条件」，
+ * 行距收紧会和同一行里的元素黏成一片。
+ */
+.air-filter {
+  position: relative;
   flex-shrink: 0;
   display: flex;
-  gap: 8px;
-  padding: 4px 12px 10px;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 10px 8px;
+  padding: 4px 12px 9px;
+}
+
+/*
+ * 站点下拉：原生 <select>，手机上点开是系统选择器，滚轮式选中比自定义
+ * 弹层快，自带无障碍语义，也不用为它再写一套手势。
+ * min-width 是换行的临界点：低于它站点名就没法读了。
+ */
+.air-pick {
+  flex: 1 1 200px;
+  min-width: 168px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.air-pick-label {
+  flex-shrink: 0;
+  font-size: var(--fs-12);
+  line-height: 20px;
+  color: var(--muted);
+}
+
+.air-pick-sel {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+/*
+ * 下拉框外观（2026-11-19 二次统一：贴微信「选择行」）
+ *
+ * 参照基准说明：微信**没有**下拉浮层这种控件 —— 小程序 `<picker>` 与微信内
+ * 网页的原生 `<select>` 都是「底部滚轮 / 系统选择器」（WeUI 里叫 `.weui-picker`，
+ * 240px 高的滚轮 + 渐变遮罩），桌面端没有对应的下拉样式可抄。所以这里参照的
+ * 是微信**表单选择行**（`.weui-cell`）的视觉语言，套在我们这颗 32px 的触发器上：
+ *
+ *   · 白底 + 极淡中性描边（微信 cell 没有彩色描边，0.5px rgba(0,0,0,.1) 那种）；
+ *   · 无阴影 —— 微信整个视觉体系里列表/表单都不浮；
+ *   · 正文 400 字重、14px（微信表单正文是 17px regular，这里按控件尺寸等比缩），
+ *     不用 600 那种「标题感」，也不会有品牌蓝；
+ *   · 次要文字 / 箭头用中性灰（微信箭头是 rgba(0,0,0,.3) 的细 chevron）；
+ *   · 按下压一档浅灰（≈ 微信列表按下色 #ECECEC）；
+ *   · 展开时只有箭头翻转，不出现蓝色高亮环（触屏没有焦点环这回事）。
+ *
+ * 高度仍是 32px：必须与同排日期芯片（`.air-filter .cam-day`）等高，
+ * 否则窄屏折两行时两行控件上下不齐。
+ */
+.air-select {
+  width: 100%;
+  height: 32px;
+  padding: 0 30px 0 14px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: var(--r-8);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-14);
+  font-weight: 400;
+  line-height: 30px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  /* iOS 上点按会闪一层灰底，与自带圆角叠在一起显脏 */
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    border-color 0.16s var(--ease-out),
+    background-color 0.16s var(--ease-out);
+}
+
+/*
+ * 悬停：只给桌面（有真实指针的设备）。触屏上 :hover 会黏在最后点的元素上，
+ * 于是「刚选完的站点」一直浮着一层灰底，看着像没点中。
+ *
+ * 微信列表的悬停/按下都是「换底色」，不是「描边变蓝 + 浮起来」——
+ * 这里照做，去掉之前那层品牌蓝描边与投影。
+ */
+@media (hover: hover) {
+  .air-select:hover:not(:disabled) {
+    border-color: rgba(0, 0, 0, 0.12);
+    background: rgba(0, 0, 0, 0.03);
+  }
+}
+
+/* 按下：底色压一档（≈ 微信 #ECECEC），不用位移（:active 里写 transform 会丢 click） */
+.air-select:active:not(:disabled) {
+  background: var(--surface-2);
+}
+
+/*
+ * 聚焦 / 展开
+ *
+ *   · focus-within —— 点开系统选择器时也算：只把描边加深一档 + 箭头翻上来，
+ *     不出现蓝色（微信没有「聚焦变蓝」这套）；
+ *   · focus-visible —— 键盘 Tab 到它时仍保留一圈淡蓝环：这是无障碍要求，
+ *     只在键盘操作时出现，触屏点按不会留下。与登录框同一口径。
+ */
+.air-pick-sel:focus-within .air-select:not(:disabled) {
+  border-color: rgba(0, 0, 0, 0.16);
+}
+
+.air-select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(47, 124, 255, 0.12);
+}
+
+/* 无站点时（value="" 的占位项）：按微信 placeholder 处理（35% 黑），别做得像一条有效数据 */
+.air-pick-sel:has(option[value='']:checked) .air-select {
+  color: rgba(0, 0, 0, 0.35);
+  font-weight: 400;
+}
+
+/*
+ * 禁用（没有站点可选）：微信的做法是**文字压淡、底色不变**，
+ * 而不是整块变灰底 —— 变灰底看着像「加载中的骨架」，反而让人等。
+ * 描边再淡一档，箭头跟着退。
+ */
+.air-select:disabled {
+  background: var(--surface);
+  border-color: rgba(0, 0, 0, 0.06);
+  color: rgba(0, 0, 0, 0.26);
+  font-weight: 400;
+  cursor: not-allowed;
+}
+
+/*
+ * 展开后的选项面板：桌面端（Chrome / Edge / Safari 部分生效）能吃到这几条，
+ * 移动端交给系统选择器。
+ *
+ * 微信的选中项不会变成品牌色 —— 它只是「当前这一条」，所以这里也不写蓝色，
+ * 只用同色加半档字重。面板底色/选中高亮由系统绘制，改不动。
+ */
+.air-select option {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 400;
+}
+
+.air-select option:checked {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/*
+ * 箭头：CSS 画的小 chevron（右下两条边转 45°），不用 ▾ 字符 ——
+ * 字符在不同系统字体里大小、基线都不一样，和文字并排时总是差半像素。
+ *
+ * 尺寸/颜色照微信的 cell 箭头：6px、1.5px 细线、rgba(0,0,0,.3)，
+ * 展开（focus-within）时翻成向上 —— 微信本身没有这个反馈（它直接弹滚轮），
+ * 但桌面端没有「弹层已打开」的其它提示，翻转一次最省。
+ */
+.air-pick-arrow {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 6px;
+  height: 6px;
+  margin-top: -5px;
+  border-right: 1.5px solid rgba(0, 0, 0, 0.3);
+  border-bottom: 1.5px solid rgba(0, 0, 0, 0.3);
+  transform: rotate(45deg);
+  pointer-events: none;
+  transition:
+    transform 0.2s var(--ease-out),
+    margin-top 0.2s var(--ease-out),
+    border-color 0.16s var(--ease-out);
+}
+
+.air-pick-sel:focus-within .air-pick-arrow {
+  margin-top: -2px;
+  transform: rotate(225deg);
+}
+
+.air-select:disabled ~ .air-pick-arrow {
+  border-color: rgba(0, 0, 0, 0.14);
+  transform: rotate(45deg);
+}
+
+/* 日期芯片行（原 .air-days，随日期控件一起恢复；在筛选区里不再自带边距） */
+.air-days {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .air-days .cam-day { flex-shrink: 0; }
 
-.air-player .cam-cal {
-  top: 80px;
+/* 与下拉框同排，高度必须对齐（只作用于航拍筛选区，别处仍 30px） */
+.air-filter .cam-day { height: 32px; }
+
+/*
+ * 月历：贴着筛选区下沿（含 air-filter 的 12px 边距）。
+ * 用 `top: calc(100% + 6px)` 而不是固定像素 —— 窄屏两行、宽屏一行时
+ * 高度不同，这样两种布局都不用另写一个 top。
+ */
+.air-filter .cam-cal {
+  top: calc(100% + 6px);
+}
+
+/* 加载 / 空 / 失败：一句话 + 一个动作，不摆灰格子 */
+.air-state {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  color: var(--muted);
+  font-size: var(--fs-12);
+  text-align: center;
+}
+
+.air-state strong {
+  font-size: var(--fs-13);
+  font-weight: 650;
+  color: var(--text);
+}
+
+.air-state .data-empty-btn {
+  margin-top: 8px;
 }
 
 .phone.is-landscape .cam-cal {
@@ -4768,12 +5111,92 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .air-card {
+  position: relative;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
   text-align: left;
+}
+
+/*
+ * 全景那一格占满一行（2:1）—— 它排第一、是「能转着看」的东西，
+ * 和下面 4:3 的照片区分开，也提醒用户点进去不是一张静态图。
+ */
+.air-card.is-pano {
+  grid-column: 1 / -1;
+}
+
+.air-card.is-pano img {
+  aspect-ratio: 2 / 1;
+}
+
+.air-card-tag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: block;
+  height: 20px;
+  margin: 0;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  background: var(--blue);
+  color: #fff;
+  font-size: var(--fs-11);
+  font-weight: 650;
+  line-height: 20px;
+  letter-spacing: 0.02em;
+}
+
+.air-card-time {
+  display: block;
+  margin-top: 6px;
+  font-size: var(--fs-11);
+}
+
+/*
+ * 网格底部的「加载更多 / 已到底」（2026-11-19：首屏 8 张，下滑追加）。
+ *
+ * 它同时是 IntersectionObserver 的哨兵：滚到它附近就自动追加，所以这一行
+ * 既要有「还有多少」的信息，也要在观察器不可用时可点 —— 做成按钮而不是
+ * 纯文字，两个目的都能满足。铺满一行（grid 里 1 / -1），不参与两列排布。
+ */
+.air-more {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0 2px;
+}
+
+.air-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--blue);
+  font-family: inherit;
+  font-size: var(--fs-12);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* 按下只压底色，不做位移（:active 里禁 transform，见 motion-perf.spec） */
+.air-more-btn:active { background: var(--surface-2); }
+
+/* 正在加载：文字转灰，避免和蓝色按钮抢注意力 */
+.air-more-btn[aria-disabled='true'] { color: var(--muted); }
+
+/* 已经到底：一行小字，不占按钮的位置 */
+.air-more.is-end {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-11);
 }
 
 .air-card img {
@@ -4812,6 +5235,37 @@ button, input, textarea { font-family: inherit; color: inherit; }
   justify-content: flex-start;
   padding: 0;
   background: var(--bg-1);
+}
+
+/*
+ * 航拍弹层里的全景（2026-11-19）：顶栏以下整块给球面画布。
+ * 复用智眸那套 `.pano-stage / .pano-host / .pano-tools`，只把外边距与固定
+ * 高度换掉 —— 这里是全屏弹层，画布应该吃掉剩余高度，而不是 46vh 悬在中间。
+ */
+.cam-shot-pop.air-pop .pano-stage {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  border-radius: 0;
+}
+
+.cam-shot-pop.air-pop .pano-host {
+  height: 100%;
+  max-height: none;
+  min-height: 0;
+}
+
+.cam-shot-pop.air-pop .pano-hint.is-broken {
+  background: transparent;
+  color: var(--danger);
+}
+
+/*
+ * 横屏必须压住航拍层本身（`.air-player` 是 90）。
+ * 智眸那边画布长在弹层（45）里，照抄 48 会被整层遮住 → 横屏只剩黑屏。
+ */
+.cam-shot-pop.air-pop .pano-stage.is-land {
+  z-index: 96;
 }
 
 .photo-bar {
@@ -5181,6 +5635,30 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .work-short i.orange { background: var(--warn); }
 .work-short i.gray { background: #C9CDD4; }
 
+/*
+ * 「功能待定」小标签（2026-11-19 隐患上报暂缓）
+ *
+ * 放在文案下方而不是图标角上：四列等宽的格子只有 ~80px，四个字压在图标
+ * 右侧会挤到邻居身上；单独一行最稳，也不会把图标挤小。
+ * 颜色用 --muted + 浅底胶囊，比正文弱一档 —— 它是说明，不是可点的东西。
+ */
+.work-short-tag {
+  margin-top: -6px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--page);
+  color: var(--muted);
+  font-size: var(--fs-10);
+  font-style: normal;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* 待定入口的图标淡一档：一眼看出「现在点不开东西」，但品牌色还在 */
+.work-short.is-pending i {
+  opacity: 0.55;
+}
+
 .tool-list {
   display: flex;
   flex-direction: column;
@@ -5314,7 +5792,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .chip.active {
   color: var(--blue);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .chip.active::after {
@@ -5340,6 +5818,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .msg-ico {
+  /* 进度环（`.tile-ring`）绝对定位挂在它上面，需要成为定位父级 */
+  position: relative;
   width: 44px;
   height: 44px;
   border-radius: var(--r-12);
@@ -5355,7 +5835,38 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .msg-ico.people { background: var(--warn); }
 .msg-ico.inspect { background: var(--online); }
-.msg-ico.video { background: var(--blue); }
+
+/*
+ * 视频消息的图标位最终会被该条报警的抓拍图盖住，底色只在「图还没到」时可见。
+ * 与巡检 / 首页轮播的占位统一成灰（见 `.alarm-tile` 注释）：蓝底会被读成
+ * 一枚功能入口，而这里表达的是「图还没到」。图标同步换深灰描边。
+ */
+.msg-ico.video {
+  background: var(--surface-2);
+  /* 与 `.alarm-tile` 同一套占位观感：浅灰底 + 1px 内描边 */
+  box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.05);
+}
+
+.msg-ico.video > svg:not(.tile-ring) path,
+.msg-ico.video > svg:not(.tile-ring) circle,
+.msg-ico.video > svg:not(.tile-ring) rect {
+  stroke: rgba(16, 24, 40, 0.32);
+}
+
+/*
+ * 图标位换成抓拍缩略图（2026-11-19）
+ *
+ * 图直接铺满这颗 44px 圆角框：`object-fit: cover` 保证等比裁切、不拉伸变形，
+ * `border-radius: inherit` 让圆角跟着容器走（不在图片上另写一套半径）。
+ * 灰底在图片下面垫着，缩略图还没到时看到的就是那颗占位图标 + 下载进度环。
+ */
+.msg-shot {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: inherit;
+}
 
 .msg-item h4 {
   font-size: 15px;
@@ -7625,42 +8136,106 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 .insp-page .alarm-live-halo { fill: var(--blue); }
 .insp-page .dl-glow { opacity: 0.5; }
 
-/* ---------- K-2. 风险编码 ---------- */
+/* ---------- K-2. 报警图标位 ---------- */
 
 /*
- * 用户面对 4 类预警时，真正想知道的是「哪条最要紧」。
- * 一条 2px 的短色标贴在行首，比给整行染底色克制得多 —— 整行染色会让
- * 本来就密的列表变成色块阵列，反而更难扫读。
+ * 行首那根 2px 短色标（`--tone` 分档）2026-11-19 整层下线 ——
+ * 现场觉得它离图标太近，看起来像「图标前面多了一条红线」，与缩略图并排
+ * 时更像图片加载失败的竖条。风险分档本身（`utils/alarmTone.ts` →
+ * `data-tone` 属性）保留，只是不再有视觉落点。
  *
- * 分档依据是现场后果（见 utils/alarmTone.ts），不是类型名称分类。
+ * 留着这两个 `position: relative`：列表行里还有绝对定位的子元素
+ * （时间、角标）依赖它做定位上下文。
  */
 .alarm-feed-item,
 .insp-item { position: relative; }
 
-.alarm-feed-item::before,
-.insp-item::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  width: 2px;
-  height: 26px;
-  margin-top: -13px;
-  border-radius: var(--r-2);
-  background: var(--tone, transparent);
+/*
+ * 报警图标位统一占位（2026-11-19，同日二次调整：蓝底 → 灰底）
+ *
+ * 三处图标位（首页轮播 42 / 巡检预警 48 / 消息 44）原本各用一套图：前两处是
+ * 分类示意图 `img/alarm-*.webp`，消息页是蓝底摄像机。现场看，示意图长得像
+ * 当次抓拍，容易被当成「这条报警的照片」；统一成同一颗图标之后，一眼就能
+ * 区分「图标」与「抓拍图」。
+ *
+ * 底色从 blue 收到 surface-2：蓝底读起来像一枚可点的功能入口，而这里表达的
+ * 其实是「图还没到」—— 中性灰更准确，也给叠在上面的进度环留了干净底子。
+ * 图标本身是白色描边（`data/icons.ts` 的 WHITE_STROKE），灰底上必须换成深灰，
+ * 见下方 *:not(.tile-ring) 的 stroke 覆盖。
+ *
+ * 只负责铺底 + 居中 + 图标比例：宽高、圆角、flex 收缩全部沿用所在位置的
+ * 容器类（`.insp-pic` / `.alarm-feed-pic` / `.msg-ico`），三处看起来是同一枚
+ * 图标，而版式一处都没动。图标取 50%（与 `.msg-ico` 的 22/44 同比例）。
+ */
+.alarm-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  /* 浅灰底叠在白卡上只有 4% 差，加一圈 1px 内描边把「图的位置」框出来（不占布局） */
+  box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.05);
 }
 
-/* 首页深色：沿用既有深色调色板，不开新色系 */
-.alarm-feed-item[data-tone="guard"] { --tone: var(--danger-dark); }
-.alarm-feed-item[data-tone="power"] { --tone: var(--orange-dark); }
-.alarm-feed-item[data-tone="dust"] { --tone: var(--warn-dark); }
-.alarm-feed-item[data-tone="env"] { --tone: var(--blue-dark); }
+.alarm-tile > svg:not(.tile-ring) {
+  width: 50%;
+  height: 50%;
+}
 
-/* 子页浅色：同一套语义，换成浅底上够对比的那组 */
-.insp-item[data-tone="guard"] { --tone: var(--danger); }
-.insp-item[data-tone="power"] { --tone: var(--warn); }
-.insp-item[data-tone="dust"] { --tone: var(--warn-2); }
-.insp-item[data-tone="env"] { --tone: var(--blue); }
+/* presentation attribute（stroke="#fff"）优先级低于任何 CSS 规则，可直接覆盖 */
+.alarm-tile > svg:not(.tile-ring) path,
+.alarm-tile > svg:not(.tile-ring) circle,
+.alarm-tile > svg:not(.tile-ring) rect {
+  stroke: rgba(16, 24, 40, 0.32);
+}
+
+/*
+ * 占位图标上的下载进度环（2026-11-19）
+ *
+ * 绝对定位铺满图标位 —— 不参与布局流，42 / 44 / 48 三种尺寸都不用另写一套，
+ * 图标本身的 50% 比例、居中和整行点击热区一概不变。
+ *
+ * 从 12 点方向起画（`rotate(-90deg)`），弧长由组件按真实下载百分比算好，
+ * 这里只负责粗细与颜色：底部一圈浅灰当轨道，蓝色弧线是进度。
+ */
+.alarm-tile > .tile-ring,
+.msg-ico > .tile-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+}
+
+.tile-ring circle {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.tile-ring-track { stroke: rgba(16, 24, 40, 0.1); }
+
+.tile-ring-bar {
+  stroke: var(--blue);
+  transition: stroke-dashoffset 0.18s linear;
+}
+
+/*
+ * 不确定态：接口没给 Content-Length 时只留 28% 的弧并整圈旋转。
+ * 动效按项目惯例收在 no-preference 内 —— 关掉动效后仍能看到那段短弧（「在取」），
+ * 只是不再转。
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .tile-ring.is-indeterminate {
+    animation: tile-ring-spin 1s linear infinite;
+  }
+
+  @keyframes tile-ring-spin {
+    from { transform: rotate(-90deg); }
+    to { transform: rotate(270deg); }
+  }
+}
 
 /* ---------- K-3. 区块标题 ---------- */
 

@@ -67,27 +67,28 @@ describe('阶段 5 · 真实数据', () => {
   })
 
   describe('监控点位（2026-11-18 设计稿白名单）', () => {
-    it('点位是写死的 8 个白名单，与报警数据无关', () => {
+    it('点位是写死的 9 个白名单，与报警数据无关', () => {
       const cam = useCamStore()
       // 旧版是从报警 channelNo 反推，没报警就一个点位都没有；现在反过来：
       // 点位固定，报警有没有都不影响监控页
       expect(useAlarmStore().liveAlarms).toEqual([])
-      expect(cam.points).toHaveLength(8)
-      expect(cam.current.name).toBe('2#门监控1')
+      expect(cam.points).toHaveLength(9)
+      expect(cam.current.name).toBe('2#塔吊')
       expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([
-        ['出入口', 4],
-        ['场内', 2],
-        ['塔吊', 2],
+        ['设备设施', 4],
+        ['材料堆场', 1],
+        ['出入口管控', 4],
       ])
       expect(cam.points.map((p) => p.name)).toEqual([
+        '2#塔吊',
+        '4#塔吊',
+        '地磅全景',
+        '钢筋加工棚',
+        '材料堆场',
         '2#门监控1',
         '2#门监控2',
         '4#门监控',
         '4#门外监控',
-        '地磅全景',
-        '钢筋加工棚',
-        '2#塔吊',
-        '4#塔吊',
       ])
     })
 

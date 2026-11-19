@@ -27,7 +27,12 @@ import {
   fetchTodayRecords,
   fetchProjectIds,
   fetchTelemetry,
+  fetchLatestGalleryOf,
+  fetchRecordPano,
+  fetchStationDay,
+  resetPanoIndex,
   pickLatestPano,
+  toStations,
   toDock,
   toLiveStream,
   toTaskRecords,
@@ -35,6 +40,7 @@ import {
   type DroneTaskRecord,
   toTelemetry,
 } from '@/api/drone'
+import { useAirHazardStore, AIR_PAGE_SIZE } from '@/stores/airHazard'
 import { usePatrolStore } from '@/stores/patrol'
 import { useUavStore } from '@/stores/uav'
 
@@ -1106,5 +1112,550 @@ describe('pickLatestPano · 项目守卫', () => {
   it('本项目一条都没有时返回 null（不会退而求其次拿别的项目）', () => {
     const p = pickLatestPano({ list: [t({ recordId: 181656, projectId: 231070463906821 })] }, 193640872670213)
     expect(p).toBeNull()
+  })
+})
+
+/* ============================================================ *
+ * 航拍照片：站点 → 最新一次采集（2026-11-19）
+ * ============================================================ */
+
+describe('站点清单（V2 任务记录里的站点名去重）', () => {
+  it('同名记录合成一个站点，按最近一次执行倒序，架次按条数算', () => {
+    const rows = toTaskRecords([
+      { id: 1, taskName: '向阳村-塔吊定点', taskId: 4912, start: '2026-11-18T09:00:00' },
+      { id: 2, taskName: '向阳村-塔吊定点', taskId: 4912, start: '2026-11-19T09:00:00' },
+      { id: 3, taskName: '向阳村-全局定点拍照', taskId: 4916, start: '2026-11-18T08:20:00' },
+      { id: 4, taskName: ' 向阳村-土方1 ', taskId: 4913, start: '2026-11-17T17:00:00' },
+    ])
+
+    const st = toStations(rows)
+    expect(st.map((s) => s.name)).toEqual(['向阳村-塔吊定点', '向阳村-全局定点拍照', '向阳村-土方1'])
+    expect(st[0].runs).toBe(2)
+    expect(st[0].lastStart).toBe('2026-11-19T09:00:00')
+    // 名字两边空白不影响归组（下拉里不会出现「向阳村-土方1 」和「向阳村-土方1」两项）
+    expect(st[2].name).toBe('向阳村-土方1')
+  })
+
+  /*
+   * 下拉的语义是「拍照站点」（2026-11-19 现场确认）：非拍照任务与重复建图
+   * 航线一律不出现。半角括号、多余空白都要能认出来。
+   */
+  it('下拉只留拍照站点：安全巡检 / 三维（新·加密）/ 环绕视频 / 测试航线全部剔除', () => {
+    const names = [
+      '向阳村-全局定点拍照',
+      '向阳村-安全巡检',
+      '向阳村-三维（新）',
+      '向阳村-三维（加密）',
+      '向阳村-三维(加密)',
+      '向阳村-环绕视频',
+      ' 测试 ',
+      '测试全景',
+    ]
+    const rows = toTaskRecords(
+      names.map((taskName, i) => ({
+        id: i + 1,
+        taskName,
+        taskId: 4900 + i,
+        start: '2026-11-18T09:00:00',
+      })),
+    )
+    expect(toStations(rows).map((s) => s.name)).toEqual(['向阳村-全局定点拍照'])
+  })
+})
+
+describe('航拍照片：最新一次采集 + 带全景', () => {
+  /*
+   * 每个用例一个新 pinia：此前这个 describe 没重置，store 状态跨用例复用 ——
+   * `loadStations` 因 5 分钟 TTL 直接返回，用例看到的是上一个用例的站点与照片。
+   */
+  beforeEach(() => setActivePinia(createPinia()))
+
+  const OWN = 193640872670213
+
+  /** 一条执行记录 */
+  function rec(id: number, start: string, name = '向阳村-全局定点拍照') {
+    return { id, uuid: `u${id}`, taskName: name, taskId: 4916, start, end: start, status: 2, pid: OWN }
+  }
+
+  /** 一班的媒体：N 张图片 + 1 个飞行日志 */
+  function media(n: number): unknown[] {
+    return [
+      ...Array.from({ length: n }, (_, i) => ({
+        name: `DJI_000${i + 1}_V.jpeg`,
+        url: `https://oss/${i}.jpeg`,
+        thumbnail: `https://oss/thumb/${i}.jpeg`,
+        mediaType: 'image/jpeg',
+        size: 1000 + i,
+        lastModified: '2026-07-15 09:38:39',
+      })),
+      { name: 'DJI_log.DAT', url: 'https://oss/log.dat', mediaType: 'application/octet-stream', size: 10 },
+    ]
+  }
+
+  /** 成果列表的一页 */
+  function recreate(rows: unknown[]): unknown {
+    return { list: rows }
+  }
+
+  it('跳过「已完成但 0 媒体」的班，取最近一班有照片的全部图片（不含 .DAT）', async () => {
+    const asked: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        asked.push(u)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/media/task/job/2')) return khResponse({ code: 200, data: [] })
+        if (u.includes('/media/task/job/1')) return khResponse({ code: 200, data: media(9) })
+        return khResponse({ code: 200, data: {} })
+      }),
+    )
+
+    const g = await fetchLatestGalleryOf('向阳村-全局定点拍照', toTaskRecords([
+      rec(1, '2026-07-15T08:20:00'),
+      // 比上面那条新，但媒体是空的（实测 2026-11-18 08:20 那班就是这样）
+      rec(2, '2026-07-15T10:20:00'),
+    ]))
+
+    expect(g?.jobId).toBe(1)
+    expect(g?.media).toHaveLength(9)
+    expect(g?.media[0].name).toBe('DJI_0001_V.jpeg')
+    // 先探最新的那条，空了才往下找
+    expect(asked.some((u) => u.includes('/media/task/job/2'))).toBe(true)
+  })
+
+  it('未来排班与未完成的班不进候选（它们没有媒体）', async () => {
+    const asked: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        asked.push(u)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/media/task/job/')) return khResponse({ code: 200, data: media(1) })
+        return khResponse({ code: 200, data: {} })
+      }),
+    )
+
+    const rows = toTaskRecords([
+      rec(9, '2099-01-01T08:00:00'), // 未来排班
+      rec(8, '2026-07-15T08:00:00'),
+    ])
+    const g = await fetchLatestGalleryOf('向阳村-全局定点拍照', rows)
+    expect(g?.jobId).toBe(8)
+    expect(asked.some((u) => u.includes('/media/task/job/9'))).toBe(false)
+  })
+
+  it('按 recordId 找该班的全景，只用本项目的 PANO 成果', async () => {
+    resetPanoIndex()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        return khResponse({
+          code: 200,
+          data: recreate([
+            {
+              taskType: 1,
+              status: 2,
+              projectId: OWN,
+              recordId: 11,
+              createTime: '2026-07-15 11:00:00',
+              resultRecordDTOList: [{ id: 5, recreateType: 'OSGB', name: 'x.zip', size: 1 }],
+            },
+            {
+              taskType: 2,
+              status: 2,
+              projectId: OWN,
+              recordId: 10,
+              taskName: '向阳村-全景_20260715090010',
+              createTime: '2026-07-15 10:20:00',
+              endTime: '2026-07-15 10:30:00',
+              resultRecordDTOList: [
+                {
+                  id: 7,
+                  secret: 'S',
+                  recreateType: 'PANO',
+                  name: 'a_1.jpg',
+                  size: 100,
+                  thumbnail: 'https://oss/thumb/a1.jpg',
+                  download: 'https://oss/a1_origin.jpg',
+                },
+                {
+                  id: 6,
+                  secret: 'S',
+                  recreateType: 'PANO',
+                  name: 'a_0.jpg',
+                  size: 200,
+                  thumbnail: 'https://oss/thumb/a0.jpg',
+                  download: 'https://oss/a0_origin.jpg',
+                },
+              ],
+            },
+            {
+              taskType: 2,
+              status: 2,
+              projectId: 231070463906821, // 别的项目
+              recordId: 12,
+              createTime: '2026-07-15 10:40:00',
+              resultRecordDTOList: [
+                { id: 9, recreateType: 'PANO', name: 'b_0.jpg', size: 1, thumbnail: 'https://oss/thumb/b.jpg' },
+              ],
+            },
+          ]),
+        })
+      }),
+    )
+
+    const pano = await fetchRecordPano([10], '2026-07-12 00:00:00')
+    expect(pano?.recordId).toBe(10)
+    // 同一次飞行的多个全景点取名字排序第一个（与「项目全景」同一口径）
+    expect(pano?.name).toBe('a_0.jpg')
+    expect(pano?.preview).toContain('a0.jpg')
+    expect(pano?.full).toContain('a0_origin.jpg')
+    // 完成时刻用 endTime（V2 列表显示的就是它）
+    expect(pano?.time).toBe('2026-07-15 10:30:00')
+
+    // 别的项目的记录 id 找不到全景
+    expect(await fetchRecordPano([12], '2026-07-12 00:00:00')).toBeNull()
+  })
+
+  it('站点没有全景成果：返回 null，且翻到比记录更早的成果就停', async () => {
+    resetPanoIndex()
+    let pages = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        pages += 1
+        // 一页 1 条（远小于 pageSize）—— 翻到底了
+        return khResponse({
+          code: 200,
+          data: recreate([
+            {
+              taskType: 2,
+              status: 2,
+              projectId: OWN,
+              recordId: 99,
+              createTime: '2026-07-15 10:20:00',
+              resultRecordDTOList: [{ id: 1, recreateType: 'PANO', name: 'c_0.jpg', size: 1, thumbnail: 'https://oss/t.jpg' }],
+            },
+          ]),
+        })
+      }),
+    )
+
+    expect(await fetchRecordPano([500], '2026-07-14 00:00:00')).toBeNull()
+    expect(pages).toBe(1)
+  })
+
+  it('store 串起来：打开航拍自动选最近站点，列表 = 全景 + 全部照片', async () => {
+    resetPanoIndex()
+    // 打开时按「今天」取数（日期默认今天），所以记录与全景成果都得落在今天
+    const d = new Date()
+    const p2 = (n: number): string => String(n).padStart(2, '0')
+    const today = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/task/exec/list/record')) {
+          return khResponse({
+            code: 200,
+            data: [
+              rec(147744, `${today}T09:38:39`),
+              rec(147700, '2026-07-14T09:00:00', '向阳村-安全巡检'),
+            ],
+          })
+        }
+        if (u.includes('/media/task/job/147744')) return khResponse({ code: 200, data: media(9) })
+        if (u.includes('/recreate/getProjectRecreateInfo')) {
+          return khResponse({
+            code: 200,
+            data: recreate([
+              {
+                taskType: 2,
+                status: 2,
+                projectId: OWN,
+                recordId: 147744,
+                taskName: '向阳村-全景_202607150938147744',
+                createTime: `${today} 10:20:00`,
+                endTime: `${today} 10:30:00`,
+                resultRecordDTOList: [
+                  {
+                    id: 1,
+                    secret: 'S',
+                    recreateType: 'PANO',
+                    name: 'p_0.jpg',
+                    size: 100,
+                    thumbnail: 'https://oss/thumb/p.jpg',
+                    download: 'https://oss/p_origin.jpg',
+                  },
+                ],
+              },
+            ]),
+          })
+        }
+        return khResponse({ code: 200, data: [] })
+      }),
+    )
+
+    const air = useAirHazardStore()
+    air.openAir()
+    // 首次加载比之前多一层（清单 → 站点当日 → 媒体 → 全景），多等几轮微任务
+    for (let i = 0; i < 5; i++) await flushPromises()
+
+    // 安全巡检不再进下拉（只留拍照站点），所以这里只剩一条
+    expect(air.stations.map((s) => s.name)).toEqual(['向阳村-全局定点拍照'])
+    expect(air.station).toBe('向阳村-全局定点拍照')
+    expect(air.airState).toBe('ok')
+    // 全景 1 张 + 采集照片 9 张，全景排第一
+    expect(air.airList).toHaveLength(10)
+    expect(air.airList[0].pano).toBe(true)
+    expect(air.airList.filter((s) => s.pano)).toHaveLength(1)
+    expect(air.airHint).toContain('9 张')
+    expect(air.airHint).toContain('含全景')
+  })
+
+  /* ---------------- 日期控件恢复（2026-11-19）：按「站点 + 日期」取数 ---------------- */
+
+  it('按日期取数：只认那一天，同一天飞了两班取后一班', async () => {
+    const asked: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        asked.push(u)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/media/task/job/22')) return khResponse({ code: 200, data: media(3) })
+        if (u.includes('/media/task/job/21')) return khResponse({ code: 200, data: media(1) })
+        if (u.includes('/task/exec/list/record')) {
+          return khResponse({
+            code: 200,
+            data: [rec(21, '2026-07-14T08:00:00'), rec(22, '2026-07-14T15:00:00')],
+          })
+        }
+        return khResponse({ code: 200, data: {} })
+      }),
+    )
+
+    const g = await fetchStationDay('向阳村-全局定点拍照', '2026-07-14')
+    expect(g?.jobId).toBe(22)
+    expect(g?.media).toHaveLength(3)
+    // 服务端 end 不含当天 → 传次日，区间正好是这一天
+    expect(asked.some((u) => u.includes('start=2026-07-14') && u.includes('end=2026-07-15'))).toBe(true)
+  })
+
+  it('按日期取数：这一天没有该站点（或没有媒体）时返回 null，不回落到别的日期', async () => {
+    const asked: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        asked.push(u)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/task/exec/list/record')) {
+          // 这一天只有别的站点
+          return khResponse({ code: 200, data: [rec(31, '2026-07-14T09:00:00', '向阳村-安全巡检')] })
+        }
+        if (u.includes('/media/task/job/')) return khResponse({ code: 200, data: media(2) })
+        return khResponse({ code: 200, data: {} })
+      }),
+    )
+
+    expect(await fetchStationDay('向阳村-全局定点拍照', '2026-07-14')).toBeNull()
+    // 站点都没匹配上，不该再去要媒体
+    expect(asked.some((u) => u.includes('/media/task/job/'))).toBe(false)
+  })
+
+  it('store：首次打开按「站点 + 今天」取数；选日期只换日期；未来与超窗口的日期都不切', async () => {
+    resetPanoIndex()
+    const key = (shift: number): string => {
+      const d = new Date()
+      d.setDate(d.getDate() + shift)
+      const p = (n: number): string => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    }
+    const today = key(0)
+    const day5 = key(-5)
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/task/exec/list/record')) {
+          if (u.includes(`start=${day5}`)) {
+            return khResponse({ code: 200, data: [rec(31, `${day5}T09:00:00`)] })
+          }
+          // 今天是「最近一次」：首次打开就该走这条，而不是回填成别的日期
+          return khResponse({ code: 200, data: [rec(147744, `${today}T09:38:39`)] })
+        }
+        if (u.includes('/media/task/job/31')) return khResponse({ code: 200, data: media(2) })
+        if (u.includes('/media/task/job/147744')) return khResponse({ code: 200, data: media(9) })
+        return khResponse({ code: 200, data: { list: [] } })
+      }),
+    )
+
+    const air = useAirHazardStore()
+    air.openAir()
+    for (let i = 0; i < 5; i++) await flushPromises()
+    // 首次打开：站点自动选最新飞过的那个，但**日期必须是今天**，
+    // 不能因为「最近一次采集的 start」被回填成别的日期
+    expect(air.station).toBe('向阳村-全局定点拍照')
+    expect(air.airDateLabel).toBe('今天')
+    expect(air.airList).toHaveLength(9)
+
+    // 选 5 天前：按站点 + 日期取，列表换成那一班
+    const d5 = new Date()
+    d5.setDate(d5.getDate() - 5)
+    expect(air.setAirDate(d5)).toBe(true)
+    for (let i = 0; i < 5; i++) await flushPromises()
+    expect(air.airDate.getDate()).toBe(d5.getDate())
+    expect(air.airList).toHaveLength(2)
+
+    // 未来日期：拦下，日期与列表都不动
+    const before = air.airDate.getTime()
+    expect(air.setAirDate(new Date(Date.now() + 3 * 86400000))).toBe(false)
+    expect(air.airDate.getTime()).toBe(before)
+    expect(air.airList).toHaveLength(2)
+
+    // 超出窗口（今天往前 90 天以外）：同样拦下
+    const old = new Date()
+    old.setDate(old.getDate() - 120)
+    expect(air.setAirDate(old)).toBe(false)
+    expect(air.airDate.getTime()).toBe(before)
+  })
+
+  /**
+   * 现场 bug（2026-11-19）：默认站点最近一次是今天，切到「向阳村-全景」
+   * （最近一次是昨天）→ 日期芯片从今天跳成昨天。日期与站点必须互相独立。
+   */
+  it('store：切站点不碰日期；新站点当天没飞就空态，也不把日期改走', async () => {
+    resetPanoIndex()
+    const key = (shift: number): string => {
+      const d = new Date()
+      d.setDate(d.getDate() + shift)
+      const p = (n: number): string => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    }
+    const today = key(0)
+    const yest = key(-1)
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/task/exec/list/record')) {
+          // 查「昨天」这一天的区间（start=昨天&end=今天）
+          if (u.includes(`start=${yest}`)) {
+            return khResponse({ code: 200, data: [rec(52, `${yest}T15:00:00`, '向阳村-全景')] })
+          }
+          // 90 天清单 / 查今天：塔吊定点今天飞过，全景最近一次在昨天
+          return khResponse({
+            code: 200,
+            data: [
+              rec(51, `${today}T09:00:00`, '向阳村-塔吊定点'),
+              rec(52, `${yest}T15:00:00`, '向阳村-全景'),
+            ],
+          })
+        }
+        if (u.includes('/media/task/job/51')) return khResponse({ code: 200, data: media(2) })
+        if (u.includes('/media/task/job/52')) return khResponse({ code: 200, data: media(3) })
+        return khResponse({ code: 200, data: { list: [] } })
+      }),
+    )
+
+    const air = useAirHazardStore()
+    air.openAir()
+    for (let i = 0; i < 5; i++) await flushPromises()
+    expect(air.airDateLabel).toBe('今天')
+    expect(air.airList).toHaveLength(2)
+
+    // 切到「最近一次在昨天」的站点：日期仍是今天，不是昨天
+    air.pickStation('向阳村-全景')
+    for (let i = 0; i < 5; i++) await flushPromises()
+    expect(air.station).toBe('向阳村-全景')
+    expect(air.airDateLabel).toBe('今天')
+    expect(air.airState).toBe('empty')
+    // 空态里点明该站点最近一次是哪天，给用户下一步
+    expect(air.airNote).toContain('最近一次')
+    expect(air.airNote).toContain('昨天')
+
+    // 用户自己选昨天才切过去，列表跟着日期变
+    const y = new Date()
+    y.setDate(y.getDate() - 1)
+    expect(air.setAirDate(y)).toBe(true)
+    for (let i = 0; i < 5; i++) await flushPromises()
+    expect(air.airDateLabel).toBe('昨天')
+    expect(air.airList).toHaveLength(3)
+  })
+
+  /**
+   * 分页（2026-11-19）：首屏只铺 8 张，`loadMoreAir()` 每次 +8。
+   *
+   * 断言的是**渲染窗口**而不是请求次数 —— 接口一次就回整班清单、没有
+   * page/size，所以反过来要保证「分页不会多打一次媒体接口」。
+   */
+  it('store：首屏只铺 8 张，追加一页 +8，到底不再加也不再多请求', async () => {
+    resetPanoIndex()
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+
+    const stub = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+      if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+      if (u.includes('/task/exec/list/record')) {
+        return khResponse({ code: 200, data: [rec(61, `${today}T09:00:00`)] })
+      }
+      if (u.includes('/media/task/job/61')) return khResponse({ code: 200, data: media(20) })
+      return khResponse({ code: 200, data: { list: [] } })
+    })
+    vi.stubGlobal('fetch', stub)
+
+    const air = useAirHazardStore()
+    air.openAir()
+    for (let i = 0; i < 5; i++) await flushPromises()
+
+    // 全量 20 张在内存里，但网格只铺前 8 张
+    expect(air.airList).toHaveLength(20)
+    expect(air.airListShown).toHaveLength(AIR_PAGE_SIZE)
+    expect(air.airHasMore).toBe(true)
+    expect(air.airRemain).toBe(12)
+
+    const mediaCalls = (): number =>
+      stub.mock.calls.filter((c) => String(c[0]).includes('/media/task/job/')).length
+    const before = mediaCalls()
+
+    await air.loadMoreAir()
+    await flushPromises()
+    expect(air.airListShown).toHaveLength(AIR_PAGE_SIZE * 2)
+    expect(air.airRemain).toBe(4)
+    // 分页在渲染层：不能再打一次媒体接口
+    expect(mediaCalls()).toBe(before)
+
+    await air.loadMoreAir()
+    await flushPromises()
+    expect(air.airListShown).toHaveLength(20)
+    expect(air.airHasMore).toBe(false)
+
+    // 到底之后再调：不越界、不加空页
+    await air.loadMoreAir()
+    expect(air.airListShown).toHaveLength(20)
   })
 })

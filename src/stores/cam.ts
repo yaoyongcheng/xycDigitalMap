@@ -5,6 +5,14 @@ import { fetchCamSnapshot } from '@/api/camsnap'
 import { findMonitorEntry, loadMonitorList, pickStreamUrl, type MonitorEntry } from '@/api/cctv'
 import { CAM_GROUPS, CAM_POINTS, findCamPoint } from '@/data/cams'
 import { cctvPlayableUrl, cctvRtspUrl, streamModeOf, type StreamMode } from '@/data/cctv'
+import { addDays, dateKey, formatCamDate, monthStart, startOfDay } from '@/utils/date'
+import {
+  clearShots as clearShotArchive,
+  listShots,
+  saveShot,
+  SHOT_SLOT_HOURS,
+  type ShotRecord,
+} from '@/utils/shotArchive'
 import { useAirHazardStore } from './airHazard'
 import { useAuthStore } from './auth'
 import { useShellStore } from './shell'
@@ -69,16 +77,32 @@ export type CamPlayState = 'idle' | 'buffering' | 'reconnecting' | 'playing' | '
  * 记通道（换点位后仍能说清是哪台相机）、记时刻（分组与排序都靠它）。
  */
 export interface CamShot {
+  /** 主键 = `通道|日期|档位` */
   id: string
-  /** 缩略图（列表用，1:1 或 4:3 裁切） */
+  /** 压缩预览（列表用，长边 480 的 WebP） */
   thumb: string
   /** 原图（点开看大图用） */
   url: string
   /** 抓拍时刻（ms） */
   at: number
+  /** 档位序号 0/1/2（08:00 / 12:00 / 18:00） */
+  slot: number
+  /** 原图字节数 */
+  size: number
   /** 所属点位 */
   channelId: string
 }
+
+/**
+ * 历史抓拍的可查范围：以今天为基准的**近 30 天**（含今天）。
+ *
+ * 上下界都不是随便定的：
+ *   · 上界必须是今天 —— 服务端只有「最近一帧」，未来日期连数据源都不存在；
+ *   · 下界跟着本机档案的淘汰天数走（`SHOT_KEEP_DAYS`），比档案更早的日期
+ *     必然是空的，放开了只会让人白点一次、看到「本机没有记录」。
+ * 两边一起改，别只改一边（改一边就会出现「能选但永远没图」的死日期）。
+ */
+export const SHOT_RANGE_DAYS = 30
 
 /** 一个通道已取到的画面 */
 interface CamFrame {
@@ -258,65 +282,281 @@ export const useCamStore = defineStore('cam', () => {
     playNote.value = ''
   }
 
-  /* ---------------- 历史抓拍（2026-11-18：入口已通，数据待接入） ---------------- */
+  /* ---------------- 历史抓拍（2026-11-19：接真实快照 + 本机档案） ---------------- */
 
   /** 是否停在「历史抓拍」视图（画面视图与之互斥） */
   const shotsOpen = ref(false)
 
+  /** 选中日期（默认今天） */
+  const shotDate = ref<Date>(startOfDay(new Date()))
+  const shotCalOpen = ref(false)
+  const shotCalMonth = ref<Date>(monthStart(new Date()))
+
+  /**
+   * 可选区间的上界（今天）与下界（今天往前 {@link SHOT_RANGE_DAYS} 天）。
+   *
+   * 写成 computed 而不是常量：应用挂在前台跨过零点时，「今天」会变，
+   * 区间要跟着挪一天，否则第二天早上打开还是只能选到昨天。
+   */
+  const shotMaxDate = computed(() => startOfDay(new Date()))
+  const shotMinDate = computed(() => addDays(shotMaxDate.value, 1 - SHOT_RANGE_DAYS))
+
   const shots = ref<CamShot[]>([])
-  const shotsState = ref<'idle' | 'loading' | 'ok' | 'error'>('idle')
+  /** idle 未查 / loading 查询中 / ok 有照片 / empty 这天没有 / error 请求失败 */
+  const shotsState = ref<'idle' | 'loading' | 'ok' | 'empty' | 'error'>('idle')
   const shotsNote = ref('')
 
-  /**
-   * 按天分组（视图里的日期芯片）。
-   *
-   * 直接由 `shots` 派生 —— 数据一进来，日期芯片、照片网格、空态的判断全都自动成立，
-   * 视图层不需要再改。
-   */
-  const shotDays = computed(() => {
-    const map = new Map<string, CamShot[]>()
-    for (const s of shots.value) {
-      const d = new Date(s.at)
-      const key = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
-      const list = map.get(key)
-      if (list) list.push(s)
-      else map.set(key, [s])
-    }
-    return [...map.entries()].map(([key, items]) => ({
-      key,
-      label: `${Number(key.split('-')[1])}月${Number(key.split('-')[2])}日`,
-      items: items.sort((a, b) => b.at - a.at),
-    }))
-  })
+  /** 详情弹层：正在看的那张 */
+  const shotPopId = ref('')
+  const shotPopOpen = computed(() => shotPopId.value !== '')
+  const shotPop = computed(() => shots.value.find((s) => s.id === shotPopId.value) ?? null)
+  /** 详情里是否已切到原图 */
+  const shotShowFull = ref(false)
+
+  /** 列表里的 objectURL（重查 / 关层时统一撤） */
+  let shotUrls: string[] = []
+  let shotSeq = 0
+  let shotInflight: AbortController | null = null
+
+  /** 选中日期的人话（今天 / 昨天 / MM/DD） */
+  const shotDateLabel = computed(() => formatCamDate(shotDate.value))
 
   /**
-   * 取历史抓拍列表。**这里是唯一的数据接入点。**
+   * 标题右侧那句说明。
    *
-   * 现状：万方媒体服务只给「当前一帧」快照（`/api/video/snapshots`），没有按天/
-   * 按时段的抓拍列表 —— `/snapshots/history`、`/list`、`/records`、`/count` 等
-   * 2026-11-18 实测全是 nginx 404。所以现在返回空列表 + 一句说明，不编造照片。
+   * 设计稿写的是「每天 3 张，点开查看照片」—— 前半句是真的（上游每天
+   * 08:00 / 12:00 / 18:00 各更新一次），但「3 张」指的是**服务端的更新次数**，
+   * 不是一份随时可查的历史列表。所以这里把口径写实：更新节奏 + 当天留了几张。
+   */
+  const shotsHint = computed(() => {
+    const hours = SHOT_SLOT_HOURS.join(' / ')
+    return `每天 ${hours} 点更新 · 当天 ${shots.value.length} 张`
+  })
+
+  /** 'M月D日'（区间说明里的人话日期） */
+  function md(d: Date): string {
+    return `${d.getMonth() + 1}月${d.getDate()}日`
+  }
+
+  /** 空态那句话（今天 / 历史日口径不同） */
+  function shotEmptyNote(): string {
+    if (shotDateLabel.value === '今天') {
+      return '服务端只保留最近一帧快照（每天 08 / 12 / 18 点各更新一次），今天还没取到画面。点下面「重新获取」立刻抓一张。'
+    }
+    return `服务端只保留最近一帧快照、不保存历史；这一天本机也没有留存记录（本机只存近 ${SHOT_RANGE_DAYS} 天）。`
+  }
+
+  function releaseShotUrls(): void {
+    for (const u of shotUrls) {
+      try {
+        URL.revokeObjectURL(u)
+      } catch {
+        /* 忽略 */
+      }
+    }
+    shotUrls = []
+  }
+
+  /** 一条档案 → 视图用的 CamShot（两份 objectURL：缩略图 / 原图） */
+  function toCamShot(rec: ShotRecord): CamShot {
+    const make = (b: Blob): string => {
+      if (typeof URL.createObjectURL !== 'function') return ''
+      const u = URL.createObjectURL(b)
+      shotUrls.push(u)
+      return u
+    }
+    return {
+      id: rec.key,
+      at: rec.at,
+      slot: rec.slot,
+      size: rec.size,
+      channelId: rec.channelId,
+      thumb: make(rec.thumb),
+      url: make(rec.full),
+    }
+  }
+
+  /**
+   * 查询某天某点位的抓拍。**这里是唯一的数据接入点。**
    *
-   * 接入时只改这个函数体的中间三段：
-   *   ① 请求：`const list = await fetchCamShots(camId.value)`
-   *   ② 落地：`shots.value = list`
-   *   ③ 状态：失败置 `shotsState='error'`、`shotsNote=...`
-   * 视图、日期分组、空态、无障碍文案都不用动。
+   * 服务端能力（《监控快照接口使用说明》+ 2026-11-19 实测）：
+   *   · 只有 `GET /api/video/snapshots?pid&channelId` 一种，回**最近一帧**；
+   *   · 带 `date` / `startTime` 之类参数直接 400「不支持的查询参数」；
+   *   · `/snapshots/history`、`/list`、`/records`、`/count` 全 404。
+   *
+   * 所以流程是：
+   *   ① 先读本机档案 → 本机有的照片立刻上屏（不等网络）；
+   *   ② 选中的是**今天**时，再真请求一次快照，按「更新档」存进档案
+   *      （同档重复取到同样大小的字节不覆盖，时刻保持第一次看到的那个），落档后重画；
+   *   ③ 今天请求失败但档案里有旧记录 → 照常显示，只在说明里提一句失败。
+   *
+   * 将来万方开了历史接口，只改 ② 这一段（换成 `fetchCamShots(channelId, day)`），
+   * 视图、日期芯片、日历、详情弹层都不用动。
    */
   async function loadShots(): Promise<void> {
-    shotsState.value = 'loading'
+    const id = camId.value
+    if (!id) return
+    const day = dateKey(shotDate.value)
+    const isToday = day === dateKey(new Date())
+
+    shotInflight?.abort()
+    const ac = new AbortController()
+    shotInflight = ac
+    const my = ++shotSeq
+
+    releaseShotUrls()
     shots.value = []
-    shotsNote.value = '历史抓拍接口尚未接入，接入后按天展示照片'
-    shotsState.value = 'ok'
+    shotPopId.value = ''
+    shotsState.value = 'loading'
+    shotsNote.value = ''
+
+    /** 把一批档案铺到页面上（`keepWhenEmpty` 为真时不清掉已经显示的照片） */
+    const paint = async (keepWhenEmpty = false): Promise<boolean> => {
+      const recs = await listShots(id, day)
+      if (my !== shotSeq) return false
+      if (!recs.length && keepWhenEmpty) return false
+      releaseShotUrls()
+      shots.value = recs.map(toCamShot)
+      return true
+    }
+
+    /**
+     * ① 先出档案：本机有的照片立刻显示，不等网络。
+     * 手机在工地上网慢，为了「取最新一帧」让整页转好几秒是不划算的。
+     */
+    let shown = false
+    try {
+      shown = await paint()
+      if (my !== shotSeq) return
+      if (shown) {
+        shotsState.value = 'ok'
+      }
+    } catch {
+      /* 档案读不出来不致命，下面还会试接口 */
+    }
+
+    /**
+     * ② 今天再补一次最新：真请求 `/api/video/snapshots`，落档后重画。
+     * 别的日期不发请求 —— 服务端没有按天查询这回事。
+     */
+    let snapErr = ''
+    if (isToday) {
+      try {
+        const blob = await fetchCamSnapshot(id, ac.signal)
+        if (my !== shotSeq) return
+        await saveShot(id, blob)
+        if (my !== shotSeq) return
+        shown = (await paint(true)) || shown
+      } catch (e) {
+        if (ac.signal.aborted || (e as Error)?.name === 'AbortError') return
+        if (my !== shotSeq) return
+        snapErr = (e as Error)?.message || '监控画面获取失败'
+      }
+    }
+    if (my !== shotSeq) return
+
+    if (shots.value.length) {
+      shotsState.value = 'ok'
+      shotsNote.value = snapErr ? `最近一帧获取失败（${snapErr}），下面是已留存的历史` : ''
+    } else if (snapErr) {
+      shotsState.value = 'error'
+      shotsNote.value = snapErr
+    } else {
+      shotsState.value = 'empty'
+      shotsNote.value = shotEmptyNote()
+    }
+
+    if (shotInflight === ac) shotInflight = null
+  }
+
+  /** 展开 / 收起日历（展开时把月份对齐到选中日，同设计稿 showCamCal） */
+  function toggleShotCal(): void {
+    shotCalOpen.value = !shotCalOpen.value
+    if (shotCalOpen.value) shotCalMonth.value = monthStart(shotDate.value)
+  }
+
+  function setShotCalMonth(d: Date): void {
+    // 月份也夹在区间内：日历上一月/下一月已经禁掉了越界，这里再兜一层，
+    // 防止别的入口（键盘、将来补的快捷跳转）把月份翻出可选范围。
+    const m = monthStart(d)
+    const lo = monthStart(shotMinDate.value).getTime()
+    const hi = monthStart(shotMaxDate.value).getTime()
+    const t = m.getTime()
+    shotCalMonth.value = t < lo ? new Date(lo) : t > hi ? new Date(hi) : m
+  }
+
+  /**
+   * 切日期（今天 / 昨天 / 日历选中的某天）。
+   *
+   * **日期范围校验的唯一裁决点**：芯片、日历、以后可能补的别的入口都走这里，
+   * 规则只维护一处。只接受「近 {@link SHOT_RANGE_DAYS} 天」内的日期，
+   * 越界即拦下并说明原因，返回是否真的切了 —— 拦下时保持原来的日期与列表，
+   * 不闪空态、也不发多余请求。
+   */
+  function setShotDate(d: Date): boolean {
+    const day = startOfDay(d)
+    const t = day.getTime()
+    if (t > shotMaxDate.value.getTime()) {
+      shell.showToast('不能查看未来日期的抓拍', 'warn')
+      return false
+    }
+    if (t < shotMinDate.value.getTime()) {
+      shell.showToast(
+        `只能查看近 ${SHOT_RANGE_DAYS} 天（${md(shotMinDate.value)} 起）的抓拍`,
+        'info',
+      )
+      return false
+    }
+    shotDate.value = day
+    shotCalOpen.value = false
+    shotCalMonth.value = monthStart(day)
+    shotPopId.value = ''
+    shotShowFull.value = false
+    void loadShots()
+    return true
   }
 
   /** 打开历史抓拍视图（设计稿里画面视图与抓拍视图互斥） */
   function openShots(): void {
     shotsOpen.value = true
+    shotCalOpen.value = false
+    shotDate.value = startOfDay(new Date())
+    shotCalMonth.value = monthStart(shotDate.value)
+    shotPopId.value = ''
+    shotShowFull.value = false
     void loadShots()
   }
 
   function closeShots(): void {
     shotsOpen.value = false
+    shotCalOpen.value = false
+    shotPopId.value = ''
+    shotShowFull.value = false
+    shotInflight?.abort()
+    shotInflight = null
+    shotSeq += 1
+    releaseShotUrls()
+    shots.value = []
+    shotsState.value = 'idle'
+    shotsNote.value = ''
+  }
+
+  /** 打开一张抓拍的大图（从压缩预览起步，与智眸一致） */
+  function openShot(id: string): void {
+    if (!shots.value.some((s) => s.id === id)) return
+    shotShowFull.value = false
+    shotPopId.value = id
+  }
+
+  function closeShot(): void {
+    shotPopId.value = ''
+    shotShowFull.value = false
+  }
+
+  /** 详情里切「查看原图」（原图就在本机档案里，切换是即时的） */
+  function showShotFull(): void {
+    if (!shotPop.value) return
+    shotShowFull.value = true
   }
 
   function setCamLand(on: boolean): void {
@@ -420,9 +660,16 @@ export const useCamStore = defineStore('cam', () => {
     note.value = ''
     resetPlay()
     closeShots()
+    shotInflight?.abort()
+    shotInflight = null
+    shotSeq += 1
     shots.value = []
     shotsState.value = 'idle'
     shotsNote.value = ''
+    shotPopId.value = ''
+    shotShowFull.value = false
+    // 抓拍档案也是按会话存的：登出后下一个人不该看到上一个人的现场照
+    void clearShotArchive()
     inflight?.abort()
     inflight = null
   }
@@ -466,10 +713,26 @@ export const useCamStore = defineStore('cam', () => {
     shots,
     shotsState,
     shotsNote,
-    shotDays,
+    shotsHint,
+    shotDate,
+    shotDateLabel,
+    shotMinDate,
+    shotMaxDate,
+    shotCalOpen,
+    shotCalMonth,
+    shotPopId,
+    shotPopOpen,
+    shotPop,
+    shotShowFull,
     loadShots,
     openShots,
     closeShots,
+    setShotDate,
+    toggleShotCal,
+    setShotCalMonth,
+    openShot,
+    closeShot,
+    showShotFull,
     setCamLand,
     load,
     refresh,

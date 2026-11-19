@@ -359,7 +359,7 @@ describe('首页三模块', () => {
 
     expect(mods).toHaveLength(3)
     expect(mods.map((b) => b.text())).toEqual([
-      '智巡巡检察踪',
+      '智巡风险巡查',
       '智眸现场快照',
       '智控装备管控',
     ])

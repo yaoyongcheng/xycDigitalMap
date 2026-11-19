@@ -21,7 +21,6 @@ export function camAlarmFixtures(): Alarm[] {
     type: '反光衣检测',
     title: '防护报警',
     desc: `反光衣检测 · ${channelNo}号通道抓拍`,
-    img: '',
     rel: '',
     at,
     geo: '',

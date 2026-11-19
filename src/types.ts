@@ -21,8 +21,14 @@ export type TabId = 'home' | 'work' | 'msg' | 'mine'
  */
 export type HomeMod = 'safety' | 'patrol' | 'equip'
 
-/** 监控分组（2026-11 阶段 5：真实点位只有「视频监控」一组） */
-export type CamGroup = '出入口' | '场内' | '塔吊' | '视频监控'
+/**
+ * 监控分组。
+ *
+ * 2026-11-19 按现场要求重排：塔吊 / 地磅 / 钢筋加工棚合并成「设备设施」并置顶，
+ * 「出入口」改名「出入口管控」，并新增「材料堆场」一组（只有一个点位）。
+ * 组名与顺序**只在这里和 `data/cams.ts::CAM_GROUPS` 维护**，组件不参与排序。
+ */
+export type CamGroup = '设备设施' | '材料堆场' | '出入口管控' | '视频监控'
 
 /**
  * 监控点位。
@@ -69,7 +75,12 @@ export interface Alarm {
   type: string
   title: string
   desc: string
-  img: string
+  /**
+   * 2026-11-19 起**不再有 `img`**：原先每条报警挂一张分类示意图
+   * （`img/alarm-*.webp`），看着像当次抓拍，容易被当成现场照片。
+   * 现在列表图标位只在「取到该报警的抓拍图」时显示照片，取不到就铺
+   * 统一占位图标（`work-cam` + 灰底，见 `.alarm-tile`）。
+   */
   /** 相对时间文案，如「1分钟前」 */
   rel: string
   /** 绝对时间，'YYYY-MM-DD HH:mm:ss' */

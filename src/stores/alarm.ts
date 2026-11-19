@@ -1,9 +1,12 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchVideoAlarms } from '@/api/video'
+import { fetchAlarmPicture, fetchVideoAlarms } from '@/api/video'
+import { ApiError } from '@/api/http'
 import { addDays, dateKey, dayOffsetOf, startOfDay } from '@/utils/date'
-import { relTime, toAlarms } from '@/utils/videoAlarm'
+import { shrinkDataUrl } from '@/utils/imageThumb'
+import { clearThumbCache, readThumb, writeThumb } from '@/utils/thumbCache'
+import { relTime, remoteIdOf, toAlarms } from '@/utils/videoAlarm'
 import type { TrendPoint } from '@/utils/chart'
 import type { Alarm, MapAlarm } from '@/types'
 
@@ -46,6 +49,41 @@ const RETRY_MS = 60_000
 function withRel(a: Alarm): Alarm {
   return { ...a, rel: relTime(a.at) || a.rel }
 }
+
+/**
+ * 是否值得预取缩略图。
+ *
+ * 现场大多数是 4G / wifi；省流模式与 2G/3G 下不预取 —— 为了「首屏快一点」
+ * 替用户多花几 MB 流量不划算。`navigator.connection` 在 iOS Safari 上没有，
+ * 这时按「可以」处理：今日最新 4 张本来就要看，提前拉不算浪费。
+ */
+function canPrefetch(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const c = (navigator as unknown as {
+    connection?: { saveData?: boolean; effectiveType?: string }
+  }).connection
+  if (!c) return true
+  if (c.saveData) return false
+  return !/^(slow-)?2g$|^3g$/.test(String(c.effectiveType || ''))
+}
+
+/**
+ * 缩略图并发数。
+ *
+ * 单张约 1MB，2 路并发在 4G 上大约 1~2s 一张；再多会让首屏那几张互相抢带宽，
+ * 反而更慢。实测 2 路时列表第一屏的图在 3s 内陆续出来。
+ *
+ * 2026-11-19 复测补充：4 路并发时每张要 8~10s（单张串行只要 2.7~3.4s），
+ * 说明这条链路的瓶颈是带宽而不是连接数 —— **不要调高**，调高只会让第一张更晚。
+ * 真正省时间的是「不重复下载」：`utils/thumbCache.ts` 落盘 + 首屏预取。
+ */
+const THUMB_PARALLEL = 2
+
+/** 网络类失败（超时 / 断网）的重试间隔：这类失败不是结论，滚回来还要再试 */
+const THUMB_RETRY_MS = 30_000
+
+/** 首屏预取条数（只取今日最新几条 —— 正好是消息页 / 预警列表打开时最上面那几行） */
+const PREFETCH_N = 4
 
 export const useAlarmStore = defineStore('alarm', () => {
   /* ---------- 真实报警 ---------- */
@@ -137,6 +175,8 @@ export const useAlarmStore = defineStore('alarm', () => {
       pagesLoaded.value = await fetchPages(token, 1, FIRST_PAGES)
       liveState.value = 'ok'
       liveError.value = ''
+      // 数据到手就把首屏那几张图排上队（详见 prefetchThumbs 的三条闸门）
+      prefetchThumbs(token)
       return liveAlarms.value.length > 0
     } catch (err) {
       liveState.value = 'error'
@@ -202,6 +242,191 @@ export const useAlarmStore = defineStore('alarm', () => {
     merge(incoming)
   }
 
+  /* ---------- 抓拍缩略图（列表 / 消息 / 首页轮播的图标位） ---------- */
+
+  /**
+   * 图标位改成「与详情页同一张抓拍图」的缩略图（2026-11-19 现场要求）。
+   *
+   * 为什么收在 store 里而不是各页各取：
+   *   · 同一条报警会同时出现在首页轮播、消息页、报警预警列表，各取一次就是
+   *     三份 1MB 的 base64；
+   *   · 抓拍图接口单张约 1MB，必须限制并发（{@link THUMB_PARALLEL}），否则
+   *     一屏 8 条同时拉会把现场网络打满；
+   *   · 登出必须一起清掉（见 {@link clearLive}），不能让下一个人看到现场照片。
+   *
+   * 取不到（该报警确实没有抓拍图 / 未登录 / 不是视频报警）只记一笔、不再重试，
+   * 列表退回**统一占位图标**（`.alarm-tile`：灰底 + 深灰摄像机），不会变成破图。
+   * 取图过程中占位图标外圈会显示真实下载进度（见 {@link thumbPctOf}）。
+   */
+  const thumbs = ref<Record<string, string>>({})
+
+  /** 取失败（**确实没有抓拍图**）的 id：结论性的失败，永久不再重试 */
+  const thumbFailed = new Set<string>()
+
+  /** 网络类失败（超时 / 断网）的 id → 可再次尝试的时刻 */
+  const thumbRetryAt = new Map<string, number>()
+
+  /** 排队中 / 请求中的 id：同一个点位在首页、消息、列表同时出现时只打一次 */
+  const thumbWaiting = new Set<string>()
+  const thumbQueue: string[] = []
+  let thumbActive = 0
+
+  /** 代际：清空（登出）之后，在途请求的结果一律丢弃 */
+  let thumbGen = 0
+
+  /** 缩略图（data URL）；空串 = 还没有，调用方据此退回统一占位图标 */
+  function thumbOf(id: string): string {
+    return thumbs.value[id] || ''
+  }
+
+  /**
+   * 下载进度（0~100，缺省 = 还不知道）。
+   *
+   * 与 `thumbs` 分开放、且用 `reactive` 而不是整对象替换：进度是**高频写入**
+   * 的（每收一个 chunk 就变一次），若也走 `thumbs.value = { ... }`，每条报警
+   * 的进度更新都会让三处列表里所有图标的 computed 重新求值。`reactive` 下只有
+   * 真正读这个 id 的组件会重渲染。
+   */
+  const thumbPct = reactive<Record<string, number>>({})
+
+  /**
+   * 该 id 此刻是否**真的在下载**（已过缓存查询、已发请求）。
+   *
+   * 排队中不算：队列里排着 20 条时，让 20 颗图标一起转圈会像整页都在加载；
+   * 没开始就没有进度可报，保持灰底静止更诚实。
+   */
+  const thumbBusy = reactive<Record<string, boolean>>({})
+
+  function thumbPctOf(id: string): number {
+    return thumbPct[id] ?? 0
+  }
+
+  function thumbBusyOf(id: string): boolean {
+    return thumbBusy[id] === true
+  }
+
+  /**
+   * 某条报警的缩略图（幂等，可反复调）。
+   *
+   * `token` 由调用方传入而不是在这里 `useAuthStore()` —— auth store 反向
+   * import 了本 store（登出时 clearLive），互相 import 会成环。
+   */
+  function ensureThumb(token: string, id: string): void {
+    if (!token || !id) return
+    if (thumbs.value[id] || thumbFailed.has(id) || thumbWaiting.has(id)) return
+    // 上一次是超时 / 断网：冷却期内不重试，冷却过了允许再来一次（这类失败不是结论）
+    const retryAt = thumbRetryAt.get(id) || 0
+    if (retryAt && Date.now() < retryAt) return
+    const target = byId(id)
+    if (!target || !remoteIdOf(target)) return
+    thumbWaiting.add(id)
+    thumbQueue.push(id)
+    pumpThumbs(token)
+  }
+
+  /**
+   * 首屏预取（2026-11-19）。
+   *
+   * 为什么在同步成功后就开始拉：缩略图单张 820KB~1.3MB、实测 2.7~3.4s，
+   * 等用户点进消息页 / 预警列表再拉，第一屏必然「先看到一排占位图标」。
+   * 首页拿到报警数据时先把**今日最新 {@link PREFETCH_N} 条**排队，
+   * 用户切过去时这几张通常已经在内存（或已落盘）里了。
+   *
+   * 三条闸门，避免把流量当不要钱：
+   *   · 只在「非省流、非 2G/3G」时预取（{@link canPrefetch}）；
+   *   · 只取今日最新几条（不是整页）—— 再多就变成替用户预载他没看的照片；
+   *   · 走 `requestIdleCallback` 排队，不与首页自己的报警请求抢带宽。
+   */
+  function prefetchThumbs(token: string): void {
+    if (!token || !canPrefetch()) return
+    const list = liveAlarms.value.filter((a) => a.day === 'today').slice(0, PREFETCH_N)
+    if (!list.length) return
+    const kick = (): void => {
+      for (const a of list) ensureThumb(token, a.id)
+    }
+    const ric = (
+      globalThis as {
+        requestIdleCallback?: (cb: () => void, opt?: { timeout: number }) => number
+      }
+    ).requestIdleCallback
+    // 有 requestIdleCallback 就等空闲；没有（iOS Safari）立刻排队 ——
+    // 此刻报警列表已经拉完，队列里只有缩略图，不存在抢带宽的问题。
+    // 刻意**不用 setTimeout 兜底**：它会在组件卸载后继续触发，等于给已离开的页面拉图。
+    if (ric) ric(kick, { timeout: 2500 })
+    else kick()
+  }
+
+  function pumpThumbs(token: string): void {
+    while (thumbActive < THUMB_PARALLEL && thumbQueue.length) {
+      const id = thumbQueue.shift() as string
+      thumbActive += 1
+      void runThumb(token, id).finally(() => {
+        thumbActive -= 1
+        pumpThumbs(token)
+      })
+    }
+  }
+
+  async function runThumb(token: string, id: string): Promise<void> {
+    const gen = thumbGen
+    try {
+      // ① 先看本机缓存：命中就不用走网络（一条只有 4~6KB，读出来是毫秒级）。
+      //    这一步放在请求之前，是「第二次进页面秒出图」的全部原因。
+      const hit = await readThumb(id)
+      if (hit) {
+        if (gen === thumbGen) thumbs.value = { ...thumbs.value, [id]: hit }
+        return
+      }
+
+      const target = byId(id)
+      const rid = target ? remoteIdOf(target) : ''
+      if (!rid) return
+
+      // ② 真开始下载了才点亮进度：接口 1MB、2~3s，图标位上要能看到它在一格一格动
+      thumbBusy[id] = true
+      const full = await fetchAlarmPicture(token, rid, undefined, (ratio) => {
+        if (gen !== thumbGen) return
+        const pct = Math.round(Math.min(1, Math.max(0, ratio)) * 100)
+        // 4 个点以内不重渲染：一屏十几颗图标，每个 chunk 都写一遍纯属浪费
+        if (pct < 100 && pct - (thumbPct[id] ?? 0) < 4) return
+        thumbPct[id] = pct
+      })
+      // 缩略图只是优化：缩不了就把原图当缩略图用（见 utils/imageThumb.ts）
+      const small = await shrinkDataUrl(full)
+      // 期间登出过：这张照片不能再留在内存里
+      if (gen !== thumbGen) return
+      thumbs.value = { ...thumbs.value, [id]: small || full }
+      // ② 缩略图落盘：下次进页面 / 下次冷启动直接命中，不再下 1MB
+      writeThumb(id, small || full)
+    } catch (err) {
+      if (gen !== thumbGen) return
+      // 「没有可用的抓拍图」是结论（服务端确实没存这张），永久不再重试；
+      // 超时 / 断网是暂时的，冷却 30s 后滚回来还能再试一次 ——
+      // 否则一条卡住的请求会让那一行永远停在占位图标上。
+      if (err instanceof ApiError && /没有可用的抓拍图/.test(err.message)) thumbFailed.add(id)
+      else thumbRetryAt.set(id, Date.now() + THUMB_RETRY_MS)
+    } finally {
+      thumbWaiting.delete(id)
+      // 进度状态只服务于「还没图」的那一帧，图到了 / 放弃了就该清掉，
+      // 不然一张列表滚过去会在 reactive 里留几百个死 key。
+      delete thumbBusy[id]
+      delete thumbPct[id]
+    }
+  }
+
+  function clearThumbs(): void {
+    thumbGen += 1
+    thumbs.value = {}
+    thumbFailed.clear()
+    thumbRetryAt.clear()
+    thumbWaiting.clear()
+    thumbQueue.length = 0
+    for (const k of Object.keys(thumbPct)) delete thumbPct[k]
+    for (const k of Object.keys(thumbBusy)) delete thumbBusy[k]
+    // 落盘的那份也要清：现场照片不能留给下一个登录的人
+    void clearThumbCache()
+  }
+
   /** 退出登录 / 清会话时把真实数据一并清掉，别让下一个人看到上一个人的现场 */
   function clearLive(): void {
     liveAlarms.value = []
@@ -210,6 +435,7 @@ export const useAlarmStore = defineStore('alarm', () => {
     total.value = 0
     pagesLoaded.value = 0
     liveTriedAt = 0
+    clearThumbs()
   }
 
   /* ---------- 派生数据（全部只来自 liveAlarms） ---------- */
@@ -346,5 +572,11 @@ export const useAlarmStore = defineStore('alarm', () => {
     dayRecords,
     byId,
     mapAlarms,
+    // 列表 / 消息 / 首页轮播的图标位：与详情页同一张抓拍图的缩略图
+    thumbOf,
+    ensureThumb,
+    // 占位图标上的下载进度（0~100 / 是否正在下载）
+    thumbPctOf,
+    thumbBusyOf,
   }
 })

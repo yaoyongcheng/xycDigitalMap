@@ -59,14 +59,15 @@ const handleText = computed(() => (props.alarm.handleStatus === 1 ? '已处理' 
 const { zoomed, label, imgStyle, animating, handlers, reset } = useImageZoom()
 
 // 从上一条预警切到下一条时，沿用上一张的缩放会让用户莫名其妙
-watch(() => props.alarm.img, reset)
+watch(() => props.alarm.id, reset)
 
 /**
  * 真实抓拍图（2026-11 接口迁移 · 阶段 3）。
  *
  * 服务端按报警 Id 单独下发 base64（`/api/video/alarms/{id}/picture`）。
- * 2026-11 收口：拉不到就**明确显示「暂无抓拍图」**，不再退到 `img/alarm-*.webp`
- * 那张分类示意图 —— 示意图长得像真实现场，会被当成当次抓拍看。
+ * 2026-11 收口：拉不到就**明确显示「暂无抓拍图」**，不退到任何示意图 ——
+ * 示意图长得像真实现场，会被当成当次抓拍看。2026-11-19 起 `Alarm` 上
+ * 干脆没有 `img` 字段了，这条规则由数据结构保证。
  */
 const auth = useAuthStore()
 const remoteShot = ref('')

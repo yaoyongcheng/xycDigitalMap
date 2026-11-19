@@ -14,15 +14,32 @@ import type { IconName } from '@/data/icons'
  * 注：原版 3 个 .tool-card 在 JS 中无任何事件绑定（纯展示）；
  * 2026-10 改造补了「接入中」Toast 反馈作为点击出口（见 onToolClick）。
  * 图标几何见 data/icons.ts，由 SvgIcon 直出 SVG 元素（不再走 v-html）。
+ *
+ * ## 隐患上报暂缓（2026-11-19）
+ *
+ * 隐患上报的表单（拍照 / 类型 / 描述 / 提交）整套都做好了，但后端没有上报接口，
+ * 提交只能「假装成功」—— 这比不提供更糟：用户以为报上去了，实际上没人能看到。
+ * 现在按需求把它标成「功能待定」，点击只给一句说明，不再打开表单；
+ * 表单本身（`HazardPage.vue` + `stores/airHazard.ts`）原样保留，二期接了接口
+ * 把 `pending` 去掉、恢复 `air.openHazard()` 即可。
  */
 const shell = useShellStore()
 const cam = useCamStore()
 const air = useAirHazardStore()
 
-const shorts: { work: string; color: string; label: string; icon: IconName }[] = [
+interface Shortcut {
+  work: string
+  color: string
+  label: string
+  icon: IconName
+  /** 未上线标记；有值就只提示、不开功能 */
+  pending?: string
+}
+
+const shorts: Shortcut[] = [
   { work: 'cam', color: 'blue', label: '视频监控', icon: 'work-cam' },
   { work: 'photo', color: 'green', label: '航拍照片', icon: 'drone' },
-  { work: 'hazard', color: 'orange', label: '隐患上报', icon: 'work-hazard' },
+  { work: 'hazard', color: 'orange', label: '隐患上报', icon: 'work-hazard', pending: '功能待定' },
   { work: 'todo2', color: 'gray', label: '待定', icon: 'work-todo' },
 ]
 
@@ -45,9 +62,15 @@ function onShortClick(work: string): void {
   // 原 app.js:997-1005 —— cam 打开首个点位，photo 开航拍，hazard 开隐患，其余提示待定
   // 监控点位现在是写死的白名单（data/cams.ts），不再依赖报警是否已同步；
   // 登录守卫仍在 openCam 里（未登录先去登录页）
+  const s = shorts.find((x) => x.work === work)
+  // 标了「待定」的入口一律只提示，不碰任何业务逻辑（不打开表单、
+  // 不复位草稿、不发请求）—— 二期上线时把 pending 去掉即可
+  if (s?.pending) {
+    shell.showToast(`${s.label}${s.pending}，留待二期开发`, 'info', 2600)
+    return
+  }
   if (work === 'cam') cam.openCam()
   else if (work === 'photo') air.openAir()
-  else if (work === 'hazard') air.openHazard()
   else shell.showToast('功能待定', 'info')
 }
 
@@ -76,14 +99,17 @@ function onToolClick(title: string): void {
         v-for="s in shorts"
         :key="s.work"
         class="work-short"
+        :class="{ 'is-pending': !!s.pending }"
         type="button"
         :data-work="s.work"
+        :aria-label="s.pending ? `${s.label}（${s.pending}）` : undefined"
         @click="onShortClick(s.work)"
       >
         <i :class="s.color">
           <SvgIcon :name="s.icon" />
         </i>
         <span>{{ s.label }}</span>
+        <em v-if="s.pending" class="work-short-tag">{{ s.pending }}</em>
       </button>
     </div>
 

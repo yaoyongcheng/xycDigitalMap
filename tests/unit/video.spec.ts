@@ -196,9 +196,8 @@ describe('toAlarms', () => {
       { ...mk(1, '', '2026-11-11 08:37:00'), alertType: 12, channelNo: 3 },
     ])
     expect(a.type).toBe('反光衣检测')
-    // 反光衣 → 防护类配图与风险色
+    // 反光衣 → 防护类标题
     expect(a.title).toBe('防护报警')
-    expect(a.img).toBe('img/alarm-net.webp')
     // 通道 3 有点位名（安全讲台），副标题用点位名而不是「3号通道」
     expect(a.desc).toBe('反光衣检测 · 安全讲台抓拍')
   })
@@ -231,7 +230,7 @@ describe('toAlarms', () => {
     const rows = toAlarms([{ ...mk(1, '', '2026-11-11 09:00:00'), alertType: 9999 }])
     expect(rows).toHaveLength(1)
     expect(rows[0].type).toBe('AI 识别报警')
-    expect(rows[0].img).toBe('img/alarm-net.webp')
+    expect(rows[0].title).toBe('防护报警')
   })
 
   it('多个常见类型码都能还原成可读名称', () => {
@@ -248,20 +247,20 @@ describe('toAlarms', () => {
     }
   })
 
-  it('按关键词配图，归不进去也必须有图（详情页直接拿它当 src）', () => {
-    const imgs = toAlarms([
+  it('按关键词归到四类标题，归不进去的按防护类', () => {
+    const titles = toAlarms([
       mk(1, '道路垃圾', '2026-11-11 09:00:00'),
       mk(2, '电缆拖地', '2026-11-11 09:00:00'),
       mk(3, '临边防护缺失', '2026-11-11 09:00:00'),
       mk(4, '渣土未覆盖', '2026-11-11 09:00:00'),
       mk(5, '火星识别', '2026-11-11 09:00:00'),
-    ]).map((a) => a.img)
-    expect(imgs).toEqual([
-      'img/alarm-trash.webp',
-      'img/alarm-cable.webp',
-      'img/alarm-net.webp',
-      'img/alarm-soil.webp',
-      'img/alarm-net.webp',
+    ]).map((a) => a.title)
+    expect(titles).toEqual([
+      '环境报警',
+      '用电报警',
+      '防护报警',
+      '扬尘报警',
+      '防护报警',
     ])
   })
 

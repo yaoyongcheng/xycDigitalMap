@@ -1,92 +1,139 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 
 import BackBar from '@/components/ui/BackBar.vue'
 import DayPickChips from '@/components/ui/DayPickChips.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
+import PanoViewer from '@/components/ui/PanoViewer.vue'
 import SmartImg from '@/components/ui/SmartImg.vue'
-import { useAirHazardStore } from '@/stores/airHazard'
+import { AIR_PAGE_SIZE, useAirHazardStore } from '@/stores/airHazard'
 import { useShellStore } from '@/stores/shell'
-import { useAlbumFile } from '@/utils/albumSave'
-import { addDays, formatCamDate, startOfDay } from '@/utils/date'
-import { photoHd, savePhoto } from '@/utils/photoHd'
+import { addDays } from '@/utils/date'
+import { fetchBlobWithProgress } from '@/utils/blobFetch'
+import { useLandscape } from '@/utils/landscape'
 import { useSlideOverlay } from '@/utils/slideOverlay'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
- * 无人机巡检全屏层
+ * 航拍照片全屏层
  *
  * 对应原 index.html:123-150 + 事件处理（app.js:1495-1559）
  * + renderAir()（app.js:1361-1372）。
+ *
+ * ## 2026-11-19：站点下拉 + 原有日期控件
+ *
+ * 顶部两行筛选，缺一不可：
+ *   · **站点名称**下拉 —— 选项 = 任务记录里的航线名（= 站点）去重；
+ *   · **今天 / 昨天 / 选日期**（`ui/DayPickChips.vue`）+ 月历
+ *     （`ui/MonthCalendar.vue`）—— 与监控抓拍、巡检历史**同一份组件同一份样式**，
+ *     没有换成别的控件。
+ *
+ * 默认进来看该站点**最近一次采集**（日期芯片随之落到那一天）；用户选历史日期
+ * 就查「站点 + 日期」那一天（同一天飞了两班取后一班）。全景仍排第一格，
+ * 点开是球面环视（`ui/PanoViewer.vue`，与智眸同一套）。
+ *
+ * 大图弹层只保留「原图」（照片）与「复位 / 看高清 / 横屏」（全景）——
+ * 2026-11-19 按现场要求去掉下载：OSS 直链在移动端存相册依赖分享面板，
+ * 现场这条链不可靠，按钮留着反而误导。
  */
 const air = useAirHazardStore()
+const shell = useShellStore()
 
 /** 全屏层转场（进入左滑入 / 返回右滑出），见 utils/slideOverlay.ts */
 const playerEl = ref<HTMLElement | null>(null)
 const overlay = useSlideOverlay(() => playerEl.value)
 watch(() => air.isOpen, (open) => overlay.syncOpen(open), { flush: 'post' })
 
-const label = computed(() => formatCamDate(air.airDate))
-
-/** 原 app.js:1366 airHint.textContent */
-const hint = computed(() => `${label.value}  无人机定点拍摄  ${air.airList.length} 张`)
-
-/** 原 js/app.js:1495-1506 —— 三级优先：关大图 → 收日历 → 关播放器 */
+/** 返回：关大图 → 收月历 → 关层（一级一级退，不一步跳到底） */
 function onBack(): void {
   if (air.airPopOpen) {
     air.airPopOpen = false
     return
   }
   if (air.airCalOpen) {
-    air.airCalOpen = false
+    air.toggleAirCal()
     return
   }
   overlay.leave(() => air.closeAir())
 }
 
-/** 原 js/app.js:1508-1521 */
-function onDayPick(day: number): void {
-  air.airCalOpen = false
-  air.airDate = addDays(new Date(), -day)
-  air.airPopOpen = false
+/** 下拉框换站点（原生 select，手机上走系统选择器，最省事也最无障碍） */
+function onStationChange(e: Event): void {
+  const v = (e.target as HTMLSelectElement).value
+  air.pickStation(v)
 }
 
-function onCalToggle(): void {
-  if (air.airCalOpen) {
-    air.airCalOpen = false
-    return
-  }
-  // 原 showAirCal()（app.js:1355-1359）—— 展开时对齐月份到选中日
-  air.airCalMonth = startOfDay(new Date(air.airDate.getFullYear(), air.airDate.getMonth(), 1))
-  air.airCalOpen = true
+/* ---------- 日期（原有控件：今天 / 昨天 / 选日期 + 月历） ---------- */
+
+/** 芯片：0 = 今天，1 = 昨天 */
+function onAirDay(day: number): void {
+  air.setAirDate(addDays(new Date(), -day))
 }
 
-/** 原 js/app.js:1535-1543 */
-function onCalSelect(d: Date): void {
-  air.airDate = startOfDay(d)
-  air.airCalOpen = false
-  air.airPopOpen = false
+function onAirCalToggle(): void {
+  air.toggleAirCal()
 }
 
-/** 原 js/app.js:1545-1555 */
+function onAirCalSelect(d: Date): void {
+  air.setAirDate(d)
+}
+
 function onPhotoClick(i: number): void {
   if (!air.airList[i]) return
   air.airPopIdx = i
   air.airPopOpen = true
 }
 
-/** 原 js/app.js:1557-1559 —— 注意原版此处只移除 .open，未设 hidden */
+/* ---------- 网格分片：首屏 8 张，滑到接近底部再追加 8 张 ---------- */
+
+/** 网格本身就是滚动容器（`.air-grid { overflow: auto }`），观察器的 root 用它 */
+const gridEl = ref<HTMLElement | null>(null)
+/** 底部哨兵：只在「还有没铺出来的」时候存在，铺完被 v-if 摘掉 */
+const moreEl = ref<HTMLElement | null>(null)
+let moreIO: IntersectionObserver | null = null
+
+/**
+ * 哨兵进入视野（提前 240px，约两行卡片）就请求下一页。
+ *
+ * 环境没有 IntersectionObserver（老 WebView / happy-dom）时干脆不装：
+ * 底部那颗按钮仍在，点一下同样能加载，功能不依赖观察器。
+ */
+function bindMoreIO(): void {
+  moreIO?.disconnect()
+  moreIO = null
+  const root = gridEl.value
+  const target = moreEl.value
+  if (!root || !target || typeof IntersectionObserver === 'undefined') return
+  moreIO = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) void air.loadMoreAir()
+    },
+    { root, rootMargin: '0px 0px 240px 0px' },
+  )
+  moreIO.observe(target)
+}
+
+// 网格与哨兵都是 v-if 出来的：进入 ok 态、换站点 / 换日期后都要重新挂
+watch([gridEl, moreEl], bindMoreIO, { flush: 'post' })
+onUnmounted(() => moreIO?.disconnect())
+
 function onPopClose(): void {
   air.airPopOpen = false
 }
 
 const currentShot = computed(() => air.airList[air.airPopIdx])
+const isPano = computed(() => Boolean(currentShot.value?.pano))
 
-/**
- * 大图缩放（2026-10 新增，非原版内容）
- * 航拍照片的判读点常在小范围，不能放大等于看不了。
- * SmartImg 的根元素就是 <img>，这些监听与 style 会经 attribute 继承落上去。
- */
+/** 顶栏标题：照片是「站点 时刻」，全景是「站点 · 全景」 */
+const popTitle = computed(() => {
+  const s = currentShot.value
+  if (!s) return ''
+  if (s.pano) return `${air.station} · 全景`
+  return `${air.station} ${s.time}`
+})
+
+/* ---------- 平面照片：缩放 / 原图（下载带进度，照智眸全景那套） ---------- */
+
 const {
   zoomed: imgZoomed,
   label: zoomLabel,
@@ -96,73 +143,248 @@ const {
   reset: resetZoom,
 } = useImageZoom()
 
-// 换照片或关闭弹层时复原，否则下次打开还停在上一张的缩放位置
+/** 已经是原图（画面正在用原图字节） */
+const hd = ref(false)
+/** 原图那一层：本地 objectURL / 在途请求 / 真实字节进度 / 序号 */
+const imgObjUrl = ref('')
+const imgHdBusy = ref(false)
+const imgHdPct = ref(0)
+let imgCtrl: AbortController | null = null
+let imgSeq = 0
+
+/** 释放原图字节（关弹层、换张、重来时都要） */
+function releaseImgHd(): void {
+  imgSeq += 1
+  imgCtrl?.abort()
+  imgCtrl = null
+  if (imgObjUrl.value) URL.revokeObjectURL(imgObjUrl.value)
+  imgObjUrl.value = ''
+  imgHdBusy.value = false
+  imgHdPct.value = 0
+}
+
+// 换照片或关弹层时复位（原图态、在途下载、缩放都别带到下一张）
 watch([() => air.airPopOpen, () => air.airPopIdx], () => {
-  if (!air.airPopOpen) resetZoom()
+  releaseImgHd()
+  hd.value = false
+  resetZoom()
+  releasePanoHd()
 })
 watch(() => currentShot.value?.img, resetZoom)
 
-/* ---------- 原图 / 下载（2026-11 设计稿 gx2 版，原 photo-stage 顶栏 app.js:764-785） ---------- */
-
-const shell = useShellStore()
-const hd = ref(false)
-
-// 换照片或关弹层时，原图态跟着复位
-watch([() => air.airPopOpen, () => air.airPopIdx], () => {
-  hd.value = false
-})
-
 /**
- * 顶栏标题（原 openPhotoStage 传的 photo.name：`定点航拍 今天 08:15`）。
- * 原版是单独一行的居中原信息（双空格留气口），这里进了顶栏 ——
- * 单空格排版 + 省略号截断，日期再长也不会把「原图 / 下载」挤出去。
- */
-const popTitle = computed(() => {
-  const s = currentShot.value
-  if (!s) return ''
-  return `定点航拍 ${label.value} ${s.time}`
-})
-
-/**
- * 切原图：列表/大图首屏加载的是压缩图（几百 KB），点了这里才换成
- * img/hd/ 下的高清原图 —— 现场判读要细节，但没必要为每次打开付那份流量。
- * 换源后当前缩放得复位，否则 4× 停在旧图上，新图一进来直接糊出边界。
- */
-function onHd(): void {
-  if (hd.value) return
-  hd.value = true
-  resetZoom()
-}
-
-/**
- * 「存相册」用的预转文件：大图打开后先把 jpg 备好，点下载时才能在同一个
- * 用户手势里调起系统分享面板（详见 utils/albumSave.ts 的注释）。
- * 关弹层时 src 变 undefined，在途任务随之作废。
- */
-const { file: albumFile } = useAlbumFile(
-  computed(() => (air.airPopOpen ? currentShot.value?.img : undefined)),
-  () => popTitle.value,
-)
-
-/**
- * 下载 = 存进手机相册（2026-11）。
+ * 原图：**真下载一遍**（OSS 直链 4~8MB），按真实字节显示进度，下完再换源。
  *
- * 手机浏览器没有写相册的 Web API，只能借系统分享面板落进相册
- * （iOS「存储图像」/ Android「保存到相册」）；桌面或分享不可用时才退回
- * a[download] 存文件。返回值决定提示文案：取消时不弹 toast。
+ * 为什么不直接把 `src` 换成原图直链：那样下载进度完全不可见，4G 下停几秒
+ * 没有任何反馈，用户会以为没点上。这里与智眸全景的「看高清」同一套：
+ * `fetchBlobWithProgress` 拿字节 → 按钮显示百分比 → 底边压一条进度带 →
+ * 解码完再换图（避免切过去空一帧）。
+ *
+ * 下载中可以关弹层：`releaseImgHd()` 会 abort，请求不会留在后台空跑。
  */
-async function onDownload(): Promise<void> {
+async function onHd(): Promise<void> {
   const s = currentShot.value
-  if (!s) return
+  if (!s || hd.value || imgHdBusy.value) return
+  // 没有原图直链（理论上不会）就当已是原图，别让按钮点着没反应
+  if (!s.full) {
+    hd.value = true
+    resetZoom()
+    return
+  }
+  const key = ++imgSeq
+  imgHdBusy.value = true
+  imgHdPct.value = 0
+  imgCtrl = new AbortController()
   try {
-    // 文件名与顶栏标题一致（原 app.js:770 用 photo.name，落盘 photo.name + ".jpg"）
-    const res = await savePhoto(s.img, popTitle.value, albumFile.value)
-    if (res === 'album') shell.showToast('已保存到相册', 'success')
-    else if (res === 'download') shell.showToast('已开始下载', 'success')
+    const blob = await fetchBlobWithProgress(
+      s.full,
+      (loaded, total) => {
+        if (key !== imgSeq) return
+        imgHdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
+      },
+      imgCtrl.signal,
+    )
+    const url = URL.createObjectURL(blob)
+    await preload(url)
+    if (key !== imgSeq) {
+      URL.revokeObjectURL(url)
+      return
+    }
+    if (imgObjUrl.value) URL.revokeObjectURL(imgObjUrl.value)
+    imgObjUrl.value = url
+    hd.value = true
+    resetZoom()
+    shell.showToast('原图已加载', 'success')
   } catch {
-    shell.showToast('保存失败', 'warn')
+    if (key !== imgSeq) return
+    shell.showToast('原图加载失败，请稍后重试', 'warn')
+  } finally {
+    if (key === imgSeq) {
+      imgCtrl = null
+      imgHdBusy.value = false
+      imgHdPct.value = 0
+    }
   }
 }
+
+/** 按钮文案：原图 → 下载中 / 原图 42% → 已是原图 */
+const hdLabel = computed(() => {
+  if (hd.value) return '已是原图'
+  if (imgHdBusy.value) return imgHdPct.value ? `原图 ${imgHdPct.value}%` : '下载中'
+  return '原图'
+})
+
+/**
+ * 现在该显示哪张：默认**缩略图**（约 440KB，列表里已经下过，秒开），
+ * 点「原图」下载完成后换成原图字节（objectURL），失败则仍留缩略图。
+ *
+ * 不能用 `photoHd()` 那套：它映射的是站内 `img/hd/` 的静态资源清单，
+ * 真实媒体的原图在 OSS 上，路径规则完全不同。
+ */
+const shownSrc = computed(() => {
+  const s = currentShot.value
+  if (!s) return ''
+  if (hd.value) return imgObjUrl.value || s.full || s.img
+  return s.img
+})
+
+/* ---------- 全景：球面环视 + 看高清 + 横屏（与智眸同一套） ---------- */
+
+const panoRef = ref<InstanceType<typeof PanoViewer> | null>(null)
+
+/** 全景环境不支持 WebGL（退成平面图，拖不动但仍能看） */
+const panoUnsupported = ref(false)
+/** 拉不开（多半是 OSS 签名过期） */
+const panoBroken = ref(false)
+
+/** 高清那一层：本地 objectURL / 在途请求 / 序号 */
+const panoHd = ref(false)
+const panoHdWait = ref(false)
+const panoHdUrl = ref('')
+const panoHdPct = ref(0)
+const panoHdBusy = ref(false)
+let panoObjUrl = ''
+let panoCtrl: AbortController | null = null
+let panoSeq = 0
+
+/** 现在贴哪张：默认预览图（3162×1581，约 185KB），点「看高清」才换原图 */
+const panoSrc = computed(() => {
+  const p = air.airPano
+  if (!p) return ''
+  if (panoHd.value) return panoHdUrl.value || p.full || p.preview
+  return p.preview
+})
+
+const panoSizeText = computed(() => {
+  const n = air.airPano?.size ?? 0
+  if (!n) return ''
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.round(n / 1024)}KB`
+})
+
+function releasePanoHd(): void {
+  panoSeq += 1
+  panoCtrl?.abort()
+  panoCtrl = null
+  if (panoObjUrl) URL.revokeObjectURL(panoObjUrl)
+  panoObjUrl = ''
+  panoHdUrl.value = ''
+  panoHd.value = false
+  panoHdWait.value = false
+  panoHdBusy.value = false
+  panoHdPct.value = 0
+}
+
+/** 解码完再换源，避免切过去那一瞬间空一帧（上万像素的图解码要几百毫秒） */
+function preload(url: string): Promise<void> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    const done = (): void => {
+      window.clearTimeout(timer)
+      resolve()
+    }
+    const timer = window.setTimeout(done, 1200)
+    img.onload = done
+    img.onerror = done
+    img.src = url
+  })
+}
+
+/**
+ * 看高清：先把原图（约 13MB）拉下来、带真实字节进度，再换源。
+ * 拉不到就退回直链（慢，但图还是会出来），与智眸里的处理一致。
+ */
+async function onPanoHd(): Promise<void> {
+  const p = air.airPano
+  if (!p?.full || panoHd.value || panoHdBusy.value) return
+  const key = panoSeq
+  panoHdBusy.value = true
+  panoHdPct.value = 0
+  panoCtrl = new AbortController()
+  try {
+    const blob = await fetchBlobWithProgress(
+      p.full,
+      (loaded, total) => {
+        if (key !== panoSeq) return
+        panoHdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
+      },
+      panoCtrl.signal,
+    )
+    const url = URL.createObjectURL(blob)
+    await preload(url)
+    if (key !== panoSeq) {
+      URL.revokeObjectURL(url)
+      return
+    }
+    if (panoObjUrl) URL.revokeObjectURL(panoObjUrl)
+    panoObjUrl = url
+    panoHdUrl.value = url
+  } catch {
+    if (key === panoSeq) panoHdUrl.value = ''
+  } finally {
+    if (key === panoSeq) {
+      panoCtrl = null
+      panoHdBusy.value = false
+      panoHdPct.value = 0
+      panoHdWait.value = true
+      panoHd.value = true
+    }
+  }
+}
+
+const panoHdLabel = computed(() => {
+  if (panoHdBusy.value) return panoHdPct.value ? `高清 ${panoHdPct.value}%` : '高清加载中'
+  if (!panoHd.value) return '看高清'
+  return panoHdWait.value ? '高清加载中' : '已是高清'
+})
+
+function onPanoError(): void {
+  if (panoHd.value) {
+    releasePanoHd()
+    shell.showToast('高清全景加载失败，已退回预览', 'warn')
+    return
+  }
+  panoBroken.value = true
+}
+
+function onPanoReady(): void {
+  panoHdWait.value = false
+  panoBroken.value = false
+}
+
+const {
+  land: panoLand,
+  setStage: setPanoStage,
+  toggle: togglePanoLand,
+  exit: exitPanoLand,
+} = useLandscape()
+
+/** 关弹层 / 换站点时把横屏收回来 */
+watch(
+  () => [air.airPopOpen, air.station] as const,
+  ([open]) => {
+    if (!open && panoLand.value) void exitPanoLand()
+  },
+)
 </script>
 
 <template>
@@ -176,42 +398,133 @@ async function onDownload(): Promise<void> {
   >
     <BackBar title="航拍照片" back-id="btnAirBack" @back="onBack" />
 
-    <div class="air-days" id="airDays">
-      <DayPickChips
+    <!--
+      筛选区：站点下拉 + 日期芯片，同一块里排。
+
+      为什么不硬塞成一行：窄屏（375 宽）下两颗控件加起来要 400+ px，
+      站点名会被压到只剩三四个字，比换行更难认。所以用 flex-wrap ——
+      手机竖屏自动两行，横屏 / 平板（≥ 420 宽）并成一行，布局代码只有一套。
+
+      站点名称选项来自 V2 任务记录里的航线（= 站点）去重后的清单，
+      顺序按最近一次采集时间倒序 —— 第一个就是「最近飞过的」。
+    -->
+    <div class="air-filter" id="airFilter">
+      <div class="air-pick">
+        <label class="air-pick-label" for="airStation">站点</label>
+        <div class="air-pick-sel">
+          <select
+            id="airStation"
+            class="air-select"
+            :value="air.station"
+            :title="air.station || undefined"
+            :disabled="!air.stations.length"
+            :aria-label="`站点名称，共 ${air.stations.length} 个`"
+            @change="onStationChange"
+          >
+            <option v-if="!air.stations.length" value="">暂无站点</option>
+            <option v-for="s in air.stations" :key="s.name" :value="s.name">{{ s.name }}</option>
+          </select>
+          <!-- 箭头由 CSS 画（见 .air-pick-arrow）：字符 ▾ 在各系统字体里大小不一 -->
+          <span class="air-pick-arrow" aria-hidden="true"></span>
+        </div>
+      </div>
+
+      <!--
+        日期：原有控件（今天 / 昨天 / 选日期 + 月历），与监控抓拍、巡检历史
+        同一份组件与样式。默认显示该站点最近一次采集的日期，选历史日期即按
+        「站点 + 日期」查那一天。
+      -->
+      <div class="air-days" id="airDays">
+        <DayPickChips
+          :selected="air.airDate"
+          open-attr-name="data-air-cal-open"
+          @pick="onAirDay"
+          @open="onAirCalToggle"
+        />
+      </div>
+
+      <!--
+        月历：与监控抓拍、巡检历史同一个组件（样式只有一份 .cam-cal）。
+        放在筛选区里是为了让它的定位跟着这块走 —— 窄屏两行、宽屏一行时
+        都紧贴筛选区下沿，不用为两种布局各写一个 top。
+      -->
+      <MonthCalendar
+        :month="air.airCalMonth"
         :selected="air.airDate"
-        open-attr-name="data-air-cal-open"
-        @pick="onDayPick"
-        @open="onCalToggle"
+        :min-day="air.airMinDate"
+        :max-day="air.airMaxDate"
+        :hidden="!air.airCalOpen"
+        @update:month="air.setAirCalMonth"
+        @select="onAirCalSelect"
       />
     </div>
 
-    <MonthCalendar
-      v-model:month="air.airCalMonth"
-      :selected="air.airDate"
-      :hidden="!air.airCalOpen"
-      @select="onCalSelect"
-    />
+    <p class="air-hint" id="airHint">{{ air.airHint }}</p>
 
-    <p class="air-hint" id="airHint">{{ hint }}</p>
+    <!-- 加载中：一句话，不摆灰格子（灰格子看着像「有图但坏了」） -->
+    <div v-if="air.airState === 'loading'" class="air-state" data-state="air-loading">
+      <i class="cam-shots-spin" aria-hidden="true"></i>
+      <span>正在读取航拍照片…</span>
+    </div>
 
-    <div class="air-grid" id="airGrid">
+    <!-- 空 / 失败：说清结论，给一个能重试的动作（重试当前站点当前日期） -->
+    <div v-else-if="air.airState === 'empty' || air.airState === 'error'" class="air-state">
+      <strong>{{ air.airState === 'error' ? '航拍照片加载失败' : `${air.airDateLabel}没有航拍照片` }}</strong>
+      <span>{{ air.airNote }}</span>
+      <button class="data-empty-btn" type="button" @click="air.refreshAir()">重新获取</button>
+    </div>
+
+    <div v-else class="air-grid" id="airGrid" ref="gridEl">
+      <!--
+        只铺 air.airListShown（airList 的前缀），key 用内容 id 而不是下标：
+        追加下一页时前 8 张 identity 不变，不会重挂重下；换站点时整块网格
+        本来就会因为 loading 态被卸载，也不会有跨站点的旧图串进来。
+      -->
       <button
-        v-for="(s, i) in air.airList"
-        :key="i"
+        v-for="(s, i) in air.airListShown"
+        :key="s.pano ? 'pano' : s.photoId || `${s.time}-${i}`"
         class="air-card"
+        :class="{ 'is-pano': s.pano }"
         type="button"
         :data-air="i"
+        :aria-label="s.pano ? `${air.station} 全景，点开环视` : `${air.station} ${s.time} 航拍`"
         @click="onPhotoClick(i)"
       >
-        <SmartImg :pos="s.pos" :src="s.img" :alt="`${label} ${s.time} 航拍`" />
-        <span>{{ label }} {{ s.time }}</span>
+        <SmartImg :pos="s.pos" :src="s.img" :alt="`${air.station} ${s.pano ? '全景' : s.time}`" />
+        <span v-if="s.pano" class="air-card-tag">全景 · 可环视</span>
+        <span class="air-card-time">{{ s.pano ? '全景' : s.time }}</span>
       </button>
+
+      <!--
+        底部一栏：还有 → 哨兵（滚到这里自动追加）+ 一颗可点的按钮
+        （没有 IntersectionObserver 的 WebView、以及键盘用户靠它）；
+        没有 → 一行「已显示全部」。
+      -->
+      <div v-if="air.airHasMore" ref="moreEl" class="air-more" id="airMore">
+        <button
+          class="air-more-btn"
+          type="button"
+          :aria-disabled="air.airMoreBusy ? 'true' : undefined"
+          :aria-label="`加载更多，还有 ${air.airRemain} 张`"
+          @click="air.loadMoreAir()"
+        >
+          <i v-if="air.airMoreBusy" class="cam-shots-spin" aria-hidden="true"></i>
+          <span>{{ air.airMoreBusy ? '正在加载更多…' : `加载更多（还有 ${air.airRemain} 张）` }}</span>
+        </button>
+      </div>
+      <!-- 只有真的分过页才写「已显示全部」，一两张时不必多一行 -->
+      <p
+        v-else-if="air.airList.length > AIR_PAGE_SIZE"
+        class="air-more is-end"
+        id="airMoreEnd"
+      >
+        已显示全部 {{ air.airList.length }} 张
+      </p>
     </div>
 
     <!--
-      航拍大图：设计稿的全屏 photo-stage（原 index.html:318-333 + app.css:3557-3630）。
-      三段式 —— 顶栏「关闭 / 标题 / 原图 · 下载」、弹性图片区、底部手势提示。
-      图片先给压缩图，点「原图」才换 img/hd/ 下的高清版。
+      大图弹层：照片走平面看（缩放 / 原图 / 下载），全景走球面环视
+      （拖动转头、双指或滚轮改视场角，与智眸 VR360 完全同一套组件）。
     -->
     <div
       class="cam-shot-pop air-pop"
@@ -226,18 +539,85 @@ async function onDownload(): Promise<void> {
         </button>
         <strong>{{ popTitle }}</strong>
         <div class="photo-bar-acts">
-          <button class="photo-bar-btn" type="button" :disabled="hd" @click="onHd">
-            {{ hd ? '已是原图' : '原图' }}
-          </button>
-          <button class="photo-bar-btn" type="button" @click="onDownload">下载</button>
+          <template v-if="!isPano">
+            <button
+              class="photo-bar-btn"
+              type="button"
+              :disabled="hd"
+              :aria-disabled="hd || imgHdBusy ? 'true' : undefined"
+              :aria-label="imgHdBusy ? `正在下载原图 ${imgHdPct}%` : '查看原图'"
+              @click="onHd"
+            >
+              {{ hdLabel }}
+            </button>
+          </template>
         </div>
       </div>
 
-      <div class="photo-view">
+      <Teleport to="body" :disabled="!panoLand">
+        <figure
+          v-if="isPano"
+          :ref="setPanoStage"
+          class="pano-stage"
+          :class="{ 'is-land': panoLand }"
+        >
+          <PanoViewer
+            ref="panoRef"
+            :src="panoSrc"
+            :alt="`${air.station} 全景`"
+            @unsupported="panoUnsupported = true"
+            @error="onPanoError"
+            @ready="onPanoReady"
+          />
+          <span class="patrol-view-tag is-pano">{{ panoHd ? '全景 · 高清' : '全景 · 可环视' }}</span>
+
+          <div class="pano-tools">
+            <button
+              v-if="!panoUnsupported"
+              class="pano-tool"
+              type="button"
+              aria-label="复位视角"
+              @click="panoRef?.reset()"
+            >
+              复位
+            </button>
+            <button
+              class="pano-tool"
+              type="button"
+              :disabled="panoHd || panoHdBusy"
+              :aria-label="`看高清，原图 ${panoSizeText}`"
+              @click="onPanoHd"
+            >
+              {{ panoHdLabel }}
+            </button>
+            <button
+              class="pano-tool"
+              type="button"
+              :aria-pressed="panoLand"
+              :aria-label="panoLand ? '退出横屏' : '横屏查看'"
+              @click="togglePanoLand"
+            >
+              {{ panoLand ? '竖屏' : '横屏' }}
+            </button>
+          </div>
+
+          <!-- 高清字节进度：压在画布底边，不占版面 -->
+          <div v-if="panoHdBusy" class="hd-progress is-in-stage">
+            <i :style="{ width: `${panoHdPct}%` }"></i>
+          </div>
+
+          <p v-if="panoBroken" class="pano-hint is-broken">全景图加载失败，请退出重进</p>
+          <p v-else class="pano-hint">
+            {{ panoUnsupported ? '当前环境不支持全景渲染，已切换为平面查看' : '拖动环视 · 双指或滚轮缩放' }}
+          </p>
+        </figure>
+      </Teleport>
+
+      <div v-if="!isPano" class="photo-view">
         <SmartImg
           id="airPopImg"
           :pos="currentShot?.pos"
-          :src="currentShot ? (hd ? photoHd(currentShot.img) : currentShot.img) : ''"
+          :src="shownSrc"
           alt=""
           class="zoomable"
           :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
@@ -245,9 +625,14 @@ async function onDownload(): Promise<void> {
           v-on="zoomHandlers"
         />
         <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
+
+        <!-- 原图下载进度：与智眸全景同一条（压在图底边，不占版面、不挡操作） -->
+        <div v-if="imgHdBusy" class="hd-progress is-in-stage" data-state="air-hd-progress">
+          <i :style="{ width: `${imgHdPct}%` }"></i>
+        </div>
       </div>
 
-      <p class="photo-tip">双指缩放，单指拖动</p>
+      <p v-if="!isPano" class="photo-tip">双指缩放，单指拖动</p>
     </div>
   </div>
 </template>

@@ -49,12 +49,14 @@ import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
+import { clearShots } from '@/utils/shotArchive'
 
 /**
  * 视频监控层（2026-11-18 设计稿重做）
  *
  * 这一组钉住五件事，都是「改错了页面也不报错、但现场看到的是错的」那类：
- *   ① 点位只有设计稿圈定的 8 个，分「出入口 / 场内 / 塔吊」三组，顺序照设计稿；
+ *   ① 点位是设计稿圈定的 9 个，分「设备设施 / 材料堆场 / 出入口管控」三组，
+ *      设备设施置顶（2026-11-19 现场要求），顺序照 `CAM_POINTS`；
  *   ② 画面区只有控件（播放键 + 刷新 + 全屏），不叠时间戳 / 点位名那种文字标签；
  *   ③ 每次取图都带 `X-API-Key` 与当前 `channelId`，切点位按需取、来回切不重复下；
  *   ④ 取不到图给明确空态 + 重试，绝不挂示意图假装有画面；
@@ -63,8 +65,8 @@ import { useSubpageStore } from '@/stores/subpage'
  *      连点不叠加请求也不重复起流。
  */
 
-const A = CAM_POINTS[0].channelId // 2#门监控1
-const B = CAM_POINTS[1].channelId // 2#门监控2
+const A = CAM_POINTS[0].channelId // 2#塔吊
+const B = CAM_POINTS[1].channelId // 4#塔吊
 
 /** 一张「图片」响应：够 api 层校验 content-type 与体积 */
 function imgResponse(size = 512): Response {
@@ -112,7 +114,7 @@ describe('components/overlays/CamPlayer', () => {
   let shell: ReturnType<typeof useShellStore>
   let urls: { created: string[]; revoked: string[] }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     setActivePinia(createPinia())
     signIn()
     vi.stubGlobal('fetch', vi.fn(async () => imgResponse()))
@@ -120,6 +122,8 @@ describe('components/overlays/CamPlayer', () => {
     urls = stubObjectUrl()
     cam = useCamStore()
     shell = useShellStore()
+    // 抓拍档案是进程级的（单测里是内存兜底），不清就会把上一例的照片带过来
+    await clearShots()
   })
 
   afterEach(() => {
@@ -141,23 +145,28 @@ describe('components/overlays/CamPlayer', () => {
 
   /* ---------------- 点位列表 ---------------- */
 
-  it('按设计稿分三组渲染 8 个点位，组头数字是组内点位数', async () => {
+  it('按设计稿分三组渲染 9 个点位，设备设施置顶，组头数字是组内点位数', async () => {
     await mountPlayer()
     await open()
 
     const groups = wrapper.findAll('.cam-chip-group')
-    expect(groups.map((g) => g.find('h5').text())).toEqual(['出入口4', '场内2', '塔吊2'])
+    expect(groups.map((g) => g.find('h5').text())).toEqual([
+      '设备设施4',
+      '材料堆场1',
+      '出入口管控4',
+    ])
 
     const chips = wrapper.findAll('.cam-chip')
     expect(chips.map((c) => c.text())).toEqual([
+      '2#塔吊',
+      '4#塔吊',
+      '地磅全景',
+      '钢筋加工棚',
+      '材料堆场',
       '2#门监控1',
       '2#门监控2',
       '4#门监控',
       '4#门外监控',
-      '地磅全景',
-      '钢筋加工棚',
-      '2#塔吊',
-      '4#塔吊',
     ])
   })
 
@@ -168,7 +177,7 @@ describe('components/overlays/CamPlayer', () => {
     expect(wrapper.find('#camPlayerName').text()).toBe(CAM_POINTS[0].name)
     expect(wrapper.find('.cam-chip.on').text()).toBe(CAM_POINTS[0].name)
 
-    await wrapper.findAll('.cam-chip')[4].trigger('click')
+    await wrapper.findAll('.cam-chip')[2].trigger('click')
     await flushPromises()
 
     expect(wrapper.find('#camPlayerName').text()).toBe('地磅全景')
@@ -273,7 +282,7 @@ describe('components/overlays/CamPlayer', () => {
     expect(btn.find('svg').exists()).toBe(true)
   })
 
-  it('点「历史抓拍」切到抓拍视图：画面视图让位，空态说清原因', async () => {
+  it('点「历史抓拍」切到抓拍视图：真实快照落进网格，日期芯片齐全', async () => {
     await mountPlayer()
     await open()
 
@@ -282,22 +291,109 @@ describe('components/overlays/CamPlayer', () => {
     await wrapper.find('#btnCamShots').trigger('click')
     await flushPromises()
     await nextTick()
+    await flushPromises()
 
     expect(cam.shotsOpen).toBe(true)
     expect(wrapper.find('#camShotsView').classes()).not.toContain('hide')
     expect(wrapper.find('#camLiveView').classes()).toContain('hide')
     expect(wrapper.find('#btnCamShots').attributes('aria-expanded')).toBe('true')
 
-    // 标题条照设计稿
+    // 标题条照设计稿；右侧说明按真实更新节奏写（08 / 12 / 18 点各一次）
     expect(wrapper.find('.cam-shots-hd strong').text()).toBe('历史抓拍')
-    expect(wrapper.find('.cam-shots-hd span').text()).toBe('每天 3 张，点开查看照片')
+    expect(wrapper.find('.cam-shots-hd span').text()).toContain('18 点更新')
+    expect(wrapper.find('.cam-shots-hd span').text()).toContain('当天 1 张')
 
-    // 还没有数据：给空态，不摆示意图、不塞示例照片
+    // 三颗日期芯片：今天 / 昨天 / 选日期（第三个带日历图标）
+    const days = wrapper.findAll('.cam-day')
+    expect(days.map((d) => d.text().trim())).toEqual(['今天', '昨天', '选日期'])
+    expect(days[0].classes()).toContain('on')
+    expect(days[2].find('svg').exists()).toBe(true)
+
+    // 今天真取到的一帧：一张缩略图，不是示意图
+    const shots = wrapper.findAll('.cam-shot')
+    expect(shots).toHaveLength(1)
+    expect(shots[0].find('img').attributes('src')).toMatch(/^blob:cam\//)
+    expect(shots[0].text()).toContain('今天')
+  })
+
+  it('点开抓拍进详情：默认压缩预览，右上角有「查看原图」「横屏」', async () => {
+    await mountPlayer()
+    await open()
+    await wrapper.find('#btnCamShots').trigger('click')
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+
+    await wrapper.find('.cam-shot').trigger('click')
+    await nextTick()
+
+    expect(cam.shotPopOpen).toBe(true)
+    const pop = wrapper.find('#camShotPop')
+    expect(pop.classes()).toContain('open')
+    expect(pop.find('.cam-shot-stage img').attributes('src')).toMatch(/^blob:cam\//)
+    expect(pop.find('.patrol-view-tag').text()).toBe('压缩预览')
+
+    // 工具条在图片右上角，两颗胶囊：查看原图 / 横屏
+    const tools = pop.findAll('.pano-tools .pano-tool')
+    expect(tools.map((t) => t.text())).toEqual(['查看原图', '横屏'])
+    expect(tools[1].attributes('aria-pressed')).toBe('false')
+
+    await tools[0].trigger('click')
+    await nextTick()
+    expect(cam.shotShowFull).toBe(true)
+    expect(pop.find('.patrol-view-tag').text()).toBe('原图')
+
+    // 返回键先关大图，再退回抓拍列表
+    await wrapper.find('#btnCamBack').trigger('click')
+    await nextTick()
+    expect(cam.shotPopOpen).toBe(false)
+    expect(cam.shotsOpen).toBe(true)
+  })
+
+  it('历史抓拍：取图失败且本机无留存 → 失败态 + 重试按钮', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => failResponse(502)))
+
+    await mountPlayer()
+    await open()
+    await wrapper.find('#btnCamShots').trigger('click')
+    await flushPromises()
+    await nextTick()
+
     const empty = wrapper.find('[data-empty="cam-shots"]')
-    expect(empty.text()).toContain('暂无历史抓拍')
-    expect(empty.text()).toContain('接口尚未接入')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('抓拍获取失败')
+    expect(empty.text()).toContain('上游视频服务异常')
+
+    // 重试：这次通了，网格里就有图
+    vi.stubGlobal('fetch', vi.fn(async () => imgResponse()))
+    await empty.find('button').trigger('click')
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+
+    expect(cam.shotsState).toBe('ok')
+    expect(wrapper.findAll('.cam-shot')).toHaveLength(1)
+  })
+
+  it('历史抓拍：本机没留存的日期给空态，不用今天的图顶替', async () => {
+    await mountPlayer()
+    await open()
+    await wrapper.find('#btnCamShots').trigger('click')
+    await flushPromises()
+    await nextTick()
+    await flushPromises()
+
+    // 点「昨天」芯片
+    await wrapper.findAll('.cam-day')[1].trigger('click')
+    await flushPromises()
+    await nextTick()
+
     expect(wrapper.findAll('.cam-shot')).toHaveLength(0)
-    expect(wrapper.findAll('.cam-day')).toHaveLength(0)
+    const empty = wrapper.find('[data-empty="cam-shots"]')
+    expect(empty.text()).toContain('这一天没有抓拍记录')
+    // 2026-11-19 按反馈去掉空态长说明：只留结论 + 「重新获取」，不再念一遍缘由
+    expect(empty.text()).not.toContain('本机也没有留存记录')
+    expect(empty.find('span').exists()).toBe(false)
   })
 
   it('历史抓拍视图里返回键先回画面，再按才关层', async () => {
@@ -448,7 +544,7 @@ describe('components/overlays/CamPlayer', () => {
   it('关闭后重新打开保持上次选中的点位', async () => {
     await mountPlayer()
     await open()
-    await wrapper.findAll('.cam-chip')[5].trigger('click')
+    await wrapper.findAll('.cam-chip')[3].trigger('click')
     await flushPromises()
 
     await wrapper.find('#btnCamBack').trigger('click')

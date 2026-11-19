@@ -81,14 +81,10 @@ describe('结构性守卫', () => {
 
     const referenced = [...refs.keys()].sort()
 
-    it('至少引用了全部业务图（2026-11 设计稿补入 4 张设备立绘 + 12 张 hd 原图）', () => {
+    it('至少引用了全部业务图（2026-11-19 起报警不再有分类示意图）', () => {
       expect(referenced).toEqual([
         'img/aerial-a.webp',
         'img/aerial-b.webp',
-        'img/alarm-cable.webp',
-        'img/alarm-net.webp',
-        'img/alarm-soil.webp',
-        'img/alarm-trash.webp',
         'img/cam-crane2.webp',
         'img/eq-climb.webp',
         'img/eq-crane.webp',
@@ -186,12 +182,13 @@ describe('结构性守卫', () => {
       // 已改成明说「实时视频流未接入」）。
       // 2026-11-18：MapLand.vue 移出（二维/三维底图改由场景截图接口动态取），
       // 兜底的 site-map / site-flat 两处引用收进 stores/scene.ts 一张表里。
+      // 2026-11-19：utils/videoAlarm.ts 移出（报警不再挂分类示意图
+      // img/alarm-*.webp，图标位改「抓拍缩略图 or 统一占位图标」）。
       expect([...owners].sort()).toEqual([
         'src/components/ui/MapViewer.vue',
         'src/stores/scene.ts',
         'src/styles/app.css',
         'src/utils/photoHd.ts',
-        'src/utils/videoAlarm.ts',
         'src/views/home/EquipPanel.vue',
       ])
     })
@@ -339,9 +336,21 @@ describe('结构性守卫', () => {
       expect(air.isOpen).toBe(true)
       expect(cam.isOpen).toBe(false)
 
+      // 2026-11-19：隐患上报二期才上线，入口标「功能待定」——点击只提示，
+      // 既不打开表单，也不动当前打开的航拍层
       await w.find('[data-work="hazard"]').trigger('click')
-      expect(air.hazardOpen).toBe(true)
-      expect(air.isOpen).toBe(false)
+      expect(air.hazardOpen).toBe(false)
+      expect(air.isOpen).toBe(true)
+      expect(useShellStore().toast).toContain('功能待定')
+    })
+
+    it('工作台：隐患上报标为待定，文案与 aria 都说清楚', () => {
+      const w = mount(WorkPage)
+      const btn = w.find('[data-work="hazard"]')
+      expect(btn.classes()).toContain('is-pending')
+      expect(btn.text()).toContain('隐患上报')
+      expect(btn.find('.work-short-tag').text()).toBe('功能待定')
+      expect(btn.attributes('aria-label')).toBe('隐患上报（功能待定）')
     })
 
     it('工作台：待定入口给 Toast 而不是静默', async () => {

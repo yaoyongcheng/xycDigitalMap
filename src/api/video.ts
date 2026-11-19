@@ -126,6 +126,7 @@ async function wfText(
   path: string,
   token: string,
   signal?: AbortSignal,
+  onProgress?: (ratio: number) => void,
 ): Promise<{ ok: boolean; status: number; text: string }> {
   let res: Response
   try {
@@ -137,6 +138,47 @@ async function wfText(
     if (err instanceof DOMException && err.name === 'AbortError') throw new ApiError(0, '请求已取消')
     throw new ApiError(0, '视频报警服务不可达')
   }
+
+  /*
+   * 需要进度时走流式读取（2026-11-19）。
+   *
+   * `res.text()` 是一次性的：调用方拿不到任何中间状态，界面上只能「转圈直到
+   * 图出现」。抓拍图单张约 1MB、现场 2~3s，中间这段什么都不显示会让人以为卡死。
+   * 这里按 chunk 累计字节数回吐进度。
+   *
+   * 百分比的分母只能取 `Content-Length`：该接口**没有开 gzip 也没有分块以外的
+   * 编码**，正常都带长度；万一缺失（chunked）就回吐 0，由界面渲染成不确定态 ——
+   * 不猜一个假分母（猜出来的进度条会在最后突然跳回去）。
+   */
+  if (onProgress && res.body && typeof res.body.getReader === 'function') {
+    const rawLen = res.headers?.get?.('content-length') || ''
+    const total = Number(rawLen) || 0
+    const reader = res.body.getReader()
+    const chunks: Uint8Array[] = []
+    let got = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value) continue
+        chunks.push(value)
+        got += value.byteLength
+        // 留 1% 给「解码 + 落盘」，否则进度条到 100% 后还要空等一瞬
+        onProgress(total > 0 ? Math.min(0.99, got / total) : 0)
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw new ApiError(0, '请求已取消')
+      throw new ApiError(0, '视频报警服务不可达')
+    }
+    const buf = new Uint8Array(got)
+    let off = 0
+    for (const c of chunks) {
+      buf.set(c, off)
+      off += c.byteLength
+    }
+    return { ok: res.ok, status: res.status, text: new TextDecoder().decode(buf) }
+  }
+
   return { ok: res.ok, status: res.status, text: await res.text() }
 }
 
@@ -260,6 +302,39 @@ function cachePut(id: string, url: string): void {
 }
 
 /**
+ * 抓拍图请求超时（2026-11-19 实测补充）。
+ *
+ * 这个接口的尾部延迟很糟：同一天同一台服务器，`86605` 3.4s、`86604` 2.7s，
+ * 但 `86601` 30s 都没吐完（curl 直接超时）。列表里一条卡住的请求会占住
+ * 一个并发位，让后面已经进入视野的图全部排队等着 —— 用户看到的就是
+ * 「有几张特别慢，其余也不出来」。
+ *
+ * 8s 覆盖正常请求（实测 < 3.5s）的两倍余量，超时就放弃这次、把并发位让出来；
+ * 调用方（`stores/alarm.ts`）会把它标记成「可重试」，滚动回来时再试一次。
+ */
+const PIC_TIMEOUT_MS = 8000
+
+/**
+ * 把两个 AbortSignal 合成一个（任一取消即取消）。
+ *
+ * `AbortSignal.any()` 只有较新的 Safari / Chrome 有，这里手动桥接：
+ * 监听器都带 `once`，不会随着请求次数累积。
+ */
+function linkAbort(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+  if (!a) return b
+  if (!b) return a
+  if (a.aborted || b.aborted) {
+    const pre = new AbortController()
+    pre.abort()
+    return pre.signal
+  }
+  const ctl = new AbortController()
+  a.addEventListener('abort', () => ctl.abort(), { once: true })
+  b.addEventListener('abort', () => ctl.abort(), { once: true })
+  return ctl.signal
+}
+
+/**
  * 拉一条报警的抓拍图，返回可直接塞进 img.src 的 data URL。
  *
  * 现场实测（2026-11-11）：`HTTP 200` + `Content-Type: application/json`，
@@ -274,15 +349,33 @@ export async function fetchAlarmPicture(
   token: string,
   id: string,
   signal?: AbortSignal,
+  onProgress?: (ratio: number) => void,
 ): Promise<string> {
   const cached = PIC_CACHE.get(id)
   if (cached) return cached
 
-  const { ok, status, text } = await wfText(
-    `/api/video/alarms/${encodeURIComponent(id)}/picture`,
-    token,
-    signal,
-  )
+  // 超时用独立的控制器：外部 signal（关弹层 / 换一条）仍然要能取消。
+  // 两者合成一个 —— 只有较新的 Safari 才有 AbortSignal.any，这里手动桥接。
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), PIC_TIMEOUT_MS)
+  let res: { ok: boolean; status: number; text: string }
+  try {
+    res = await wfText(
+      `/api/video/alarms/${encodeURIComponent(id)}/picture`,
+      token,
+      linkAbort(signal, ctl.signal),
+      onProgress,
+    )
+  } catch (err) {
+    // 是我们自己的超时（不是调用方主动取消）→ 给一条能说明问题的错误
+    if (ctl.signal.aborted && !signal?.aborted) {
+      throw new ApiError(0, '抓拍图请求超时，稍后重试')
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+  const { ok, status, text } = res
   if (status === 401) {
     notifyUnauthorized()
     throw new ApiError(401, '登录已过期，请重新登录')

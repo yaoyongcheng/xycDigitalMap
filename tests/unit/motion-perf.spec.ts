@@ -491,7 +491,6 @@ describe('第二轮体验优化回归', () => {
       type: '电缆拖地',
       title: '用电报警',
       desc: '作业面电缆拖地未架空',
-      img: 'img/alarm-cable.webp',
       rel: '3分钟前',
       at: '2026-10-20 15:19:00',
       geo: '114.24738810244102,30.53290155210933',
@@ -525,15 +524,15 @@ describe('第二轮体验优化回归', () => {
       item.unmount()
     })
 
-    it('色标与编号的样式契约', () => {
+    it('行首色标已下线，分档语义只留在 data-tone 上（2026-11-19）', () => {
       const css = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
-      // 深色与浅色两套语义各自成组
-      for (const tone of ['guard', 'power', 'dust', 'env']) {
-        expect(css).toContain(`.alarm-feed-item[data-tone="${tone}"]`)
-        expect(css).toContain(`.insp-item[data-tone="${tone}"]`)
-      }
-      // 色标是 2px 短条而不是整行染色：整行染色会让密集列表变成色块阵列
-      expect(css).toContain('background: var(--tone, transparent)')
+      // 现场要求去掉「图标前的红色竖条」：伪元素与 --tone 变量一起删干净，
+      // 只留 data-tone 属性（分档本身仍有意义，只是不再有视觉落点）
+      expect(css).not.toContain('background: var(--tone, transparent)')
+      expect(css).not.toContain('[data-tone="guard"]')
+      expect(css).not.toContain('[data-tone="power"]')
+      // 列表行仍保留定位上下文（时间、角标等绝对定位子元素依赖它）
+      expect(css).toContain('.alarm-feed-item,\n.insp-item { position: relative; }')
 
       // 区块标题：编号 + 延伸细线
       expect(css).toContain('#homePanels { counter-reset: block; }')

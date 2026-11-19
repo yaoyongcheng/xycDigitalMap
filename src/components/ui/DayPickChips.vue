@@ -8,10 +8,13 @@ import { addDays, dayOffsetOf, formatMD, sameDay, startOfDay } from '@/utils/dat
  * 「今天 / 昨天 / 选日期」三个日期芯片
  *
  * 对应原 js/app.js:1092-1103 dayPickChips(selected, openAttr)。
- * 三处复用：监控抓拍、航拍、巡检历史，差异仅在第三个芯片上的展开属性名：
+ * 三处复用：监控抓拍、航拍照片、巡检历史，差异仅在第三个芯片上的展开属性名：
  *   cam  -> data-cal-open="1"
  *   air  -> data-air-cal-open="1"
  *   insp -> data-insp-cal-open="1"
+ *
+ * 2026-11-19：航拍照片一度改「站点 + 最新一次采集」把这组芯片取下，
+ * 当天又按要求恢复 —— 组件本身没动过，仍是原来那三颗。
  */
 const props = defineProps<{
   selected: Date

@@ -68,7 +68,6 @@ describe('stores · alarm / home / subpage', () => {
         expect(a.title).toBeTruthy()
         expect(a.desc).toBeTruthy()
         expect(a.rel).toBeTruthy()
-        expect(a.img).toMatch(/^img\/.+\.webp$/)
         expect(a.at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
         // geo 形如 "114.24751233100210,30.53310211883421"
         expect(a.geo).toMatch(/^-?\d+\.\d+,-?\d+\.\d+$/)
@@ -81,15 +80,13 @@ describe('stores · alarm / home / subpage', () => {
       expect(new Set(ids).size).toBe(ids.length)
     })
 
-    it('图源只用了 4 张预警图', () => {
+    it('报警不再挂分类示意图（图标位只有抓拍图 / 占位图标）', () => {
+      // 2026-11-19 起报警不再挂分类示意图：图标位要么是抓拍缩略图，
+      // 要么是统一占位图标。这一条改成断言「没有任何图片字段残留」。
       const alarm = useAlarmStore()
-      const imgs = [...new Set(alarm.liveAlarms.map((a) => a.img))].sort()
-      expect(imgs).toEqual([
-        'img/alarm-cable.webp',
-        'img/alarm-net.webp',
-        'img/alarm-soil.webp',
-        'img/alarm-trash.webp',
-      ])
+      for (const a of alarm.liveAlarms) {
+        expect('img' in a).toBe(false)
+      }
     })
 
     /*

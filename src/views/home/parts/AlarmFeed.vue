@@ -2,9 +2,13 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import SmartImg from '@/components/ui/SmartImg.vue'
+import SvgIcon from '@/components/ui/SvgIcon.vue'
+import ThumbRing from '@/components/ui/ThumbRing.vue'
 import { ALARM_FEED_SHOW, alarmSrcOf } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
+import { useAuthStore } from '@/stores/auth'
 import { alarmTone } from '@/utils/alarmTone'
+import { revealThumb } from '@/utils/thumbReveal'
 
 /**
  * 预警横滑分页轮播（2026-11 设计稿 gx2 版同步）
@@ -29,8 +33,27 @@ import { alarmTone } from '@/utils/alarmTone'
  *   停稳后必须 `normalize()` 归位到等价的真实页。
  */
 const alarm = useAlarmStore()
+const auth = useAuthStore()
 
 const emit = defineEmits<{ open: [id: string] }>()
+
+/**
+ * 卡片左图：优先用「该条报警详情页里的同一张抓拍图」缩略图。
+ *
+ * 轮播每页 3 条 × 多页，一次全量请求太重；`revealThumb` 只给滑到眼前
+ * （±240px）的那几张发请求。取不到时铺**统一占位图标**（`.alarm-tile`：
+ * 灰底 + 深灰摄像机），不再用 `img/alarm-*.webp` 分类示意图 —— 那张图
+ * 长得像真实现场，会被误读成当次抓拍（2026-11-19 现场反馈）。
+ * 取图过程中图标外圈有一圈真实下载进度（`ThumbRing`）。
+ */
+function bindThumb(el: unknown, id: string): void {
+  if (!(el instanceof Element)) return
+  // 已经有图（内存命中 / 预取先到）：不必再登记观察器
+  if (alarm.thumbOf(id)) return
+  revealThumb(el, () => {
+    if (auth.token) alarm.ensureThumb(auth.token, id)
+  })
+}
 
 /** 原 alarmFeedPages()（app.js:342-347）：feed 按 ALARM_FEED_SHOW 切页 */
 const pages = computed(() => {
@@ -387,6 +410,7 @@ onUnmounted(() => {
           <div
             v-for="a in s.items"
             :key="a.id"
+            :ref="(el) => bindThumb(el, a.id)"
             class="alarm-feed-item"
             :data-alarm="a.id"
             :data-tone="alarmTone(a.type)"
@@ -395,7 +419,16 @@ onUnmounted(() => {
             @click="onItemClick(a.id)"
             @keydown="onKey($event, a.id)"
           >
-            <SmartImg class="alarm-feed-pic" :src="a.img" :alt="a.type" />
+            <SmartImg
+              v-if="alarm.thumbOf(a.id)"
+              class="alarm-feed-pic"
+              :src="alarm.thumbOf(a.id)"
+              :alt="a.type"
+            />
+            <span v-else class="alarm-feed-pic alarm-tile" aria-hidden="true">
+              <SvgIcon name="work-cam" />
+              <ThumbRing :id="a.id" />
+            </span>
             <div class="alarm-feed-meta">
               <div class="alarm-feed-hd">
                 <strong>{{ a.title }}</strong>

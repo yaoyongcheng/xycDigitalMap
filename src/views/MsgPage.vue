@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import Skel from '@/components/ui/Skel.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
+import ThumbRing from '@/components/ui/ThumbRing.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
 import { useMsgStore } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { useSlowLoading } from '@/utils/slowLoading'
+import { revealThumb } from '@/utils/thumbReveal'
 import { onMounted } from 'vue'
 import type { IconName } from '@/data/icons'
 import type { Message } from '@/types'
@@ -37,11 +39,31 @@ const showSkel = useSlowLoading(() => !alarm.hasLive && alarm.liveState === 'loa
 /** 翻下一页同样按支付宝口径：快请求不闪，慢请求才在列表末尾铺同构灰条 */
 const showMoreSkel = useSlowLoading(() => msg.loadingMore)
 
-/** 消息类型 → 图标名；video 是现场视频报警，用工作台那套监控图标 */
+/**
+ * 消息类型 → 图标名；video 是现场视频报警，用工作台那套监控图标
+ *
+ * 2026-11-19 起视频报警这张图标会被「该条报警在详情页里的同一张抓拍图」替换
+ * （见 `alarm.thumbOf`），图标只在还没取到图时继续当占位 —— 布局、尺寸不变。
+ */
 const msgIcon: Record<Message['kind'], IconName> = {
   people: 'msg-people',
   inspect: 'drone',
   video: 'work-cam',
+}
+
+/**
+ * 行的 `ref` 回调：登记「滚到视口附近再取缩略图」。
+ *
+ * 消息可能 20 条一页、越翻越多，绝不能渲染即全量请求（单张约 1MB）。
+ * 触发逻辑在 `utils/thumbReveal.ts`，全站共用一个观察器。
+ */
+function bindThumb(el: unknown, id: string): void {
+  if (!(el instanceof Element)) return
+  // 已经有图（内存命中 / 首页预取先到）：不必再登记观察器，省一次观察与回调
+  if (alarm.thumbOf(id)) return
+  revealThumb(el, () => {
+    if (auth.token) alarm.ensureThumb(auth.token, id)
+  })
 }
 
 /** 触底阈值：离底 160px 就提前拉，别等用户滑到卡住才转圈 */
@@ -125,6 +147,7 @@ function goLogin(): void {
         <div
           v-for="m in msg.messages"
           :key="m.id"
+          :ref="(el) => bindThumb(el, m.id)"
           class="msg-item"
           :class="{ 'is-link': m.kind !== 'people' }"
           :data-kind="m.kind"
@@ -134,7 +157,25 @@ function goLogin(): void {
           @click="onItemClick(m)"
           @keydown="onItemKey($event, m)"
         >
-          <div class="msg-ico" :class="m.kind"><SvgIcon :name="msgIcon[m.kind]" /></div>
+          <!--
+            图标位：取到该条报警的抓拍图就换成图（等比铺满、圆角跟着容器），
+            没取到 / 没有图就还是原来那颗图标 —— 尺寸与位置都不变。
+            视频类取的就是该条报警的抓拍图，加载中在图标外圈叠一圈真实进度。
+          -->
+          <div class="msg-ico" :class="m.kind">
+            <img
+              v-if="alarm.thumbOf(m.id)"
+              class="msg-shot"
+              :src="alarm.thumbOf(m.id)"
+              :alt="m.title"
+              loading="lazy"
+              decoding="async"
+            />
+            <template v-else>
+              <SvgIcon :name="msgIcon[m.kind]" />
+              <ThumbRing v-if="m.kind === 'video'" :id="m.id" />
+            </template>
+          </div>
           <div class="meta">
             <h4>{{ m.title }}</h4>
             <p>{{ m.desc }}</p>

@@ -15,10 +15,10 @@ import { formatMD, protoToday, sameDay, startOfDay } from '@/utils/date'
  *   ② **名称要自己拼**。现场 `alertName` 常为空串，必须用 `alertType` 查
  *      `ALERT_TYPE_NAME` 还原；两个都取不到才给中性名（不能空着，详情页
  *      「识别类型」会变成空白行）。
- *   ③ **分类靠关键词猜**。服务端没有项目这套四分类，而徽标配色与详情页配图
- *      是按 `type` 走的。用关键词把报警名归到既有四类图上，归不进去的给通用
- *      防护图 —— 总要有一张图，`AlarmDetail` 是直接拿 `img` 当 src 的，
- *      空串会破图。
+ *   ③ **分类靠关键词猜**。服务端没有项目这套四分类，而徽标配色与列表标题
+ *      是按 `type` 走的。用关键词把报警名归到既有四类上，归不进去的给通用
+ *      防护类 —— 分类只决定 `title` 文案，不再挂示意图（2026-11-19 起列表
+ *      图标位改为「抓拍图 or 统一占位图标」，见 `types.ts::Alarm`）。
  */
 
 /**
@@ -98,15 +98,15 @@ const CLASSIFY: { re: RegExp; kind: 'trash' | 'cable' | 'net' | 'soil' }[] = [
   },
 ]
 
-/** 四类配图（分类名用 style.title，具体报警名用 alertLabelOf） */
-const STYLE: Record<string, { title: string; img: string }> = {
-  trash: { title: '环境报警', img: 'img/alarm-trash.webp' },
-  cable: { title: '用电报警', img: 'img/alarm-cable.webp' },
-  soil: { title: '扬尘报警', img: 'img/alarm-soil.webp' },
-  net: { title: '防护报警', img: 'img/alarm-net.webp' },
+/** 四类分类名（`title`），配图在 2026-11-19 整体下线，见 `types.ts::Alarm` */
+const STYLE: Record<string, { title: string }> = {
+  trash: { title: '环境报警' },
+  cable: { title: '用电报警' },
+  soil: { title: '扬尘报警' },
+  net: { title: '防护报警' },
 }
 
-/** 兜底：归不进四类的报警按「防护」展示，配图不能为空 */
+/** 兜底：归不进四类的报警按「防护」展示 */
 const FALLBACK = STYLE.net
 
 /**
@@ -188,7 +188,6 @@ export function toAlarm(v: VideoAlarm, now: Date = new Date()): Alarm | null {
     title: style.title,
     // 轮播卡只给一行高度：具体类型 + 点位（没有点位名时用通道号）
     desc: `${name} · ${place || ch}抓拍`,
-    img: style.img,
     rel: relTime(at, now),
     at,
     // 服务端不下发坐标，宁可不撒点

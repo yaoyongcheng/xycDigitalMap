@@ -647,7 +647,7 @@ describe('交互优化回归', () => {
 
   describe('SmartImg 占位与兜底', () => {
     it('未加载完成前是占位态，load 后淡入', async () => {
-      const w = mount(SmartImg, { props: { src: 'img/alarm-trash.webp', alt: 'x' } })
+      const w = mount(SmartImg, { props: { src: 'img/site-map.webp', alt: 'x' } })
       const img = w.find('img')
       expect(img.classes()).toContain('simg')
       expect(img.classes()).not.toContain('is-loaded')
@@ -657,7 +657,7 @@ describe('交互优化回归', () => {
     })
 
     it('加载失败换成内联占位图，不再出破图', async () => {
-      const w = mount(SmartImg, { props: { src: 'img/alarm-trash.webp' } })
+      const w = mount(SmartImg, { props: { src: 'img/site-map.webp' } })
       const before = w.find('img').attributes('src')
       await w.find('img').trigger('error')
       const after = w.find('img').attributes('src')
