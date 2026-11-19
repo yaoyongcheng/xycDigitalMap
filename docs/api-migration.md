@@ -108,7 +108,7 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 | `/person/page` | 人员花名册 | 人员列表 | ⚠️ **57007 接口权限未获取** |
 | `/report/attendance/attendanceDay` | 日考勤明细 | 考勤页 | ⚠️ **57007 接口权限未获取** |
 | `/location/snapshootProjectPersonCountV3` | 项目人员数量快照 | 人员分布 | ⚠️ **57007 接口权限未获取** |
-| `/location/personCurLocation/v2` | 人员当前位置 | 人员分布/地图撒点 | ⚠️ **57007 接口权限未获取** |
+| `/location/personCurLocation/v2` | 人员当前位置 | 人员分布/地图撒点 | ✅ **已接**（2026-11-18；**必须 POST**，用 GET 会回 57007 的假象） |
 | `/location/track` | 人员轨迹 | 轨迹回放 | ⚠️ 同上（未单独验证，同属 location 分组） |
 | `/device/label/page` | 定位标签（实测 200 条） | 人员定位设备 | ✅ 阶段 8 已接客户端（**行内无区域字段**） |
 | `/device/label/getLabelOrPersonRelation` | 标签-人员绑定 | 人员定位 | ⬜ 未验证 |
@@ -281,14 +281,21 @@ URL 追加 `projectKey / accessKey / timestamp / nonce / sign`。
 
 页面按 V2 地图归成三个场景（`src/api/person.ts: sceneOf`）：
 
-| 场景 | 纳入的管控区 |
-|---|---|
-| 场布图 | 管理区域 / 智能钢筋加工区 / 北侧钢筋加工区（总平面上的都在这里） |
-| 2#住宅楼 | `2#楼` 3F/4F/5F 等楼栋管控区 |
-| 地下室 | `B1管理区域`（先判 B1，否则会被「管理区域」抢走） |
+| 场景 | 纳入的管控区 | 下钻后列什么 |
+|---|---|---|
+| 场布图 | 管理区域 / 智能钢筋加工区 / 北侧钢筋加工区（总平面上的都在这里） | 管控区（人数降序） |
+| 2#住宅楼 | `2#楼` 1F/3F/4F/5F 等楼栋管控区 | **楼层 1F~5F**（固定五行） |
+| 地下室 | `B1管理区域`（先判 B\d / 地下，否则会被「管理区域」抢走） | **楼层 -1F** |
 
-点场景下钻 → 管控区分组 + **人员姓名 + 工种**（限高 320px 内部滚动）。
-`-1`「全部」不参与归类，只用来校验总数。
+**楼层规则（2026-11-18，对齐 V2 浮层）**：2# 住宅楼固定列 `1F 2F 3F 4F 5F` 五行，
+`B1管理区域` / `B2管理区域` 解析成 `-1F` / `-2F`（`floorOf`）。
+固定枚举而不是"数据里有哪层列哪层"，是因为现场 2# 楼只有 1F/3F/4F/5F 四条管控区，
+2F 没有——按数据列会凭空少一行，而 V2 里它就是一行 0 人。
+同一层的多条管控区（如 `2#楼5F管控区` + `2#楼5F管控区_copy`）合并成一层；
+表外楼层（将来出现 6F、-2F）按层数追加在后面，负层保持 -1F 在 -2F 之前。
+
+点场景下钻 → 一行一楼层 / 一个管控区 + **人员姓名 + 工种**（限高 320px 内部滚动，
+滚到边界后继续滑会接力给外层抽屉）。`-1`「全部」不参与归类，只用来校验总数。
 
 > 与「今日出勤工种」卡的口径差异：工种卡用**全天在场清单**（含已离场的人，
 > 对齐 V2「今日入场人员」表格）；人员分布用 **`alive` 在线**（对齐 V2 人员分布浮层）。
@@ -2552,3 +2559,883 @@ V2 的 cube 分支只贴 6 张 `cube/*_low.jpg`（每面 1024²，等效约 11 p
 
 **镜像**：`u` 必须取 `1 - θ/2π`。球面顶点按 `x=sinθ, z=cosθ` 生成、摄像机朝 -Z，
 于是 θ 增大等于画面往左；若写成 θ/2π，整张全景就是左右反的（2026-11-16 实测）。
+
+### 7. 全景航拍：全局定点拍照最新 9 张（2026-11-18）
+
+「全景航拍」这一格不再是照片墙的一类，而是**固定 9 张**，来源与 V2 的
+「任务记录 → 选中一条 → 采集数据 → 采集图片」完全同一条链：
+
+```
+GET /task/exec/list/record?pid=193640872670213&start=…&end=…   → 这条航线的班次
+GET /media/task/job/{执行记录id}                                → 这一班的采集文件
+```
+
+筛选条件（与 V2 逐条对齐，`api/drone.ts` 的 `fetchSpotGallery`）：
+
+| 规则 | 取值 | 为什么 |
+| --- | --- | --- |
+| 任务名 | **完全等于** `向阳村-全局定点拍照` | 同时段还有「分区定点拍照」，模糊匹配会混进来 |
+| 状态 | `status === 2`（已完成）且 `start <= 现在` | 记录里混着未来排班（11-19 那几条 `status: -1`），没有媒体 |
+| 顺序 | `start` 倒序，**跳过媒体为空的那一班** | 实测 11-18 08:20 那班 `status=2` 但媒体 0 条 |
+| 媒体类型 | 只留 `image/*` | 每班都有 1 个 `.DAT` 飞行日志；V2「采集图片 9」= 9 张 JPEG |
+| 张数 / 顺序 | 按 DJI 序号（`_0001_V` → `_0009_V`）升序，多于 9 张取最后 9 张 | 与 V2 那排缩略图从左到右一致 |
+| 窗口 | 近 30 天，没有照片再退 180 天 | 与照片墙同一套策略 |
+
+实测（2026-11-18 10:05）：`job 182349`（`2026-11-17 15:30–15:35`）返回 10 个文件
+= 9 张 JPEG + 1 个 `.DAT`，9 张**全部带 `thumbnail`**（`oss.keehang.com:19090/thumbnail/iot/…`）。
+V2 截图里「巡检时长 5 分钟 / 采集图片 9」就是这一班。
+
+页面行为：
+
+- 列表卡片只用 `thumbnail`（约 0.4MB/张），点开大图先显示同一张缩略图，
+  点「查看原图」才拉 7~8MB 的 OSS 原图并显示进度 —— 与照片墙同一套弹层
+  （`PatrolSheet.vue` 的 `photoById()`，照片墙与这 9 张各存一个数组）。
+- 这条航线的照片**不再进照片墙**（`probe` 里跳过）：否则会在「安全巡查」里
+  再出现一遍，还多打一次媒体请求。
+- 这一格同时取代了旧的「基坑区域」：`向阳村-土方1` 的照片不再有专属按钮
+  （`PATROL_TASK_CAT` 里的归类还在，只是页面不再按它铺图）。
+
+### 8. 材料堆场 / 设备设施 / 安全巡查：按序号从班里挑图（2026-11-18）
+
+这三格也不走照片墙的分类，而是**固定张数**，取数链与第 7 节完全相同
+（`latestTaskMedia`：同一套窗口、任务名全等、`status=2` 且已开始、跳过空媒体、
+只留 `image/*`、文件名升序），差别只有"从这一班里挑哪几个位置"：
+
+| 格子 | 航线（**完全相等**） | 取第几张（1 基） | 张数 |
+| --- | --- | --- | --- |
+| 材料堆场（分类 id `equip`） | `向阳村-分区定点拍照` | 第 1、2、37 | 3 |
+| 设备设施（分类 id `face`） | `向阳村-塔吊定点` | 第 2、7 | 2 |
+| 安全巡查（分类 id `layout`） | `向阳村-土方1` | 第 1 | 1 |
+| 安全巡查（同上，**另一条航线**） | `向阳村-分区定点拍照` | 第 34 | 1 |
+
+⚠️ 安全巡查是唯一**跨两条航线**的一格（`SAFETY_SOURCES`），所以
+`fetchSafetyGallery()` 返回的是 `DroneSpotGallery[]`（每个有图的来源一项），
+不是单条 —— 两班的 `jobId / taskName` 不同，合成一条会让卡片标题和弹层 id 都错。
+两条**串行**取（并行会在同一秒打两个媒体请求，keehang 直接 42901）；
+一条取不到只少一张，两条都挂才抛错。
+
+实测依据：土方1 `2026-11-17 17:00–17:05` 那班采集 **50** 张；分区定点
+`2026-11-17 12:30` 那班采集 **41** 张（V2 截图里的那两个数）。
+
+序号是用户对着 V2「任务记录 → 该航线 → 采集数据 → 采集照片(N)」那张网格逐格
+点出来的，不做任何"看起来像堆场/像塔吊"的画面猜测。**班次照片数不足该序号时
+只给存在的那几张**：不拿最后一张凑数，也不跨班补 —— 凑出来的不是指定的那张。
+
+实测依据：分区定点 `2026-11-17 12:30` 那班 41 张；塔吊定点 `2026-11-17 14:15`
+那班 16 张（截图里「采集照片(16)」），第 2、7 格是塔吊。
+
+**待接入**：设备设施按用户口径应有 4 张，另两张来自「视频监控-塔吊-2#塔吊」
+「视频监控-塔吊-4#塔吊」各自最新的一张。监控侧（tciccs）目前**没有照片查询
+接口**，只有实时流与抓拍报警，2026-11-18 用户明确「本轮先保持现状」，所以这一格
+现在稳定 2 张。等接口通了再在 `fetchFacilityGallery` 里拼一条链，页面不用改。
+
+页面行为与第 7 节一致：列表用 `thumbnail`，点开走同一个大图弹层
+（`photoById()` 现在查五个数组：照片墙 / spot / yard / facility / safety）；失败保留
+上一批，只有服务端明确回"近期没有照片"才清空；`probe()` 跳过这几条航线的整班
+照片（`塔吊定点` / `分区定点拍照` / `土方1` / `全局定点拍照`）—— 它们各自只被专用链
+取指定张，上墙也没有位置，跳过还能省掉每次刷新的媒体请求。
+
+于是**六格里只剩「出入口管控」（`yard`）还按航线名归组**（`PatrolPanel` 的 groups）。
+
+## 六点六、场景截图底图：首页背景 + 二维图改走接口（2026-11-18）
+
+现场平台每截一次图就上传一张，**每个项目分别保存一张 2D 与一张 3D**，同类型再上传覆盖。
+首页背景（`.home-map`）与全屏地图的「三维 / 二维」从此都读它，不再写死
+`public/img/site-map.webp` / `site-flat.webp`。接口文档是桌面
+`向阳村工地数字地图/场景截图接口使用.md`（版本 365ea8f3，2026-11-17 发布）。
+
+### 接口
+
+| 用途 | 方法与地址 | 鉴权 |
+| --- | --- | --- |
+| 图片字节（**本项目用这个**） | `GET https://115.159.67.12/api/file/scene-screenshots/content?pid=P000000076&type=2d\|3d` | 头 `X-API-Key` |
+| 元数据 + Base64 | `GET .../api/file/scene-screenshots?pid=..&type=..` | 头 `X-API-Key` |
+| 上传 | `POST .../api/file/scene-screenshots`，multipart（pid / type / file） | 平台 `Bearer` |
+
+- 查询用**第三方只读密钥**（文档原值，写在 `src/api/scene.ts` 的 `SCENE_KEY`），
+  与平台登录 token 无关；**密钥不能放 URL 参数**。
+- `type` 只认 `2d` / `3d`，**省略即 3D**；未上传指定类型回 **404，且不回退到另一种**。
+- 成功回 `{code:200,message,data:{pid,type,fileName,contentType,fileSize,uploadedAt,updatedAt,imageBase64}}`；
+  `uploadedAt` 首次上传、`updatedAt` 最近覆盖，均 UTC。本项目只用 `/content` 的字节，
+  不用元数据接口（它会把整张图 Base64 塞进 JSON，实测 2D 那张响应 5.08MB）。
+
+### 三个坑
+
+1. **不能直接写进 `<img src>`**：图片 URL 本身也要 `X-API-Key`，而 `<img>` 无法带请求头。
+   只能 `fetch` → `Blob` → `URL.createObjectURL`（文档同款说法）。项目里落在
+   `stores/scene.ts`，换图时 `revokeObjectURL`。
+2. **跨域是通的**（2026-11-18 实测）：该域对任意 `Origin` 都回显
+   `Access-Control-Allow-Origin`（含 `https://yaoyongcheng.github.io`），预检放行
+   `X-API-Key` —— 所以**不需要**像 `/iot-api` 那样加同源反代，GitHub Pages 也能直连。
+3. **这张图是 1920×1080 PNG**（2D 3.81MB / 3D 3.25MB），旧的内置图是 1024×642 WebP。
+   体积差 30 倍，所以：首页只取 3D 一张；2D 只在真的点「二维地图」时才拉。
+
+### 页面行为
+
+- `stores/scene.ts` 一次会话内每个类型只取一次（并发调用合并成一个 Promise），
+  首页与全屏地图的三维共用同一份 objectURL。
+- 失败不清图：已成功过的图在刷新失败时保留；本机有落盘兜底图（见下一节）就继续
+  用它；两者都没有才回落到内置 `img/site-map.webp` / `img/site-flat.webp`
+  （布局与首屏观感不变）。
+- 未上传（404）单独记 `empty`，不当作错误反复重试。
+- ⚠️ **报警撒点坐标按旧图取景标定**（`Alarm.pin` / `Alarm.flat` 都是百分比）。
+  换图后取景若与旧图不同，点位会有偏移 —— 换图后需要人工核一次撒点位置。
+
+### 六点六补：刷新时视角偏移 / 切图闪旧图（2026-11-18 晚）
+
+用户先报「点二维时旧地图短暂闪现」，再报「刷新后 3D 视角偏移」，两者是同一个
+根因的两面：**同一个位置上先后出现了两张取景不同的图**。
+
+1. 兜底图与接口图不同源。`public/img/site-map.webp`（1024×642，迁移前的设计稿
+   截图）取景更紧，接口图是 1920×1080 更宽；刷新时先出兜底图、3.2MB 到手后再
+   切接口图 —— 一次刷新切了两次图，看起来就是「视角偏了一下」。
+   **修法**：兜底图改由**同一次接口截图同源导出**（`site-map.webp` /
+   `site-flat.webp` 都是 1280×720、16:9，约 132KB / 183KB），与接口图同比例
+   同取景。以后接口图若换了取景角度，需要重导这两张（否则又会差一点）。
+2. 默认自然尺寸与图不同比例。`MapViewer` 的 `natW/natH` 默认 1024×642（16:10），
+   而接口图是 16:9：cover 在同一个容器里裁切方向不同（一个裁上下、一个裁左右），
+   首屏会先按旧比例排一帧再重排。**修法**：默认值改成 1280×720，与两张图一致。
+3. 换图不是原子的。**修法**：
+   - `stores/scene` 加 `settled()`（ok/empty/error 都算有结论）与 `warm()`（置 ok
+     前先 `decode()`，最多等 1.2s），页面据此判断「能不能直接切」。
+   - `MapLand` 等目标图有结论才翻 `flat`，等待期按钮写「二维加载中」并禁用；
+     期间旧图继续显示（清空只会变黑）。报警点坐标与 `.is-flat` 样式跟着一起翻，
+     保证撒点与画面永远是同一张图。
+   - `MapViewer` 做双缓冲：两张 `<img class="map-base">` 叠在画布里，新图先在
+     背层（opacity 0）备好，等它 `load`（像素可渲染、顺带拿到自然尺寸）才把
+     `.is-front` 交过去，旧层淡出后清空 src。换图不再有白帧，也不会残留旧图。
+
+自测覆盖：`map-viewer.spec`（默认 16:9 几何常量）、`map-alarm.spec`（切换后
+`.map-canvas img.is-front` 才是正射图）、`scene.spec`（等就绪才切）。全量 40 文件
+1045 例通过。
+
+### 六点六再补：本地兜底图的比对与自更新（2026-11-18 晚）
+
+需求：**每次取到接口图先和「本地兜底图」比，一样就继续用兜底图、不重写；不一样就
+立刻换成新图，并把兜底图替换掉**，下次刷新以最新那张为基准。
+
+#### 兜底图为什么不放在 `public/img`
+
+`public/img/site-map.webp` / `site-flat.webp` 是**构建产物**，静态站运行时没有任何
+办法写回自己的发布包（GitHub Pages 上更是只读）。所以「本地兜底图」只能落在浏览器
+侧，用 IndexedDB 存 Blob（`utils/sceneCache.ts`）：
+
+| 项 | 值 |
+| --- | --- |
+| 库 / 版本 | `xyc-scene` / `1` |
+| 对象仓库 | `shots`（keyPath 无，key 就是 `'2d'` / `'3d'`） |
+| 记录 | `{ blob, hash, savedAt }` |
+| 容量 | 两张 PNG 合计约 7MB，按 key 覆盖写，不会越攒越多 |
+
+`localStorage` 不行：3.8MB 单张、上限 5MB、只能存字符串，base64 一膨胀就顶满配额，
+还会卡主线程。
+
+#### 一次刷新的完整流程（`stores/scene.ts`）
+
+1. `hydrate()`：先从 IndexedDB 读兜底图，有就**直接上屏**（状态 `cache`）——
+   接口那 3MB 还没到时，画面已经是上次最新那张，不是打包老图。
+2. `fetchSceneBlob()` 取接口图 → `fingerprint()` 算指纹。
+3. 指纹与当前这张（`hashes[type]`，冷启动时由兜底图填充）**相同** →
+   不建新 objectURL、不换 `src`、**不写库**。`MapViewer` 的 watcher 不触发，
+   画面一帧都不动。
+4. **不同**（或本机没有兜底图）→ 新图 `warm()` 解码后立刻上屏、`revoke` 旧的
+   objectURL，再把新图 `writeSceneCache()` 覆盖成兜底图。
+5. 接口 404 / 空体 / 断网 → 画面保持不动（兜底图或本次会话旧图），状态记
+   `empty` / `error`；只有一张都没有时 `src()` 才回落到打包图。这类状态不阻挡
+   下一次 `load()` 重试。
+
+`MapLand` 的「二维 / 三维」在 `settled()`（含 `cache`）时直接翻过去，同时
+`void scene.load(type)` 后台确认最新：回同一张则零跳变，回新图走双缓冲平滑换。
+
+#### 指纹为什么要自己算
+
+`crypto.subtle` **只在安全上下文存在**，而本项目日常要在局域网
+`http://192.168.x.x:5173` 真机调（非安全上下文里它是 `undefined`）；完整 SHA-256
+还得把 3.8MB 全读一遍。这里取**首 / 中 / 尾各 64KB** 做双通道 FNV-1a（共 192KB，
+同步完成），足以区分「同一次上传」与「重新截的一张」。
+
+判等口径是**字节级**：现场重新截的图即使画面看着一样，PNG 里也会带新的时间戳 /
+差分编码，字节不同 → 走换图分支。宁可多换一次，也不让画面停在旧取景上。
+
+#### 降级与边界
+
+- 没有 IndexedDB（隐私模式 / 老 WebView）：退化成**会话内存**，本次刷新仍按缓存
+  逻辑跑，只是关掉页面就丢；`writeSceneCache` 如实返回 `false`。
+- `open()` 1.5s 超时、读写事务 1.2s 超时：库被别的标签页锁住 / 磁盘满时不能把
+  底图加载吊死，超时按「没有兜底图」继续。
+- 记录被写坏（没有 blob / 空 blob / 没有 hash）一律当作「没有兜底图」。
+- **字节解不出图也算失败**：`warm()` 返回 `ok / bad / unknown` 三态，只有
+  `decode()` **明确 reject** 才判 `bad` —— 这张既不上屏也不落盘（否则下次刷新
+  会以一张打不开的图当基准）；没有 `decode`、或 1.2s 内没结果都算 `unknown`，
+  照常使用（`<img>` 自己还会再解一次，不能因为测不出来就丢正常图）。
+- 清站点数据、换浏览器或换设备 → 回到打包图，随后第一次成功取图会重新建立兜底。
+- ⚠️ 兜底图只存在**本机这个浏览器**里，不是全项目共享；它保证的是「同一台设备
+  刷新时不跳」，不是「所有人看到同一张」。
+
+自测覆盖：`scene.spec`（同图不换不写 / 换图覆盖 / 接口失败用兜底 / 首次落盘 /
+reset 后重新 hydrate）、`scene-cache.spec`（假 IndexedDB 走通真实读写路径 +
+无库降级）。全量 `npm run build` 通过。
+
+---
+
+## 六点七、视频监控：画面按钮、播放联动与历史抓拍入口（2026-11-18）
+
+### 一、画面区三颗控件（照设计稿 `#camPlayerStage` 还原）
+
+| 控件 | 位置 | 尺寸 / 圆角 | 底色 | 行为 |
+| --- | --- | --- | --- | --- |
+| `.cam-play`（播放键） | 画面正中 | 68×68、3px 白圈、50% | `rgba(255,255,255,.08)` | 有流→播/停；无流→重取一帧 |
+| `.cam-stage-btn`（历史抓拍） | 画面右上 8px | 28px 高、`r-6`、`0 10px` | `rgba(11,18,32,.62)` + `blur(8px)` | 切到历史抓拍视图 |
+| `.home-full`（全屏 / 退出全屏） | 同上，间距 6px | 22px 高、`r-8` | `rgba(8,18,32,.55)` | 进 / 退横屏 |
+
+- **文字标签仍然不叠**：`.cam-time`（时间戳）与点位名一个都不放 —— 相机 OSD 已经把
+  时间刻在画面里，点位名在顶栏。按钮只占一圈，不挡人挡设备。
+- 设计稿这两颗按钮本来**不一样高**（28 / 22），刻意不统一：统一了观感和设计稿对不上。
+- 交互态：`hover` 加浓底色、`active` 再深一档（**不写 `transform`**，`:active` 里位移
+  会丢 click，`motion-perf.spec` 守着）、`focus-visible` 走全站 `--blue-2` 描边、
+  快照取图中播放键 `disabled`。
+- 横屏时顶栏浮成渐变遮罩（z-index 3），`.cam-stage-acts` 下移到 `top:52px` 否则被盖住
+  看得见点不到；窄屏（≤360px）内距与播放圈各收一档，仍 ≥44px 触控下限。
+
+### 二、播放键 ↔ 视频联动：为什么是「双模」
+
+**服务端没有视频流。** 2026-11-18 复核：
+
+- `/api/video/snapshots/channels` 的返回只有 `channelId / name / status`，**没有任何流地址**；
+- `stream / live / play / hls / flv / webrtc / rtsp / snapshots/live`、`snapshots/history`、
+  `snapshots/list`、`snapshots/records`、`snapshots/count` 等 20 余条路径 **全 404（nginx）**；
+- `/openapi.json`、`/swagger.json`、`/v3/api-docs`、`/docs` 也没有（没有可发现的接口表）；
+- V2 Unity 包内同样搜不到 `rtsp/rtmp/ezviz/ys7/flv/m3u8`，`MonitorData.json` 只有一条空记录。
+
+所以播放键做成双模，**不假装**：
+
+1. `streamUrl` 有值才渲染 `<video>`（`data/cams.ts` 的点位 `stream` 字段，或 `.env`
+   里配 `VITE_CAM_STREAM_TEMPLATE=https://gw/.../{channelId}.live.flv`，八个点位一次接通）；
+2. 没有流 → 播放键 = 「重新取一帧」，无障碍名照实写「重新获取最新画面」。
+
+联动实现要点：
+
+- **状态以媒体元素为准**：`play / playing / pause / waiting / error` 五个事件推进
+  store 的 `playState`，按钮图形（三角 / 双竖条 / 转圈）与 `aria-label`（播放 / 暂停）
+  全部由它派生 —— 点击只是「请求播放」，不直接改按钮。
+- **连点不炸**：`play()` 返回的 promise 被紧随其后的 `pause()` 打断（`AbortError`）时
+  `catch` 吞掉，不当故障；`<video>` 用 `:key="camId"` 绑通道，切点位换元素而不是改
+  `src`（后者会把上一个通道的缓冲态带过来，正是「连点卡死」的老根因）；快照模式下
+  取图中按钮 `disabled`，连点只发一次请求（`stores.spec` 有断言）。
+- **流挂了回落快照**：`error` 事件 → `streamBroken=true`，画面区换回 `<img>`（不是留
+  一块黑），说明条写「直播流不可用 · 当前为定时快照」，播放键退回取帧模式。
+- 切点位 / 关层 / 登出都 `resetPlay()`，不把「在播」带到下一台相机。
+
+### 三、历史抓拍：入口已通，数据待接入
+
+- 按钮 `#btnCamShots`：文案「历史抓拍」、`aria-label="查看历史抓拍照片"`、
+  `aria-controls="camShotsView"`、`aria-expanded` 跟视图状态；图标是相册（`gallery`），
+  不再是刷新箭头。位置 / 尺寸 / 层级 / 圆角与原来那颗「刷新」完全一致。
+- 视图 `#camShotsView` 照设计稿：标题条（`历史抓拍` + `每天 3 张，点开查看照片`）→
+  日期芯片 `.cam-day` → 三列照片网格 `.cam-shot-grid`。与画面视图用 `.hide` 互斥
+  （不用 `v-if`：画面 `<img>` 一销毁，objectURL 的图要重建，退回来会闪白）。
+- **唯一数据接入点**是 store 的 `loadShots()`（`src/stores/cam.ts`，函数里有 ①②③ 三段
+  注释标好了）。返回的 `CamShot { id, thumb, url, at, channelId }` 一填，日期分组
+  （`shotDays`，按 `at` 倒序）、网格、空态判断全部自动成立，视图不用改。
+- 现状返回空列表 + 说明「历史抓拍接口尚未接入」，**不编造照片**；空态文案 +
+  `data-empty="cam-shots"` 便于定位。
+- 接口一旦提供（按天/按时段），只需在 `api/` 下加一个 fetch 并替换 `loadShots()` 中段。
+- 返回键三级：抓拍视图 → 横屏 → 关层。
+
+自测：`cam-player.spec` 23 例（含三颗控件就位、播放联动 5 例、历史抓拍入口 4 例）、
+`stores.spec` 48 例（含播放态 4 例、抓拍分组 2 例），`vue-tsc --noEmit` 与
+`npm run build` 通过。
+
+---
+
+## 六点八、流媒体地址全量迁移（对齐 V2 · 2026-11-18）
+
+### 一、V2 的证据链（全部来自反编译 + 线上文件核对）
+
+| 环节 | V2 实现 | 结论 |
+| --- | --- | --- |
+| CDN 根 | `StreamingAssets/CdnConfig.txt` = `http://120.26.34.95:9689` | 与爬架同源 |
+| 路径拼法 | `CdnHelper.GetHostServerURL(fn) = 根 + "/CDN/PC/" + fn` | 清单在 `/CDN/PC/monitorData.json` |
+| 清单加载 | `MonitorRequester.<LoadMonitorListFromCdnAsync>` → `GetHostServerURL("monitorData.json")` | 静态 JSON，免鉴权、无参数 |
+| 清单结构 | `[{ "type":"Null", "monitorName":"地磅全景", "videoPath":["rtsp://…"] }]` | **20 条，全部 RTSP** |
+| 地址拼法 | `rtsp://120.26.34.95:554/rtp/{deviceId}_{channelId}?originTypeStr=rtp_push` | deviceId = `42010500441188000001` |
+| 播法判定 | `UIPopCCTV.CheckUrlMode(url)`：`url.Contains("flv") ? PlayFlv : PlayRTSP` | 只有 FLV / RTSP 两种 |
+| RTSP 兜底 | `HttpFlv2RtspUtil.OpenFfmpeg` + `LinkParameter`（`ffmpeg`、`mediamtx`、`rtsp://localhost:8554/live`） | 桌面端本地起 ffmpeg 转 rtsp 给 mediamtx |
+| 萤石云（备用源） | `OpenYs7MonitorModel`：`https://open.ys7.com/api/lapp/token/get?appKey=&appSecret=`；`…/api/lapp/v2/live/address/get?accessToken=&deviceSerial=GG9271178&protocol=2&channelNo=&supportH265=1&quality=1&expireTime=300` | appKey `d0496fc7…` / appSecret `63e5d21b…`；**2026-11-18 实测返回 `{"meta":{"code":-1,"message":"未知错误"}}`，凭据已失效** |
+
+> 线上清单实测（2026-11-18）：`curl http://120.26.34.95:9689/CDN/PC/monitorData.json` 返回 20 条，
+> `type` 全为 `Null`，`videoPath` 全为 `rtsp://120.26.34.95:554/rtp/…`，无第二条备用地址。
+
+### 二、本项目落地
+
+| 文件 | 内容 |
+| --- | --- |
+| `src/api/config.ts` | 新增 `CDN_ORIGIN`、`CCTV_RTSP_ORIGIN`、`CCTV_DEVICE_ID`、`CCTV_FLV_TEMPLATE`、`CCTV_HLS_TEMPLATE`（后两个默认空） |
+| `src/data/cctv.ts` | `cctvStreamId()` / `cctvRtspUrl()`（与 V2 逐字同构）、`streamModeOf()`（照 `CheckUrlMode`）、`cctvPlayableUrl()`（网关模板）、`CCTV_V2_NAME`（20 条名称，按 channelId 对齐） |
+| `src/api/cctv.ts` | 清单取数：线上 CDN 优先（6s）→ 内置快照（8s）→ null；`parseMonitorList` 按 V2 字段名解析；`channelIdOfEntry` 从 `/rtp/{dev}_{ch}` 取通道号；`pickStreamUrl` 优先 flv、其次 m3u8、最后原址 |
+| `public/data/cctv.json` | 上述清单的**真实副本**（20 条），随站点发布，供 HTTPS 页面/断网时兜底 |
+| `src/stores/cam.ts` | 打开监控层时 `loadManifest()`（只试一次）；`playUrl` 解析顺序：点位 `stream` 覆盖 → 清单 flv/hls → 网关模板；`rtspUrl` 交出原始地址；`playMode` 判定 |
+| `src/components/overlays/CamPlayer.vue` | flv → mpegts.js（动态 import，MSE）；hls/other → 原生 `<video>`；只有 RTSP → 画面下方显示 `仅 RTSP` + 地址行（可选中复制），播放键退回「重新获取最新画面」 |
+| `src/data/cams.ts` | 删掉旧的 `camStreamUrl()` / `VITE_CAM_STREAM_TEMPLATE`（与 V2 清单重复的两套机制收敛成一套），`stream?` 只留作单点临时覆盖 |
+
+### 三、移动端能不能播（关键结论）
+
+**RTSP 在任何移动端浏览器里都播不了**，这是浏览器能力边界，不是前端写法问题：
+`<video>` 只认 mp4/HLS（iOS 原生）与 MSE 喂进去的 fMP4，没有任何移动浏览器实现 RTSP 客户端。
+
+所以「移动端能播」的前提是**服务端另开一路浏览器可消费的流**，前端已按下面两条接好：
+
+1. **HTTP-FLV**：配 `VITE_CCTV_FLV_TEMPLATE=https://<网关>/rtp/{streamId}.live.flv`
+   → 走 mpegts.js（已在依赖里），Android Chrome / iOS 17+ 可播；`{streamId}` = `{deviceId}_{channelId}`。
+2. **HLS**：配 `VITE_CCTV_HLS_TEMPLATE=https://<网关>/rtp/{streamId}/hls.m3u8`
+   → 原生 `<video>`（iOS 原生支持；Android 需再引 hls.js）。
+   模板里也支持 `{channelId}`。
+
+**当前实测（2026-11-18，本项目网络内）**：
+
+| 目标 | 结果 |
+| --- | --- |
+| `120.26.34.95:80 / :8080` | IIS 10.0（`/rtp/…live.flv`、`/index/api/getMediaList` 均 404） |
+| `120.26.34.95:554` | TCP 可连（RTSP），DESCRIBE 无响应/被网络策略挡；即使通，浏览器也用不了 |
+| `120.26.34.95:1935` | TCP 可连（RTMP），同样不是浏览器可播协议 |
+| `120.26.34.95:10000 / :8081` | TCP 可连但不响应 HTTP（非 ZLM 的 HTTP 端口） |
+| 萤石云 token | `code:-1`，凭据失效 |
+
+结论：**ZLM 的 HTTP-FLV/HLS 端口没有对外开**，所以现在移动端拿到的是「定时快照 + RTSP 地址说明」。
+让运维在 ZLMediaKit 上开放 HTTP 端口（默认 `http.port`，路径 `/rtp/{stream}.live.flv` 与
+`/rtp/{stream}/hls.m3u8`），再把地址填进上面任一环境变量，**不用改代码**即可在手机上出画面。
+
+### 四、自测
+
+`cctv.spec` 13 例（地址同构、播法判定、清单解析、通道匹配、线上→快照降级、内置快照校验）、
+`cam-player.spec` 24 例（含「只有 RTSP 时露出地址、不挂 `<video>`」与「有可播地址时不露该行」）、
+`stores.spec` 48 例；`vue-tsc --noEmit`、`npm run build` 通过。
+
+---
+
+## 六点九、视频流拉取与播放：把 V2 的生命周期搬到浏览器（2026-11-18）
+
+### 一、V2 的关键流程（反编译 + 线上清单核对）
+
+| 环节 | V2 实现 | 浏览器里的对应做法 |
+| --- | --- | --- |
+| 取地址 | `CdnHelper.GetHostServerURL("monitorData.json")` → CDN 静态清单，20 条 | `api/cctv.ts`：线上 CDN 6s → 内置快照 8s → null，**永不抛错** |
+| 判播法 | `UIPopCCTV.CheckUrlMode`：含 `flv` → `PlayFlv`，否则 `PlayRTSP` | `data/cctv.ts` 的 `streamModeOf()`，另认 `m3u8` |
+| 初始化 | `PlayFlv(url)`：给 Unity `VideoPlayer` 设地址 + `Prepare/Play` | `utils/flvStream.ts`：`createPlayer → attachMediaElement → load → play` |
+| 状态 | `VideoPlayerProgressController`：视频加载中 / 缓冲中 / 加载失败 | store `playState`：`buffering / playing / paused / error`，全部由媒体事件推进 |
+| 异常 | RTSP 失败时 `HttpFlv2RtspUtil` 起本地 `ffmpeg + mediamtx` 兜底（桌面才有） | 浏览器没有 ffmpeg：改成**退避重连 + 回落快照**，并把 RTSP 地址交给人 |
+| 销毁 | Unity 切场景 / 关面板时 `Release` 播放器 | `FlvStream.stop()/destroy()`：`pause → unload → detach → destroy` + 清定时器 |
+
+> V2 能播 RTSP 是因为它跑在桌面 Unity 里；浏览器没有任何 RTSP 客户端，
+> 所以本项目只认 HTTP-FLV / HLS，这一点在六点八已实测确认（ZLM 的 HTTP 端口未对外开）。
+
+### 二、落地：一个引擎 + 一处状态
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/utils/flvStream.ts`（新） | FLV 生命周期：连流、12s 无画面超时、2/4/6s 快速退避 + 每 10s 持续重连（**不设上限**）、卡死看门狗、四步释放 |
+| `src/stores/cam.ts` | `markConnecting()` / `markReconnecting()`；`playState` 仍是唯一状态源 |
+| `src/components/overlays/CamPlayer.vue` | 引擎状态 → store；关层 / 切点位 / 进后台 / 卸载时收连接；`showPlayBtn` 决定播放键显隐 |
+| `src/styles/app.css` | `.cam-frame` 绝对定位叠加 + `.is-veiled`（透明度隐藏，不用 `display:none`） |
+
+关键实现点：
+
+1. **打开即起流**（不再需要先点一下）：`muted + playsinline` 允许自动播放；
+   被策略拦下时进入 `paused` 态并提示「点击播放键开始播放」，不谎报在播。
+2. **状态只由媒体事件推进**：`play / playing / pause / waiting / error` → store；
+   `play()` 的 resolve **不算**在播（数据没到它也会 resolve）。
+3. **失败一律自动重连，不设上限**（2026-11-18 三改）：
+   - FLV：`mpegts ERROR` / `LOADING_COMPLETE` / 12s 无帧 / `<video> error` /
+     出过画面后 12s 无新数据（看门狗）统一进 `fail()`，按 2s→4s→6s 快速退避，
+     之后**每 10 秒一次持续重连**，直到流回来或画面被关掉；连续失败会把
+     「已连续重试 N 次，正在持续自动重连」写进说明条，但状态仍是 `reconnecting`，
+     **不是 `error`** —— 这时播放键不出现，用户不需要（也不该）去点；
+   - 只连**当前这一路地址**，绝不换源；连上就自动续播（`playing` → `markPlaying`）；
+   - 只有「浏览器没有 MSE」「模块加载被环境彻底阻断」这类不可恢复的情况才报 `error`；
+   - HLS / 直连：没有重连能力，`error` 回落快照，播放键文案变「重新连接直播流」，
+     点击时**换一个 `<video>` 元素**（`:key` 带 `mediaNonce`）重新拉。
+4. **重连期间画面退回快照**，但 `<video>` 用 `opacity:0` 蒙起来而**不销毁** ——
+   移动浏览器对 `display:none` 的视频会停解码，回来永远等不到 `playing`。
+5. **播放键只在「需要人」时出现**（`showPlayBtn`）：播放中与重连中都不画，
+   避免遮挡画面、避免被当成「暂停 / 重新连接」反复点；只在快照模式、
+   自动播放被拦（`paused`）、环境不可恢复（`error`）时出现。
+6. **单实例**：`FlvStream` 的 `connect()` 走单飞（`pending` 折成同一个 Promise），
+   同一路重复 `start()` 直接复用；组件侧用 `flvKey = camId|url` + 元素身份做幂等，
+   切点位 / 清单晚到 / 前后台切换不会反复 detach-attach（现场表现是画面黑一下），
+   也不会让两只 mpegts 播放器抢同一个 `<video>`。
+7. **用户意图优先**：`wantPlay` 记住「想看 / 自己按了暂停」，重连成功只在想看时自动播；
+   进后台再回来重建实例时，通过 `autoplay` 把这个意图带过去。
+8. **释放三处必到**：关层、切点位、页面进后台（`visibilitychange`）。
+   FLV 一路 1~4Mbps，切一次点位多挂一根连接，手机上很快就能看出来；
+   关层同时 `resetPlay()` 清状态，重连定时器随 `destroy()` 一起清掉。
+9. **网络恢复立刻重连**：监听 `online`，不等 10 秒退避 —— 手机上从电梯/地下室
+   出来时这是唯一的信号。
+
+### 三、移动端能不能播（结论不变，但链路已就绪）
+
+浏览器能力边界：**任何移动端浏览器都不能直连 RTSP**。所以手机要出画面，服务端必须
+另开一路 HTTP-FLV 或 HLS。前端已经把开关留好，**不用改代码**：
+
+```bash
+# HTTP-FLV（推荐：Android Chrome / iOS 17+ 都能播，走 mpegts.js）
+VITE_CCTV_FLV_TEMPLATE=https://<网关>/rtp/{streamId}.live.flv
+# 或 HLS（iOS 原生可播；Android Chrome 还需 hls.js）
+VITE_CCTV_HLS_TEMPLATE=https://<网关>/rtp/{streamId}/hls.m3u8
+```
+
+`{streamId}` = `42010500441188000001_{channelId}`，与 V2 清单地址里的那一段一致。
+2026-11-18 复测：`120.26.34.95` 的 80 / 8080 / 9689 全是 404（IIS），8000 / 10000
+不响应 HTTP，554 / 1935 是 RTSP / RTMP。**唯一待办是让运维在 ZLMediaKit 上开 HTTP 端口。**
+
+### 四、自测
+
+- `tests/unit/flv-stream.spec.ts`（15 例）：起播参数、超时收口、2s 退避、
+  出画面后计数归零、**快速段用完转持续重连（不停止、不换源、流回来自动续播）**、
+  用户暂停后不再重连、暂停掐掉待执行的重连、**卡死看门狗**、
+  重复 `start` / 重连与退避撞车只保留一只播放器、无 MSE 直接报错、自动播放被拦、
+  `stop` 四步释放、`destroy` 解绑、手动重试清计数。
+- `tests/unit/cam-player-flv.spec.ts`（8 例）：打开即起流、出画面切直播态、
+  断流回落快照且元素不销毁、**播放中/重连中都不出现播放键**、
+  **重连成功自动续播且地址不变**、关层即释放、切到无流点位收掉旧连接、
+  进后台断流/回前台接上。
+- `cam-player.spec` 24 例（原生流失败改为「元素留着 + 蒙起来 + 播放键=重新连接」）、
+  `stores.spec` 48、`cctv.spec` 13、`stage5` 21、`tokens/guards/motion-perf` 全绿；
+  `vue-tsc --noEmit`、`npm run build` 通过（mpegts 仍是独立 chunk，272KB 只在真播流时加载）。
+
+---
+
+## 六点十、视频流地址按现场模板全量接通（2026-11-18）
+
+### 一、现场给的模板（逐字，不可改）
+
+```
+http://120.26.34.95:9092/rtp/42010500441188000001_34020000001320000005.live.flv?originTypeStr=rtp_push
+```
+
+| 片段 | 值 | 说明 |
+| --- | --- | --- |
+| 协议 / 域名 / 端口 | `http://120.26.34.95:9092` | ZLMediaKit 的 HTTP-FLV 端口（`:554` 是给桌面客户端的 RTSP） |
+| 路径前缀 | `/rtp/` | ZLM 的国标推流应用名 |
+| 流 ID | `42010500441188000001_{channelId}` | `CCTV_DEVICE_ID` + 20 位通道号 |
+| 后缀 | `.live.flv` | 少一个字就变成别的资源 |
+| 查询参数 | `?originTypeStr=rtp_push` | **不能省**，少了 ZLM 会当回放请求 |
+
+实测（`curl -r 0-4000`）：`200 video/x-flv`，正文以 `FLV\x01` 开头，
+`Server: ZLMediaKit(git hash:1e6a896/…, build 2025-12-20)`，
+且回 `Access-Control-Allow-Origin: <请求 Origin>` + `Allow-Credentials: true`
+→ **浏览器可直连，不需要同源反代**。
+
+> **该端口不提供 TLS**（`https://120.26.34.95:9092` 连接失败）。当前站点按 HTTP
+> 部署（`npm run deploy:http`），所以没有混合内容问题；若将来改回 HTTPS，
+> 这条流会被浏览器拦掉，届时需要给 ZLM 配 `ssl` 或用 HTTPS 网关中转。
+
+### 二、改动的文件与入口位置
+
+| 文件 | 位置 | 内容 |
+| --- | --- | --- |
+| `src/api/config.ts` | 新增 `CCTV_FLV_ORIGIN` | 默认 `http://120.26.34.95:9092`，`VITE_CCTV_FLV_ORIGIN` 可覆盖 |
+| `src/data/cctv.ts` | 新增 `cctvFlvUrl()` | **唯一的地址拼装点**：`{origin}/rtp/{streamId}.live.flv?originTypeStr=rtp_push` |
+| `src/data/cctv.ts` | `cctvPlayableUrl()` | 优先级改为 env FLV 模板 → env HLS 模板 → **默认 `cctvFlvUrl()`** |
+| `src/data/cctv.ts` | 新增 `CCTV_CHANNELS` | 现场核对表 20 条（channelId + 名称 + 当日实测有无流），`CCTV_V2_NAME` 由它派生 |
+| `src/data/cams.ts` | `CamPoint.stream` 注释 | 说明常态留空，地址由模板逐条拼；该字段只做单点覆盖 |
+| `src/stores/cam.ts` | `playUrl` 注释 | 写明三级优先级，并解释为什么跳过 rtsp |
+| `src/api/scaffold.ts` | `CDN_BASE` | 去掉硬编码，改为引用 `CDN_ORIGIN`（同一台 CDN 只留一处定义） |
+| `.env.example` | 新增小节 | 记录 `VITE_CCTV_FLV_ORIGIN` 与两个模板覆盖项的用法 |
+
+调用方式、数据结构、页面展示**一处未动**：`cam.playUrl / playMode / isLive` 的
+签名不变，`CamPlayer.vue` 一行没改，上墙的仍是 `CAM_POINTS` 那 8 个点位。
+
+### 三、20 个通道的替换结果
+
+地址按模板逐条生成，只换中间那段 20 位通道号。当日实测有无流：
+
+| channelId | 名称 | 当日 FLV |
+| --- | --- | --- |
+| 34020000001310000001 | 监控A | ✅ |
+| 34020000001310000002 | 监控B | ✅ |
+| 34020000001310000003 | 地磅全景 | ✅ |
+| 34020000001320000001 | 4#门安全通道门禁监控 | ✅ |
+| 34020000001320000002 | 场内 | ✅ |
+| 34020000001320000003 | 2#门监控 | ⚠️ 时有时无 |
+| 34020000001320000004 | 4#门外监控 | ⚠️ 按需拉流后恢复 |
+| 34020000001320000005 | 材料堆场 | ✅ |
+| 34020000001320000006 | 2#门监控 | ✅ |
+| 34020000001320000007 | 4#门监控 | ⚠️ 按需拉流后恢复 |
+| 34020000001320000008 | 3#门外监控 | 未确认 |
+| 34020000001320000009 | 场内 | 未确认 |
+| 34020000001320000010 | 1#门安全通道门禁监控 | 未确认 |
+| 34020000001320000011 | 1#门监控 | 未确认 |
+| 34020000001320000012 | 5#门监控 | 未确认 |
+| 34020000001320000013 | 5#门外监控 | 未确认 |
+| 34020000001320000014 | 钢筋加工棚 | ⚠️ 按需拉流后恢复 |
+| 34020000001320000015 | 安全讲台 | 未确认 |
+| 34020000001320000016 | 4#塔吊 | ✅ |
+| 34020000001320000017 | 2#塔吊 | ⚠️ 按需拉流后恢复 |
+
+**上墙 8 个点位的对应关系**（`data/cams.ts`，顺序照设计稿）：
+
+| 点位 | channelId | 生成的流地址（后缀统一） |
+| --- | --- | --- |
+| 2#门监控1 | …13200000003 | `…_34020000001320000003.live.flv?originTypeStr=rtp_push` |
+| 2#门监控2 | …13200000006 | `…_34020000001320000006.live.flv?originTypeStr=rtp_push` |
+| 4#门监控 | …13200000007 | `…_34020000001320000007.live.flv?originTypeStr=rtp_push` |
+| 4#门外监控 | …13200000004 | `…_34020000001320000004.live.flv?originTypeStr=rtp_push` |
+| 地磅全景 | …13100000003 | `…_34020000001310000003.live.flv?originTypeStr=rtp_push` |
+| 钢筋加工棚 | …13200000014 | `…_34020000001320000014.live.flv?originTypeStr=rtp_push` |
+| 2#塔吊 | …13200000017 | `…_34020000001320000017.live.flv?originTypeStr=rtp_push` |
+| 4#塔吊 | …13200000016 | `…_34020000001320000016.live.flv?originTypeStr=rtp_push` |
+
+### 四、「首次 404 / 超时」是正常的，不是配错了
+
+ZLM 这台是**按需拉流**（请求进来才去国标设备拉 RTSP 源）。实测同一批通道
+隔几分钟再打，404 的会变 200、200 的会变 404：
+
+- 第 1 轮：`13200000004 / 14 / 17` 全 404；第 2 轮：全部 200；
+- `13200000003` 第 2 轮 404、第 3 轮连续 3 次连接超时（源端卡住）；
+- `13200000007` 首轮 404，之后连续 3 轮稳定 200。
+
+所以**不能把 404 当「永久不可用」**：`utils/flvStream.ts` 的 2s/4s/6s 退避重连
+正好覆盖这段拉流时间，重试成功后画面自然出来。这也是为什么播放键在 error 态
+仍允许「重新连接直播流」，而不是永久退回快照。
+
+### 五、自测
+
+`cctv.spec` 17 例（新增 5 例：FLV 地址与现场模板逐字同构、20 通道全部可拼且
+域名/端口/前缀/参数一致、默认可播、名单 20 条不重复）、`stores.spec` 48、
+`cam-player.spec` 24、`cam-player-flv.spec` 6、`flv-stream.spec` 10 全绿；
+`vue-tsc --noEmit`、`npm run build` 通过（mpegts 仍是独立 chunk，272KB 按需加载）。
+
+> 组件/状态机用例里把 `cctvPlayableUrl` 压成空串（`vi.mock('@/data/cctv')`），
+> 这样「快照模式」「切到无流点位」这些场景仍可构造；真实拼法只在 `cctv.spec` 里钉。
+
+## 六点十一、全设备回到 FLV + 撤掉画面内播放键（2026-11-18 二次定稿）
+
+### 一、结论
+
+现场确认：**不做按机型分流，所有设备统一走 HTTP-FLV**（`cctvPlayableUrl()`），
+并且**画面里不再出现播放键**。上一版按机型切 HLS 的实现已整段撤回：
+
+| 已删除 | 说明 |
+| --- | --- |
+| `CCTV_HLS_ORIGIN` | 配置项一并删掉 |
+| `cctvHlsUrl()` / `cctvPreferredUrl()` | 地址拼装回到只有一个出口 `cctvPlayableUrl()` |
+| `utils/env.ts` 的 `preferHls()` | 不做协议分流 |
+| `CamPlayer.vue` 的 HLS 分支 | 自动起播、每 3s `load()`、`hlsTimer` 全部移除 |
+
+保留 `isAppleMobile()` 与 `stripRetryCount()`：手机端**仍然不显示重连计数**
+（删计数的范围后来又扩到「所有手机」，见六点十二）。播放键则对所有设备一视同仁地撤掉。
+
+### 二、播放键：整颗撤掉，能力交给「点画面」
+
+`showPlayBtn` 恒为 `false`（模板那段留着当开关，将来某类设备必须点一下才能起播时
+改一行就能放回来）。播放 / 暂停 / 立即重连三种能力改由 `#camPlayerStage` 的
+`onStageClick` 承担 —— 内部就是原来的 `onPlay`，语义没变：
+
+| 当前状态 | 点画面 |
+| --- | --- |
+| 没有可播地址（只有 RTSP / 没清单） | 重新取一帧快照（取图中再点会被 `busy` 挡掉，不堆请求） |
+| `reconnecting` / `error` | 立刻重连，不等退避（`flv.retry()` 清零计数） |
+| 播放中 | ~~暂停~~ → **什么都不做**（暂停这一条已撤销，见六点十二） |
+| 已暂停 | 继续播 |
+
+右上角两颗控件（历史抓拍 / 全屏）点击时冒泡到画面区，`onStageClick` 用
+`target.closest('button, a')` 放行，不会「点全屏顺带把画面暂停」。
+
+### 三、无限自动重连（不变）
+
+`utils/flvStream.ts` 本来就是**不设上限**：快速段 2s / 4s / 6s，此后每 10s 一次
+持续重连，直到流回来或画面被关掉；网络失败**永不进 `error`**（error 只留给
+「没有 MSE / 播放器模块加载失败」这类重试无意义的情况）。`wantPlay` 记住用户意图：
+自己按过暂停就不再后台拉流，重新打开 / 切点位则回到「想看」。
+
+### 四、手机端为什么仍然要裁掉计数（范围后来扩到所有手机，见六点十二）
+
+iPhone Safari 没有 mpegts 需要的 `MediaSource`（`ManagedMediaSource` 也不被认），
+`isSupported()` 为假 —— FLV 在 iPhone 上**必然**连不上，说明条会一直刷
+「第 N/3 次」「已连续重试 3 次」，而且永远等不到「连上」把它盖掉。
+所以 `stampText` 在苹果端统一过 `stripRetryCount()`，把次数与倒计时全部裁掉，
+只留「出什么事了 + 正在自动重连」；其他设备照旧显示引擎原话（排查有用）。
+
+> 实测记录（留档，当前**不使用**）：同一台 ZLM 的
+> `http://120.26.34.95:9092/rtp/{streamId}/hls.m3u8` 返回 `200
+> application/vnd.apple.mpegurl`，切片 `ts`、`TARGETDURATION` 约 10s，
+> Safari 原生可播。将来若要让 iPhone 真正出画面，这是现成的一条路
+> （代价是 4~10s 延迟），但需要现场先确认。
+
+### 五、自测
+
+`env.spec` 9 例（机型判定 5 + 文案去计数 4）、`cam-player.spec` 25、
+`cam-player-flv.spec` 10（新增苹果端去计数、其他设备保留原话两条）、
+`cctv.spec` 17、`flv-stream.spec` 15、`stores.spec` 49 全绿；
+`vue-tsc --noEmit`、`npm run build` 通过，产物里已无任何 `hls.m3u8`，
+`120.26.34.95:9092` 与 `live.flv?originTypeStr=rtp_push` 仍在。
+
+## 六点十二、手机端去计数扩到「所有手机」+ 点画面不再暂停（2026-11-18 三改）
+
+### 一、背景：现场三个反馈
+
+1. 换一台安卓手机看，说明条又开始跳「2 秒后自动重连（1/3）」—— 上一版只对
+   苹果特判，等于「换台设备就又露出来」；
+2. 手机上点一下画面，视频**停了**；
+3. 掉线后要能一直自己连回来（这条本来已满足，本轮复验）。
+
+### 二、去计数：判定从 `isAppleMobile()` 换成 `isMobileDevice()`
+
+`src/utils/env.ts` 新增 `isMobileDevice(ua?, touchPoints?)`，三层都要认，
+缺一条就会漏掉一整类设备：
+
+| 来源 | 覆盖 |
+| --- | --- |
+| `isAppleMobile()` | iPhone / iPod / iPad；iPadOS 13+ 自报 `Macintosh` 时靠 `maxTouchPoints > 1` |
+| UA 关键字 | `Android`、`Mobile`、`HarmonyOS`、`OpenHarmony`、`Windows Phone`、`IEMobile`、`BlackBerry`、`Opera Mini`、`Kindle`、`Silk`、`Symbian`、`Tablet` |
+| `(pointer: coarse)` + 触点 > 0 | 自报桌面 UA 的移动浏览器 / App 内置 WebView |
+
+判定**故意做宽**：它只决定一句话里带不带数字，判宽了没有任何副作用；
+判窄了就会出现「这台手机又露计数」。组件里在 `setup` 时算一次
+（`const isPhone = isMobileDevice()`），UA 在页面生命周期里不会变，不做响应式。
+
+桌面继续保持引擎原话（`2 秒后自动重连（1/3）`）—— 排查时这是有用的信息。
+
+### 三、点画面为什么会让视频暂停，已经改掉
+
+根因就在组件里，与浏览器无关：`#camPlayerStage` 的 `onStageClick` → `onPlay`，
+而 `onPlay` 的兜底分支是「在播就 `pause()`」—— 那是播放键时代的交互
+（播/停切换）。按钮撤掉后能力挂到整块画面上，于是「点画面 = 暂停」。
+手机上手指落在画面里极其常见（误触、想看清一点、滑动没成），
+一停画面就定在最后一帧，看着像卡死。
+
+改法：`onPlay` 只做「加法」，**永不暂停**：
+
+| 当前状态 | 点画面 |
+| --- | --- |
+| 没有可播地址（只有 RTSP / 没清单） | 重新取一帧快照（取图中再点被 `busy` 挡掉） |
+| `reconnecting` / `error` | 立刻重连（`flv.retry()`，不换源、不新建第二条连接） |
+| 已暂停（自动播放被策略拦下 / 系统停掉） | 继续播 |
+| **正在播** | **什么都不做**（判 `video.paused`，不是判 `playState`） |
+
+连带一处必要修正：`applyStreamState` 的 `case 'paused'` 不再把 `wantPlay` 置 false。
+界面上已经没有「暂停」这个动作，能走到 paused 的只剩「自动播放被策略拦下」，
+若此时清掉播放意图，之后的断流就**不会重连**了 —— 与「掉线无限重连」直接冲突。
+现在只把 paused 记进 store 让说明条说实话，重连意图保持不变。
+
+### 四、无限重连复验（未改动，确认仍然成立）
+
+`utils/flvStream.ts` 的 `fail()` 只有两种出口：
+
+- `attempt < fastRetries`：2s / 4s / 6s 三次快速退避，状态 `reconnecting`；
+- 否则：`slow = true`，每 `slowRetryDelay`（10s）再连一次，**永不停止**，
+  直到 `playing`（自动续播、不换源）或 `stop()`/`destroy()`（关层、进后台、切换）。
+
+网络类失败（`ERROR`、`LOADING_COMPLETE`、12s 首帧超时、12s 无数据看门狗、
+`<video> error`、动态 `import('mpegts.js')` 失败）**全部走 `fail()`**，都不会进 `error`。
+`error` 只留给 `isSupported()` 为假（没有 MSE，重试一万次也没画面）。
+另有 `window online` 监听：网络恢复时立刻重连，不等那 10 秒。
+
+### 五、自测
+
+- `env.spec` 14 例（新增 `isMobileDevice` 五组：苹果 / 安卓手机与平板 /
+  鸿蒙与自带 WebView / 桌面不误判 / 读 `navigator`）；
+- `cam-player-flv.spec` 新增 4 例：`播放中点画面不暂停（pause 调用 0 次、连接仍 1 条）`、
+  `重连中点画面 = 立即重连（元素不换、地址不变、存活连接仍 1 条）`、
+  `安卓手机同样不出现次数`、`桌面保留原话`；
+- `cam-player.spec` 把「播放中连点 = 播/停切换」改成「连点不暂停、不重复起流」；
+- 全量 45 个 spec 文件 44 通过（唯一红的是 `patrol.spec` 既有的测试隔离问题），
+  `vue-tsc --noEmit`、`npm run build` 通过。
+
+## 六点十三、视频链路复核 +「暂停 / 断流」双通道修复（2026-11-19）
+
+现场反馈：iPhone 上看着看着就断、播放不连续，**点一下屏幕才回来**。
+按采集 → 传输 → 解码 → 播放四段复核，结论是前三段没问题，问题全在播放层的
+状态判定上。
+
+### 一、四段链路复核
+
+| 段 | 实际链路 | 复核结论 |
+| --- | --- | --- |
+| 采集 | 相机 RTSP → ZLMediaKit 按需拉流 | 正常。ZLM 按需拉流会 404↔200 翻转，属于预期；前端靠重连吃下 |
+| 传输 | `:9092/rtp/{dev}_{ch}.live.flv?originTypeStr=rtp_push`（HTTP-FLV 长连接） | 正常。实测 200 + `video/x-flv` + `FLV\x01` 魔数 + `ACAO` 回显 |
+| 解码 | mpegts.js → MSE | **参数偏激进**：只开 `liveBufferLatencyChasing` 不给上下限，弱网时反复 seek → 花屏 / 跳帧 / 声音断续，正是「播放不连续」 |
+| 播放 | `FlvStream` + `<video>` | **两处致命判定**，见下节 |
+
+### 二、根因（都在 `utils/flvStream.ts`）
+
+**① `play()` 被拒 = 被判成「用户不想看」**
+
+```ts
+// 旧：doConnect() 里 await p.play() 失败且未出画
+this.wantPlay = false          // ← 把「环境拒绝」记成「用户不想看」
+this.clearTimers()
+this.emit('paused', '点击播放键开始播放')
+```
+
+`wantPlay` 变 false 之后，`fail()` 里有这道早退：
+
+```ts
+if (!this.wantPlay) { this.emit('paused', '已暂停'); return }   // 不排重连
+```
+
+于是「无限重连」在这台设备上实际失效 —— 不是次数用完，是根本没进队列。
+而 iOS 上元素一旦被系统暂停过，无手势的 `play()` 大概率被拒，所以必然走到这里。
+
+**② 看门狗见了 `paused` 直接返回**
+
+```ts
+// 旧：checkIdle()
+if (this.video.paused) { this.lastDataAt = Date.now(); return }
+```
+
+系统把 `<video>` 暂停后（来电、锁屏、切后台、控制中心、低电量、拔耳机），
+看门狗每 2 秒进来一次、每次刷新时间戳然后返回：既不判卡死，也不尝试恢复。
+两条路同时堵死 → 画面定格在最后一帧，只有手指点一下才动。
+
+> 用户看到的「点击后重新连接」，其实多半只是一次 `play()`，不是重连。
+
+### 三、修复：拆成两条通道
+
+| 现象 | 走哪条 | 行为 |
+| --- | --- | --- |
+| 连接真的断了（ERROR / 超时 / 看门狗判卡死） | `fail()` | 2s / 4s / 6s → 每 10s，**不设上限**，不换源 |
+| 连接还在、只是停着（系统暂停 / 策略拒绝） | `scheduleResume()` | 只重试 `play()`，1/2/3/4s（封顶 5s），**不 teardown、不新建播放器、不改 url** |
+
+具体改动：
+
+- `wantPlay` 恢复为「用户意图」语义：**只有 `pause()` / `stop()` 能改**；
+  策略拒绝只记「暂时受阻」，不再改写意图。
+- 新增 `scheduleResume()` / `clearResume()` / `resumeTries`：恢复通道，
+  连续 `resumeMaxTries`（默认 4）次失败才转 `fail()` 重连（那时多半是解码管线废了）。
+- 新增 `<video>` 的 `pause` 监听：`started && wantPlay && hasFrame` 就排恢复。
+- 看门狗改判：`paused` 且还想看 → 先排恢复；用户真暂停（`wantPlay=false`）才跳过。
+- 新增 `suspend()` / `resume()`：页面切前后台用。暂停但**保留连接与意图**，
+  回来 `play()` 直接续，不重建、不黑屏、不需要手势。
+- mpegts 追帧加上下界：`liveBufferLatencyMaxLatency: 3.0`、
+  `liveBufferLatencyMinRemain: 0.5`，避免追帧过猛反复 seek。
+
+组件侧（`CamPlayer.vue`）：
+
+| 位置 | 旧 | 新 |
+| --- | --- | --- |
+| `onPlay`（点画面） | 重连中调 `flv.retry()`（拆连接重建） | **重连中什么都不做**；只有 `error` 才 retry |
+| `onMediaPause` | 一律 `markPaused()` | FLV 时改 `markReconnecting('画面恢复中…')`，不谎报「已暂停」 |
+| `onVisibility` | hidden 立刻 `destroyStream()` | 先 `suspend()`，超过 30s 才释放；visible 时 `resume()` |
+
+### 四、怎么验证
+
+**现场（手机）**
+
+1. 打开任意点位，等画面出现，说明条应为「现场画面 · 直播中」；
+2. 下拉控制中心再收起 → 不应断流；即使断了也应在几秒内自己回来，**不用点屏幕**；
+3. 锁屏 10s 再解锁 → 同上；锁屏超过 30s 再回来 → 会重建一次，仍不需要点；
+4. 飞行模式开 20s 再关 → 说明条出现「正在自动重连」，恢复后自动续播；
+5. 全程点画面：不应暂停、不应黑一下、不应出现「重新连接」；
+6. 说明条上不应出现任何次数 / 倒计时（手机端统一裁掉）。
+
+**单测**
+
+- `flv-stream.spec`（17 例）：新增「自动播放被拦自己恢复且不重建连接」、
+  「系统暂停后自己恢复」「恢复连续失败转重连且仍无限」「挂起再恢复连接不变」；
+- `cam-player-flv.spec`（15 例）：新增「重连中点画面什么都不做」、
+  「系统暂停说明条写恢复中」、「进后台先挂起」「后台超 30s 才释放」；
+- `cam-player.spec` / `stores.spec` / `cctv.spec` / `env.spec` 全绿。
+
+### 五、边界情况
+
+- **iOS 一直不给手势**：恢复通道会一直试（4 次后转重连，再 4 次…），
+  界面上是「正在自动重连」，不会假装在播。真起不来时用户点一下仍然有效（那是手势）。
+- **后台被系统冻结**：定时器在后台会被节流，30s 释放可能延后到回前台才执行；
+  代码里判了 `document.hidden`，回来就不会误销毁。
+- **网络恢复事件**（`online`）仍走 `retry()`：那是真断网，重建连接是对的。
+- **快照兜底不变**：断流期间画面让给最近一帧快照，重连成功切回直播。
+- **不做按机型分流**：所有设备同一条链路、同一套参数。
+
+
+## 六点十四、主屏安装与独立运行（iOS 18 + 安卓各机型，2026-11-19）
+
+目标：iPhone iOS 18 添加到主屏幕后**独立窗口**运行；小米 / 华为 / OPPO / vivo
+等安卓机型同样能装、能独立开、图标和启动画面正常。
+
+### 一、原来的缺口
+
+| 缺什么 | 后果 |
+| --- | --- |
+| `<meta name="apple-mobile-web-app-capable">` | iOS 点主屏图标仍**在 Safari 里带地址栏**打开，不是独立窗口 |
+| `apple-mobile-web-app-status-bar-style` | 状态栏与自绘色条（`--status-h`）关系不确定，顶部可能多出一截 |
+| `apple-mobile-web-app-title` | 主屏名取 `<title>`，被截成「向阳村项目智能建造…」 |
+| `apple-touch-startup-image` | iOS 独立启动**白屏 1~2 秒**（iOS 不读 manifest 的 background_color） |
+| manifest 的 `id` / `start_url` / `scope` | 从监控页添加到桌面后，以后点开直接落在监控层；改 start_url 还会被当成另一个应用 |
+| 专用 maskable 图标 | 原 512 主体贴边（约 76% 宽），安卓自适应图标把两端柱子裁掉 |
+| 首帧前的骨架 | 从 WebView 首帧到 Vue 挂载这段是白屏 |
+
+### 二、改了什么
+
+| 文件 | 改动 |
+| --- | --- |
+| `index.html` | 补 4 条主屏 meta + `format-detection`；10 张 `apple-touch-startup-image`（按设备宽高/像素比精确匹配）；app 挂载前的 `#boot` 骨架（内联样式，外链 CSS 没下来时也生效）；12s 未挂载给「重新加载」入口 |
+| `vite.config.ts` | manifest 补 `id` / `start_url`（`?from=homescreen`）/ `scope` / `display_override` / `categories` / `prefer_related_applications`；图标区分 `any` 与 `maskable`，补 180 / 152 / 167 |
+| `public/` | 新增 `pwa-maskable-512.png`（主体缩进中心安全区）、`pwa-152x152.png`、`pwa-167x167.png`、`startup/*.png`（10 张，共 125 KB） |
+| `src/utils/standalone.ts`（新） | `isStandalone()` / `displayMode()` / `isIOS()` / `isAndroid()` / `watchDisplayMode()` / `markEnvironment()` / `hideBootSplash()`；`beforeinstallprompt` 捕获与 `promptInstall()` |
+| `src/main.ts` | 挂载后 `markEnvironment()` + `hideBootSplash()` |
+| `src/App.vue` | `.app` 加 `has-subpage`，`.phone-screen` 加 `has-home-top` / `has-land-top`（只给旧内核兜底用） |
+| `src/styles/app.css` | 新增 `.no-has` 兜底：底栏隐藏、右滑揭示、顶部色条 |
+
+### 三、启动显示分成三段，各管一段
+
+1. **系统启动 → WebView 首帧**：由 `apple-touch-startup-image`（iOS）与
+   `background_color`（安卓 12+ SplashScreen）负责，纯色底 + 居中标识；
+2. **首帧 → Vue 挂载**：由 `#boot` 骨架负责，同色 `#0b1a2b`，与上一段无缝；
+3. **挂载之后**：`hideBootSplash()` 等**两帧**（布局 + 绘制）再淡出 260ms，
+   避免「骨架先没了、下面还是白的」那一帧。
+
+### 四、全屏与安全区
+
+- `viewport-fit=cover` 已有；`--status-h: max(32px, env(safe-area-inset-top))`、
+  `--safe-bot: max(8px, env(safe-area-inset-bottom))` 已覆盖刘海与手势条。
+- 状态栏风格选 **`default`** 而不是 `black-translucent`：后者会把页面顶到状态栏
+  下面并要求白字，而工作台 / 消息 / 我的都是白色顶栏，白字会看不见。
+- 高度用 `100vh` → `100dvh` 双写（旧内核取前者，新内核取后者）。
+- `theme_color` 由 `utils/themeColor.ts` 按视图动态改，状态栏底色始终跟页面一致。
+
+### 五、页面兼容性（重点：`:has()`）
+
+样式表里有 22 处 `:has()`，`:has()` 需要 Chrome 105+ / Safari 15.4+。
+小米 / 华为 / OPPO / vivo 自带浏览器仍有一批老内核，命不中时**整条规则被丢弃**，
+症状是「子页打开后底栏还露在下面」。
+
+兜底做法：启动时 `CSS.supports('selector(:has(*))')` 检测，不支持就给 `<html>`
+加 `.no-has`，CSS 里用等价 class 规则顶上（只兜三条影响可操作性的：
+底栏隐藏、右滑揭示、顶部色条）。支持 `:has()` 的设备永远命中不到 `.no-has`。
+
+### 六、异常处理
+
+- SW 注册失败已静默（`utils/pwa.ts` 的 `.catch`），不阻断启动；
+- 独立窗口没有地址栏、不能下拉刷新 → 骨架 12s 未挂载时给出「重新加载」按钮；
+- 图标 / 启动图缺失只会退化成系统默认，不会白屏；
+- `beforeinstallprompt` 必须 `preventDefault()` 才能自己决定时机，
+  否则 Chromium 会立刻弹自己的安装条；当前**不主动弹**，只把能力开放给页面；
+- iOS 没有 `beforeinstallprompt`，只能「分享 → 添加到主屏幕」，这是系统限制。
+
+### 七、各机型验证要点
+
+**iPhone（iOS 18）**
+
+1. Safari 打开 → 分享 → 「添加到主屏幕」，图标应是三根柱子的标识，名称「数字地图」；
+2. 从主屏点开：**没有地址栏**，顶部状态栏与页面顶栏衔接，无多余白条；
+3. 冷启动：先出现深蓝启动图，接着深蓝骨架，再淡入首页 —— 全程**不应出现白屏**；
+4. 底部手势条区域不压内容（底栏按钮可点）；
+5. 锁屏 / 切后台再回来，页面状态与滚动位置保持。
+
+**安卓（小米 / 华为 / OPPO / vivo 自带浏览器 + Chrome）**
+
+1. 菜单里应有「添加到桌面 / 添加到主屏幕」，图标为圆形或方圆自适应形状，
+   **主体不被裁切**（验证 maskable）；
+2. 从桌面图标打开：独立窗口，无地址栏；
+3. 启动：先系统 SplashScreen（深蓝 + 图标），再骨架，无白屏；
+4. 打开任意子页 → 底栏应隐藏；右滑返回时底栏随页面揭开（这是 `:has` /
+   `.no-has` 两条路径都要验的点，老机型尤其）；
+5. 按系统返回键：先退子页，再退首页，不直接退出应用；
+6. 微信内置浏览器不支持安装，属预期，引导用系统浏览器打开。
+
+**通用**
+
+- 桌面 Chrome 打开 DevTools → Application → Manifest：无报错、图标全部可加载、
+  `start_url` 与 `scope` 正确；
+- Lighthouse 的 PWA / Installability 检查应通过。

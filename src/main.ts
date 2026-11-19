@@ -10,9 +10,28 @@ import App from './App.vue'
 import { useAuthStore } from './stores/auth'
 import { registerServiceWorker } from './utils/pwa'
 import { mountDiag, unmountDiag } from './utils/diag'
+import { hideBootSplash, markEnvironment } from './utils/standalone'
 
 const pinia = createPinia()
 createApp(App).use(pinia).mount('#app')
+
+/**
+ * 主屏独立运行的环境标记（2026-11-19）
+ *
+ * 给 <html> 打 is-standalone / is-ios / is-android / no-has。
+ * 其中 no-has 是兼容兜底：老内核（Chrome 105 之前，部分小米 / 华为 / OPPO / vivo
+ * 自带浏览器）不支持 :has()，样式表里靠它切换的「子页打开时隐藏底栏」会失效，
+ * 由 CSS 的等价 class 规则顶上。详见 utils/standalone.ts。
+ */
+markEnvironment()
+
+/**
+ * 移除 index.html 的启动骨架。
+ *
+ * iOS 独立窗口没有地址栏、也不能下拉刷新，入口 JS 若慢一拍就是一秒多的白屏；
+ * 骨架铺在 #boot 上（同 background_color 的深蓝），这里等首帧画出来再淡出。
+ */
+hideBootSplash()
 
 /**
  * 尽早建一次会话 store：它负责从 localStorage 恢复 token 并注册到 api/http 的

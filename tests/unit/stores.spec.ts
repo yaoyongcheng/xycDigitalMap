@@ -1,17 +1,27 @@
+import { flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
+/**
+ * 监控地址清单（V2 `monitorData.json`）在组件/状态机用例里不打真实网络：
+ * 这里返回 null（= 清单没取到），fetcher 的调用次数就只反映「取快照」那一路，
+ * 断言才有意义。清单自身的解析见 `tests/unit/cctv.spec.ts`。
+ */
+vi.mock('@/api/cctv', () => ({
+  loadMonitorList: async () => null,
+  findMonitorEntry: () => undefined,
+  pickStreamUrl: () => '',
+}))
+
+import { CAM_POINTS } from '@/data/cams'
 import { useAirHazardStore } from '@/stores/airHazard'
-import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
 import { usePatrolStore } from '@/stores/patrol'
 import { useShellStore } from '@/stores/shell'
-import { addDays } from '@/utils/date'
 
 import { blobUrls } from '../helpers/browser'
-import { camAlarmFixtures } from '../fixtures/camAlarms'
 
 function pngFile(name = 'shot.png'): File {
   return new File(['x'], name, { type: 'image/png' })
@@ -203,177 +213,274 @@ describe('stores', () => {
 
   /* ============================================================ */
 
-  describe('cam（2026-11 阶段 5：真实通道与报警抓拍）', () => {
+  describe('cam（2026-11-18 设计稿白名单 + 快照接口）', () => {
+    let n = 0
+    const revoked: string[] = []
+
+    /** 快照接口直出图片字节（不是 JSON 信封） */
+    function snapResponse(size = 128): Response {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'image/jpeg' : null) },
+        blob: async () => new Blob([new Uint8Array(size)], { type: 'image/jpeg' }),
+      } as unknown as Response
+    }
+
     beforeEach(() => {
-      // 点位/抓拍来自真实报警，openCam 有登录守卫；抓拍图请求用桩挡掉
-      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, text: async () => '' })))
+      n = 0
+      revoked.length = 0
+      vi.spyOn(URL, 'createObjectURL').mockImplementation(() => `blob:cam/${++n}`)
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation((u: string) => {
+        revoked.push(u)
+      })
+      vi.stubGlobal('fetch', vi.fn(async () => snapResponse()))
       const auth = useAuthStore()
       auth.token = 'test-token'
       auth.expiresAt = Date.now() + 3_600_000
-      useAlarmStore().liveAlarms = camAlarmFixtures()
     })
 
-    it('点位来自真实报警通道，不挂演示示意图', () => {
+    it('点位是写死的 8 个白名单，分出入口 / 场内 / 塔吊三组', () => {
       const cam = useCamStore()
-      expect(cam.cameras.map((c) => c.id)).toEqual(['ch-2', 'ch-3'])
-      expect(cam.cameras.map((c) => c.name)).toEqual(['材料堆场', '安全讲台'])
-      expect(cam.cameras.every((c) => c.group === '视频监控')).toBe(true)
-      expect(cam.cameras.every((c) => c.img === '')).toBe(true)
+      expect(cam.points).toHaveLength(8)
+      expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([
+        ['出入口', 4],
+        ['场内', 2],
+        ['塔吊', 2],
+      ])
+      // 默认选中第一个点位，未取图前没有画面地址
+      expect(cam.current.name).toBe('2#门监控1')
+      expect(cam.frameUrl).toBe('')
+      expect(cam.state).toBe('idle')
     })
 
-    it('按 group 分组：真实点位只有一组', () => {
-      const cam = useCamStore()
-      expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([['视频监控', 2]])
-    })
-
-    it('没有报警数据时点位为空，currentCam 给兜底对象', () => {
-      useAlarmStore().liveAlarms = []
-      const cam = useCamStore()
-      expect(cam.cameras).toEqual([])
-      expect(cam.currentCam.name).toBe('暂无监控点位')
-      expect(cam.camShots).toEqual([])
-    })
-
-    it('切换点位后 currentCam 跟随', () => {
-      const cam = useCamStore()
-      cam.camId = 'ch-3'
-      expect(cam.currentCam.name).toBe('安全讲台')
-    })
-
-    it('camId 指向不存在的点位时回退到首个', () => {
+    it('camId 指向不存在的通道时回退到首个点位', () => {
       const cam = useCamStore()
       cam.camId = 'nope'
-      expect(cam.currentCam.id).toBe('ch-2')
+      expect(cam.current.channelId).toBe('34020000001320000003')
     })
 
-    describe('报警抓拍派生', () => {
-      it('今天 2 号通道 3 条，时间取 captureTime，无假裁切位', () => {
-        const cam = useCamStore()
-        cam.camId = 'ch-2'
-        expect(cam.camShots.map((s) => s.time)).toEqual(['08:12:00', '12:36:00', '16:50:00'])
-        expect(cam.camShots.map((s) => s.pos)).toEqual(['', '', ''])
-        expect(cam.camShots.map((s) => s.remoteId)).toEqual(['101', '102', '103'])
-      })
+    it('applyCam 切点位并取图；同一点位不重复请求', async () => {
+      const cam = useCamStore()
+      cam.applyCam('34020000001310000003')
+      await flushPromises()
 
-      it('按通道隔离：3 号通道只有 1 条', () => {
-        const cam = useCamStore()
-        cam.camId = 'ch-3'
-        expect(cam.camShots).toHaveLength(1)
-        expect(cam.camShots[0].time).toBe('09:05:00')
-      })
+      const spy = fetch as unknown as ReturnType<typeof vi.fn>
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(String(spy.mock.calls[0]?.[0])).toContain('channelId=34020000001310000003')
+      expect(cam.current.name).toBe('地磅全景')
+      expect(cam.state).toBe('ok')
+      expect(cam.frameUrl).toBe('blob:cam/1')
 
-      it('按日期筛选：昨天 1 条，没记录的日子是空数组', () => {
-        const cam = useCamStore()
-        expect(cam.shotsFor('ch-2', 1)).toHaveLength(1)
-        expect(cam.shotsFor('ch-2', 7)).toEqual([])
-      })
-
-      it('日期变更驱动 camShots 重算', async () => {
-        const cam = useCamStore()
-        cam.camId = 'ch-2'
-        cam.camShotDate = addDays(new Date(), -1)
-        await nextTick()
-        expect(cam.camShots.map((s) => s.time)).toEqual(['10:00:00'])
-      })
+      // 再点一次同一个点位：命中缓存，不再请求
+      cam.applyCam('34020000001310000003')
+      await flushPromises()
+      expect(spy).toHaveBeenCalledTimes(1)
     })
 
-    describe('applyCam', () => {
-      it('默认清掉直播态并复位日期与日历', () => {
-        const cam = useCamStore()
-        cam.isLive = true
-        cam.camCalOpen = true
-        cam.camShotDate = new Date(2026, 0, 1)
-        cam.applyCam('ch-3')
-        expect(cam.camId).toBe('ch-3')
-        expect(cam.isLive).toBe(false)
-        expect(cam.camCalOpen).toBe(false)
-        expect(cam.camShotDate.getDate()).toBe(new Date().getDate())
-      })
+    it('refresh 强制重取并撤掉旧 objectURL', async () => {
+      const cam = useCamStore()
+      cam.applyCam('34020000001310000003')
+      await flushPromises()
+      cam.refresh()
+      await flushPromises()
 
-      it('keepLive 为真时保留直播态', () => {
-        const cam = useCamStore()
-        cam.isLive = true
-        cam.applyCam('ch-3', true)
-        expect(cam.isLive).toBe(true)
-      })
-
-      it('未知 id 回退到首个真实点位', () => {
-        const cam = useCamStore()
-        cam.applyCam('unknown')
-        expect(cam.camId).toBe('ch-2')
-      })
+      const spy = fetch as unknown as ReturnType<typeof vi.fn>
+      expect(spy).toHaveBeenCalledTimes(2)
+      expect(cam.frameUrl).toBe('blob:cam/2')
+      expect(revoked).toEqual(['blob:cam/1'])
     })
 
-    describe('开合与互斥', () => {
-      it('openCam 会关掉航拍与隐患上报，并清掉横屏', () => {
-        const shell = useShellStore()
-        const cam = useCamStore()
-        const air = useAirHazardStore()
+    it('取图失败记 error + 原因，切到别的点位不受影响', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: false,
+          status: 502,
+          headers: { get: () => null },
+          blob: async () => new Blob([]),
+        })),
+      )
+      const cam = useCamStore()
+      cam.applyCam('34020000001310000003')
+      await flushPromises()
+      expect(cam.state).toBe('error')
+      expect(cam.note).toContain('上游视频服务异常')
+      expect(cam.frameUrl).toBe('')
+    })
 
-        air.isOpen = true
-        air.hazardOpen = true
-        shell.isLandscape = true
+    it('applyCam 忽略不存在的通道（不把页面切成空点位）', () => {
+      const cam = useCamStore()
+      cam.applyCam('unknown')
+      expect(cam.current.channelId).toBe('34020000001320000003')
+    })
 
-        cam.openCam('ch-3')
-        expect(air.isOpen).toBe(false)
-        expect(air.hazardOpen).toBe(false)
-        expect(shell.isLandscape).toBe(false)
-        expect(shell.isLand).toBe(false)
-        expect(cam.isOpen).toBe(true)
-        expect(cam.camMode).toBe('live')
-        expect(cam.isLive).toBe(false)
-        expect(cam.camId).toBe('ch-3')
-      })
+    it('openCam 关掉航拍与隐患、清横屏，并按登录守卫放行', () => {
+      const shell = useShellStore()
+      const cam = useCamStore()
+      const air = useAirHazardStore()
 
-      it('closeCam 复位全部覆盖层状态', () => {
-        const shell = useShellStore()
-        const cam = useCamStore()
-        cam.openCam('g2a')
-        cam.isLive = true
-        cam.camMode = 'shots'
-        cam.shotPopOpen = true
-        cam.camCalOpen = true
-        shell.isLandscape = true
-        shell.isLand = true
+      air.isOpen = true
+      air.hazardOpen = true
+      shell.isLandscape = true
 
-        cam.closeCam()
-        expect(cam.isOpen).toBe(false)
-        expect(cam.isLive).toBe(false)
-        expect(cam.camMode).toBe('live')
-        expect(cam.shotPopOpen).toBe(false)
-        expect(cam.camCalOpen).toBe(false)
-        expect(shell.isLandscape).toBe(false)
-        expect(shell.isLand).toBe(false)
-      })
+      cam.openCam()
+      expect(air.isOpen).toBe(false)
+      expect(air.hazardOpen).toBe(false)
+      expect(shell.isLand).toBe(false)
+      expect(cam.isOpen).toBe(true)
+      expect(cam.camId).toBe('34020000001320000003')
+    })
 
-      it('setCamLand 同时切两个横屏标记', () => {
-        const shell = useShellStore()
-        const cam = useCamStore()
-        cam.setCamLand(true)
-        expect(shell.isLandscape).toBe(true)
-        expect(shell.isLand).toBe(true)
-        cam.setCamLand(false)
-        expect(shell.isLandscape).toBe(false)
-        expect(shell.isLand).toBe(false)
-      })
+    it('closeCam 退出横屏并关层，但保留已取到的画面（会话内缓存）', async () => {
+      const cam = useCamStore()
+      cam.openCam()
+      await flushPromises()
+      cam.setCamLand(true)
+      cam.closeCam()
 
-      it('showCamMode 只切视图，不动直播态', () => {
-        const cam = useCamStore()
-        cam.isLive = true
-        cam.showCamMode('shots')
-        expect(cam.camMode).toBe('shots')
-        expect(cam.isLive).toBe(true)
-      })
+      expect(cam.isOpen).toBe(false)
+      expect(useShellStore().isLand).toBe(false)
+      expect(cam.frameUrl).toBe('blob:cam/1')
+    })
 
-      it('抓拍大图开合', () => {
-        const cam = useCamStore()
-        cam.openShotPop(2)
-        expect(cam.shotPopOpen).toBe(true)
-        expect(cam.shotPopIdx).toBe(2)
-        cam.closeShotPop()
-        expect(cam.shotPopOpen).toBe(false)
-        expect(cam.shotPopIdx).toBe(2)
-      })
+    it('setCamLand 同时切两个横屏标记', () => {
+      const shell = useShellStore()
+      const cam = useCamStore()
+      cam.setCamLand(true)
+      expect(shell.isLandscape).toBe(true)
+      expect(shell.isLand).toBe(true)
+      cam.setCamLand(false)
+      expect(shell.isLandscape).toBe(false)
+      expect(shell.isLand).toBe(false)
+    })
+
+    it('会话失效（登出）撤掉全部 objectURL，不留给下一个人', async () => {
+      const cam = useCamStore()
+      cam.openCam()
+      await flushPromises()
+      cam.applyCam('34020000001320000017')
+      await flushPromises()
+
+      useAuthStore().clear()
+      // token 的 watch 是 flush: pre，等一拍再断言
+      await nextTick()
+      expect(revoked).toEqual(['blob:cam/1', 'blob:cam/2'])
+      expect(cam.frameUrl).toBe('')
+      expect(cam.state).toBe('idle')
+    })
+
+    /**
+     * 播放态（2026-11-18 播放键联动）
+     *
+     * 这一层的职责只是「如实记录媒体元素报上来的状态」：有流才有非 idle 的播放态，
+     * 且 error 一旦成立不会被后面的 pause 改回去（否则断流后按钮会在转圈/暂停间横跳）。
+     */
+    it('默认按现场模板拼出 HTTP-FLV：地址与模板逐字同构，isLive=true', () => {
+      const cam = useCamStore()
+      const ch = CAM_POINTS[0].channelId
+
+      expect(cam.playUrl).toBe(
+        `http://120.26.34.95:9092/rtp/42010500441188000001_${ch}.live.flv?originTypeStr=rtp_push`,
+      )
+      expect(cam.playMode).toBe('flv')
+      expect(cam.isLive).toBe(true)
+      // 地址有了不等于在播：播放态仍要等媒体元素报上来
+      expect(cam.playState).toBe('idle')
+      expect(cam.isPlaying).toBe(false)
+    })
+
+    it('点位挂了 stream 时单点覆盖优先，地址逐字取点位配置', () => {
+      const point = CAM_POINTS[0]
+      point.stream = 'https://gw.test/live/a.m3u8'
+      const cam = useCamStore()
+      cam.camId = point.channelId
+
+      expect(cam.isLive).toBe(true)
+      expect(cam.playUrl).toBe('https://gw.test/live/a.m3u8')
+
+      delete point.stream
+    })
+
+    it('播放态跟着媒体事件走，error 之后不再被 pause 改回', () => {
+      const cam = useCamStore()
+
+      cam.markBuffering()
+      expect(cam.playState).toBe('buffering')
+
+      cam.markPlaying()
+      expect(cam.playState).toBe('playing')
+      expect(cam.isPlaying).toBe(true)
+
+      cam.markPaused()
+      expect(cam.playState).toBe('paused')
+      expect(cam.isPlaying).toBe(false)
+
+      cam.markPlayError()
+      expect(cam.playState).toBe('error')
+      expect(cam.playNote).toContain('已回到定时快照')
+
+      // 重连中是一个独立状态：按钮据此画成「等它自己回来」，不跟暂停混淆
+      cam.markReconnecting('2 秒后自动重连（1/3）')
+      expect(cam.playState).toBe('reconnecting')
+      expect(cam.playNote).toContain('1/3')
+
+      cam.markPlayError()
+      cam.markPaused()
+      cam.markBuffering()
+      expect(cam.playState).toBe('error')
+
+      cam.resetPlay()
+      expect(cam.playState).toBe('idle')
+      expect(cam.playNote).toBe('')
+    })
+
+    it('切点位把播放态复位（不把上一个通道的「在播」带过去）', async () => {
+      const cam = useCamStore()
+      cam.markPlaying()
+      cam.applyCam('34020000001310000003')
+      await flushPromises()
+
+      expect(cam.playState).toBe('idle')
+    })
+
+    /**
+     * 历史抓拍（2026-11-18）
+     *
+     * 入口已通、数据待接入：`loadShots()` 现在返回空列表 + 一句说明，不编造照片。
+     * 分组逻辑按真实字段（at）算，所以接口一接上，日期芯片与照片顺序就自动成立 ——
+     * 这两条就是钉这件事。
+     */
+    it('历史抓拍：开关与空态说明（数据待接入，不塞示例照片）', async () => {
+      const cam = useCamStore()
+      expect(cam.shotsOpen).toBe(false)
+      expect(cam.shots).toEqual([])
+
+      cam.openShots()
+      await flushPromises()
+
+      expect(cam.shotsOpen).toBe(true)
+      expect(cam.shots).toEqual([])
+      expect(cam.shotsState).toBe('ok')
+      expect(cam.shotsNote).toContain('接口尚未接入')
+
+      cam.closeShots()
+      expect(cam.shotsOpen).toBe(false)
+    })
+
+    it('历史抓拍按天分组，同一天按时刻倒序（接口一接上就成立）', () => {
+      const cam = useCamStore()
+      const day = 24 * 3600 * 1000
+      const t0 = new Date(2026, 10, 18, 9, 0).getTime()
+
+      cam.shots = [
+        { id: 'a', thumb: 'ta', url: 'ua', at: t0, channelId: 'c1' },
+        { id: 'b', thumb: 'tb', url: 'ub', at: t0 + day, channelId: 'c1' },
+        { id: 'c', thumb: 'tc', url: 'uc', at: t0 + 3_600_000, channelId: 'c1' },
+      ]
+
+      expect(cam.shotDays.map((d) => d.label)).toEqual(['11月18日', '11月19日'])
+      expect(cam.shotDays[0].items.map((s) => s.id)).toEqual(['c', 'a'])
     })
   })
 

@@ -72,14 +72,28 @@ const emptyText = computed(() => {
   return '暂无人员区域数据'
 })
 
-/** 下钻里有人 / 无人的管控区数量，给副标题用 */
+/**
+ * 下钻里有人 / 无人的子级数量，给副标题用。
+ *
+ * 2#住宅楼 / 地下室的子级是**层**，场布图是**管控区** —— 固定楼层表会让没人的
+ * 层也占一行，所以这里要如实数「共 5 层」，而不是「共 5 个管控区」。
+ * `isFloor` 同时决定列表排版：楼层是一行一条数据，管控区是带小标题的一段名单。
+ */
 const areaStats = computed(() => {
-  const list = drilled.value?.areas ?? []
-  return { live: list.filter((a) => a.count > 0).length, all: list.length }
+  const list = drilled.value?.units ?? []
+  const isFloor = Boolean(drilled.value) && drilled.value?.name !== '场布图'
+  const live = list.filter((a) => a.count > 0).length
+  const all = list.length
+  return {
+    live,
+    all,
+    isFloor,
+    text: isFloor ? `有人 ${live} 层 · 共${all}层` : `有人 ${live} 个 · 共${all}个管控区`,
+  }
 })
 
 function onDrill(s: SceneAtte): void {
-  if (!s.areas.length) return
+  if (!s.units.length) return
   drilled.value = s
 }
 
@@ -97,21 +111,21 @@ function retry(): void {
 </script>
 
 <template>
-  <!-- 下钻：该场景下的管控区 + 人员姓名（V2 里点开区域就是这层名单） -->
+  <!-- 下钻：该场景下的子级（楼层 / 管控区）+ 人员姓名 -->
   <template v-if="drilled">
     <button class="people-back" type="button" data-people="back" @click="onBack">
       <em>‹</em>
       <strong>{{ drilled.name }}</strong>
       <b>{{ drilled.count }}<i>人</i></b>
     </button>
-    <div class="people-sub">有人 {{ areaStats.live }} 个 · 共{{ areaStats.all }}个管控区</div>
+    <div class="people-sub">{{ areaStats.text }}</div>
     <!--
       名单限高内滚：滚到上/下边界后继续滑，滚动会接力给外层抽屉（见 useScrollChain）。
       两侧渐隐只在那个方向「还有东西」时出现，提示手势没被吃掉。
     -->
     <div class="people-scroll" :class="{ 'can-up': canUp, 'can-down': canDown }">
       <div ref="listEl" class="people-groups" data-people="areas">
-        <div v-for="a in drilled.areas" :key="a.name" class="people-group">
+        <div v-for="a in drilled.units" :key="a.name" class="people-group" :class="{ 'is-floor': areaStats.isFloor }">
           <div class="people-group-hd">
             <span>{{ a.name }}</span>
             <b>{{ a.count }}<em>人</em></b>
@@ -122,7 +136,8 @@ function retry(): void {
               <span class="pm-trade">{{ m.trade }}</span>
             </li>
           </ul>
-          <div v-else class="people-no-member">暂无现场名单</div>
+          <!-- 0 人的楼层不摆「暂无名单」：没人就是没人，那行数字已经说明白了 -->
+          <div v-else-if="a.count > 0" class="people-no-member">暂无现场名单</div>
         </div>
       </div>
     </div>
@@ -150,9 +165,9 @@ function retry(): void {
           v-for="s in scenes"
           :key="s.name"
           class="people-scene"
-          :class="{ empty: !s.count, drill: s.areas.length > 0 }"
+          :class="{ empty: !s.count, drill: s.units.length > 0 }"
           type="button"
-          :disabled="!s.areas.length"
+          :disabled="!s.units.length"
           :data-scene="s.name"
           @click="onDrill(s)"
         >

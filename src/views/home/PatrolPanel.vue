@@ -13,10 +13,25 @@ import { useSlowLoading } from '@/utils/slowLoading'
  *
  * 照片来自 keehang 真实航拍媒体（见 `stores/patrol.ts`）。
  *
- * ## 分类：设计稿的六类，固定两行（2026-11-16 用户要求）
+ * ## 分类：六类固定两行（2026-11-16 用户要求，2026-11-18 改过按钮文案）
  *
- * 项目全景 / 基坑区域 / 作业面 / 施工装备 / 材料堆场 / 现场场布 —— 3 列 × 2 行，
+ * VR 360环视 / 全景航拍 / 设备设施 / 材料堆场 / 出入口管控 / 安全巡查 —— 3 列 × 2 行，
  * 位置固定（某一类 0 张也占位，否则一有数据就换行错位），不做横向滑动。
+ * 文案在 `data/config.ts` 的 `PATROL_CATS` 里；`id` 与归类规则没动过。
+ *
+ * 其中四格**不走照片墙的分类**（2026-11 用户要求，各自一条专用链，见 store）：
+ * 「全景航拍」= 全局定点拍照最近一班的 9 张；「材料堆场」= 分区定点拍照最近
+ * 一班的第 1、2、37 张；「设备设施」= 塔吊定点最近一班的第 2、第 7 张；
+ * 「安全巡查」= 土方1 最近一班的第 1 张 + 分区定点拍照最近一班的第 34 张。
+ * 所以它们的计数与内容都从 `patrol.spot / yard / facility / safety` 取，
+ * 不按航线名归组 —— 按名字归组会把同类航线的别的照片一起吞进来。
+ *
+ * ⚠️ 注意分类 `id` 与显示名**早就不对应**了（2026-11-18 只改了文案，没改 id）：
+ * 「设备设施」的 id 是 `face`，「材料堆场」的 id 是 `equip`，`pit` 才是「全景航拍」。
+ * 下面按 id 分支时别看名字对号。
+ *
+ * 「设备设施」按用户要求本该有 4 张（塔吊定点 2 张 + 视频监控 2#/4# 塔吊各 1 张），
+ * 但监控侧没有照片查询接口，2026-11-18 明确「本轮先保持现状」，所以现在稳定 2 张。
  *
  * ⚠️ **服务端没有分类字段**（keehang 媒体接口只有文件名/大小/链接/缩略图；
  * 万联后端的 devDroneMedia 表也没有分类列；15 条航线的 taskType 全是 AIRLINE）。
@@ -48,7 +63,15 @@ onMounted(() => {
 })
 
 /** 慢请求才显示骨架 */
-const syncing = computed(() => patrol.state === 'loading' && !patrol.photos.length)
+const syncing = computed(
+  () =>
+    patrol.state === 'loading' &&
+    !patrol.photos.length &&
+    !patrol.spot.length &&
+    !patrol.yard.length &&
+    !patrol.facility.length &&
+    !patrol.safety.length,
+)
 const showSkel = useSlowLoading(() => syncing.value)
 
 /** 每张照片带上归属分类（`patrol.list` 已按时间倒序） */
@@ -68,9 +91,20 @@ const groups = computed(() => {
 /** 六个分类恒定显示（0 张也占位，保住 3×2 的版式） */
 const chips = computed(() =>
   PATROL_CATS.map((c) => {
-    // 「项目全景」下**只放那一张最新全景**（2026-11-16 用户要求）：正射 / 三维
+    // 「VR 360环视」下**只放那一张最新全景**（2026-11-16 用户要求）：正射 / 三维
     // 那些俯视照片不再挤进来，这一格就是「点进去环视」的入口，计数恒为 0 或 1。
     if (c.id === 'pano') return { id: c.id, name: c.name, count: patrol.pano ? 1 : 0 }
+    // 「全景航拍」= 「向阳村-全局定点拍照」最近一班有照片的飞行里那 9 张
+    // （V2「任务记录 → 采集数据 → 采集图片」同一条链，见 api/drone.ts）
+    if (c.id === 'pit') return { id: c.id, name: c.name, count: patrol.spot.length }
+    // 「材料堆场」= 「向阳村-分区定点拍照」最近一班的第 1、2、37 张（2026-11-18）
+    // —— 这一格只认那三张，不再按航线名把塔吊定点那批混进来
+    if (c.id === 'equip') return { id: c.id, name: c.name, count: patrol.yard.length }
+    // 「设备设施」= 「向阳村-塔吊定点」最近一班的第 2、第 7 张（2026-11-18）
+    // —— id 是 `face`（旧归类语义），别看名字对号
+    if (c.id === 'face') return { id: c.id, name: c.name, count: patrol.facility.length }
+    // 「安全巡查」= 土方1 第 1 张 + 分区定点拍照第 34 张（两条航线各一张）
+    if (c.id === 'layout') return { id: c.id, name: c.name, count: patrol.safety.length }
     return { id: c.id, name: c.name, count: (groups.value.get(c.id) ?? []).length }
   }),
 )
@@ -89,13 +123,32 @@ const activeCat = computed(() =>
 /**
  * 当前分类下要铺的照片。
  *
- * 「项目全景」这一格**不铺照片**：它只放那一张最新全景（见模板里的全景卡片）。
+ * 「VR 360环视」这一格**不铺照片**：它只放那一张最新全景（见模板里的全景卡片）。
  * 正射 / 三维归的是同一个分类，但用户要的是"点进去环视"，不是再看一遍
  * 一堆俯视航拍图 —— 那些照片在 UavPage 的任务记录里本来就能翻。
+ *
+ * 「全景航拍」则是另一条链的 9 张（`patrol.spot`），不按任务分组 —— 按分组
+ * 会把「分区定点拍照」等同类航线混进来，数量就不是 V2 那 9 张了。
+ *
+ * 「材料堆场」同理走自己的链（`patrol.yard`）：只有「向阳村-分区定点拍照」
+ * 最近一班的第 1、第 2、第 37 张，别的照片一张都不进来。
+ *
+ * 「设备设施」也是（`patrol.facility`）：只有「向阳村-塔吊定点」最近一班的
+ * 第 2、第 7 张。
+ *
+ * 「安全巡查」同理（`patrol.safety`）：土方1 第 1 张 + 分区定点拍照第 34 张，
+ * 两条航线各一张 —— 卡片标题仍是各自真实航线名。
+ *
+ * 于是照片墙那套「按航线名归组」（`groups`）现在只服务「出入口管控」一格。
  */
-const shown = computed(() =>
-  activeCat.value === 'pano' ? [] : (groups.value.get(activeCat.value) ?? []),
-)
+const shown = computed(() => {
+  if (activeCat.value === 'pano') return []
+  if (activeCat.value === 'pit') return patrol.spot
+  if (activeCat.value === 'equip') return patrol.yard
+  if (activeCat.value === 'face') return patrol.facility
+  if (activeCat.value === 'layout') return patrol.safety
+  return groups.value.get(activeCat.value) ?? []
+})
 
 const activeName = computed(() => chips.value.find((c) => c.id === activeCat.value)?.name ?? '')
 
@@ -139,6 +192,26 @@ function retry(): void {
 function retryPano(): void {
   void patrol.loadPano(true)
 }
+
+/** 「全景航拍」9 张单独重试：同样不惊动照片墙 */
+function retrySpot(): void {
+  void patrol.loadSpot()
+}
+
+/** 「材料堆场」3 张单独重试 */
+function retryYard(): void {
+  void patrol.loadYard()
+}
+
+/** 「设备设施」2 张单独重试 */
+function retryFacility(): void {
+  void patrol.loadFacility()
+}
+
+/** 「安全巡查」2 张单独重试（两条航线各拉一次） */
+function retrySafety(): void {
+  void patrol.loadSafety()
+}
 </script>
 
 <template>
@@ -149,7 +222,19 @@ function retryPano(): void {
     </div>
 
     <!-- 分类：3 列 × 2 行固定版式（设计稿 .patrol-cats），0 张的分类照旧占位 -->
-    <div v-if="patrol.list.length || patrol.pano" class="patrol-cats" role="group" aria-label="照片分类">
+    <div
+      v-if="
+        patrol.list.length ||
+        patrol.pano ||
+        patrol.spot.length ||
+        patrol.yard.length ||
+        patrol.facility.length ||
+        patrol.safety.length
+      "
+      class="patrol-cats"
+      role="group"
+      aria-label="照片分类"
+    >
       <button
         v-for="c in chips"
         :key="c.id"
@@ -178,15 +263,62 @@ function retryPano(): void {
     </div>
 
     <!-- 有内容，但当前分类下没有：设计稿原文「这个分类下还没有照片」 -->
-    <div v-else-if="!hasContent && (patrol.list.length || patrol.pano)" class="patrol-empty">
-      <!-- 全景走的是另一条接口，挂了要说「取不到」而不是「没有照片」 -->
-      <p v-if="activeCat === 'pano' && patrol.panoState === 'error'">项目全景暂时取不到</p>
+    <div
+      v-else-if="
+        !hasContent &&
+        (patrol.list.length ||
+          patrol.pano ||
+          patrol.spot.length ||
+          patrol.yard.length ||
+          patrol.facility.length ||
+          patrol.safety.length)
+      "
+      class="patrol-empty"
+    >
+      <!-- 全景 / 全景航拍 / 材料堆场 / 设备设施走的是另外几条接口，挂了要说「取不到」而不是「没有照片」 -->
+      <p v-if="activeCat === 'pano' && patrol.panoState === 'error'">VR 360环视暂时取不到</p>
+      <p v-else-if="activeCat === 'pit' && patrol.spotState === 'error'">全景航拍照片暂时取不到</p>
+      <p v-else-if="activeCat === 'equip' && patrol.yardState === 'error'">材料堆场照片暂时取不到</p>
+      <p v-else-if="activeCat === 'face' && patrol.facilityState === 'error'">设备设施照片暂时取不到</p>
+      <p v-else-if="activeCat === 'layout' && patrol.safetyState === 'error'">安全巡查照片暂时取不到</p>
       <p v-else>这个分类下还没有照片</p>
       <button
         v-if="activeCat === 'pano' && patrol.panoState === 'error'"
         class="data-empty-btn"
         type="button"
         @click="retryPano"
+      >
+        重试
+      </button>
+      <button
+        v-else-if="activeCat === 'pit' && patrol.spotState === 'error'"
+        class="data-empty-btn"
+        type="button"
+        @click="retrySpot"
+      >
+        重试
+      </button>
+      <button
+        v-else-if="activeCat === 'equip' && patrol.yardState === 'error'"
+        class="data-empty-btn"
+        type="button"
+        @click="retryYard"
+      >
+        重试
+      </button>
+      <button
+        v-else-if="activeCat === 'face' && patrol.facilityState === 'error'"
+        class="data-empty-btn"
+        type="button"
+        @click="retryFacility"
+      >
+        重试
+      </button>
+      <button
+        v-else-if="activeCat === 'layout' && patrol.safetyState === 'error'"
+        class="data-empty-btn"
+        type="button"
+        @click="retrySafety"
       >
         重试
       </button>

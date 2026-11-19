@@ -1,0 +1,142 @@
+[
+  {
+    "type": "Null",
+    "monitorName": "监控A",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001310000001?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "监控B",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001310000002?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "地磅全景",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001310000003?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "4#门安全通道门禁监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000001?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "场内 1",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000002?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "2#门监控 1",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000003?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "4#门外监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000004?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "材料堆场",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000005?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "2#门监控 2",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000006?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "4#门监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000007?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "3#门外监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000008?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "场内 2",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000009?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "1#门安全通道门禁监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000010?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "1#门监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000011?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "5#门监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000012?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "5#门外监控",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000013?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "钢筋加工棚",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000014?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "安全讲台",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000015?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "4#塔吊",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000016?originTypeStr=rtp_push"
+    ]
+  },
+  {
+    "type": "Null",
+    "monitorName": "2#塔吊",
+    "videoPath": [
+      "rtsp://120.26.34.95:554/rtp/42010500441188000001_34020000001320000017?originTypeStr=rtp_push"
+    ]
+  }
+]

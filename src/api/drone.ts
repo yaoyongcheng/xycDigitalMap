@@ -822,6 +822,285 @@ export async function fetchMediaJobs(jobId: number): Promise<DroneMedia[]> {
   return out
 }
 
+/* ---------- 「全局定点拍照」最新九张（V2 任务记录 → 采集数据 同一条链） ---------- */
+
+/**
+ * 现场那条定时拍照航线的**全名**。
+ *
+ * V2 的「任务记录 → 选中一条 → 采集数据 → 采集图片」就是这条航线的一次执行
+ * （2026-11-17 15:30 那班，界面写着「巡检时长 5 分钟 / 采集图片 9」）。
+ * 名字要完全对上：`/task/exec/list/record` 里同一时段还有「分区定点拍照」，
+ * 用 includes('定点拍照') 会把两条混在一起。
+ */
+export const SPOT_TASK_NAME = '向阳村-全局定点拍照'
+
+/** 这组照片固定取多少张（V2 采集图片一栏就是 9 张） */
+export const SPOT_LIMIT = 9
+
+/**
+ * 回溯窗口（天），与照片墙同一套策略：先近 30 天，没有相片再退到 180 天。
+ * 现场每天两班，30 天足够；退一次是为了停飞一段时间后进来仍能看到最后一批。
+ */
+const SPOT_WINDOWS = [30, 180] as const
+
+/** 一条「定点拍照」航线的执行结果（照片 + 来自哪一班） */
+export interface DroneSpotGallery {
+  /** 执行记录 id（媒体就是按它取的） */
+  jobId: number
+  /** 该班次的开始时间 */
+  start: string
+  /** 任务 id（同一条航线每次执行都一样） */
+  taskId: number | null
+  /** 任务名 */
+  taskName: string
+  /** 图片媒体，按文件名（拍摄先后）升序；挑几张由调用方决定（9 张 / 第 1、2、37 张 / 第 2、7 张） */
+  media: DroneMedia[]
+}
+
+/** 本地 `YYYY-MM-DD`，offset 为天 */
+function spotDay(offset = 0): string {
+  const d = new Date()
+  d.setDate(d.getDate() + offset)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 本地当前时刻，格式与记录里的 `start` 一致（`YYYY-MM-DDTHH:mm:ss`） */
+function spotNow(): string {
+  const d = new Date()
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/**
+ * 取某条「定点拍照」航线**最近一班有照片的飞行**的全部图片（两条航线共用）。
+ *
+ * 「全景航拍」（`fetchSpotGallery`）、「材料堆场」（`fetchYardGallery`）与
+ * 「设备设施」（`fetchFacilityGallery`）都走这里，差别只在"从这一班里挑哪几张"。
+ * 这样几个模块的**数据源、过滤与排序规则**天然一致，不会一处改了另一处忘 ——
+ * 用户明确要求「不要另建不一致的逻辑」。
+ *
+ * 规则（与 V2「任务记录 → 采集数据 → 采集图片」同一条链）：
+ *   · 任务名 **完全相等**；
+ *   · 只要 `status === 2` 且 `start <= now`（记录里混着未来排班）；
+ *   · 按 `start` 倒序，跳过媒体为空的那班（实测有 `status=2` 但 0 条媒体的班）；
+ *   · 只留 `image/*`（每班混着 1 个 `.DAT` 飞行日志）；
+ *   · 按文件名升序 = DJI 拍摄序号。
+ *
+ * 返回 `null` = 近期确实没有照片；抛错 = 两个窗口都请求失败（页面要写"取不到"）。
+ */
+async function latestTaskMedia(taskName: string): Promise<DroneSpotGallery | null> {
+  const now = spotNow()
+  let firstErr: unknown = null
+  let okWindows = 0
+
+  for (const days of SPOT_WINDOWS) {
+    let rows: DroneTaskRecord[]
+    try {
+      rows = (await fetchTaskRecords({ page: 1, size: 100, start: spotDay(-days), end: spotDay(1) })).rows
+      okWindows += 1
+    } catch (e) {
+      firstErr ??= e
+      continue
+    }
+
+    const jobs = rows
+      .filter((r) => r.taskName.trim() === taskName)
+      .filter((r) => r.status === 2 && (!r.start || r.start <= now))
+      .sort((a, b) => b.start.localeCompare(a.start))
+
+    for (const job of jobs) {
+      let media: DroneMedia[]
+      try {
+        media = await fetchMediaJobs(job.id)
+      } catch {
+        // 某一班取不到（限流 / 404）不该让整组照片消失，继续往下一班找
+        continue
+      }
+      const imgs = media.filter((m) => m.mediaType.startsWith('image/'))
+      if (!imgs.length) continue
+      imgs.sort((a, b) => a.name.localeCompare(b.name))
+      return { jobId: job.id, start: job.start, taskId: job.taskId, taskName: job.taskName, media: imgs }
+    }
+  }
+
+  // 两个窗口都请求失败 ≠ 没有照片，得让页面写「加载失败」而不是「暂无」
+  if (!okWindows && firstErr) throw firstErr instanceof Error ? firstErr : new ApiError(0, `${taskName}加载失败`)
+  return null
+}
+
+/**
+ * 取「全局定点拍照」**最近一班有照片的飞行**里的最新 9 张图。
+ *
+ * ## 这条链是怎么来的（对齐 V2，不是另起一套）
+ *
+ * V2 的任务记录页拿的就是同两个接口：
+ *   `GET /task/exec/list/record`（本项目 pid + 日期区间）→ 该航线的一班班执行
+ *   `GET /media/task/job/{执行记录id}` → 这一班的采集文件
+ *
+ * 所以这里一条都不新造，只把「哪一班、哪些文件、什么顺序」按 V2 的口径钉死：
+ *
+ *   · **只认 `taskName === 向阳村-全局定点拍照`**，不是按关键词模糊匹配；
+ *   · **只要已完成（`status === 2`）且已过开始时刻**的班次 —— 记录里混着未来
+ *     排班（11-19 那些 `status: -1`），它们没有媒体，取到就是空白；
+ *   · 按 `start` **倒序**从最近一班往下找，**跳过媒体为空的那班**
+ *     （实测 11-18 08:20 那班 `status=2` 但媒体 0 条，直接取它会显示空）；
+ *   · 媒体里**只留 `image/*`**：每班都混着 1 个 `.DAT` 飞行日志，
+ *     V2 的「采集图片 9」= 9 张 JPEG，日志不算图片；
+ *   · 按**文件名升序** = DJI 的拍摄序号（`_0001_V` → `_0009_V`），
+ *     与 V2 那排缩略图从左到右的顺序一致；多于 9 张时取**最后 9 张**
+ *     （最新拍的），再按升序排。
+ *
+ * 返回 `null` 表示「这条航线近期确实没有照片」—— 页面给空态，不拿别的航线顶。
+ */
+export async function fetchSpotGallery(limit = SPOT_LIMIT): Promise<DroneSpotGallery | null> {
+  const g = await latestTaskMedia(SPOT_TASK_NAME)
+  if (!g) return null
+  return { ...g, media: g.media.slice(-Math.max(1, limit)) }
+}
+
+/* ---------- 「分区定点拍照」固定三张（材料堆场，2026-11-18） ---------- */
+
+/**
+ * 材料堆场那条航线的**全名**（与 SPOT 一样要完全相等，不能用关键词）。
+ *
+ * 现场同时有「全局定点拍照」和「分区定点拍照」两条定时航线，`includes('定点拍照')`
+ * 会把两条混在一起，取到哪条全靠运气。
+ */
+export const YARD_TASK_NAME = '向阳村-分区定点拍照'
+
+/**
+ * 材料堆场固定取哪几张（**1 基**，按拍摄顺序 = 文件名升序）。
+ *
+ * 用户按 V2「任务记录 → 向阳村-分区定点拍照 → 采集数据 → 采集照片(41)」那张网格
+ * 逐格点出来的：第 1、第 2 张和**第 37 张**是材料堆场那几堆料，其余 38 张是别处。
+ * 所以这里写死序号，不做任何"看起来像堆场"的画面猜测。
+ */
+export const YARD_PICKS = [1, 2, 37] as const
+
+/**
+ * 按 **1 基序号**从一班的图片里挑几张（不足序号就少给，不凑数）。
+ *
+ * 「材料堆场」与「设备设施」共用：两条链只在"挑哪几个位置"上不同，
+ * 取数（窗口 / 任务名全等 / 已完成 / 已开始 / 跳过空媒体 / 文件名升序）
+ * 全在 `latestTaskMedia` 里，别各写一份。
+ */
+function pickByIndex(g: DroneSpotGallery, picks: readonly number[]): DroneSpotGallery {
+  const picked = picks.map((n) => g.media[n - 1]).filter((m): m is DroneMedia => Boolean(m))
+  return { ...g, media: picked }
+}
+
+/**
+ * 取「分区定点拍照」**最近一班有照片的飞行**里的第 1、2、37 张。
+ *
+ * 走的是和 `fetchSpotGallery` **同一条**取数链（`latestTaskMedia`：同一套窗口、
+ * 同一套任务名全等 + 已完成 + 已开始 + 跳过空媒体的规则、同一套文件名升序），
+ * 只有"从这班里挑哪几张"不一样 —— 那边取末尾 9 张，这边按序号点三个位置。
+ *
+ * 班次照片数不足 37 张时**只返回存在的那几张**（不拿最后一张凑数，也不跨班补）：
+ * 凑出来的第 3 张不是用户指的那张，宁可少一张。
+ */
+export async function fetchYardGallery(): Promise<DroneSpotGallery | null> {
+  const g = await latestTaskMedia(YARD_TASK_NAME)
+  return g ? pickByIndex(g, YARD_PICKS) : null
+}
+
+/* ---------- 「塔吊定点」固定两张（设备设施，2026-11-18） ---------- */
+
+/**
+ * 设备设施那条航线的**全名**（与 SPOT / YARD 同规矩：完全相等，不用关键词）。
+ *
+ * 现场同时有「巡检」「安全巡检」「塔吊定点」「分区定点拍照」几条，用 `includes`
+ * 会串台。V2 的任务记录里它就是一条独立航线（2026-11-17 14:15 那班采集 16 张）。
+ */
+export const FACILITY_TASK_NAME = '向阳村-塔吊定点'
+
+/**
+ * 设备设施固定取哪几张（**1 基**，按拍摄顺序 = 文件名升序）。
+ *
+ * 用户按 V2「任务记录 → 向阳村-塔吊定点 → 采集数据 → 采集照片(16)」那张网格
+ * 逐格点出来的：**第 2 张和第 7 张**才是设备设施那几台塔吊，其余是别处。
+ *
+ * ## 另外两张（本轮不做）
+ *
+ * 「视频监控-塔吊-2#塔吊」「视频监控-塔吊-4#塔吊」各自最新的一张也是这一格的
+ * 来源，但监控侧目前**没有照片查询接口**（keehang 那套只有无人机媒体，
+ * 塔吊监控走的是 tciccs，只有实时流 / 抓拍报警），用户 2026-11-18 明确
+ * 「本轮先保持现状，不做该接口接入」。所以这一格现在稳定是 **2 张**；
+ * 等接口通了再加一条链拼进来，`PatrolPanel` 那边不用改。
+ */
+export const FACILITY_PICKS = [2, 7] as const
+
+/**
+ * 取「塔吊定点」**最近一班有照片的飞行**里的第 2、第 7 张。
+ *
+ * 与 `fetchYardGallery` 同一套（共用 `latestTaskMedia` + `pickByIndex`），
+ * 差别只有航线名与序号；不足 7 张时只给存在的那几张。
+ */
+export async function fetchFacilityGallery(): Promise<DroneSpotGallery | null> {
+  const g = await latestTaskMedia(FACILITY_TASK_NAME)
+  return g ? pickByIndex(g, FACILITY_PICKS) : null
+}
+
+/* ---------- 「安全巡查」：两条航线各取一张（2026-11-18） ---------- */
+
+/**
+ * 「土方1」的**全名**（安全巡查的第一张来源，同时 `probe` 用它跳过整班照片）。
+ *
+ * 名字带数字 1，不能写成 `向阳村-土方`：现场还有「土方2 / 土方3」时，
+ * 模糊匹配会把几片开挖区混成一条。
+ */
+export const SAFETY_SOIL_TASK_NAME = '向阳村-土方1'
+
+/**
+ * 安全巡查那 2 张的来源。**不是一条航线**，所以这里是一张来源表，
+ * 每项 = 一条航线 + 该班取第几张（1 基，按拍摄顺序）。
+ *
+ * 用户对着 V2 的两张截图点出来的：
+ *   · 「向阳村-土方1」2026-11-17 17:00 那班（采集 50 张）→ 第 **1** 张；
+ *   · 「向阳村-分区定点拍照」2026-11-17 12:30 那班（采集 41 张）→ 第 **34** 张。
+ *
+ * 顺序就是表里的顺序（土方1 在前）：页面两张卡片按这个顺序铺。
+ * 第二条复用的就是「材料堆场」那条航线（`YARD_TASK_NAME`），只是取的张不同。
+ */
+export const SAFETY_SOURCES = [
+  { taskName: SAFETY_SOIL_TASK_NAME, pick: 1 },
+  { taskName: YARD_TASK_NAME, pick: 34 },
+] as const
+
+/**
+ * 取「安全巡查」那 2 张：每条航线各取**最近一班有照片的飞行**里指定的那一张。
+ *
+ * 与 `fetchYardGallery` / `fetchFacilityGallery` 同一套（`latestTaskMedia` +
+ * `pickByIndex`），只是这里跨**两条**航线：所以返回的是一个数组（每个有图
+ * 的来源一项），而不是单条 `DroneSpotGallery` —— 两班的 `jobId / taskName`
+ * 不同，合成一条会让卡片标题和弹层 id 都错。
+ *
+ * 逐条**串行**取（每条一次列表 + 一次媒体）：并行会在同一秒打两个媒体请求，
+ * keehang 那侧直接 42901。
+ *
+ * 容错：一条挂了不影响另一条（只少一张）；两条都挂才抛错，页面才写「取不到」。
+ */
+export async function fetchSafetyGallery(): Promise<DroneSpotGallery[]> {
+  const out: DroneSpotGallery[] = []
+  let firstErr: unknown = null
+
+  for (const s of SAFETY_SOURCES) {
+    try {
+      const g = await latestTaskMedia(s.taskName)
+      const picked = g ? pickByIndex(g, [s.pick]) : null
+      if (picked?.media.length) out.push(picked)
+    } catch (e) {
+      firstErr ??= e
+    }
+  }
+
+  if (!out.length && firstErr) {
+    throw firstErr instanceof Error ? firstErr : new ApiError(0, '安全巡查加载失败')
+  }
+  return out
+}
+
 /* ---------- 项目全景（重建成果，V2「控制 → 成果」同一条链） ---------- */
 
 /**

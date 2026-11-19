@@ -9,6 +9,8 @@
  *     需要能断言「创建了几次、释放了几次」，泄露与否正是要测的点
  */
 
+import { vi } from 'vitest'
+
 /* ---------------- ResizeObserver ---------------- */
 
 export class ResizeObserverMock implements ResizeObserver {
@@ -51,6 +53,35 @@ export const blobUrls = {
 }
 
 let blobSeq = 0
+
+/* ---------------- Image 预加载桩 ---------------- */
+
+/**
+ * `Image` 桩：MapViewer 换底图前会先预加载新图（对齐自然尺寸、等像素就绪），
+ * happy-dom 的 `Image` 不会真的去加载，`onload` 永不触发 —— 组件会一直等到
+ * 超时才换图，断言时看到的还是上一张。这里让 `src` 赋值同步回调 `onload`，
+ * 尺寸按内置兜底图的 1280×720 给。
+ */
+export function stubImageLoader(w = 1280, h = 720): void {
+  class FakeImage {
+    onload: (() => void) | null = null
+    onerror: (() => void) | null = null
+    naturalWidth = w
+    naturalHeight = h
+    complete = true
+    private current = ''
+
+    get src(): string {
+      return this.current
+    }
+
+    set src(v: string) {
+      this.current = v
+      this.onload?.()
+    }
+  }
+  vi.stubGlobal('Image', FakeImage as unknown as typeof Image)
+}
 
 /* ---------------- 安装 ---------------- */
 

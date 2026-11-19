@@ -66,33 +66,29 @@ describe('阶段 5 · 真实数据', () => {
     vi.unstubAllGlobals()
   })
 
-  describe('监控点位与报警抓拍', () => {
-    it('点位由真实报警的 channelNo 去重派生，没有报警就没有点位', () => {
+  describe('监控点位（2026-11-18 设计稿白名单）', () => {
+    it('点位是写死的 8 个白名单，与报警数据无关', () => {
       const cam = useCamStore()
-      expect(cam.cameras).toEqual([])
-      expect(cam.currentCam.name).toBe('暂无监控点位')
-
-      useAlarmStore().liveAlarms = camAlarmFixtures()
-      expect(cam.cameras.map((c) => [c.id, c.name])).toEqual([
-        ['ch-2', '材料堆场'],
-        ['ch-3', '安全讲台'],
+      // 旧版是从报警 channelNo 反推，没报警就一个点位都没有；现在反过来：
+      // 点位固定，报警有没有都不影响监控页
+      expect(useAlarmStore().liveAlarms).toEqual([])
+      expect(cam.points).toHaveLength(8)
+      expect(cam.current.name).toBe('2#门监控1')
+      expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([
+        ['出入口', 4],
+        ['场内', 2],
+        ['塔吊', 2],
       ])
-      expect(cam.grouped.map((g) => g.name)).toEqual(['视频监控'])
-    })
-
-    it('抓拍按「通道 + 日期」真实过滤，不再恒定 3 张 / 不轮转假图', () => {
-      signIn()
-      useAlarmStore().liveAlarms = camAlarmFixtures()
-      const cam = useCamStore()
-      cam.camId = 'ch-2'
-
-      expect(cam.camShots.map((s) => s.time)).toEqual(['08:12:00', '12:36:00', '16:50:00'])
-      expect(cam.camShots.every((s) => s.pos === '' && s.img === '')).toBe(true)
-      // 昨天只有 1 条；更早的日子没有任何记录 → 空数组（明确空态，不编 3 张）
-      expect(cam.shotsFor('ch-2', 1)).toHaveLength(1)
-      expect(cam.shotsFor('ch-2', 7)).toEqual([])
-      expect(cam.shotsFor('ch-3', 0)).toHaveLength(1)
-      expect(cam.shotsFor('unknown', 0)).toEqual([])
+      expect(cam.points.map((p) => p.name)).toEqual([
+        '2#门监控1',
+        '2#门监控2',
+        '4#门监控',
+        '4#门外监控',
+        '地磅全景',
+        '钢筋加工棚',
+        '2#塔吊',
+        '4#塔吊',
+      ])
     })
 
     it('未登录点监控：跳登录页而不是先摆一个空播放器', async () => {
@@ -105,33 +101,28 @@ describe('阶段 5 · 真实数据', () => {
       w.unmount()
     })
 
-    it('抓拍图走真实截图接口，回填到对应灰条位置并缓存', async () => {
+    it('登录后从工作台进入：打开监控层并取首个点位画面', async () => {
       signIn()
-      useAlarmStore().liveAlarms = camAlarmFixtures()
-      const cam = useCamStore()
-      cam.camId = 'ch-2'
-      cam.showCamMode('shots')
+      // 快照接口直出图片字节，与上面那条 JSON 桩不同，这里单独给一份
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => 'image/jpeg' },
+          blob: async () => new Blob([new Uint8Array(64)], { type: 'image/jpeg' }),
+        })),
+      )
+
+      const w = mount(WorkPage)
+      await w.find('[data-work="cam"]').trigger('click')
       await flushPromises()
 
-      expect(cam.camShots[0].img).toContain('data:image/jpeg;base64,')
-      expect(cam.currentCam.img).toContain('data:image/jpeg;base64,')
-      // 同一条不重复打接口（LRU + store 内缓存）
-      const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length
-      await cam.ensurePictures(['101'])
-      await flushPromises()
-      expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls)
-    })
-
-    it('报警晚到时自动选中首个真实通道，抓拍视图不会一直空着', async () => {
-      signIn()
       const cam = useCamStore()
-      cam.openCam('')
-      expect(cam.camId).toBe('')
-
-      useAlarmStore().liveAlarms = camAlarmFixtures()
-      await nextTick()
-      expect(cam.camId).toBe('ch-2')
-      expect(cam.camShots.length).toBeGreaterThan(0)
+      expect(cam.isOpen).toBe(true)
+      expect(cam.camId).toBe(cam.points[0].channelId)
+      expect(cam.state).toBe('ok')
+      w.unmount()
     })
   })
 
@@ -262,20 +253,42 @@ describe('阶段 5 · 真实数据', () => {
       expect(scenes[0].count).toBe(2)
       expect(scenes[1].count).toBe(1)
       expect(scenes[2].count).toBe(1)
+      // 2# 住宅楼是固定 1F~5F 五层（与 V2 一致），王五在 1F
+      expect(scenes[1].units.map((u) => u.name)).toEqual(['1F', '2F', '3F', '4F', '5F'])
+      expect(scenes[1].units[0].count).toBe(1)
+      // B1 就是负一层
+      expect(scenes[2].units.map((u) => u.name)).toEqual(['-1F'])
+      expect(scenes[2].units[0].count).toBe(1)
       // 离线的牟其兵（areaName 为空 / alive false）不进任何区域
       expect(total).toBe(4)
-      expect(scenes.flatMap((s) => s.areas.flatMap((a) => a.members.map((m) => m.name)))).not.toContain('牟其兵')
+      expect(scenes.flatMap((s) => s.units.flatMap((a) => a.members.map((m) => m.name)))).not.toContain('牟其兵')
+    })
+
+    it('同一层的多条管控区合并，表外楼层排在 5F 之后', () => {
+      const { scenes } = buildScenes(
+        [
+          { personName: '甲', personTypeWork: '木工', areaName: '2#楼5F管控区', alive: true },
+          { personName: '乙', personTypeWork: '木工', areaName: '2#楼5F管控区_copy', alive: true },
+          { personName: '丙', personTypeWork: '瓦工', areaName: '2#楼6F管控区', alive: true },
+        ],
+        [],
+      )
+      const s = scenes[1]
+      expect(s.units.map((u) => u.name)).toEqual(['1F', '2F', '3F', '4F', '5F', '6F'])
+      expect(s.units[4].count).toBe(2)
+      expect(s.units[4].members.map((m) => m.name)).toEqual(['甲', '乙'])
+      expect(s.count).toBe(3)
     })
 
     it('每个管控区带人员姓名与工种（人数 = 名单条数，不会对不上）', () => {
       const { scenes } = buildScenes(PEOPLE, [])
-      const zb = scenes[0].areas.find((a) => a.name === '智能钢筋加工区')
+      const zb = scenes[0].units.find((a) => a.name === '智能钢筋加工区')
       expect(zb?.members).toEqual([
         { name: '何功纯', trade: '钢筋工', company: '湖北瀚海星泊建设有限公司' },
       ])
       for (const s of scenes) {
-        for (const a of s.areas) expect(a.count).toBe(a.members.length)
-        expect(s.count).toBe(s.areas.reduce((n, a) => n + a.count, 0))
+        for (const a of s.units) expect(a.count).toBe(a.members.length)
+        expect(s.count).toBe(s.units.reduce((n, a) => n + a.count, 0))
       }
     })
 
@@ -286,7 +299,24 @@ describe('阶段 5 · 真实数据', () => {
       )
       expect(total).toBe(41)
       expect(scenes[0].count).toBe(35)
-      expect(scenes[0].areas[0].members).toEqual([])
+      expect(scenes[0].units[0].members).toEqual([])
+    })
+
+    it('地下室现在只有 B1（-1F）；真出现 B2 才追加 -2F，且 -1F 在前', () => {
+      const one = buildScenes([{ personName: '甲', areaName: 'B1管理区域', alive: true }], [])
+      expect(one.scenes[2].units.map((u) => u.name)).toEqual(['-1F'])
+
+      const two = buildScenes(
+        [
+          { personName: '甲', areaName: 'B1管理区域', alive: true },
+          { personName: '乙', areaName: 'B2管理区域', alive: true },
+        ],
+        [],
+      )
+      expect(two.scenes[2].units.map((u) => u.name)).toEqual(['-1F', '-2F'])
+      expect(two.scenes[2].units[1].count).toBe(1)
+      // B2 归地下室，别漏到场布图
+      expect(two.scenes[0].units.map((u) => u.name)).toEqual([])
     })
 
     it('三个场景都渲染，0 人的场景也明写「0人」', async () => {
@@ -302,6 +332,28 @@ describe('阶段 5 · 真实数据', () => {
       expect(rows[1].text()).toContain('2#住宅楼')
       expect(rows[2].text()).toContain('地下室')
       expect(w.text()).not.toContain('—')
+      w.unmount()
+    })
+
+    it('下钻 2#住宅楼：照 V2 列 1F~5F 五行，没人也占位', async () => {
+      signIn()
+      seed(buildScenes(PEOPLE, []).scenes, 4)
+      const w = mount(PeopleDist)
+      await nextTick()
+
+      await w.findAll('.people-scene')[1].trigger('click')
+      await nextTick()
+
+      const rows = w.findAll('.people-group')
+      expect(rows).toHaveLength(5)
+      expect(rows.map((r) => r.find('.people-group-hd span').text())).toEqual(['1F', '2F', '3F', '4F', '5F'])
+      // 楼层是一行一条数据，不是分组小标题
+      expect(rows.every((r) => r.classes('is-floor'))).toBe(true)
+      // 0 人的层不摆「暂无名单」，只有 1F 有王五
+      expect(w.findAll('.people-no-member')).toHaveLength(0)
+      expect(w.findAll('.people-members .pm-name').map((n) => n.text())).toEqual(['王五'])
+      // 副标题按「层」计数
+      expect(w.text()).toContain('共5层')
       w.unmount()
     })
 

@@ -184,9 +184,11 @@ describe('结构性守卫', () => {
       // 2026-11 阶段 8 再移出两个：data/config.ts（演示照片常量全删，
       // 改真实航拍图）、views/sub/UavPage.vue（静态示意图当直播画面，
       // 已改成明说「实时视频流未接入」）。
+      // 2026-11-18：MapLand.vue 移出（二维/三维底图改由场景截图接口动态取），
+      // 兜底的 site-map / site-flat 两处引用收进 stores/scene.ts 一张表里。
       expect([...owners].sort()).toEqual([
-        'src/components/overlays/MapLand.vue',
         'src/components/ui/MapViewer.vue',
+        'src/stores/scene.ts',
         'src/styles/app.css',
         'src/utils/photoHd.ts',
         'src/utils/videoAlarm.ts',

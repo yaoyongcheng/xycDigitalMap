@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { useSceneStore } from '@/stores/scene'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import HomeSheet from './home/HomeSheet.vue'
@@ -24,6 +25,29 @@ import HomeSheet from './home/HomeSheet.vue'
 const shell = useShellStore()
 const alarm = useAlarmStore()
 const subpage = useSubpageStore()
+const scene = useSceneStore()
+
+/**
+ * 首页背景（三维场景图）改由场景截图接口动态取（2026-11-18）。
+ *
+ * 这里只发起一次：store 内部按类型去重 + 成功后整个会话复用，
+ * 切标签导致首页卸载重挂时不会重复下 3MB。取不到时的落点有三层 ——
+ * 本机落盘的本地兜底图（IndexedDB，比打包图新）→ public/img 的
+ * site-map.webp（内置兜底），布局与首屏观感不变。
+ */
+const map3d = computed(() => scene.src('3d'))
+
+/**
+ * `.home-map` 那层 CSS 背景也跟着换成接口图。
+ *
+ * 它平时被 MapViewer 的 `<img>` 完全盖住，只在「图片字节还没到」的空窗期
+ * 露出来；换成同一张图能让这段空窗期的画面连续，不必先从旧图跳一下。
+ * 内联 url 用双引号包住 —— objectURL 里不会出现引号，但 `blob:` 在部分
+ * 浏览器会带括号，包起来更稳。
+ */
+const mapBgStyle = computed(() =>
+  scene.isLive('3d') ? { backgroundImage: `url("${map3d.value}")` } : {},
+)
 
 const pageEl = ref<HTMLElement | null>(null)
 
@@ -186,6 +210,9 @@ onMounted(() => {
    */
   recalibrateTimer = window.setTimeout(applySheetTop, 600)
 
+  // 首页背景 = 三维场景图，挂载即取（store 保证一次会话只下一次）
+  void scene.load('3d')
+
   window.addEventListener('resize', onResize)
   // Safari 的地址栏收放只改 visualViewport，未必触发 window 的 resize
   window.visualViewport?.addEventListener('resize', onResize)
@@ -247,13 +274,14 @@ function onMapAlarm(id: string): void {
     }"
   >
     <div class="home-scene">
-      <div class="home-map">
+      <div class="home-map" :style="mapBgStyle">
         <!--
           全屏地图打开时挂起首页这份实例：两者互斥，任一时刻只有一个在观测
           容器尺寸、响应手势（MapViewer 的 suspended 说明见组件内注释）。
         -->
         <MapViewer
           :alarms="mapAlarmPins"
+          :src="map3d"
           fit="cover"
           compact
           :suspended="shell.mapLandOpen"

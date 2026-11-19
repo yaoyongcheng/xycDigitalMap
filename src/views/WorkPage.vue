@@ -43,8 +43,9 @@ const tools: { color: string; title: string; desc: string; icon: IconName }[] = 
 
 function onShortClick(work: string): void {
   // 原 app.js:997-1005 —— cam 打开首个点位，photo 开航拍，hazard 开隐患，其余提示待定
-  // cameras 现在来自真实报警通道，未同步到数据时是空数组；守卫由 openCam 负责
-  if (work === 'cam') cam.openCam(cam.cameras[0]?.id ?? '')
+  // 监控点位现在是写死的白名单（data/cams.ts），不再依赖报警是否已同步；
+  // 登录守卫仍在 openCam 里（未登录先去登录页）
+  if (work === 'cam') cam.openCam()
   else if (work === 'photo') air.openAir()
   else if (work === 'hazard') air.openHazard()
   else shell.showToast('功能待定', 'info')

@@ -3,8 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <!-- viewport-fit=cover：刘海屏 / 灵动岛 / 底部手势条区域交给 env(safe-area-inset-*) 处理 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>向阳村项目智能建造管理平台</title>
+
   <!--
     PWA 主题色：决定系统状态栏区域的底色。
     这里给的是首屏默认值（浅色，与导航栏 #fff 一致，iOS 会配深色文字）；
@@ -12,14 +14,120 @@
     首页与横屏覆盖层是深色顶，需要切回深色，避免切出白边。
   -->
   <meta name="theme-color" content="#ffffff" />
-  <!-- apple 图标用于 iOS 添加到主屏 -->
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+  <!--
+    添加到主屏幕（2026-11-19 补）
+
+    iOS 18 的「添加到主屏幕」仍以这两条为准：
+      · apple-mobile-web-app-capable —— 没有它，点主屏图标会在 Safari 里带地址栏打开，
+        而不是独立窗口；manifest 的 display 在 iOS 上只是锦上添花，不能替代它。
+      · apple-mobile-web-app-status-bar-style —— `default` 让系统状态栏保持不透明，
+        底色跟随 theme-color，文字颜色由系统按底色亮度决定（浅底黑字）。
+        刻意**不用** black-translucent：那会把页面顶到状态栏下面并要求状态栏用白字，
+        而本项目大量页面是白色顶栏（工作台 / 消息 / 我的），白字会看不见。
+      · apple-mobile-web-app-title —— 主屏显示名。不写就会拿 <title> 截断成
+        「向阳村项目智能建造…」，写成短名才看得清。
+    安卓侧对应的是 mobile-web-app-capable 与 manifest 的 display（见 vite.config.ts）。
+  -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="数字地图" />
+  <meta name="application-name" content="数字地图" />
+
+  <!-- 工地现场会把工程编号、电话号当号码识别并加下划线，关掉 -->
+  <meta name="format-detection" content="telephone=no, email=no, address=no" />
+
+  <!--
+    图标
+      · 180×180 是 iPhone 主屏标准尺寸，iOS 会自己加圆角遮罩（图片本身不要带圆角）
+      · 152 / 167 给 iPad（iPad mini / iPad Pro），缺了会从 180 缩，边缘会糊
+      · favicon 给桌面浏览器标签页
+    manifest 里的 192 / 512 / maskable 由 vite-plugin-pwa 注入，这里不重复写。
+  -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="apple-touch-icon" sizes="152x152" href="/pwa-152x152.png" />
+  <link rel="apple-touch-icon" sizes="167x167" href="/pwa-167x167.png" />
   <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png" />
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <!-- manifest 与 SW 注册脚本由 vite-plugin-pwa 在构建期自动注入，无需手写 -->
+
+  <!--
+    iOS 独立运行时的启动画面（2026-11-19 补）
+
+    iOS 不读 manifest 的 background_color 生成启动图：没有这些 link，从主屏点开
+    会先白屏 1~2 秒再出内容，在深色应用上非常刺眼。每张按「设备 CSS 宽高 + 像素比」
+    精确匹配，尺寸不匹配的会退化成白屏 —— 所以下面按 iPhone 12~16 全系 + SE + 8 Plus
+    逐条列出，全部 portrait（本项目主界面是竖屏，横屏只在覆盖层内旋转）。
+    图片为静态纯色底 + 居中标识，不参与 SW 预缓存（只在启动瞬间取一次）。
+  -->
+  <link rel="apple-touch-startup-image" href="/startup/750x1334.png" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1125x2436.png" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/828x1792.png" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1170x2532.png" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1179x2556.png" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1284x2778.png" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1290x2796.png" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1320x2868.png" media="(device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1206x2622.png" media="(device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+  <link rel="apple-touch-startup-image" href="/startup/1242x2208.png" media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" />
+
+  <!--
+    启动骨架（2026-11-19 补）
+
+    iOS 的 startup-image 只负责「系统启动 → WebView 首帧」；从首帧到 Vue 挂载
+    还有一段（HTML 解析 + 入口 JS 下载执行），这段默认是白屏。
+    这里先铺一层与 background_color 同色的骨架，main.ts 挂载后淡出移除。
+
+    样式内联在 head：外链 CSS 还没下来时它就得生效，否则又是白闪。
+    尺寸/配色刻意写死，不引用任何 CSS 变量 —— 此刻 app.css 还不存在。
+  -->
+  <style>
+    html, body { margin: 0; padding: 0; background: #0b1a2b; }
+    #boot {
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 18px; background: #0b1a2b;
+      transition: opacity 0.26s ease;
+      -webkit-user-select: none; user-select: none;
+    }
+    #boot.is-gone { opacity: 0; pointer-events: none; }
+    #boot img { display: block; width: 88px; height: 88px; border-radius: 20px; }
+    #boot-tip {
+      margin: 0; color: #9fb3c8; font-size: 13px; line-height: 1.6;
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+    #boot-retry {
+      margin: 2px 0 0; padding: 8px 18px; border: 0; border-radius: 999px;
+      background: #4c9fff; color: #fff; font-size: 14px;
+      font-family: inherit;
+    }
+    #boot-retry[hidden] { display: none; }
+  </style>
 </head>
 <body>
+  <!-- 启动骨架：main.ts 挂载完成后移除；12s 仍未挂载则给出重试入口（独立窗口没有地址栏，不能靠下拉刷新） -->
+  <div id="boot" aria-hidden="true">
+    <img src="/pwa-192x192.png" width="88" height="88" alt="" />
+    <p id="boot-tip">正在加载现场数据…</p>
+    <button id="boot-retry" type="button" hidden>重新加载</button>
+  </div>
+
   <div id="app"></div>
   <script type="module" src="/src/main.ts"></script>
+
+  <script>
+    // 入口 JS 没跑起来（网络断、缓存坏、白屏）时，骨架会一直停着 —— 给一条自查路径。
+    // 独立模式下没有地址栏、也没有下拉刷新，不给按钮用户只能杀进程重开。
+    window.setTimeout(function () {
+      var app = document.getElementById('app')
+      var tip = document.getElementById('boot-tip')
+      var btn = document.getElementById('boot-retry')
+      if (!app || app.childElementCount > 0) return
+      if (tip) tip.textContent = '加载失败，请检查网络后重试'
+      if (btn) {
+        btn.hidden = false
+        btn.onclick = function () { window.location.reload() }
+      }
+    }, 12000)
+  </script>
 </body>
 </html>

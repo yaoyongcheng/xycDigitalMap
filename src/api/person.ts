@@ -33,9 +33,18 @@ export interface TradeAtte {
   count: number
 }
 
-/** 一个区域（管控区）的在场人数 + 人员名单 */
-export interface AreaAtte {
-  /** 区域名，来自人员的 `areaName`（如「2#楼4F管控区」） */
+/**
+ * 场景下的一个「子级」。
+ *
+ * 两种场景长得不一样，所以名字不叫「管控区」：
+ *   · `2#住宅楼` / `地下室` —— 子级是**楼层**（`1F`…`5F` / `-1F`），
+ *     一个楼层可能对应多条管控区（如 `2#楼4F管控区`、`2#楼4F管控区_copy`）；
+ *   · `场布图` —— 子级就是**管控区**本身（管理区域 / 智能钢筋加工区 / 北侧钢筋加工区）。
+ *
+ * 页面对两者一视同仁：一行名字 + 一个人数，点开看这行下面的名单。
+ */
+export interface SceneUnit {
+  /** 楼层名（1F / -1F）或管控区名（管理区域 / 智能钢筋加工区） */
   name: string
   /** 当前在场人数（= members.length） */
   count: number
@@ -53,14 +62,14 @@ export interface PersonBrief {
   company: string
 }
 
-/** 一个大场景的人数与其下属管控区 */
+/** 一个大场景的人数与其下属子级（楼层 / 管控区） */
 export interface SceneAtte {
   /** 场景名：场布图 / 2#住宅楼 / 地下室 */
   name: string
-  /** 场景合计（= 下属管控区之和） */
+  /** 场景合计（= 下属子级之和） */
   count: number
-  /** 下属管控区（点开场景后列出；人数降序） */
-  areas: AreaAtte[]
+  /** 下属子级（点开场景后列出，顺序见 `toUnits`） */
+  units: SceneUnit[]
 }
 
 /** 一次请求的全部产物 */
@@ -132,9 +141,100 @@ const SCENES = ['场布图', '2#住宅楼', '地下室'] as const
  * 将来现场新增管控区（如「酒店」「A 区」）默认归场布图 —— 它们都在总平面上。
  */
 function sceneOf(areaName: string): string {
-  if (/B1|地下|地库|负一/i.test(areaName)) return '地下室'
+  // B1/B2/负一层 都算地下室（现场目前只有 B1，B2 出现了也要能归对）
+  if (/B\s*\d|地下|地库|负\s*[一二三四\d]/i.test(areaName)) return '地下室'
   if (/2\s*#|住宅楼/.test(areaName)) return '2#住宅楼'
   return '场布图'
+}
+
+/**
+ * 固定楼层表（数组顺序 = 页面顺序），对齐 V2「人员分布」浮层的楼层列表。
+ *
+ * V2 里 `2#住宅楼` 永远是 1F~5F 五行，一个人都没有也照列；`地下室` 现场只有
+ * 一条 `B1管理区域` 管控区 —— 也就是负一层，所以固定 `-1F`（用户确认）。
+ *
+ * 为什么固定枚举、不按数据里出现过的楼层列：现场 2# 楼的管控区只有
+ * 1F / 3F / 4F / 5F 四条，2F 没有对应的管控区。按数据列会少一行，
+ * 看起来像「2 层凭空没了」，而 V2 里它就是一行 0 人。
+ *
+ * 表里没有的楼层不会丢：`toUnits` 会按层数把它们追加在后面。所以将来现场
+ * 真出现 `B2管理区域`，地下室会自动变成「-1F、-2F」两行。
+ */
+const FLOORS: Record<string, string[]> = {
+  '2#住宅楼': ['1F', '2F', '3F', '4F', '5F'],
+  '地下室': ['-1F'],
+}
+
+/** `2#楼4F管控区` → 4F；`B1管理区域` → -1F；认不出返回 null */
+const FLOOR_RE = /(\d+)\s*F/i
+const BASEMENT_FLOOR_RE = /(?:B|负)\s*(\d+)/i
+
+/**
+ * 管控区名 → 楼层名。
+ *
+ * 注意 `2#楼4F管控区` 里的 `2#` 不是楼层：正则要求数字后面紧跟 `F`，
+ * 「2」后面是「#」，所以只会命中 4F。
+ */
+export function floorOf(areaName: string, scene: string): string | null {
+  if (scene === '地下室') {
+    const b = BASEMENT_FLOOR_RE.exec(areaName)
+    if (b) return `-${b[1]}F`
+    const f = FLOOR_RE.exec(areaName)
+    return f ? `-${f[1]}F` : null
+  }
+  const f = FLOOR_RE.exec(areaName)
+  return f ? `${f[1]}F` : null
+}
+
+/**
+ * 楼层名的排序键：正层按层数升序（1F < 6F），负层按离地面由近到远
+ * （-1F 在 -2F 前面 —— 直接比数值会把 -2F 排到 -1F 之上）。
+ */
+function floorOrder(name: string): number {
+  const m = /^(-?\d+)\s*F$/i.exec(name.trim())
+  if (!m) return Number.MAX_SAFE_INTEGER
+  const n = Number(m[1])
+  return n >= 0 ? n : 1000 + Math.abs(n)
+}
+
+/** 收到 `toUnits` 里的一条原始行（一个管控区的人数 + 名单） */
+interface UnitSeed {
+  name: string
+  count: number
+  members: PersonBrief[]
+}
+
+/**
+ * 管控区行 → 场景下的子级。
+ *
+ * · `场布图`：原样保留管控区，人数降序 —— 现场就是几块料场/加工区，没有楼层。
+ * · `2#住宅楼` / `地下室`：按楼层归并，再按 `FLOORS` 补齐没人楼层（0 人也占位），
+ *   顺序与 V2 那个列表一致。表外的楼层（将来多出 6F、-2F）排在后面并保持层数有序。
+ */
+function toUnits(scene: string, rows: UnitSeed[]): SceneUnit[] {
+  const fixed = FLOORS[scene]
+  if (!fixed) {
+    return [...rows].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
+  }
+
+  const buckets = new Map<string, SceneUnit>()
+  for (const name of fixed) buckets.set(name, { name, count: 0, members: [] })
+
+  for (const row of rows) {
+    const key = floorOf(row.name, scene) ?? row.name
+    const u = buckets.get(key) ?? { name: key, count: 0, members: [] }
+    u.count += row.count
+    u.members.push(...row.members)
+    buckets.set(key, u)
+  }
+
+  const extras = [...buckets.values()]
+    .filter((u) => !fixed.includes(u.name))
+    .sort((a, b) => floorOrder(a.name) - floorOrder(b.name))
+
+  const out = [...fixed.map((name) => buckets.get(name) as SceneUnit), ...extras]
+  for (const u of out) u.members.sort((a, b) => a.name.localeCompare(b.name, 'zh'))
+  return out
 }
 
 /** 工种清单 → 按人数降序，「其它/未填」沉底 */
@@ -195,17 +295,17 @@ export function buildScenes(people: StayPerson[], counts: StayCount[]): { scenes
   }
 
   const scenes: SceneAtte[] = SCENES.map((name) => {
-    const areas: AreaAtte[] = []
+    const rows: UnitSeed[] = []
     for (const [areaName, members] of byArea) {
       if (sceneOf(areaName) !== name) continue
-      areas.push({
+      rows.push({
         name: areaName,
         count: members.length,
         members: [...members].sort((a, b) => a.name.localeCompare(b.name, 'zh')),
       })
     }
-    areas.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
-    return { name, count: areas.reduce((s, a) => s + a.count, 0), areas }
+    const units = toUnits(name, rows)
+    return { name, count: units.reduce((s, u) => s + u.count, 0), units }
   })
 
   const live = scenes.reduce((s, x) => s + x.count, 0)
@@ -223,7 +323,7 @@ export function buildScenes(people: StayPerson[], counts: StayCount[]): { scenes
  * 不参与归类，只用来取总人数。
  */
 export function groupScenes(rows: StayCount[]): { scenes: SceneAtte[]; total: number } {
-  const buckets = new Map<string, AreaAtte[]>()
+  const buckets = new Map<string, UnitSeed[]>()
   let total = -1
 
   for (const r of rows) {
@@ -242,24 +342,14 @@ export function groupScenes(rows: StayCount[]): { scenes: SceneAtte[]; total: nu
   }
 
   const scenes: SceneAtte[] = SCENES.map((name) => {
-    const areas = (buckets.get(name) ?? []).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
-    return { name, count: areas.reduce((s, a) => s + a.count, 0), areas }
+    const units = toUnits(name, buckets.get(name) ?? [])
+    return { name, count: units.reduce((s, u) => s + u.count, 0), units }
   })
 
   if (total < 0) total = scenes.reduce((s, x) => s + x.count, 0)
   return { scenes, total }
 }
 
-/**
- * 今日在场人员：工种 + 三场景人数，一次请求。
- *
- * 两个聚合都来自同一次响应 —— 首页同时要工种卡和人员分布卡，分开请求等于
- * 把同一份清单拉两遍。
- *
- * **接口没给 `stayPersonCountVos` 时 `scenes` 返回空数组、`total` 返回 -1**，
- * 而不是三个 0 人场景：那样页面会显示「场布图 0人 / 2#住宅楼 0人 / 地下室 0人」，
- * 把「没有这个口径」说成「一个人都没有」——0 是个结论，此刻没资格下。
- */
 /**
  * 今日在场人员：工种 + 三场景（含人员姓名），一次请求。
  *

@@ -1,11 +1,12 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import MapLand from '@/components/overlays/MapLand.vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { stubImageLoader } from '../helpers/browser'
 import { alarmFixtures } from '../fixtures/alarms'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
@@ -14,12 +15,28 @@ import { useSubpageStore } from '@/stores/subpage'
  * 报警撒点与二维地图（2026-10 版本同步 · 第二批）
  *
  * 这批的风险不在「画不出来」，而在坐标口径：
- *   三维图（透视渲染 1024×735）与二维图（正射影像 1024×861）取景不同，
+ *   三维图（透视渲染）与二维图（正射影像）取景不同，
  *   同一组百分比坐标搬到另一张图上就是错的。用例把三件事钉住：
  *   1. 两套坐标各自取对（含靠近边界时标签翻边）
  *   2. 切二维时设施撒点必须隐藏、报警点必须换坐标
  *   3. 关闭地图后复位成三维，下次进来不会停在二维
+ *
+ * 2026-11-18：底图改由场景截图接口动态取（`stores/scene`）。用例里把 fetch
+ * 打成失败桩 —— 一来不联网，二来正好验证「接口没通时回落内置 site-map /
+ * site-flat」这条兼容路径，下面这些断言依赖的正是回落后的地址。
  */
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      throw new TypeError('offline')
+    }),
+  )
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('报警撒点', () => {
   beforeEach(() => {
@@ -77,6 +94,8 @@ describe('二维 / 三维地图', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     useAlarmStore().liveAlarms = alarmFixtures()
+    // 换底图要等新图像素就绪才上屏（MapViewer 的双缓冲），happy-dom 不加载图片
+    stubImageLoader()
   })
 
   async function openMap() {
@@ -90,7 +109,7 @@ describe('二维 / 三维地图', () => {
   it('默认三维：底图是 site-map，只有报警点（2026-11 起设施撒点下线）', async () => {
     const w = await openMap()
 
-    expect(w.find('.map-canvas img').attributes('src')).toContain('site-map.webp')
+    expect(w.find('.map-canvas img.is-front').attributes('src')).toContain('site-map.webp')
     expect(w.findAll('.map-pin')).toHaveLength(0)
     expect(w.findAll('.alarm-pin')).toHaveLength(4)
     expect(w.find('.map-land-flat').text()).toBe('二维地图')
@@ -101,8 +120,11 @@ describe('二维 / 三维地图', () => {
     const w = await openMap()
 
     await w.find('.map-land-flat').trigger('click')
+    // 切换要等目标图就绪（不闪旧图的前提），这里把微任务跑完
+    await flushPromises()
+    await nextTick()
 
-    expect(w.find('.map-canvas img').attributes('src')).toContain('site-flat.webp')
+    expect(w.find('.map-canvas img.is-front').attributes('src')).toContain('site-flat.webp')
     expect(w.findAll('.alarm-pin')).toHaveLength(4)
     expect(w.find('.alarm-pin').attributes('style')).toContain('left: 34%')
     expect(w.find('.map-land').classes()).toContain('is-flat')
@@ -115,6 +137,7 @@ describe('二维 / 三维地图', () => {
   it('关闭地图后复位成三维', async () => {
     const w = await openMap()
     await w.find('.map-land-flat').trigger('click')
+    await flushPromises()
 
     useShellStore().closeMapLand()
     await nextTick()
@@ -122,7 +145,7 @@ describe('二维 / 三维地图', () => {
 
     useShellStore().openMapLand()
     await nextTick()
-    expect(w.find('.map-canvas img').attributes('src')).toContain('site-map.webp')
+    expect(w.find('.map-canvas img.is-front').attributes('src')).toContain('site-map.webp')
     w.unmount()
   })
 

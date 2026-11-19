@@ -396,6 +396,44 @@ const ICON_MAP = {
       { tag: 'path', d: 'M4 14.5 8.2 11l3 2.4L15 9.5 20 14' },
     ],
   },
+
+  /**
+   * 全屏进出（2026-11-18，监控画面右上角）
+   *
+   * 设计稿在这颗按钮里放了两枚内联 SVG（`.cam-land-enter` / `.cam-land-exit`），
+   * 靠 CSS 显隐切换。这里照几何搬成两个图标，由调用方按状态换名 —— 显隐交给
+   * 数据，不再让 CSS 藏一个实际上已经渲染出来的图标。
+   *
+   * 「进」是四个角朝内收，「出」是四个角朝外张：同一套角标坐标，方向相反，
+   * 一眼能看出点下去是变大还是变小。
+   */
+  'cam-expand': {
+    viewBox: '0 0 24 24',
+    attrs: CAL_STROKE,
+    shapes: [{ tag: 'path', d: 'M8 5H5v3M16 5h3v3M8 19H5v-3M16 19h3v-3' }],
+  },
+
+  'cam-collapse': {
+    viewBox: '0 0 24 24',
+    attrs: CAL_STROKE,
+    shapes: [{ tag: 'path', d: 'M9 5v4H5M15 5v4h4M9 19v-4H5M15 19v-4h4' }],
+  },
+
+  /**
+   * 历史抓拍（2026-11-18）
+   *
+   * 一摞照片：前面一张带「山 + 地平线」，后面一张只露左边一条边 —— 12px 下
+   * 还能认出是「相册」而不是「刷新」。几何与 map-flat 同一套笔触。
+   */
+  gallery: {
+    viewBox: '0 0 24 24',
+    attrs: CAL_STROKE,
+    shapes: [
+      { tag: 'rect', x: 3, y: 5, width: 14, height: 12, rx: 1.8 },
+      { tag: 'path', d: 'M3 13.4 6.7 10.4l2.6 2.1 2.8-2.6L17 13.4' },
+      { tag: 'path', d: 'M20 8.6v8.9a2 2 0 0 1-2 2H6.6' },
+    ],
+  },
 } satisfies Record<string, IconDef>
 
 /**

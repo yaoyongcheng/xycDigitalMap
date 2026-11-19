@@ -235,12 +235,38 @@ export default defineConfig({
        */
       injectRegister: null,
 
+      /**
+       * manifest（2026-11-19 补全主屏安装字段）
+       *
+       * 这次补的都是「能安装」与「装完打开是对的」所必需、但原来缺的：
+       *   · `id`        —— PWA 的身份。不写则由 `start_url` 推导，将来一旦改
+       *                    start_url（比如加统计参数），系统会当成另一个应用，
+       *                    桌面上出现第二个图标。写死成站点根。
+       *   · `start_url` —— 从主屏打开时进哪个地址。不写就沿用「添加时的当前页」，
+       *                    用户在监控页添加到桌面，以后点开就直接落在监控层，
+       *                    而不是首页。统一进首页，`?from=homescreen` 供埋点/引导识别。
+       *   · `scope`     —— 独立窗口的边界。站内跳转留在应用内，出站才开浏览器。
+       *   · `display_override` —— Chromium 系（小米 / OPPO / vivo / 华为的 WebView
+       *                    与 Chrome）按这个顺序挑显示模式，排在前面不被支持时
+       *                    自动降级，避免个别内核不认识 standalone 就退回带地址栏。
+       *   · maskable 专用图 —— 原先把 512 同时当 any 与 maskable 用，但那张图的
+       *                    主体贴边（约占 76% 宽），安卓自适应图标会把两端柱子裁掉。
+       *                    现在换成主体缩进中心安全区的 pwa-maskable-512.png。
+       *
+       * 刻意不写 `shortcuts`：那需要 `?open=cam` 这类深链支持，当前应用没有
+       * 查询参数路由，写了只会点到首页 —— 宁可不写，也不放死链接。
+       */
       manifest: {
-        name: '工地数字地图移动端标准版',
+        id: '/xycDigitalMap/',
+        name: '向阳村项目智能建造管理平台',
         short_name: '数字地图',
         description: '向阳村项目智能建造管理平台 · 移动端',
         lang: 'zh-CN',
+        dir: 'ltr',
+        start_url: '/xycDigitalMap/?from=homescreen',
+        scope: '/xycDigitalMap/',
         display: 'standalone',
+        display_override: ['standalone', 'minimal-ui', 'browser'],
         orientation: 'any',
         /**
          * theme_color 决定系统状态栏区域底色，也是 iOS 判断状态栏文字颜色的依据
@@ -249,12 +275,23 @@ export default defineConfig({
          * src/utils/themeColor.ts 动态改回深色。
          */
         theme_color: '#ffffff',
+        /**
+         * background_color 有两处用途：安卓 12+ 的启动画面底色，以及部分内核
+         * 在应用首帧前铺的底。与 index.html 内联的 #boot 骨架同色，启动全程
+         * 不出现白闪。
+         */
         background_color: '#0b1a2b',
+        categories: ['business', 'productivity'],
+        prefer_related_applications: false,
         icons: [
-          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-          // maskable 让 Android 自适应图标时不被裁掉主体
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          // maskable：主体缩进中心 80% 安全区，安卓自适应图标（圆形/方圆/水滴）不裁主体
+          { src: 'pwa-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          // 部分安卓内核取 manifest 里的图标做主屏图标，带上 180 与 iPad 尺寸更稳
+          { src: 'apple-touch-icon.png', sizes: '180x180', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-152x152.png', sizes: '152x152', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-167x167.png', sizes: '167x167', type: 'image/png', purpose: 'any' },
         ],
       },
 

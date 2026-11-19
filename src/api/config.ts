@@ -116,3 +116,103 @@ export function isMixedContent(): boolean {
 /** 页面在 HTTPS 下访问 HTTP 接口时的提示文案 */
 export const MIXED_CONTENT_HINT =
   '当前页面是 HTTPS，而登录接口是 HTTP，浏览器会拦截该请求。请改用 HTTP 访问本页，或让服务端为接口配置 HTTPS。'
+
+/* ---------------- 万方媒体服务（场景截图 + 监控快照） ---------------- */
+
+/**
+ * 媒体服务源站（`https://115.159.67.12`，走 443 的 nginx）。
+ *
+ * 它和登录域是同一台机器，但**只提供两类只读图片**，都不要 Bearer：
+ *   · `/api/file/scene-screenshots` —— 2D/3D 场景截图（首页底图）
+ *   · `/api/video/snapshots`        —— 20 路监控通道的快照
+ *
+ * 两者用**同一个第三方只读密钥**（`MEDIA_KEY`），文档见桌面
+ * `场景截图接口使用.md` 与 `监控快照接口使用说明-向阳村.md`。
+ * 换域名 / 上反代用 `VITE_MEDIA_ORIGIN` 覆盖。
+ */
+export const MEDIA_ORIGIN = (
+  (import.meta.env.VITE_MEDIA_ORIGIN as string | undefined)?.trim() || 'https://115.159.67.12'
+).replace(/\/+$/, '')
+
+/**
+ * 第三方只读密钥（**只授权 P000000076，只能读上面那两类图片**）。
+ *
+ * 它在浏览器里可见 —— 但这不是「泄露」：文档本身就是把它作为第三方查询凭据
+ * 发出来的，权限被限制成「只能读这个项目的图片」，既不能上传也读不到别的项目。
+ * 收回或换项目时用 `VITE_MEDIA_KEY` 覆盖。
+ */
+export const MEDIA_KEY =
+  (import.meta.env.VITE_MEDIA_KEY as string | undefined)?.trim() ||
+  (import.meta.env.VITE_SCENE_KEY as string | undefined)?.trim() ||
+  '1c7582231acd998de531f61d6cf112712610d200acf28c2a6cc8b8168eacfec3'
+
+/** 项目号（Unity 端 ProjectId；场景截图与监控通道列表都用它） */
+export const MEDIA_PID =
+  (import.meta.env.VITE_MEDIA_PID as string | undefined)?.trim() ||
+  (import.meta.env.VITE_SCENE_PID as string | undefined)?.trim() ||
+  'P000000076'
+
+/* ---------------- 流媒体（V2 万联装备集群作业系统 · 国标接入） ---------------- */
+
+/**
+ * CDN 根（V2 `StreamingAssets/CdnConfig.txt` 的实际内容）。
+ *
+ * V2 的拼法是 `CdnHelper.GetHostServerURL(name) = 本值 + "/CDN/PC/" + name`，
+ * 爬架传感器（`ScaffoldData.json`）与监控清单（`monitorData.json`）都在这条路径下。
+ * 换机器用 `VITE_CDN_ORIGIN` 覆盖。
+ */
+export const CDN_ORIGIN = (
+  (import.meta.env.VITE_CDN_ORIGIN as string | undefined)?.trim() || 'http://120.26.34.95:9689'
+).replace(/\/+$/, '')
+
+/**
+ * 视频国标设备的 RTSP 源（V2 `monitorData.json` 里 20 条地址的共同前缀）。
+ *
+ * 形如：
+ *   rtsp://120.26.34.95:554/rtp/{deviceId}_{channelId}?originTypeStr=rtp_push
+ *
+ * `?:` 里那个 `originTypeStr=rtp_push` 不能删 —— ZLMediaKit 用它标识推流来源，
+ * 去掉后部分版本会当成回放请求。换设备用 `VITE_CCTV_RTSP_ORIGIN` / `VITE_CCTV_DEVICE_ID`。
+ */
+export const CCTV_RTSP_ORIGIN = (
+  (import.meta.env.VITE_CCTV_RTSP_ORIGIN as string | undefined)?.trim() || 'rtsp://120.26.34.95:554'
+).replace(/\/+$/, '')
+
+/** 国标设备编号（V2 清单里 20 条地址共用的那段 42010500441188000001） */
+export const CCTV_DEVICE_ID =
+  (import.meta.env.VITE_CCTV_DEVICE_ID as string | undefined)?.trim() || '42010500441188000001'
+
+/**
+ * ZLMediaKit 的 **HTTP-FLV 出口**（2026-11-18 实测确认可用）。
+ *
+ * 与 RTSP 是同一台 ZLM 的两个协议端口：`:554` 给桌面客户端，`:9092` 给浏览器。
+ * 实测（`curl -r 0-300`）返回 `200 video/x-flv`，正文以 `FLV\x01` 开头，
+ * `Server: ZLMediaKit(git hash:1e6a896/…)`，且带
+ * `Access-Control-Allow-Origin: <回显请求 Origin>` —— 也就是说浏览器可以**直连**，
+ * 不需要同源反代。
+ *
+ * 注意：该端口**不提供 TLS**（`https://120.26.34.95:9092` 连接失败）。放在 HTTPS
+ * 页面里会被浏览器当混合内容拦掉，详见 `docs/api-migration.md` 六点十。
+ *
+ * 换机器用 `VITE_CCTV_FLV_ORIGIN` 覆盖（只写 `协议://主机:端口`，不要带路径）。
+ */
+export const CCTV_FLV_ORIGIN = (
+  (import.meta.env.VITE_CCTV_FLV_ORIGIN as string | undefined)?.trim() || 'http://120.26.34.95:9092'
+).replace(/\/+$/, '')
+
+/**
+ * 浏览器可播地址模板（HTTP-FLV / HLS）的**整体覆盖**入口，留空即用默认拼法。
+ *
+ * 默认不需要配：`data/cctv.ts` 的 `cctvFlvUrl()` 会按
+ * `{CCTV_FLV_ORIGIN}/rtp/{deviceId}_{channelId}.live.flv?originTypeStr=rtp_push`
+ * 逐通道拼出来，与现场给的模板逐字同构。
+ *
+ * 什么时候才用它：网关不在 `CCTV_FLV_ORIGIN` 上（例如加了 CDN 回源、或换成
+ * `https://gw.example.com/live/{streamId}.live.flv` 这类别的路径约定）。
+ * 占位符：`{channelId}`、`{streamId}`（= `{deviceId}_{channelId}`）。
+ *
+ * FLV 走 mpegts.js（移动端 Chrome / iOS 17+ 可播）；HLS 走原生 `<video>`。
+ */
+export const CCTV_FLV_TEMPLATE = String(import.meta.env.VITE_CCTV_FLV_TEMPLATE ?? '').trim()
+
+export const CCTV_HLS_TEMPLATE = String(import.meta.env.VITE_CCTV_HLS_TEMPLATE ?? '').trim()

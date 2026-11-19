@@ -49,7 +49,9 @@ function seedPhoto(): void {
       name: 'DJI_1.jpeg',
       url: 'https://oss.keehang.com/iot-media/DJI_1.jpeg',
       thumbnail: 'https://oss.keehang.com/thumbnail/iot/DJI_1.jpeg',
-      taskName: '向阳村-安全巡检',
+      // 用一条仍走照片墙分组的航线（「出入口管控」= yard）当夹具：
+      // 2026-11-18 起「安全巡查」改走专用链，`apply()` 灌进去的 layout 照片不上墙
+      taskName: '向阳村-材料堆场',
       taskId: 4912,
       jobId: 147744,
       time: '2026-07-15 09:38:39',

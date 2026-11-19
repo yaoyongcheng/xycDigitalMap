@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import PanoViewer from '@/components/ui/PanoViewer.vue'
 import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
 import { useShellStore } from '@/stores/shell'
 import { fetchBlobWithProgress } from '@/utils/blobFetch'
+import { useLandscape } from '@/utils/landscape'
 import { isEquirect, panoLabel } from '@/utils/pano'
-import { savePhoto } from '@/utils/photoHd'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -40,7 +40,7 @@ const props = defineProps<{ id: string }>()
 const shell = useShellStore()
 const patrol = usePatrolStore()
 
-const photo = computed(() => patrol.photos.find((p) => p.id === props.id))
+const photo = computed(() => patrol.photoById(props.id))
 
 /* ---------- 项目全景（平台拼好的等距圆柱成果，2026-11-16） ---------- */
 
@@ -197,56 +197,31 @@ const panoHdLabel = computed(() => {
   return panoHdWait.value ? '高清加载中' : '已是高清'
 })
 
-/* ---------- 全景 · 横屏 ---------- */
-
-const panoLand = ref(false)
-const stageEl = ref<HTMLElement | null>(null)
+/* ---------- 横屏 ---------- */
 
 /**
- * 横屏查看：铺满视口 + 尽量锁横屏。
+ * 两块画布各一套横屏开关（逻辑在 `utils/landscape.ts`）：
  *
- * 两种 API 都可能没有 —— iOS Safari 不支持 `Element.requestFullscreen`，
- * `screen.orientation.lock` 还要求先处于全屏。所以两段都 try/catch，
- * 拿不到就只保留「铺满视口」这一层（用户自己把手机横过来照样能看）。
+ *   · `panoLand`  —— VR 360 环视 / 项目全景那块球面画布；
+ *   · `photoLand` —— 单张航拍照片（全景航拍 / 照片墙）的平面大图。
+ *
+ * 两套必须**互相独立**：在照片里横屏着再换一张全景，不该把全景也顶进全屏。
+ * 但交互与状态完全一致（按钮写「横屏 / 竖屏」、`aria-pressed`、退出全屏时
+ * 自动收回），因为走的是同一段代码。
  */
-async function toggleLand(): Promise<void> {
-  if (panoLand.value) {
-    await exitLand()
-    return
-  }
-  panoLand.value = true
-  try {
-    await stageEl.value?.requestFullscreen?.({ navigationUI: 'hide' })
-  } catch {
-    /* 不支持 / 被拒绝：留在铺满视口的形态 */
-  }
-  try {
-    await (
-      screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }
-    )?.lock?.('landscape')
-  } catch {
-    /* iOS / 未全屏：改不了方向就算了 */
-  }
-}
+const {
+  land: panoLand,
+  setStage: setPanoStage,
+  toggle: togglePanoLand,
+  exit: exitPanoLand,
+} = useLandscape()
 
-async function exitLand(): Promise<void> {
-  panoLand.value = false
-  try {
-    if (document.fullscreenElement) await document.exitFullscreen()
-  } catch {
-    /* 忽略 */
-  }
-  try {
-    await (screen.orientation as ScreenOrientation & { unlock?: () => void })?.unlock?.()
-  } catch {
-    /* 忽略 */
-  }
-}
-
-/** 用系统手势退出全屏（安卓返回 / 桌面 Esc）时，把布局状态同步回来 */
-function onFullscreenChange(): void {
-  if (!document.fullscreenElement && panoLand.value) panoLand.value = false
-}
+const {
+  land: photoLand,
+  setStage: setPhotoStage,
+  toggle: togglePhotoLand,
+  exit: exitPhotoLand,
+} = useLandscape()
 
 /** 签名过期后重取一次（store 会换一组新直链，弹层里的图跟着换） */
 async function onPanoRetry(): Promise<void> {
@@ -266,7 +241,8 @@ async function onPanoRetry(): Promise<void> {
  */
 function enterPano(): void {
   releasePanoHd()
-  if (panoLand.value) void exitLand()
+  if (photoLand.value) void exitPhotoLand()
+  if (panoLand.value) void exitPanoLand()
   panoBroken.value = false
   panoUnsupported.value = false
   void patrol.loadPano(true)
@@ -285,8 +261,6 @@ watch(
 const thumb = computed(() => photo.value?.thumbnail ?? '')
 const original = computed(() => photo.value?.url ?? '')
 const sizeText = computed(() => patrol.sizeText(photo.value?.size ?? 0))
-/** 存盘用的文件名：去掉服务端带的后缀（`xxx.jpeg`），savePhoto 自己会补 .jpg */
-const baseName = computed(() => (photo.value?.name ?? '').replace(/\.[^.]+$/, ''))
 
 /* ---------- 两层：缩略图 → 原图 ---------- */
 
@@ -297,8 +271,6 @@ const hdUrl = ref('')
 /** 下载进度 0~100（服务端没给长度时停在 0，按钮显示「下载中」） */
 const hdPct = ref(0)
 const hdBusy = ref(false)
-/** 原图已拿到，供「下载」直接用（省掉一次 6MB 的重下 + canvas 转码） */
-let hdBlob: Blob | null = null
 /** 当前 objectURL，换图 / 关闭时 revoke */
 let objUrl = ''
 let ctrl: AbortController | null = null
@@ -319,12 +291,17 @@ const shown = computed(() => {
 /** 还能不能点「查看原图」 */
 const canHd = computed(() => Boolean(thumb.value && original.value) && !hd.value)
 
-/** 按钮文案：四态（下载中带真实百分比） */
+/**
+ * 按钮文案：四态（拉流中带真实百分比）。
+ *
+ * **不写体积** —— 与 VR360 环视的「看高清」保持一致：一颗 26px 的胶囊塞
+ * 「查看原图 · 7.5MB」会把工具条顶宽，而弹层下方 meta 的「大小」已经写了。
+ */
 const hdLabel = computed(() => {
   if (hd.value) return '已是原图'
   if (!thumb.value) return '无压缩版'
   if (hdBusy.value) return hdPct.value ? `原图 ${hdPct.value}%` : '原图下载中'
-  return `查看原图 · ${sizeText.value}`
+  return '查看原图'
 })
 
 function dropHd(): void {
@@ -333,16 +310,16 @@ function dropHd(): void {
   ctrl = null
   if (objUrl) URL.revokeObjectURL(objUrl)
   objUrl = ''
-  hdBlob = null
   hdUrl.value = ''
   hd.value = false
   hdBusy.value = false
   hdPct.value = 0
 }
 
-/** 换照片时全部复位（否则会带着上一张的原图与进度） */
+/** 换照片时全部复位（否则会带着上一张的原图、进度与横屏态） */
 function resetForNext(): void {
   dropHd()
+  if (photoLand.value) void exitPhotoLand()
   dims.value = null
   panoUnsupported.value = false
   zoomReset()
@@ -394,7 +371,6 @@ async function onHd(): Promise<void> {
     }
     if (objUrl) URL.revokeObjectURL(objUrl)
     objUrl = url
-    hdBlob = blob
     hdUrl.value = url
   } catch {
     // 拉不到（CORS / 断网 / 被取消）：交给浏览器直接加载直链，慢但能看
@@ -456,22 +432,6 @@ function probeDims(): void {
 probeDims()
 watch(() => props.id, resetForNext)
 
-/* ---------- 下载 = 存进手机相册 ---------- */
-
-async function onDownload(): Promise<void> {
-  const p = photo.value
-  if (!p) return
-  try {
-    // 已经点过「原图」：字节在手上，直接包成 jpg File，不用再下一次
-    const ready = hdBlob ? new File([hdBlob], `${baseName.value}.jpg`, { type: 'image/jpeg' }) : null
-    const res = await savePhoto(p.url, baseName.value || p.name, ready)
-    if (res === 'album') shell.showToast('已保存到相册', 'success')
-    else if (res === 'download') shell.showToast('已开始下载', 'success')
-  } catch {
-    shell.showToast('保存失败', 'warn')
-  }
-}
-
 /** 拍摄时间：服务端给的是 'YYYY-MM-DD HH:mm:ss'，截到分钟 */
 const timeText = computed(() => {
   const t = photo.value?.time ?? ''
@@ -479,12 +439,14 @@ const timeText = computed(() => {
   return t.slice(0, 16).replace('T', ' ')
 })
 
-onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
+/*
+ * 「下载 = 存进手机相册」那颗按钮 2026-11-18 下线（用户要求）：
+ * 全景航拍的大图操作区只留画布上的「查看原图 / 横屏」，要存图走长按图片 /
+ * 系统菜单 —— 与 VR 360 环视的做法一致，别在这里再长出一颗按钮。
+ * `utils/photoHd.ts` 的 savePhoto 仍被 AirPlayer（环境抓拍）使用，没删。
+ */
 
 onBeforeUnmount(() => {
-  document.removeEventListener('fullscreenchange', onFullscreenChange)
-  // 横屏全屏状态下被关掉弹层：不退出全屏的话，页面会冻在一块空黑屏里
-  if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
   releasePanoHd()
   dropHd()
 })
@@ -501,7 +463,7 @@ onBeforeUnmount(() => {
         所以进出横屏不会重新下载 13MB、也不会把看到一半的角度丢掉。
       -->
       <Teleport to="body" :disabled="!panoLand">
-        <figure ref="stageEl" class="pano-stage" :class="{ 'is-land': panoLand }">
+        <figure :ref="setPanoStage" class="pano-stage" :class="{ 'is-land': panoLand }">
           <PanoViewer
             ref="panoRef"
             :src="panoSrc"
@@ -537,7 +499,7 @@ onBeforeUnmount(() => {
               type="button"
               :aria-pressed="panoLand"
               :aria-label="panoLand ? '退出横屏' : '横屏查看'"
-              @click="toggleLand"
+              @click="togglePanoLand"
             >
               {{ panoLand ? '竖屏' : '横屏' }}
             </button>
@@ -614,24 +576,66 @@ onBeforeUnmount(() => {
       </p>
     </figure>
 
-    <!-- 平面照片：低清缩略图起步，点「查看原图」才换高清 -->
-    <figure v-else class="patrol-view">
-      <img
-        class="zoomable"
-        :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
-        :src="shown"
-        :alt="photo.taskName"
-        :style="imgStyle"
-        v-on="zoomHandlers"
-      />
-      <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
-      <span class="patrol-view-tag">{{ hd ? '原图' : '压缩预览' }}</span>
-    </figure>
+    <!--
+      平面照片：低清缩略图起步，点「查看原图」才换高清。
 
-    <!-- 下载原图时的真实进度条 -->
-    <div v-if="hdBusy" class="hd-progress" role="progressbar" :aria-valuenow="hdPct" aria-valuemin="0" aria-valuemax="100">
-      <i :style="{ width: `${hdPct}%` }"></i>
-    </div>
+      横屏时与上方全景一样 Teleport 到 body —— 弹层面板带 transform，会让
+      position:fixed 以面板为包含块，DOM 不挪就永远铺不满视口。
+    -->
+    <Teleport v-else to="body" :disabled="!photoLand">
+      <figure :ref="setPhotoStage" class="patrol-view" :class="{ 'is-land': photoLand }">
+        <img
+          class="zoomable"
+          :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
+          :src="shown"
+          :alt="photo.taskName"
+          :style="imgStyle"
+          v-on="zoomHandlers"
+        />
+        <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
+        <span class="patrol-view-tag">{{ hd ? '原图' : '压缩预览' }}</span>
+
+        <!--
+          画布右上角工具条：查看原图 / 横屏。
+          与 VR 360 环视那颗「看高清」是同一套胶囊、同一套状态机（拉流中带真实
+          百分比、已是原图则禁用、体积写在下方 meta 里），2026-11-18 用户要求
+          照它改过来；原来的「下载」整颗下线。
+        -->
+        <div class="pano-tools">
+          <button
+            class="pano-tool"
+            type="button"
+            :disabled="!canHd || hdBusy"
+            :aria-label="`查看原图，原图 ${sizeText}`"
+            @click="onHd"
+          >
+            {{ hdLabel }}
+          </button>
+          <button
+            class="pano-tool"
+            type="button"
+            :aria-pressed="photoLand"
+            :aria-label="photoLand ? '退出横屏' : '横屏查看'"
+            @click="togglePhotoLand"
+          >
+            {{ photoLand ? '竖屏' : '横屏' }}
+          </button>
+        </div>
+
+        <!-- 拉原图的真实进度：压在画布底边，不占版面（横屏全屏时也还在视野里） -->
+        <div
+          v-if="hdBusy"
+          class="hd-progress is-in-stage"
+          role="progressbar"
+          :aria-valuenow="hdPct"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-label="`原图加载 ${hdPct}%`"
+        >
+          <i :style="{ width: `${hdPct}%` }"></i>
+        </div>
+      </figure>
+    </Teleport>
 
     <div class="patrol-meta">
       <div><span>任务</span><b>{{ photo.taskName }}</b></div>
@@ -641,13 +645,6 @@ onBeforeUnmount(() => {
       </div>
       <div><span>时间</span><b>{{ timeText }}</b></div>
       <div><span>大小</span><b>{{ sizeText || '—' }}</b></div>
-    </div>
-
-    <div class="photo-actions">
-      <button class="photo-btn" type="button" :disabled="!canHd || hdBusy" @click="onHd">
-        {{ hdLabel }}
-      </button>
-      <button class="photo-btn" type="button" @click="onDownload">下载</button>
     </div>
     </template>
   </div>

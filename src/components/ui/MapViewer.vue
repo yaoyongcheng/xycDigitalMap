@@ -35,8 +35,9 @@ const props = withDefaults(
     /**
      * 底图地址，默认取 PWA base 下的 site-map.webp。
      *
-     * 2026-11-13：底图换成设计稿 gx2 的 `site-map.jpg`（实景航拍 + 白模叠加），
-     * 尺寸从 1024×709 变成 1024×642。版本号必须跟着换，同名文件会被缓存住。
+     * 2026-11-18：内置兜底图不再用迁移前那张设计稿截图，改成用接口 3D 图
+     * 同源导出的 1280×720 快照（原因见下方 natW/natH 的注释）。版本号必须
+     * 跟着换图一起改，同名文件会被浏览器缓存住。
      */
     src?: string
     /**
@@ -74,7 +75,7 @@ const props = withDefaults(
   {
     points: () => [],
     fit: 'cover',
-    src: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261113`,
+    src: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261118`,
     compact: false,
     allowZoomOut: false,
     suspended: false,
@@ -86,9 +87,19 @@ const emit = defineEmits<{ select: [p: MapPoint]; alarm: [id: string] }>()
 
 const boxEl = ref<HTMLElement | null>(null)
 
-/** 底图自然尺寸，onload 后校准（默认值与 site-map.webp 一致：1024×642） */
-const natW = ref(1024)
-const natH = ref(642)
+/**
+ * 底图自然尺寸，onload 后校准。
+ *
+ * 默认值必须与**两张**底图同比例：接口图是 1920×1080（16:9），内置兜底图
+ * 2026-11-18 起也按同一张源图导出成 1280×720（同为 16:9，见 public/img）。
+ *
+ * ⚠️ 这一条是「刷新后视角不偏移」的关键。以前默认值是旧的 1024×642
+ * （16:10），而接口图是 16:9：cover 在同一个容器里会按不同方向裁切
+ * （一个裁上下、一个裁左右），首屏先按旧比例排一帧、图到了再按新比例重排，
+ * 用户看到的就是「刷新时画面偏了一下 / 角度变了」。
+ */
+const natW = ref(1280)
+const natH = ref(720)
 
 /** 容器尺寸（ResizeObserver 维护） */
 const boxW = ref(0)
@@ -399,10 +410,76 @@ function flipLeft(a: MapAlarm): boolean {
 
 function onImgLoad(e: Event): void {
   const img = e.target as HTMLImageElement
+  // 只有前景层的尺寸代表「当前正在显示的这张」；背层预挂的图不参与，
+  // 否则换图瞬间旧层的 load 会把 natW/natH 又写回去
+  if (!img.classList.contains('is-front')) return
   if (img.naturalWidth > 0) {
     natW.value = img.naturalWidth
     natH.value = img.naturalHeight
   }
+}
+
+/* ---------------- 底图双缓冲（换图不闪） ---------------- */
+
+interface BaseLayer {
+  /** 该层承载的地址，空串表示空闲 */
+  src: string
+  /** 是否前景（唯一可见、真正在出像素的那层） */
+  on: boolean
+}
+
+/**
+ * 换底图为什么要两层。
+ *
+ * 直接改同一个 `<img>` 的 `src`，浏览器在新图解出像素之前会先呈现一帧空白
+ * （移动端尤其明显）—— 用户看到的就是「闪一下黑」「闪一下旧图又跳回来」。
+ * 所以画布里叠两张图交替承载：
+ *   1. 新图先挂到背层（opacity 0），此时画面仍是旧图，什么都不闪；
+ *   2. 等它真的 load（像素可渲染，顺带拿到自然尺寸）再把前景换过去；
+ *   3. 旧层淡出后清空 src，别让两张 1920×1080 的解码位图同时占内存。
+ *
+ * 两个使用方都受益：全屏地图的二维/三维切换，以及首页从内置兜底图切到
+ * 接口图那一下。
+ */
+const layers = ref<BaseLayer[]>([{ src: props.src, on: true }, { src: '', on: false }])
+/** 前景层下标（0 / 1） */
+let front = 0
+/** 换图序号：连续切换时只有最后一次生效，慢请求不会把旧图挂回来 */
+let swapSeq = 0
+
+/** 淡出时长，与 CSS 里 `.map-base` 的 transition 保持一致 */
+const FADE_MS = 200
+
+interface ImgDim {
+  w: number
+  h: number
+}
+
+/**
+ * 预加载一张图，返回自然尺寸。
+ *
+ * 无论成功、失败还是超时都会落地：失败给 `{w:0,h:0}`，调用方沿用原尺寸
+ * （破图本身有 onerror 兜底，不该让切换卡死在「加载中」）。
+ */
+function preloadSize(src: string): Promise<ImgDim> {
+  const Ctor = (globalThis as { Image?: typeof Image }).Image
+  if (typeof Ctor !== 'function') return Promise.resolve({ w: 0, h: 0 })
+  return new Promise<ImgDim>((resolve) => {
+    let done = false
+    const im = new Ctor()
+    const fin = (): void => {
+      if (done) return
+      done = true
+      resolve({ w: im.naturalWidth || 0, h: im.naturalHeight || 0 })
+    }
+    im.onload = fin
+    im.onerror = fin
+    im.src = src
+    if (im.complete) fin()
+    // 已缓存的图（本地 webp / 刚下完的 objectURL）会立刻 complete；
+    // 600ms 还没落地就按「拿不到尺寸」处理，宁可沿用原尺寸也要把图换上去
+    window.setTimeout(fin, 600)
+  })
 }
 
 /* ---------------- 生命周期 ---------------- */
@@ -441,16 +518,56 @@ watch(
 )
 
 /**
- * 换底图（二维 / 三维切换）后重新钳制平移。
+ * 换底图（二维 / 三维切换）：新图就绪才上屏，旧图淡出。
  *
- * 两张底图比例不同（1024×709 / 1024×747），画布尺寸一变，原先合法的
- * tx/ty 就可能把画布拖出容器外 —— 表现是切换后地图偏到一边、留一条空白。
- * 缩放倍率保留：用户切图后仍处在相同的相对缩放级别，不会「突然回到 1x」。
+ * 顺带解决一个老问题：两张底图比例不同（内置图 1024×642 / 接口图
+ * 1920×1080），画布尺寸一变，原先合法的 tx/ty 就可能把画布拖出容器外。
+ * 所以自然尺寸与钳制都在**切换的同一帧**里做完，不会出现「先按旧比例
+ * 拉一帧、再跳成新比例」。缩放倍率保留：用户切图后仍处在相同的相对
+ * 缩放级别，不会「突然回到 1x」。
  */
 watch(
   () => props.src,
-  () => {
-    clampPan()
+  (next) => {
+    if (!next) return
+    const backIdx = 1 - front
+    const cur = layers.value[front]
+    // 目标就是当前正在显示的那张（来回切、或 store 换了同一地址）：不动画面
+    if (cur && cur.src === next) return
+
+    const back = layers.value[backIdx]
+    // 背层恰好已经是这张（上次刚淡出的那张）：省掉预加载，直接换回去
+    const cached = Boolean(back && back.src === next)
+    if (back) {
+      back.src = next
+      back.on = false
+    }
+
+    const my = ++swapSeq
+    const ready = cached ? Promise.resolve<ImgDim>({ w: 0, h: 0 }) : preloadSize(next)
+    void ready.then((dim) => {
+      // 期间又切了别的图 / 关掉地图：这次作废，绝不把过期的一张挂上屏
+      if (my !== swapSeq) return
+      const b = layers.value[backIdx]
+      const c = layers.value[front]
+      if (!b || b.src !== next) return
+
+      if (dim.w && dim.h && (dim.w !== natW.value || dim.h !== natH.value)) {
+        natW.value = dim.w
+        natH.value = dim.h
+        clampPan()
+      }
+      b.on = true
+      if (c) c.on = false
+      front = backIdx
+
+      // 淡出结束后释放旧层：两张图同时留着解码位图，手机上等于翻倍占用
+      window.setTimeout(() => {
+        if (my !== swapSeq) return
+        const old = layers.value[1 - front]
+        if (old && !old.on) old.src = ''
+      }, FADE_MS + 80)
+    })
   },
 )
 
@@ -487,7 +604,21 @@ const PIN_PATHS: Record<MapPoint['kind'], string[]> = {
     @dblclick="onDblClick"
   >
     <div class="map-canvas" :style="canvasStyle">
-      <img :src="props.src" alt="工地数字地图" draggable="false" @load="onImgLoad" />
+      <!--
+        两层底图交替承载（见脚本里「底图双缓冲」）：同一时刻只有一层带
+        .is-front 是可见的，换图时新层就绪后才把 is-front 交过去。
+      -->
+      <template v-for="(l, i) in layers" :key="i">
+        <img
+          v-if="l.src"
+          class="map-base"
+          :class="{ 'is-front': l.on }"
+          :src="l.src"
+          alt="工地数字地图"
+          draggable="false"
+          @load="onImgLoad"
+        />
+      </template>
       <button
         v-for="p in props.points"
         :key="p.id"

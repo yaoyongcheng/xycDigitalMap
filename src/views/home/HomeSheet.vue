@@ -57,15 +57,18 @@ const grabLabel = computed(() => ['展开面板', '收起面板', '半开面板'
 /**
  * 三模块（2026-10 版本同步 · 第三批，2026-11 对齐设计稿 gx2 文案与图标）
  *
- * 名称与副标严格对照设计稿 index.html:186-198：
- *   safety  → 智巡 / 风险预警・人员动态（盾牌图标）
- *   patrol  → 智眸 / 现场快照・实景核验（眼睛图标）
- *   equip   → 智控 / 集群管控・数驱作业（滑块调节图标）
+ * 名称与副标严格对照 V2（2026-11-18 用户要求）：
+ *   safety  → 智巡 / 巡检察踪（盾牌图标）
+ *   patrol  → 智眸 / 现场快照（眼睛图标）
+ *   equip   → 智控 / 装备管控（滑块调节图标）
+ *
+ * 副标由原来的「A・B」双词收成**四字短语**，不再自带「・」分隔符 ——
+ * 改文案时连分隔符一起删，别留「巡检察踪・」这种尾巴。
  */
 const mods: { id: HomeMod; label: string; sub: string; icon: IconName }[] = [
-  { id: 'safety', label: '智巡', sub: '风险预警・人员动态', icon: 'mod-shield' },
-  { id: 'patrol', label: '智眸', sub: '现场快照・实景核验', icon: 'mod-eye' },
-  { id: 'equip', label: '智控', sub: '集群管控・数驱作业', icon: 'mod-control' },
+  { id: 'safety', label: '智巡', sub: '巡检察踪', icon: 'mod-shield' },
+  { id: 'patrol', label: '智眸', sub: '现场快照', icon: 'mod-eye' },
+  { id: 'equip', label: '智控', sub: '装备管控', icon: 'mod-control' },
 ]
 
 /**

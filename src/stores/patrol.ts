@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchLatestPano, fetchMediaJobs, fetchTaskRecords, type DroneMedia, type DronePano } from '@/api/drone'
+import { fetchFacilityGallery, fetchLatestPano, fetchMediaJobs, fetchSafetyGallery, fetchSpotGallery, fetchTaskRecords, fetchYardGallery, FACILITY_TASK_NAME, SAFETY_SOIL_TASK_NAME, SPOT_TASK_NAME, YARD_TASK_NAME, type DroneMedia, type DronePano } from '@/api/drone'
 import { ApiError } from '@/api/http'
 import { isEquirect } from '@/utils/pano'
 
@@ -51,6 +51,15 @@ import { isEquirect } from '@/utils/pano'
  *
  * 照片墙里那条「2:1 就是全景」的判定（`utils/pano.ts` 的 `isEquirect`）仍然保留：
  * 万一某天媒体里直接出现一张等距圆柱图，大图弹层照样能进环视。
+ *
+ * ## 全景航拍（2026-11-18：对齐 V2「任务记录 → 采集图片」）
+ *
+ * 「全景航拍」这一格不再是照片墙的一类，而是**固定 9 张**：
+ * `向阳村-全局定点拍照` 最近一班**已完成且有照片**的飞行（`fetchSpotGallery`）。
+ * V2 就是在这条航线的执行记录里点「采集数据 → 采集图片」看那 9 张，所以这里
+ * 复用同一组接口与筛法：`/task/exec/list/record` → `/media/task/job/{id}`，
+ * 只留 `image/*`（每班还有 1 个 `.DAT` 日志），按 DJI 序号升序。
+ * 这条航线的照片因此**不进** `photos`（否则会在「安全巡查」里重复一遍）。
  */
 
 /** 一张真实航拍照片 */
@@ -202,6 +211,57 @@ export const usePatrolStore = defineStore('patrol', () => {
   const panoState = ref<PatrolState>('idle')
 
   /**
+   * 「全景航拍」模块的 9 张：`向阳村-全局定点拍照` **最近一班有照片的飞行**。
+   *
+   * 单独一条链（`fetchSpotGallery`），不混进 `photos`：
+   *   · 照片墙按任务分组，这条航线的照片挂到「安全巡查」里会和 V2 对不上；
+   *   · 这里要的是**固定 9 张**、顺序与 V2 采集图片那排缩略图一致；
+   *   · 弹层按 id 找图，所以 `photoById()` 两个数组都要看。
+   */
+  const spot = ref<PatrolPhotoReal[]>([])
+  /** 9 张图的加载状态（与 `panoState` 同理，单独一套，失败不拖累照片墙） */
+  const spotState = ref<PatrolState>('idle')
+
+  /**
+   * 「材料堆场」模块的 3 张：`向阳村-分区定点拍照` 最近一班有照片的飞行里
+   * **第 1、第 2、第 37 张**（用户按 V2 采集照片网格点出来的固定三格）。
+   *
+   * 与 `spot` 同构：单独一条链（`fetchYardGallery`）、单独一套加载态，不进 `photos`
+   * —— 这一格现在**只认这三张**，不再按航线名把塔吊定点那批照片混进来。
+   */
+  const yard = ref<PatrolPhotoReal[]>([])
+  /** 材料堆场三张的加载状态 */
+  const yardState = ref<PatrolState>('idle')
+
+  /**
+   * 「设备设施」模块的 2 张：`向阳村-塔吊定点` 最近一班有照片的飞行里
+   * **第 2、第 7 张**（用户按 V2 采集照片网格点出来的固定两格）。
+   *
+   * 与 `yard` 同构：单独一条链（`fetchFacilityGallery`）、单独一套加载态，
+   * 不进 `photos` —— 这一格只认那两张，不再按航线名把别的塔吊照片混进来。
+   *
+   * ⚠️ 用户点名这一格还有两张来自「视频监控-塔吊-2# / 4#塔吊」各自最新的一张，
+   * 但监控侧没有照片查询接口，2026-11-18 明确「本轮先保持现状」，所以这里是 2 张。
+   */
+  const facility = ref<PatrolPhotoReal[]>([])
+  /** 设备设施两张的加载状态 */
+  const facilityState = ref<PatrolState>('idle')
+
+  /**
+   * 「安全巡查」模块的 2 张：**跨两条航线**，各取最近一班的指定一张
+   * （`向阳村-土方1` 第 1 张 + `向阳村-分区定点拍照` 第 34 张，见
+   * `api/drone.ts` 的 `SAFETY_SOURCES`）。
+   *
+   * 与 `yard / facility` 同构：单独一条链（`fetchSafetyGallery`）、单独一套加载态，
+   * 不进 `photos` —— 这一格只认那两张，不再按航线名把「配电箱定点」「道路巡检」
+   * 那一堆混进来。两张的 `jobId / taskName` 不同，所以是两条记录拼起来的，
+   * 卡片标题仍显示各自真实航线名。
+   */
+  const safety = ref<PatrolPhotoReal[]>([])
+  /** 安全巡查两张的加载状态 */
+  const safetyState = ref<PatrolState>('idle')
+
+  /**
    * 照片 id → 原图尺寸（宽 × 高）。
    *
    * 来源是列表里 `<img>` 的 `naturalWidth/Height` —— 缩略图与原图尺寸一致，
@@ -253,6 +313,23 @@ export const usePatrolStore = defineStore('patrol', () => {
    */
   function previewOf(p: Pick<PatrolPhotoReal, 'thumbnail' | 'url'>): string {
     return p.thumbnail || p.url
+  }
+
+  /**
+   * 按 id 找一张照片。
+   *
+   * 照片墙 / 「全景航拍」9 张 / 「材料堆场」3 张 / 「设备设施」2 张 /
+   * 「安全巡查」2 张分五个数组存（见各 ref 的注释），而大图弹层只拿到一个 id ——
+   * 所以查找必须五处都看。
+   */
+  function photoById(id: string): PatrolPhotoReal | undefined {
+    return (
+      photos.value.find((p) => p.id === id) ??
+      spot.value.find((p) => p.id === id) ??
+      yard.value.find((p) => p.id === id) ??
+      facility.value.find((p) => p.id === id) ??
+      safety.value.find((p) => p.id === id)
+    )
   }
 
   /**
@@ -313,6 +390,83 @@ export const usePatrolStore = defineStore('patrol', () => {
   }
 
   /**
+   * 取「全景航拍」那 9 张（`fetchSpotGallery` 里的规则即 V2 的口径）。
+   *
+   * 失败**保留上一批**：网络抖一下就把已经能看的 9 张撤掉，比显示旧图难受。
+   * 服务端明确回「近期没有照片」（`null`）才清空 —— 那是真的没有。
+   */
+  async function loadSpot(): Promise<void> {
+    spotState.value = 'loading'
+    try {
+      const g = await fetchSpotGallery()
+      spot.value = g
+        ? toPhotos({ id: g.jobId, taskId: g.taskId, taskName: g.taskName, start: g.start }, g.media)
+        : []
+      spotState.value = 'ok'
+    } catch {
+      spotState.value = 'error'
+    }
+  }
+
+  /**
+   * 取「材料堆场」那 3 张（`向阳村-分区定点拍照` 最近一班的第 1、第 2、第 37 张）。
+   *
+   * 与 `loadSpot` 同一套失败策略：失败**保留上一批**，只有服务端明确回「近期没有
+   * 照片」（`null`）才清空。
+   */
+  async function loadYard(): Promise<void> {
+    yardState.value = 'loading'
+    try {
+      const g = await fetchYardGallery()
+      yard.value = g
+        ? toPhotos({ id: g.jobId, taskId: g.taskId, taskName: g.taskName, start: g.start }, g.media)
+        : []
+      yardState.value = 'ok'
+    } catch {
+      yardState.value = 'error'
+    }
+  }
+
+  /**
+   * 取「设备设施」那 2 张（`向阳村-塔吊定点` 最近一班的第 2、第 7 张）。
+   *
+   * 与 `loadYard` 同一套失败策略：失败**保留上一批**，只有服务端明确回「近期
+   * 没有照片」（`null`）才清空。
+   */
+  async function loadFacility(): Promise<void> {
+    facilityState.value = 'loading'
+    try {
+      const g = await fetchFacilityGallery()
+      facility.value = g
+        ? toPhotos({ id: g.jobId, taskId: g.taskId, taskName: g.taskName, start: g.start }, g.media)
+        : []
+      facilityState.value = 'ok'
+    } catch {
+      facilityState.value = 'error'
+    }
+  }
+
+  /**
+   * 取「安全巡查」那 2 张（两条航线各一张，见 `SAFETY_SOURCES`）。
+   *
+   * 返回的是**多条**班次，所以逐组 `toPhotos` 再拼起来；顺序保持来源表顺序。
+   * 失败策略同 `loadYard`：失败**保留上一批**，只有服务端明确回「近期没有照片」
+   * （空数组）才清空。
+   */
+  async function loadSafety(): Promise<void> {
+    safetyState.value = 'loading'
+    try {
+      const groups = await fetchSafetyGallery()
+      safety.value = groups.flatMap((g) =>
+        toPhotos({ id: g.jobId, taskId: g.taskId, taskName: g.taskName, start: g.start }, g.media),
+      )
+      safetyState.value = 'ok'
+    } catch {
+      safetyState.value = 'error'
+    }
+  }
+
+  /**
    * 取一次某次飞行的媒体，带限流重试。
    *
    * 失败返回 null（调用方跳过这条记录），**不抛** —— 一条记录取不到不该让整页失败。
@@ -354,6 +508,16 @@ export const usePatrolStore = defineStore('patrol', () => {
       // 全景航线的原片是拼接原料，成果由平台拼好、由 `loadPano()` 单独取。
       // 在**发请求之前**就跳过：这 26 张既不上墙，也没必要拉媒体列表。
       if (isPanoTask(rec.taskName)) continue
+      // 「全局定点拍照」同理：它由「全景航拍」模块（`fetchSpotGallery`）单独取，
+      // 再进照片墙会在「安全巡查」里重复一遍，还多打一次媒体请求。
+      if (rec.taskName.trim() === SPOT_TASK_NAME) continue
+      // 「塔吊定点」也一样：由「设备设施」（`fetchFacilityGallery`）单独取第 2、7 张，
+      // 整班照片既不上墙，媒体列表也就没必要再拉一次
+      if (rec.taskName.trim() === FACILITY_TASK_NAME) continue
+      // 「分区定点拍照」由「材料堆场」与「安全巡查」两条链各自取指定张（第 1/2/37
+      // 与第 34）；「土方1」由「安全巡查」取第 1 张 —— 整班都不上墙
+      if (rec.taskName.trim() === YARD_TASK_NAME) continue
+      if (rec.taskName.trim() === SAFETY_SOIL_TASK_NAME) continue
 
       const key = patrolCatKey(rec)
       if (done.has(key)) continue
@@ -404,8 +568,13 @@ export const usePatrolStore = defineStore('patrol', () => {
         // 尺寸缓存跟着换：新一批照片的 id 可能完全不同，旧记录白占内存
         dims.value = {}
 
-        // 全景走另一条链（一次列表请求），与照片探测并行；自己吞错不拖累这里
+        // 全景 / 全景航拍 / 材料堆场 / 设备设施 / 安全巡查各走另一条链
+        // （一次列表 + 一次媒体），与照片探测并行；各自吞错，不拖累照片墙
         const panoTask = loadPano(true)
+        const spotTask = loadSpot()
+        const yardTask = loadYard()
+        const facilityTask = loadFacility()
+        const safetyTask = loadSafety()
 
         for (const days of WINDOWS) {
           let rows
@@ -424,9 +593,19 @@ export const usePatrolStore = defineStore('patrol', () => {
           if (photos.value.length) break
         }
 
-        await panoTask
-        // 全景也算「有内容」：某个项目只飞了全景航线时不该当成整页失败
-        if (!photos.value.length && !pano.value && lastErr) throw lastErr
+        await Promise.all([panoTask, spotTask, yardTask, facilityTask, safetyTask])
+        // 上面几条专用链也算「有内容」：只飞了这些航线时不该当整页失败
+        if (
+          !photos.value.length &&
+          !pano.value &&
+          !spot.value.length &&
+          !yard.value.length &&
+          !facility.value.length &&
+          !safety.value.length &&
+          lastErr
+        ) {
+          throw lastErr
+        }
 
         state.value = 'ok'
         error.value = ''
@@ -474,6 +653,14 @@ export const usePatrolStore = defineStore('patrol', () => {
     photos.value = []
     pano.value = null
     panoState.value = 'idle'
+    spot.value = []
+    spotState.value = 'idle'
+    yard.value = []
+    yardState.value = 'idle'
+    facility.value = []
+    facilityState.value = 'idle'
+    safety.value = []
+    safetyState.value = 'idle'
     flightCount.value = 0
     dims.value = {}
     state.value = 'idle'
@@ -486,6 +673,14 @@ export const usePatrolStore = defineStore('patrol', () => {
     photos,
     pano,
     panoState,
+    spot,
+    spotState,
+    yard,
+    yardState,
+    facility,
+    facilityState,
+    safety,
+    safetyState,
     flightCount,
     dims,
     state,
@@ -495,7 +690,12 @@ export const usePatrolStore = defineStore('patrol', () => {
     setDims,
     isPano,
     previewOf,
+    photoById,
     loadPano,
+    loadSpot,
+    loadYard,
+    loadFacility,
+    loadSafety,
     apply,
     load,
     refresh,

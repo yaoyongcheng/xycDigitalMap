@@ -121,7 +121,17 @@ watchEffect(() => {
   <div class="stage">
     <div class="stage-title">向阳村项目智能建造管理平台</div>
     <div class="phone" :class="{ 'is-landscape': shell.isLandscape }">
-      <div class="phone-screen">
+      <!--
+        has-home-top / has-land-top：给不支持 :has() 的旧内核兜住「顶部色条」。
+        支持 :has() 的设备走 app.css 那 5 组 :has() 规则，这两个 class 只在
+        `.no-has` 前缀下被使用，对正常设备零影响。
+        刻意只兜首页透明与横屏深色两条 —— 它们不生效时最显眼（深色画面上顶一条白边）；
+        其余白底场景本来就和默认白底一致，不需要额外规则。
+      -->
+      <div
+        class="phone-screen"
+        :class="{ 'has-home-top': shell.activeTab === 'home', 'has-land-top': shell.isLand }"
+      >
         <StatusBar />
 
         <MapLand />
@@ -129,7 +139,19 @@ watchEffect(() => {
         <AirPlayer />
         <HazardPage />
 
-        <div class="app" id="app" :class="{ 'home-mode': shell.activeTab === 'home' }">
+        <!--
+          has-subpage 是给「不支持 :has() 的旧内核」用的等价标记（2026-11-19）。
+          app.css 里底栏显隐原本只靠 `.app:has(.subpage.open)`，而 :has() 需要
+          Chrome 105+ / Safari 15.4+；小米、华为、OPPO、vivo 自带浏览器里仍有一批
+          老内核，命中不了就会「子页开着、底栏还在下面露着」。
+          CSS 侧用 `.no-has`（由 utils/standalone.ts 检测后打到 <html>）把这条规则
+          用 class 再写一遍，不改支持 :has() 的设备的任何行为。
+        -->
+        <div
+          class="app"
+          id="app"
+          :class="{ 'home-mode': shell.activeTab === 'home', 'has-subpage': sub.isOpen }"
+        >
           <div class="stack">
             <NavBar />
 

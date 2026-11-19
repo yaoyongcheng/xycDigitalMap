@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import MapViewer from '@/components/ui/MapViewer.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { useAlarmStore } from '@/stores/alarm'
+import { useSceneStore } from '@/stores/scene'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 
@@ -25,28 +26,87 @@ const subpage = useSubpageStore()
 /**
  * 二维 / 三维视图切换（2026-10 版本同步 · 第二批）
  *
- * 两张底图不是同一张图的比例变换：三维图是斜视影像（1024×642，2026-11-13
- * 换成设计稿 gx2 的实景航拍 + 白模叠加），二维图是正射影像（1024×747），
+ * 两张底图不是同一张图的比例变换：三维图是斜视影像，二维图是正射影像，
  * 取景范围也不同。因此：
  *   · 报警点有各自一套坐标（Alarm.flat / Alarm.pin）。
  * 关闭地图时自动复位成三维，下次进来不会停在二维（与原版 closeMapLand 一致）。
+ *
+ * 2026-11-18 起两张底图都由场景截图接口动态给（`stores/scene`）：
+ * 三维 = `type=3d`，二维 = `type=2d`。首页背景用的也是同一份三维图，
+ * 所以 `load('3d')` 基本是命中缓存；二维只有在真的点了「二维地图」时才拉
+ * （3.8MB 一张，没必要进全屏就先下）。
  */
 const flat = ref(false)
 
-const MAP_SRC = {
-  map: `${import.meta.env.BASE_URL}img/site-map.webp?v=20261113`,
-  flat: `${import.meta.env.BASE_URL}img/site-flat.webp?v=20261109`,
-} as const
+const scene = useSceneStore()
 
-const mapSrc = computed(() => (flat.value ? MAP_SRC.flat : MAP_SRC.map))
+/** 当前底图：接口图优先，取不到自动回落到内置的 site-map / site-flat */
+const mapSrc = computed(() => scene.src(flat.value ? '2d' : '3d'))
 
 const alarmPins = computed(() => alarm.mapAlarms(flat.value ? 'flat' : 'pin'))
+
+/**
+ * 切换中的目标态（`null` = 空闲）。
+ *
+ * 只有目标底图还没到手时才非空 —— 按钮据此进加载态并挡住重复点击。
+ */
+const switching = ref<null | boolean>(null)
+
+/**
+ * 二维 / 三维切换。
+ *
+ * ⚠️ 不能「先翻 flat 再去取图」：2D 有 3.8MB，翻得早的话 `scene.src('2d')`
+ * 此刻还没有接口图，会先回落到打包的内置 `site-flat.webp`（那张是迁移前的
+ * 旧正射图），等接口图下完再换一次 —— 用户看到的就是「旧地图闪一下、
+ * 然后又跳一张」。所以这里等到目标图**有结论**（成功、未上传或失败）才翻：
+ *   · 成功 → 一次切到接口图；
+ *   · 未上传 / 失败 → 一次切到内置兜底图（虽然也是老图，但只出现一次，
+ *     不会二次跳变）；
+ *   · 等待期间旧图继续显示（清空只会让屏幕变黑），按钮写「加载中」。
+ *
+ * 报警点坐标与 `.is-flat` 样式跟着 flat 一起翻，保证撒点与画面永远同一张图。
+ *
+ * 2026-11-18 晚补一条：本机已落盘兜底图时，「有结论」不等于「一定去等接口」——
+ * 兜底图就是上次接口那张，先切过去显示，同时后台再确认一次最新（`void load`）。
+ * 接口回同一张，指纹相同、画面不动；回了新图，MapViewer 双缓冲平滑换掉。
+ */
+async function toggleFlat(): Promise<void> {
+  if (switching.value !== null) return
+  const next = !flat.value
+  const type = next ? '2d' : '3d'
+
+  // 图已经在手（接口图，或上次落盘的本地兜底图）→ 直接翻，一步到位。
+  // 兜底图那条要顺手再问一次接口：取到同一张则画面一帧不动，取到新图才换，
+  // 不能让「有缓存」把「看最新一张」这件事挡掉。
+  if (scene.settled(type)) {
+    flat.value = next
+    void scene.load(type)
+    return
+  }
+
+  switching.value = next
+  try {
+    await scene.load(type)
+  } finally {
+    switching.value = null
+  }
+  // 等待期间退出了全屏：closeMapLand 已把 flat 复位成三维，别再翻过去
+  if (shell.mapLandOpen) flat.value = next
+}
 
 watch(
   () => shell.mapLandOpen,
   (open) => {
-    if (!open) flat.value = false
+    if (!open) {
+      flat.value = false
+      return
+    }
+    // 进全屏先确保三维图在手（首页已经取过时 store 直接返回，不重复请求）
+    void scene.load('3d')
   },
+  // 本层是常驻 DOM、开局就挂载；若用户是在「地图已打开」的状态下才挂上这个
+  // 组件（深链 / 单测直接 openMapLand 后再 mount），没有 immediate 就永远不取图
+  { immediate: true },
 )
 
 /** 报警撒点 → 先退出横屏地图，再进预警详情（原版 onAlarmPin 的顺序） */
@@ -97,12 +157,16 @@ function onAlarmPin(id: string): void {
           class="map-land-flat"
           id="btnMapFlat"
           type="button"
-          :class="{ on: flat }"
+          :class="{ on: flat, 'is-busy': switching !== null }"
           :aria-pressed="flat"
-          @click="flat = !flat"
+          :aria-busy="switching !== null"
+          :disabled="switching !== null"
+          @click="toggleFlat"
         >
           <SvgIcon name="map-flat" />
-          {{ flat ? '三维地图' : '二维地图' }}
+          <!-- 等待期文案要变：否则用户以为没点上，会连点几下 -->
+          <template v-if="switching !== null">{{ switching ? '二维加载中' : '三维加载中' }}</template>
+          <template v-else>{{ flat ? '三维地图' : '二维地图' }}</template>
         </button>
 
         <button

@@ -1,4 +1,5 @@
 import type { ScaffoldSensor } from '@/types'
+import { CDN_ORIGIN } from '@/api/config'
 import { parseSensors } from '@/utils/scaffold'
 
 /**
@@ -37,8 +38,8 @@ import { parseSensors } from '@/utils/scaffold'
  * 与项目其它接口层一致：**永不抛错**。任何失败都收敛成 `null` 或快照。
  */
 
-/** CDN 根（来自 V2 的 StreamingAssets/CdnConfig.txt） */
-const CDN_BASE = 'http://120.26.34.95:9689'
+/** CDN 根（V2 的 StreamingAssets/CdnConfig.txt）—— 与监控清单共用一处定义 */
+const CDN_BASE = CDN_ORIGIN
 
 /** 爬架传感器文件（V2 的 ScaffoldDataRequester::InitRequest 硬编码） */
 export const SCAFFOLD_URL = `${CDN_BASE}/CDN/PC/ScaffoldData.json`
