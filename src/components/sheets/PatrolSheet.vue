@@ -638,10 +638,13 @@ onBeforeUnmount(() => {
     </Teleport>
 
     <div class="patrol-meta">
-      <div><span>任务</span><b>{{ photo.taskName }}</b></div>
+      <!-- 抓拍（视频监控）写「点位」，航拍写「任务」—— 一张快照没有航线可言 -->
+      <div><span>{{ photo.snap ? '点位' : '任务' }}</span><b>{{ photo.taskName }}</b></div>
       <div>
         <span>来源</span>
-        <span class="alarm-src alarm-src-drone">无人机</span>
+        <span class="alarm-src" :class="photo.snap ? 'alarm-src-cam' : 'alarm-src-drone'">
+          {{ photo.snap ? '视频监控' : '无人机' }}
+        </span>
       </div>
       <div><span>时间</span><b>{{ timeText }}</b></div>
       <div><span>大小</span><b>{{ sizeText || '—' }}</b></div>

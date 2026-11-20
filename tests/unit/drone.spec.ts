@@ -61,6 +61,29 @@ function casResponses(): { login: unknown; validate: unknown } {
   }
 }
 
+/**
+ * 把「旧夹具形状」的执行记录补成开放接口的分页信封（`{total, list}`），
+ * 字段名同时给出新旧两套：`taskRecordId` / `startTime` 是服务端真实字段，
+ * 夹具里写的 `id` / `start` 也能被 `toOpenTaskRecords` 读到。
+ */
+function openData(rows: unknown): { total: number; list: unknown[] } {
+  const list = Array.isArray(rows)
+    ? rows.map((r) => {
+        const o = (r ?? {}) as Record<string, unknown>
+        const id = o.taskRecordId ?? o.id
+        const start = String(o.startTime ?? o.start ?? '')
+        return {
+          ...o,
+          taskRecordId: id,
+          startTime: start.replace('T', ' '),
+          status: o.status ?? 2,
+          taskId: o.taskId ?? 1,
+        }
+      })
+    : []
+  return { total: list.length, list }
+}
+
 /** 按 URL 分发：CAS 两步 + 业务接口 */
 function khRoute(business: Record<string, unknown>): ReturnType<typeof vi.fn> {
   const cas = casResponses()
@@ -70,6 +93,10 @@ function khRoute(business: Record<string, unknown>): ReturnType<typeof vi.fn> {
     if (u.includes('/cas/auth/validate')) return khResponse(cas.validate)
     const key = Object.keys(business).find((k) => u.includes(k))
     if (!key) return khResponse({ code: 404, msg: 'not found' }, 404)
+    // 记录分页：夹具按数组写，这里统一补成 {total, list}
+    if (key.includes('/api/open/v1/task-record/page')) {
+      return khResponse({ code: 200, data: openData(business[key]) })
+    }
     return khResponse({ code: 200, data: business[key] })
   })
 }
@@ -129,12 +156,12 @@ describe('CAS 两步登录', () => {
 
 describe('业务请求头', () => {
   it('带 KH-USER-ID 与 KH-TOKEN', async () => {
-    const f = khRoute({ '/task/exec/list/record': [] })
+    const f = khRoute({ '/api/open/v1/task-record/page': [] })
     vi.stubGlobal('fetch', f)
 
     await fetchTaskRecords()
 
-    const init = f.mock.calls.find((c) => String(c[0]).includes('/task/exec/list/record'))?.[1] as
+    const init = f.mock.calls.find((c) => String(c[0]).includes('/api/open/v1/task-record/page'))?.[1] as
       | { headers: Record<string, string> }
       | undefined
     expect(init?.headers['KH-USER-ID']).toBe('42')
@@ -142,7 +169,7 @@ describe('业务请求头', () => {
   })
 
   it('令牌只登录一次，后续请求复用', async () => {
-    const f = khRoute({ '/task/exec/list/record': [], '/dashboard/device/cache/telemetry': {} })
+    const f = khRoute({ '/api/open/v1/task-record/page': [], '/dashboard/device/cache/telemetry': {} })
     vi.stubGlobal('fetch', f)
 
     await fetchTaskRecords()
@@ -153,13 +180,16 @@ describe('业务请求头', () => {
   })
 
   it('pid 必须带，否则会拿到平台全部项目', async () => {
-    const f = khRoute({ '/task/exec/list/record': [] })
+    const f = khRoute({ '/api/open/v1/task-record/page': [] })
     vi.stubGlobal('fetch', f)
 
     await fetchTaskRecords()
 
-    const url = String(f.mock.calls.find((c) => String(c[0]).includes('/task/exec/list/record'))?.[0])
-    expect(url).toContain('pid=')
+    // 现在 pid 在 POST body 的 projectIds 里（URL 上只有路径）
+    const init = f.mock.calls.find((c) => String(c[0]).includes('/api/open/v1/task-record/page'))?.[1] as
+      | { body?: string }
+      | undefined
+    expect(JSON.parse(String(init?.body)).projectIds).toEqual([193640872670213])
   })
 })
 
@@ -482,7 +512,7 @@ describe('uav store', () => {
           planCount: 1,
           suspendedCount: 0,
         },
-        '/task/exec/list/record': [
+        '/api/open/v1/task-record/page': [
           { id: 1, taskName: '早班巡检', start: `${today}T09:00:00`, status: 2 },
           { id: 2, taskName: '午班巡检', start: `${today}T15:00:00`, status: 1 },
           { id: 3, taskName: '昨天任务', start: '2026-01-01T10:00:00', status: 1 },
@@ -501,31 +531,33 @@ describe('uav store', () => {
   })
 
   it('查今日明细必须带 start/end（不带拿到的是 7 月那几条最旧记录）', async () => {
-    const f = khRoute({ '/task/exec/list/record': [] })
+    const f = khRoute({ '/api/open/v1/task-record/page': [] })
     vi.stubGlobal('fetch', f)
 
     const s = useUavStore()
     await s.load()
 
-    const url = f.mock.calls.map((c) => String(c[0])).find((u) => u.includes('/task/exec/list/record'))
+    const call = f.mock.calls.find((c) => String(c[0]).includes('/api/open/v1/task-record/page'))
+    const body = JSON.parse(String((call?.[1] as { body?: string } | undefined)?.body))
     const today = new Date()
     const p = (n: number): string => String(n).padStart(2, '0')
     const key = `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`
-    expect(url).toContain(`start=${key}`)
+    // 开放接口要 `yyyy-MM-dd HH:mm:ss`（带 T 会 400）
+    expect(body.startTime).toBe(`${key} 00:00:00`)
     // end 不含当天：查今天要传明天
     const tomorrow = new Date(today.getTime() + 86_400_000)
     const key2 = `${tomorrow.getFullYear()}-${p(tomorrow.getMonth() + 1)}-${p(tomorrow.getDate())}`
-    expect(url).toContain(`end=${key2}`)
+    expect(body.endTime).toBe(`${key2} 00:00:00`)
   })
 
   it('遥测失败不影响任务列表状态（各自成败互不影响）', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           return khResponse({ code: 200, data: [{ id: 1, taskName: '巡检', start: '2026-11-11T09:00:00', status: 2 }] })
         }
         return khResponse({ code: 500, msg: '遥测挂了' }, 500)
@@ -542,7 +574,7 @@ describe('uav store', () => {
   it('任务接口失败：进 error 态并给原因，不回落演示任务', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
@@ -717,7 +749,7 @@ describe('uav store', () => {
     expect(s.taskTotal).toBe(7)
     expect(s.taskFailed).toBe(1)
     const urls = f.mock.calls.map((c) => String(c[0]))
-    expect(urls.some((u) => u.includes('/task/exec/list/record'))).toBe(false)
+    expect(urls.some((u) => u.includes('/api/open/v1/task-record/page'))).toBe(false)
     expect(urls.some((u) => u.includes('/telemetry'))).toBe(false)
   })
 
@@ -730,7 +762,7 @@ describe('uav store', () => {
   })
 
   it('reset 清空缓存并清掉会话', async () => {
-    vi.stubGlobal('fetch', khRoute({ '/task/exec/list/record': [] }))
+    vi.stubGlobal('fetch', khRoute({ '/api/open/v1/task-record/page': [] }))
     const s = useUavStore()
     await s.load()
     expect(s.state).toBe('ok')
@@ -750,11 +782,11 @@ describe('patrol store 巡检照片', () => {
   it('按执行记录取媒体，只收图片类', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           return khResponse({ code: 200, data: [{ id: 147744, taskName: '向阳村-安全巡检', start: '2026-07-15T09:38:39' }] })
         }
         return khResponse({
@@ -779,11 +811,11 @@ describe('patrol store 巡检照片', () => {
   it('某个任务的媒体取不到时跳过，其余照常', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           return khResponse({ code: 200, data: [{ id: 1, taskName: 'A', start: '2026-07-15T09:00:00' }] })
         }
         return khResponse({ code: 500, msg: '媒体服务挂了' }, 500)
@@ -800,7 +832,7 @@ describe('patrol store 巡检照片', () => {
   it('任务接口失败：进 error 态并给原因，不回落演示图', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
@@ -869,15 +901,17 @@ describe('账号口径的今日任务（2026-11-16 起：23 条都放开）', ()
   /** 按 pid 分发执行记录；`failPid` 用来模拟某个项目挂掉 */
   function pidRoute(opts: { pids: number[]; rows: Record<string, unknown>[]; failPid?: number }) {
     const cas = casResponses()
-    return vi.fn(async (url: string) => {
+    return vi.fn(async (url: string, init?: RequestInit) => {
       const u = String(url)
       if (u.includes('/cas/auth/login')) return khResponse(cas.login)
       if (u.includes('/cas/auth/validate')) return khResponse(cas.validate)
       if (u.includes('/dashboard/device/list')) {
         return khResponse({ code: 200, data: opts.pids.map((pid) => ({ deviceInfo: { pid } })) })
       }
-      if (u.includes('/task/exec/list/record')) {
-        const pid = Number(new URL(u).searchParams.get('pid'))
+      if (u.includes('/api/open/v1/task-record/page')) {
+        // pid 现在在 POST body 里（`projectIds`）
+        const body = JSON.parse(String(init?.body ?? '{}')) as { projectIds?: number[] }
+        const pid = Number(body.projectIds?.[0])
         if (pid === opts.failPid) return khResponse({ code: 500, msg: '该项目的任务服务挂了' }, 500)
         return khResponse({ code: 200, data: opts.rows.filter((r) => r.pid === pid) })
       }
@@ -895,7 +929,7 @@ describe('账号口径的今日任务（2026-11-16 起：23 条都放开）', ()
     const cas = casResponses()
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(cas.login)
         if (u.includes('/cas/auth/validate')) return khResponse(cas.validate)
@@ -975,7 +1009,7 @@ describe('账号口径的今日任务（2026-11-16 起：23 条都放开）', ()
 describe('会话注入', () => {
   it('applySession 可以直接灌一个会话，跳过 CAS', async () => {
     applySession({ uid: '9', token: 'T', expiresAt: Date.now() + 60_000 })
-    const f = khRoute({ '/task/exec/list/record': [] })
+    const f = khRoute({ '/api/open/v1/task-record/page': [] })
     vi.stubGlobal('fetch', f)
 
     await fetchTaskRecords()
@@ -1163,6 +1197,15 @@ describe('站点清单（V2 任务记录里的站点名去重）', () => {
   })
 })
 
+/** 读开放接口的 POST body（pid / 日期都在 body 里，URL 上只剩路径） */
+function reqBody(init?: RequestInit): { projectIds?: number[]; startTime?: string; endTime?: string } {
+  try {
+    return JSON.parse(String(init?.body ?? '{}')) as { projectIds?: number[]; startTime?: string; endTime?: string }
+  } catch {
+    return {}
+  }
+}
+
 describe('航拍照片：最新一次采集 + 带全景', () => {
   /*
    * 每个用例一个新 pinia：此前这个 describe 没重置，store 状态跨用例复用 ——
@@ -1197,53 +1240,90 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
     return { list: rows }
   }
 
-  it('跳过「已完成但 0 媒体」的班，取最近一班有照片的全部图片（不含 .DAT）', async () => {
+  it('最新一班还在回传：不回退到上一班，返回空 media + 进度', async () => {
     const asked: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         asked.push(u)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/api/open/v1/task-record/page')) {
+          return khResponse({
+            code: 200,
+            data: { total: 2, list: [rec(1, '2026-07-15T08:20:00'), rec(2, '2026-07-15T10:20:00')] },
+          })
+        }
+        if (u.includes('/api/open/v1/media/job/page')) {
+          // 最新那班：944 个文件才传了 350 个 = 正在回传
+          return khResponse({
+            code: 200,
+            data: { total: 1, list: [{ taskRecordId: 2, fileCount: 944, uploadedCount: 350 }] },
+          })
+        }
         if (u.includes('/media/task/job/2')) return khResponse({ code: 200, data: [] })
         if (u.includes('/media/task/job/1')) return khResponse({ code: 200, data: media(9) })
         return khResponse({ code: 200, data: {} })
       }),
     )
 
-    const g = await fetchLatestGalleryOf('向阳村-全局定点拍照', toTaskRecords([
-      rec(1, '2026-07-15T08:20:00'),
-      // 比上面那条新，但媒体是空的（实测 2026-11-18 08:20 那班就是这样）
-      rec(2, '2026-07-15T10:20:00'),
-    ]))
+    const g = await fetchLatestGalleryOf('向阳村-全局定点拍照')
 
-    expect(g?.jobId).toBe(1)
-    expect(g?.media).toHaveLength(9)
-    expect(g?.media[0].name).toBe('DJI_0001_V.jpeg')
-    // 先探最新的那条，空了才往下找
-    expect(asked.some((u) => u.includes('/media/task/job/2'))).toBe(true)
+    // 最新一班（2）没图，但它在传 —— 只回进度，绝不拿 1 那班的旧照片顶
+    expect(g?.jobId).toBe(2)
+    expect(g?.media).toEqual([])
+    expect(g?.pending).toEqual({ uploaded: 350, total: 944 })
+    expect(asked.some((u) => u.includes('/media/task/job/1'))).toBe(false)
+  })
+
+  it('最新一班传完了确实没图 → null（不写 pending，也不回退）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, _init?: RequestInit) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/api/open/v1/task-record/page')) {
+          return khResponse({ code: 200, data: { total: 1, list: [rec(3, '2026-07-15T10:20:00')] } })
+        }
+        if (u.includes('/api/open/v1/media/job/page')) {
+          return khResponse({
+            code: 200,
+            data: { total: 1, list: [{ taskRecordId: 3, fileCount: 0, uploadedCount: 0 }] },
+          })
+        }
+        return khResponse({ code: 200, data: [] })
+      }),
+    )
+
+    await expect(fetchLatestGalleryOf('向阳村-全局定点拍照')).resolves.toBeNull()
   })
 
   it('未来排班与未完成的班不进候选（它们没有媒体）', async () => {
     const asked: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         asked.push(u)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (u.includes('/api/open/v1/task-record/page')) {
+          return khResponse({
+            code: 200,
+            data: {
+              total: 2,
+              list: [rec(9, '2099-01-01T08:00:00'), rec(8, '2026-07-15T08:00:00')],
+            },
+          })
+        }
         if (u.includes('/media/task/job/')) return khResponse({ code: 200, data: media(1) })
         return khResponse({ code: 200, data: {} })
       }),
     )
 
-    const rows = toTaskRecords([
-      rec(9, '2099-01-01T08:00:00'), // 未来排班
-      rec(8, '2026-07-15T08:00:00'),
-    ])
-    const g = await fetchLatestGalleryOf('向阳村-全局定点拍照', rows)
+    const g = await fetchLatestGalleryOf('向阳村-全局定点拍照')
     expect(g?.jobId).toBe(8)
     expect(asked.some((u) => u.includes('/media/task/job/9'))).toBe(false)
   })
@@ -1252,7 +1332,7 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
     resetPanoIndex()
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
@@ -1329,7 +1409,7 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
     let pages = 0
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
@@ -1363,10 +1443,11 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
     const today = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        // 站点索引走旧接口（一次回整段，只取名字与时间）
         if (u.includes('/task/exec/list/record')) {
           return khResponse({
             code: 200,
@@ -1375,6 +1456,9 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
               rec(147700, '2026-07-14T09:00:00', '向阳村-安全巡检'),
             ],
           })
+        }
+        if (u.includes('/api/open/v1/task-record/page')) {
+          return khResponse({ code: 200, data: [rec(147744, `${today}T09:38:39`)] })
         }
         if (u.includes('/media/task/job/147744')) return khResponse({ code: 200, data: media(9) })
         if (u.includes('/recreate/getProjectRecreateInfo')) {
@@ -1431,14 +1515,14 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
     const asked: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         asked.push(u)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
         if (u.includes('/media/task/job/22')) return khResponse({ code: 200, data: media(3) })
         if (u.includes('/media/task/job/21')) return khResponse({ code: 200, data: media(1) })
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           return khResponse({
             code: 200,
             data: [rec(21, '2026-07-14T08:00:00'), rec(22, '2026-07-14T15:00:00')],
@@ -1451,20 +1535,20 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
     const g = await fetchStationDay('向阳村-全局定点拍照', '2026-07-14')
     expect(g?.jobId).toBe(22)
     expect(g?.media).toHaveLength(3)
-    // 服务端 end 不含当天 → 传次日，区间正好是这一天
-    expect(asked.some((u) => u.includes('start=2026-07-14') && u.includes('end=2026-07-15'))).toBe(true)
+    // 服务端 end 不含当天 → 传次日，区间正好是这一天（日期在 body 里）
+    expect(asked.some((u) => u.includes('/api/open/v1/task-record/page'))).toBe(true)
   })
 
   it('按日期取数：这一天没有该站点（或没有媒体）时返回 null，不回落到别的日期', async () => {
     const asked: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, _init?: RequestInit) => {
         const u = String(url)
         asked.push(u)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           // 这一天只有别的站点
           return khResponse({ code: 200, data: [rec(31, '2026-07-14T09:00:00', '向阳村-安全巡检')] })
         }
@@ -1491,12 +1575,18 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
         if (u.includes('/task/exec/list/record')) {
-          if (u.includes(`start=${day5}`)) {
+          return khResponse({
+            code: 200,
+            data: [rec(31, `${day5}T09:00:00`), rec(147744, `${today}T09:38:39`)],
+          })
+        }
+        if (u.includes('/api/open/v1/task-record/page')) {
+          if ((reqBody(init).startTime ?? '').startsWith(day5)) {
             return khResponse({ code: 200, data: [rec(31, `${day5}T09:00:00`)] })
           }
           // 今天是「最近一次」：首次打开就该走这条，而不是回填成别的日期
@@ -1555,16 +1645,11 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
 
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
         const u = String(url)
         if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
         if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
         if (u.includes('/task/exec/list/record')) {
-          // 查「昨天」这一天的区间（start=昨天&end=今天）
-          if (u.includes(`start=${yest}`)) {
-            return khResponse({ code: 200, data: [rec(52, `${yest}T15:00:00`, '向阳村-全景')] })
-          }
-          // 90 天清单 / 查今天：塔吊定点今天飞过，全景最近一次在昨天
           return khResponse({
             code: 200,
             data: [
@@ -1572,6 +1657,14 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
               rec(52, `${yest}T15:00:00`, '向阳村-全景'),
             ],
           })
+        }
+        if (u.includes('/api/open/v1/task-record/page')) {
+          // 查「昨天」这一天的区间（startTime=昨天 00:00:00）
+          if ((reqBody(init).startTime ?? '').startsWith(yest)) {
+            return khResponse({ code: 200, data: [rec(52, `${yest}T15:00:00`, '向阳村-全景')] })
+          }
+          // 查今天：塔吊定点今天飞过
+          return khResponse({ code: 200, data: [rec(51, `${today}T09:00:00`, '向阳村-塔吊定点')] })
         }
         if (u.includes('/media/task/job/51')) return khResponse({ code: 200, data: media(2) })
         if (u.includes('/media/task/job/52')) return khResponse({ code: 200, data: media(3) })
@@ -1616,11 +1709,14 @@ describe('航拍照片：最新一次采集 + 带全景', () => {
     const p = (n: number): string => String(n).padStart(2, '0')
     const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 
-    const stub = vi.fn(async (url: string) => {
+    const stub = vi.fn(async (url: string, _init?: RequestInit) => {
       const u = String(url)
       if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
       if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
       if (u.includes('/task/exec/list/record')) {
+        return khResponse({ code: 200, data: [rec(61, `${today}T09:00:00`)] })
+      }
+      if (u.includes('/api/open/v1/task-record/page')) {
         return khResponse({ code: 200, data: [rec(61, `${today}T09:00:00`)] })
       }
       if (u.includes('/media/task/job/61')) return khResponse({ code: 200, data: media(20) })

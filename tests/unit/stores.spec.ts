@@ -15,6 +15,7 @@ vi.mock('@/api/cctv', () => ({
 }))
 
 import { CAM_POINTS } from '@/data/cams'
+import { dateKey } from '@/utils/date'
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
@@ -213,18 +214,74 @@ describe('stores', () => {
 
   /* ============================================================ */
 
-  describe('cam（2026-11-18 设计稿白名单 + 快照接口）', () => {
+  describe('cam（2026-11-18 设计稿白名单 + 直播流）', () => {
     let n = 0
     const revoked: string[] = []
 
-    /** 快照接口直出图片字节（不是 JSON 信封） */
-    function snapResponse(size = 128): Response {
+    /** 抓拍图片：直出字节（不是 JSON 信封） */
+    function imgResponse(size = 128): Response {
       return {
         ok: true,
         status: 200,
         headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'image/jpeg' : null) },
         blob: async () => new Blob([new Uint8Array(size)], { type: 'image/jpeg' }),
+        text: async () => '',
+        json: async () => ({}),
       } as unknown as Response
+    }
+
+    /** 历史列表信封（`{code,message,data:{items,total,...}}`，照实测结构） */
+    function jsonResponse(body: unknown, status = 200): Response {
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        headers: {
+          get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null),
+        },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+        blob: async () => new Blob([]),
+      } as unknown as Response
+    }
+
+    /** 今天 08:00 / 12:00 两张（`mark` 按服务端规则拼，时刻用本地时间） */
+    function todayItems(): Record<string, unknown>[] {
+      const make = (h: number): Record<string, unknown> => {
+        const d = new Date()
+        d.setHours(h, 0, 0, 0)
+        const p = (x: number): string => String(x).padStart(2, '0')
+        const mark = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(h)}0000`
+        return {
+          capturedAt: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(h)}:00:00+08:00`,
+          fileSize: 128,
+          imageUrl: `/api/video/snapshots?channelId=x&mark=${mark}&pid=P000000076`,
+          latest: h === 12,
+          mark,
+          timestamp: d.getTime(),
+        }
+      }
+      return [make(12), make(8)]
+    }
+
+    /** 历史列表：只有「今天」有两条，其它日期空（与服务端按天查的行为一致） */
+    function historyResponse(url: string): Response {
+      const u = new URL(url)
+      const today = dateKey(new Date())
+      const items = u.searchParams.get('date') === today ? todayItems() : []
+      return jsonResponse({
+        code: 200,
+        message: 'success',
+        data: {
+          channelId: u.searchParams.get('channelId'),
+          items,
+          page: Number(u.searchParams.get('page')) || 1,
+          pageSize: Number(u.searchParams.get('pageSize')) || 100,
+          pid: 'P000000076',
+          rangeStart: '',
+          rangeEnd: today,
+          total: items.length,
+        },
+      })
     }
 
     beforeEach(() => {
@@ -234,7 +291,12 @@ describe('stores', () => {
       vi.spyOn(URL, 'revokeObjectURL').mockImplementation((u: string) => {
         revoked.push(u)
       })
-      vi.stubGlobal('fetch', vi.fn(async () => snapResponse()))
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) =>
+          String(url).includes('/snapshots/history') ? historyResponse(String(url)) : imgResponse(),
+        ),
+      )
       const auth = useAuthStore()
       auth.token = 'test-token'
       auth.expiresAt = Date.now() + 3_600_000
@@ -256,10 +318,8 @@ describe('stores', () => {
         ['材料堆场', 1],
         ['出入口管控', 4],
       ])
-      // 默认选中第一个点位（设备设施置顶后是 2#塔吊），未取图前没有画面地址
+      // 默认选中第一个点位（设备设施置顶后是 2#塔吊）
       expect(cam.current.name).toBe('2#塔吊')
-      expect(cam.frameUrl).toBe('')
-      expect(cam.state).toBe('idle')
     })
 
     it('camId 指向不存在的通道时回退到首个点位', () => {
@@ -268,53 +328,21 @@ describe('stores', () => {
       expect(cam.current.channelId).toBe(CAM_POINTS[0].channelId)
     })
 
-    it('applyCam 切点位并取图；同一点位不重复请求', async () => {
+    it('applyCam 切点位：只换当前点位，不再请求「最近一帧」快照', async () => {
       const cam = useCamStore()
       cam.applyCam('34020000001310000003')
       await flushPromises()
 
-      const spy = fetch as unknown as ReturnType<typeof vi.fn>
-      expect(spy).toHaveBeenCalledTimes(1)
-      expect(String(spy.mock.calls[0]?.[0])).toContain('channelId=34020000001310000003')
       expect(cam.current.name).toBe('地磅全景')
-      expect(cam.state).toBe('ok')
-      expect(cam.frameUrl).toBe('blob:cam/1')
-
-      // 再点一次同一个点位：命中缓存，不再请求
-      cam.applyCam('34020000001310000003')
-      await flushPromises()
-      expect(spy).toHaveBeenCalledTimes(1)
-    })
-
-    it('refresh 强制重取并撤掉旧 objectURL', async () => {
-      const cam = useCamStore()
-      cam.applyCam('34020000001310000003')
-      await flushPromises()
-      cam.refresh()
-      await flushPromises()
-
+      // 旧 `…/snapshots?pid&channelId` 已下线：切点位只改选择，不发请求
       const spy = fetch as unknown as ReturnType<typeof vi.fn>
-      expect(spy).toHaveBeenCalledTimes(2)
-      expect(cam.frameUrl).toBe('blob:cam/2')
-      expect(revoked).toEqual(['blob:cam/1'])
-    })
+      expect(spy).not.toHaveBeenCalled()
 
-    it('取图失败记 error + 原因，切到别的点位不受影响', async () => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async () => ({
-          ok: false,
-          status: 502,
-          headers: { get: () => null },
-          blob: async () => new Blob([]),
-        })),
-      )
-      const cam = useCamStore()
+      // 再点同一个点位：什么都不变，也不发请求
       cam.applyCam('34020000001310000003')
       await flushPromises()
-      expect(cam.state).toBe('error')
-      expect(cam.note).toContain('上游视频服务异常')
-      expect(cam.frameUrl).toBe('')
+      expect(cam.current.name).toBe('地磅全景')
+      expect(spy).not.toHaveBeenCalled()
     })
 
     it('applyCam 忽略不存在的通道（不把页面切成空点位）', () => {
@@ -340,16 +368,20 @@ describe('stores', () => {
       expect(cam.camId).toBe(CAM_POINTS[0].channelId)
     })
 
-    it('closeCam 退出横屏并关层，但保留已取到的画面（会话内缓存）', async () => {
+    it('closeCam 退出横屏并关层，抓拍视图一并收起', async () => {
       const cam = useCamStore()
       cam.openCam()
       await flushPromises()
       cam.setCamLand(true)
-      cam.closeCam()
+      cam.openShots()
+      await flushPromises()
+      expect(cam.shotsOpen).toBe(true)
 
+      cam.closeCam()
       expect(cam.isOpen).toBe(false)
       expect(useShellStore().isLand).toBe(false)
-      expect(cam.frameUrl).toBe('blob:cam/1')
+      expect(cam.shotsOpen).toBe(false)
+      expect(cam.shots).toEqual([])
     })
 
     it('setCamLand 同时切两个横屏标记', () => {
@@ -363,20 +395,21 @@ describe('stores', () => {
       expect(shell.isLand).toBe(false)
     })
 
-    it('会话失效（登出）撤掉全部 objectURL，不留给下一个人', async () => {
+    it('会话失效（登出）撤掉抓拍图片的 objectURL，不留给下一个人', async () => {
       const cam = useCamStore()
-      cam.openCam()
+      cam.openShots()
       await flushPromises()
-      // 切到一个与默认点位不同的通道，才有两张 objectURL 可撤
-      cam.applyCam('34020000001310000003')
-      await flushPromises()
+      // 一张抓拍两份 objectURL：列表用缩略图、详情用原图
+      const n = cam.shots.length
+      expect(n).toBeGreaterThan(0)
+      expect(revoked).toEqual([])
 
       useAuthStore().clear()
       // token 的 watch 是 flush: pre，等一拍再断言
       await nextTick()
-      expect(revoked).toEqual(['blob:cam/1', 'blob:cam/2'])
-      expect(cam.frameUrl).toBe('')
-      expect(cam.state).toBe('idle')
+      expect(revoked).toHaveLength(n * 2)
+      expect(cam.shots).toEqual([])
+      expect(cam.shotsState).toBe('idle')
     })
 
     /**
@@ -427,7 +460,7 @@ describe('stores', () => {
 
       cam.markPlayError()
       expect(cam.playState).toBe('error')
-      expect(cam.playNote).toContain('已回到定时快照')
+      expect(cam.playNote).toContain('正在自动重连')
 
       // 重连中是一个独立状态：按钮据此画成「等它自己回来」，不跟暂停混淆
       cam.markReconnecting('2 秒后自动重连（1/3）')
@@ -454,14 +487,14 @@ describe('stores', () => {
     })
 
     /**
-     * 历史抓拍（2026-11-19：真实快照 + 本机档案）
+     * 历史抓拍（2026-11-20：服务端历史列表 + 本机图片缓存）
      *
-     * 《监控快照接口使用说明》写明服务端只回「最近一次成功更新」的那一帧，
-     * 实测也不接受 `date` / `startTime`（直接 400）、`/snapshots/history` 等全 404。
-     * 所以历史只能来自**本机档案**（`utils/shotArchive.ts`）：今天真请求一次并按
-     * 更新档存下，别的日期只读档案。这一组钉住「有就显示真的、没有就说没有」。
+     * 文档《监控快照接口.docx》：`/api/video/snapshots/history?pid&channelId&page&pageSize[&date]`
+     * 返回 `data.items`（`mark` / `capturedAt` / `fileSize` / `imageUrl`）与 `data.total`，
+     * `date` 按北京时间自然日、近 30 天。这一组钉住「按天查、时刻用服务端的、
+     * 图逐张补、没有就说没有」。
      */
-    it('历史抓拍：今天真取一帧并落进档案，按档位出图', async () => {
+    it('历史抓拍：按 date 查当天，元信息来自服务端，图片逐张补上', async () => {
       const cam = useCamStore()
       expect(cam.shotsOpen).toBe(false)
 
@@ -469,15 +502,28 @@ describe('stores', () => {
       await flushPromises()
 
       expect(cam.shotsOpen).toBe(true)
-      expect(cam.shots).toHaveLength(1)
+      expect(cam.shots).toHaveLength(2)
       expect(cam.shotsState).toBe('ok')
+      // 服务端按抓拍时刻倒序：12:00 在前、08:00 在后（不是我们排的）
+      expect(cam.shots.map((s) => s.hm)).toEqual(['12:00', '08:00'])
+      expect(cam.shots[0].id).toBe(cam.shots[0].mark)
       expect(cam.shots[0].channelId).toBe(cam.camId)
       expect(cam.shots[0].size).toBe(128)
-      expect(cam.shots[0].slot).toBeGreaterThanOrEqual(0)
-      expect(cam.shotsHint).toContain('当天 1 张')
+      expect(cam.shots[0].state).toBe('ok')
+      expect(cam.shotsHint).toContain('当天 2 张')
       // 缩略图与原图各一份 objectURL（列表用缩略图，详情才换原图）
       expect(cam.shots[0].thumb).toMatch(/^blob:cam\//)
       expect(cam.shots[0].url).toMatch(/^blob:cam\//)
+
+      // 请求参数照文档：pid / channelId / page=1 / pageSize=100 / date=今天
+      const spy = fetch as unknown as ReturnType<typeof vi.fn>
+      const histUrl = String(spy.mock.calls[0]?.[0])
+      expect(histUrl).toContain('/api/video/snapshots/history')
+      expect(histUrl).toContain('pid=P000000076')
+      expect(histUrl).toContain(`channelId=${cam.camId}`)
+      expect(histUrl).toContain('page=1')
+      expect(histUrl).toContain('pageSize=100')
+      expect(histUrl).toContain(`date=${dateKey(new Date())}`)
 
       cam.closeShots()
       expect(cam.shotsOpen).toBe(false)
@@ -485,49 +531,67 @@ describe('stores', () => {
       expect(cam.shotsState).toBe('idle')
     })
 
-    it('历史抓拍：同一更新档再取到同一张不重复存，时刻保持第一次', async () => {
+    it('历史抓拍：再打开一次命中缓存，同一 mark 不重复下载', async () => {
       const cam = useCamStore()
       cam.openShots()
       await flushPromises()
-      const firstAt = cam.shots[0].at
-      const firstId = cam.shots[0].id
+      const first = cam.shots.map((s) => [s.id, s.at])
+
+      const spy = fetch as unknown as ReturnType<typeof vi.fn>
+      const calls = spy.mock.calls.length
 
       cam.openShots()
       await flushPromises()
 
-      expect(cam.shots).toHaveLength(1)
-      expect(cam.shots[0].id).toBe(firstId)
-      expect(cam.shots[0].at).toBe(firstAt)
+      expect(cam.shots.map((s) => [s.id, s.at])).toEqual(first)
+      // 只多了「查列表」这一次，图片走缓存
+      expect(spy.mock.calls.length).toBe(calls + 1)
     })
 
-    it('历史抓拍：本机没留存的日期给空态，且不去打快照接口', async () => {
+    it('历史抓拍：其它日期照常按 date 查，服务端没记录就是空态', async () => {
       const cam = useCamStore()
       cam.openShots()
       await flushPromises()
-      const spy = fetch as unknown as ReturnType<typeof vi.fn>
-      expect(spy).toHaveBeenCalledTimes(1)
 
+      const spy = fetch as unknown as ReturnType<typeof vi.fn>
       const y = new Date()
       y.setDate(y.getDate() - 1)
+      const before = spy.mock.calls.length
       cam.setShotDate(y)
       await flushPromises()
 
       expect(cam.shots).toEqual([])
       expect(cam.shotsState).toBe('empty')
-      expect(cam.shotsNote).toContain('本机也没有留存记录')
-      // 历史日不发请求：服务端没有按日期查询这回事，别制造假动作
-      expect(spy).toHaveBeenCalledTimes(1)
+      // 历史日只查列表，不额外补任何「最新一张」
+      expect(spy.mock.calls.length).toBe(before + 1)
+      expect(String(spy.mock.calls[before]?.[0])).toContain('/snapshots/history')
+      expect(String(spy.mock.calls[before]?.[0])).toContain(`date=${dateKey(y)}`)
     })
 
-    it('历史抓拍：取图失败且本机无留存 → 失败态 + 说明', async () => {
+    it('历史抓拍：今天没有记录就是空态，不再退「最近一帧」', async () => {
+      // 2#/4# 塔吊、2#门等几路服务端没有历史索引（total=0）；
+      // 旧实现会再打一发「最近一帧」，那个接口已下线 —— 现在只查一次列表。
+      const spy = vi.fn(async (url: string) =>
+        String(url).includes('/snapshots/history')
+          ? jsonResponse({ code: 200, message: 'success', data: { items: [], total: 0 } })
+          : imgResponse(),
+      )
+      vi.stubGlobal('fetch', spy)
+
+      const cam = useCamStore()
+      cam.openShots()
+      await flushPromises()
+
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(String(spy.mock.calls[0]?.[0])).toContain('/snapshots/history')
+      expect(cam.shots).toEqual([])
+      expect(cam.shotsState).toBe('empty')
+    })
+
+    it('历史抓拍：接口失败且本机无缓存 → 失败态 + 服务端那句原因', async () => {
       vi.stubGlobal(
         'fetch',
-        vi.fn(async () => ({
-          ok: false,
-          status: 502,
-          headers: { get: () => null },
-          blob: async () => new Blob([]),
-        }) as unknown as Response),
+        vi.fn(async () => jsonResponse({ code: 502, message: '上游视频服务异常' }, 502)),
       )
       const cam = useCamStore()
       cam.openShots()
@@ -535,7 +599,29 @@ describe('stores', () => {
 
       expect(cam.shots).toEqual([])
       expect(cam.shotsState).toBe('error')
-      expect(cam.shotsNote).toContain('上游视频服务异常')
+      expect(cam.shotsNote).toContain('上游视频服务')
+    })
+
+    it('历史抓拍：接口失败但本机有缓存 → 照常显示，并说明这是缓存', async () => {
+      const cam = useCamStore()
+      cam.openShots()
+      await flushPromises()
+      expect(cam.shots).toHaveLength(2)
+      const mark = cam.shots[0].mark
+      cam.closeShots()
+
+      // 列表挂了
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => jsonResponse({ code: 502, message: '上游视频服务异常' }, 502)),
+      )
+      cam.openShots()
+      await flushPromises()
+
+      expect(cam.shots).toHaveLength(2)
+      expect(cam.shots.map((s) => s.mark)).toContain(mark)
+      expect(cam.shotsState).toBe('ok')
+      expect(cam.shotsNote).toContain('本机缓存')
     })
 
     it('历史抓拍：日期只放行近 30 天，越界拦下并说明，当前日期不动', async () => {

@@ -1,9 +1,12 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchFacilityGallery, fetchLatestPano, fetchMediaJobs, fetchSafetyGallery, fetchSpotGallery, fetchTaskRecords, fetchYardGallery, FACILITY_TASK_NAME, SAFETY_SOIL_TASK_NAME, SPOT_TASK_NAME, YARD_TASK_NAME, type DroneMedia, type DronePano } from '@/api/drone'
+import { beginRecordBatch, endRecordBatch, fetchFacilityGallery, fetchLatestPano, fetchMediaJobs, fetchSafetyGallery, fetchSpotGallery, fetchTaskRecords, fetchYardGallery, FACILITY_TASK_NAME, SAFETY_SOIL_TASK_NAME, SPOT_TASK_NAME, YARD_TASK_NAME, type DroneMedia, type DronePano } from '@/api/drone'
+import { fetchCamShotHistory } from '@/api/camsnap'
 import { ApiError } from '@/api/http'
+import { CRANE_SHOTS, GATE_SHOTS } from '@/data/cams'
 import { isEquirect } from '@/utils/pano'
+import { ensureShot, latestShot, type ShotRecord } from '@/utils/shotArchive'
 
 /**
  * 巡检照片（2026-11 阶段 8：改真实航拍图；2026-11-16 重构取数与分类）
@@ -84,6 +87,14 @@ export interface PatrolPhotoReal {
   size: number
   /** MIME 类型 */
   mediaType: string
+  /**
+   * 来源是**视频监控的抓拍**（不是无人机航拍）。
+   *
+   * 目前只有「设备设施」里那两张塔吊抓拍带这个标记 —— 卡片与弹层的来源徽标
+   * 因此要写「视频监控」（绿标），不能一律写「无人机」（蓝标）。
+   * 其余所有照片都不带它就是航拍，判断也只认这个字段，不靠 `taskName` 猜。
+   */
+  snap?: boolean
 }
 
 /** 状态：idle / loading / ok / error */
@@ -133,10 +144,17 @@ const MAX_PER_TASK = 24
  * （见 `probe` 里写入 `photos` 的位置），不是等全部探完才显示。
  */
 const PROBE_GAP = 900
-/** 被限流后的等待（服务端提示 2 秒） */
-const THROTTLE_WAIT = 2_200
-/** keehang 的限流业务码 */
-const THROTTLE_CODE = 42901
+/** 被限流后的等待（服务端只提示「稍后再试」，实测 3 秒后成功率明显回升） */
+const THROTTLE_WAIT = 3_000
+/**
+ * keehang 的限流业务码。
+ *
+ * 2026-11-20 实测：服务端改回 **HTTP 200 + `{code:429, msg:"当前查询较多，请稍后再试！"}`
+ * + `data: []`**（12 条记录里 10 条如此），而旧代码只认 `42901` —— 碰上 429
+ * 直接 `return null` 不重试，照片墙因此必然空。两个码都算，并与
+ * `api/drone.ts` 的 `STATION_THROTTLE_CODES` 保持一致。
+ */
+const THROTTLE_CODES = new Set([429, 42901])
 
 /**
  * 切回智眸面板的刷新节流。
@@ -234,17 +252,21 @@ export const usePatrolStore = defineStore('patrol', () => {
   const yardState = ref<PatrolState>('idle')
 
   /**
-   * 「设备设施」模块的 2 张：`向阳村-塔吊定点` 最近一班有照片的飞行里
-   * **第 2、第 7 张**（用户按 V2 采集照片网格点出来的固定两格）。
+   * 「设备设施」模块的 **4 张**（2026-11-20 由 2 张扩到 4 张）。
    *
-   * 与 `yard` 同构：单独一条链（`fetchFacilityGallery`）、单独一套加载态，
-   * 不进 `photos` —— 这一格只认那两张，不再按航线名把别的塔吊照片混进来。
+   * 前两张：`向阳村-塔吊定点` 最近一班有照片的飞行里 **第 2、第 7 张**
+   * （用户按 V2 采集照片网格点出来的固定两格）—— 单独一条链
+   * （`fetchFacilityGallery`）、单独一套加载态，不进 `photos`。
    *
-   * ⚠️ 用户点名这一格还有两张来自「视频监控-塔吊-2# / 4#塔吊」各自最新的一张，
-   * 但监控侧没有照片查询接口，2026-11-18 明确「本轮先保持现状」，所以这里是 2 张。
+   * 后两张（`snap: true`）：2#塔吊 / 4#塔吊 各自**最新的一条历史抓拍** ——
+   * 与工作台同一个接口（`/snapshots/history`）。这两路服务端目前**没有历史索引**
+   * （`total=0`），所以实际展示的通常是本机缓存里最新那张（看过监控 / 首页就会留下）；
+   * 缓存也没有就少这两张，不编照片。
+   *
+   * 顺序 = 展示顺序（航拍在前、抓拍在后），所以这里**不做排序**。
    */
   const facility = ref<PatrolPhotoReal[]>([])
-  /** 设备设施两张的加载状态 */
+  /** 设备设施四张的加载状态 */
   const facilityState = ref<PatrolState>('idle')
 
   /**
@@ -262,6 +284,23 @@ export const usePatrolStore = defineStore('patrol', () => {
   const safetyState = ref<PatrolState>('idle')
 
   /**
+   * 「出入口管控」模块的 **5 张**（2026-11-20 新增）。
+   *
+   * 5 个来源见 `data/cams.ts` 的 `GATE_SHOTS`（视频监控A / 2#门监控1 /
+   * 2#门监控2 / 4#门监控 / 4#门外监控），每个来源**只取最新的一条历史抓拍**。
+   *
+   * 与「设备设施」后两张同一套取法（`snapShotOf`）：历史列表最新一条 → 该通道无历史
+   * 或接口不可用时退回本机缓存最新那条 → 都没有就不出现，不拿别的图顶替。
+   *
+   * 这一格**不再走照片墙**（原先 `groups.get('yard')` 按航线名归组，实际常年为空）：
+   * 出入口看的是视频监控的实时抓拍，与无人机航线不是一回事。
+   * 顺序 = 来源表顺序，不做排序（`snap: true` 让卡片写「抓拍 / 视频监控」）。
+   */
+  const gate = ref<PatrolPhotoReal[]>([])
+  /** 出入口管控五张的加载状态 */
+  const gateState = ref<PatrolState>('idle')
+
+  /**
    * 照片 id → 原图尺寸（宽 × 高）。
    *
    * 来源是列表里 `<img>` 的 `naturalWidth/Height` —— 缩略图与原图尺寸一致，
@@ -276,6 +315,21 @@ export const usePatrolStore = defineStore('patrol', () => {
   let lastFailAt = 0
   let lastOkAt = 0
   let inflight: Promise<void> | null = null
+  /**
+   * 「设备设施」这一格的取数序号。
+   *
+   * 连点「重试」会并发两次 `loadFacility`：抓拍那两张要下 300KB×2，慢的那次
+   * 回来得晚，落地就会把新的一批盖回旧的（还会把别人正在显示的 objectURL
+   * 撤掉）。所以只让最后一次落地，前面的在中途的 await 之后直接退。
+   */
+  let facilitySeq = 0
+  /**
+   * 「出入口管控」这一格的取数序号（同 `facilitySeq`）。
+   *
+   * 5 张是串行取的、要好几秒，连点「重试」会并发两次：只让最后一次落地，
+   * 慢的那次回来后直接退（否则会把新的一批盖回旧的，还会撤掉正在显示的 URL）。
+   */
+  let gateSeq = 0
 
   /** 照片按时间倒序（最新在前） */
   const list = computed<PatrolPhotoReal[]>(() =>
@@ -290,6 +344,151 @@ export const usePatrolStore = defineStore('patrol', () => {
     if (bytes < 1024) return `${bytes}B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`
     return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+  }
+
+  /**
+   * 毫秒 → 'YYYY-MM-DD HH:mm:ss'。
+   *
+   * 与无人机媒体的 `time` 字段**同一种字符串格式**：卡片与弹层都只做
+   * `slice(0, 16)`，格式不一致会显示成半截时间（所以不交给 `toISOString`，
+   * 它带 `T` 和 `Z`，还要再换时区）。
+   */
+  function stampOf(ms: number): string {
+    const d = new Date(ms)
+    const p = (n: number): string => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  }
+
+  /* ---- 抓拍（视频监控）的 objectURL ---- */
+
+  /**
+   * 受管的 objectURL 池。
+   *
+   * 抓拍每次刷新都会重新取字节 → 重新建 objectURL，所以必须自己登记、
+   * 下次重取（或登出 reset）时统一 `revoke`；一张 300KB，不撤就是纯泄漏。
+   *
+   * 不放进 `dims` / `photos` 那些结构里：它们跟着数据走，而 objectURL 的生命
+   * 周期是「这次渲染」，混在一起迟早出现「数据还在、图已经撤了」的黑块。
+   *
+   * 设备设施（2 张塔吊）与出入口管控（5 个门禁）**各持一个池**：两格是两条独立
+   * 的链、刷新时机不同，共用一个池会在一边重取时把另一边正在显示的图撤掉。
+   */
+  function makeUrlPool(): { make: (b: Blob) => string; release: () => void } {
+    let urls: string[] = []
+    return {
+      /** 建一个受管理的 objectURL（环境不支持时返回空串，卡片会退成文字占位） */
+      make(b: Blob): string {
+        if (typeof URL.createObjectURL !== 'function') return ''
+        try {
+          const u = URL.createObjectURL(b)
+          urls.push(u)
+          return u
+        } catch {
+          return ''
+        }
+      },
+      release(): void {
+        for (const u of urls) {
+          try {
+            URL.revokeObjectURL(u)
+          } catch {
+            /* 老内核 / 单测环境没有 revoke：忽略 */
+          }
+        }
+        urls = []
+      },
+    }
+  }
+
+  const cranePool = makeUrlPool()
+  /** 出入口管控的池（`loadGate` 每轮换一个，见那里的说明） */
+  let gatePool = makeUrlPool()
+
+  /* ---- 快照请求的全局串行队列 ---- */
+
+  /**
+   * 同一时刻只打一张快照。
+   *
+   * 监控接口文档明确要求「多通道逐张请求，遇 429 按 `Retry-After` 重试，避免
+   * 并发占带宽」，实测同一秒打两路就回 429。设备设施的 2 张与出入口管控的 5 张
+   * 是两条并行跑的链，所以队列必须放在**模块级共享**，各排各的等于没排。
+   */
+  let snapQueue: Promise<unknown> = Promise.resolve()
+
+  function snapSerial<T>(fn: () => Promise<T>): Promise<T> {
+    const next = snapQueue.then(fn, fn)
+    // 队列本身不能因为一次失败就断掉：吞掉结果，只往下传「轮到你了」
+    snapQueue = next.then(
+      () => undefined,
+      () => undefined,
+    )
+    return next
+  }
+
+  /**
+   * 「最新一条」的取法：历史列表第 1 页第 1 条（服务端按抓拍时刻倒序）。
+   *
+   * 这个请求走调用方的串行队列（`snapSerial`）：文档明确要求多通道逐张取、
+   * 别并发占带宽，7 张（塔吊 2 + 出入口 5）并发打过去只会一起等。
+   *
+   * 该通道没有历史索引时返回 `null`（实测 2#/4# 塔吊、2#门监控等几路 `total=0`），
+   * 由调用方退本机缓存 —— 旧的「最近一帧」兜底地址（`…/snapshots?pid&channelId`）
+   * 已随旧接口下线，这里不再试第二枪。
+   */
+  async function latestShotOf(channelId: string): Promise<ShotRecord | null> {
+    const page = await fetchCamShotHistory(channelId, { page: 1, pageSize: 1 })
+    const top = page.items[0]
+    if (!top) return null
+    return await ensureShot(channelId, top)
+  }
+
+  /**
+   * 一个监控点位的「最新一条历史抓拍」。
+   *
+   * 与工作台「历史抓拍」同一套数据源（`/api/video/snapshots/history`）：
+   *
+   *   ① 历史列表取第 1 页第 1 条（服务端按抓拍时刻倒序）→ 按行里的 `imageUrl`
+   *      取图（缓存优先，见 `utils/shotArchive.ts::ensureShot`）—— 时刻用的是
+   *      服务端给的 `capturedAt`，不拿「刚取到的这一刻」冒充拍摄时间；
+   *   ② 该通道历史为空（实测 2#/4# 塔吊、2#门监控等几路服务端没有历史索引）
+   *      或接口挂了（断网 / 502 / 429）→ 用本机缓存里最新那张，那也是真照片；
+   *      缓存也没有 → `null`，调用方少这一张，不编照片。
+   *
+   * 通道号为空（配置里名字对不上）也返回 `null`：不猜一个通道去拍。
+   */
+  async function snapShotOf(
+    channelId: string,
+    name: string,
+    pool: { make: (b: Blob) => string },
+  ): Promise<PatrolPhotoReal | null> {
+    if (!channelId) return null
+    let rec: ShotRecord | null = null
+    try {
+      rec = await snapSerial(() => latestShotOf(channelId))
+    } catch {
+      // 接口不可用（断网 / 502 / 429）：落到下面本机缓存那条，不报整格错
+      rec = null
+    }
+    // 该通道没有历史记录 / 接口挂了：用本机缓存里最新那张（也是真抓拍），
+    // 缓存也没有就不出现 —— 不拿别的图顶替。
+    if (!rec) rec = await latestShot(channelId)
+    if (!rec) return null
+    return {
+      // 前缀 `cam-` 与航拍照片的 `${jobId}-${文件名}` 分开，`photoById` 不会撞
+      id: `cam-${rec.key}`,
+      name: `${name}-${rec.mark}.jpg`,
+      // 列表用压缩预览（480 长边，约 20KB），点开大图先看同一张；
+      // 「查看原图」拉的是档案里的原始字节（见 `utils/shotArchive.ts`）
+      thumbnail: pool.make(rec.thumb),
+      url: pool.make(rec.full),
+      taskName: name,
+      taskId: null,
+      jobId: 0,
+      time: stampOf(rec.at),
+      size: rec.size,
+      mediaType: 'image/jpeg',
+      snap: true,
+    }
   }
 
   /** 记一张图的原始尺寸（尺寸无效或已记录时不动） */
@@ -318,9 +517,9 @@ export const usePatrolStore = defineStore('patrol', () => {
   /**
    * 按 id 找一张照片。
    *
-   * 照片墙 / 「全景航拍」9 张 / 「材料堆场」3 张 / 「设备设施」2 张 /
-   * 「安全巡查」2 张分五个数组存（见各 ref 的注释），而大图弹层只拿到一个 id ——
-   * 所以查找必须五处都看。
+   * 照片墙 / 「全景航拍」9 张 / 「材料堆场」3 张 / 「设备设施」4 张 /
+   * 「安全巡查」2 张 / 「出入口管控」5 张分六个数组存（见各 ref 的注释），
+   * 而大图弹层只拿到一个 id —— 所以查找必须六处都看。
    */
   function photoById(id: string): PatrolPhotoReal | undefined {
     return (
@@ -328,7 +527,8 @@ export const usePatrolStore = defineStore('patrol', () => {
       spot.value.find((p) => p.id === id) ??
       yard.value.find((p) => p.id === id) ??
       facility.value.find((p) => p.id === id) ??
-      safety.value.find((p) => p.id === id)
+      safety.value.find((p) => p.id === id) ??
+      gate.value.find((p) => p.id === id)
     )
   }
 
@@ -428,21 +628,100 @@ export const usePatrolStore = defineStore('patrol', () => {
   }
 
   /**
-   * 取「设备设施」那 2 张（`向阳村-塔吊定点` 最近一班的第 2、第 7 张）。
+   * 「设备设施」里那两张**塔吊抓拍**：2# / 4# 各取最新的一条。
    *
-   * 与 `loadYard` 同一套失败策略：失败**保留上一批**，只有服务端明确回「近期
-   * 没有照片」（`null`）才清空。
+   * 取法与失败策略全在 `snapShotOf` 里（历史最新 → 退本机缓存 → 都没有
+   * 就不出现）；这里只按 `CRANE_SHOTS` 的顺序逐个取，串行由 `snapSerial` 保证。
+   */
+  async function craneShots(): Promise<PatrolPhotoReal[]> {
+    const out: PatrolPhotoReal[] = []
+    for (const c of CRANE_SHOTS) {
+      const p = await snapShotOf(c.channelId, c.name, cranePool)
+      if (p) out.push(p)
+    }
+    return out
+  }
+
+  /**
+   * 取「出入口管控」那一格：**5 张**，5 个来源各最新一张（顺序即来源表顺序）。
+   *
+   * 两个和「设备设施」不同的地方：
+   *
+   *   ① 5 张各约 300KB，串行取完要好几秒 —— 所以**首次进入逐张上屏**（第一张
+   *      回来就先显示，不等齐 5 张）；
+   *   ② 已经有一批在显示时（刷新 / 点重试）反过来**攒齐再换**：逐张替换会让
+   *      张数从 5 掉到 1 再涨回来，比多等两秒更晃眼。
+   *
+   * objectURL 每轮用一个新池，全部落地后才撤旧池 —— 逐张上屏期间已经显示的
+   * 那几张不能因为下一张建了新 URL 就被撤成黑块。
+   *
+   * 一张都取不到才算 `error`（页面写「暂时取不到」+ 重试）；部分取不到保留
+   * 能拿到的几张，缺哪几路由面板那行说明点出来（`gateMissing`）。
+   */
+  async function loadGate(): Promise<void> {
+    const my = ++gateSeq
+    gateState.value = 'loading'
+    const pool = makeUrlPool()
+    const had = gate.value.length > 0
+    const fresh: PatrolPhotoReal[] = []
+    for (const s of GATE_SHOTS) {
+      const p = await snapShotOf(s.channelId, s.name, pool)
+      if (my !== gateSeq) {
+        // 被新的一轮或 reset 顶掉了：这一轮建的 URL 没人会用，当场撤掉
+        pool.release()
+        return
+      }
+      if (!p) continue
+      fresh.push(p)
+      if (!had) gate.value = [...fresh]
+    }
+    if (had) {
+      // 有旧一批在显示：攒齐再整体替换。5 路全挂时这里是空数组 → 一并清空，
+      // 由 `gateState = 'error'` 让面板写「暂时取不到」。
+      // 不在这种情况下留旧图：这一格看的是「门口现在什么样」，拿几小时前的
+      // 画面当最新比空着更糟（与材料堆场「失败保留上一批」不同 —— 那是航拍）
+      gate.value = fresh
+    }
+    gatePool.release()
+    gatePool = pool
+    gateState.value = fresh.length ? 'ok' : 'error'
+  }
+
+  /**
+   * 取「设备设施」那一格：**4 张**。
+   *
+   *   · 前两张 = `向阳村-塔吊定点` 最近一班的第 2、第 7 张（航拍，无人机）；
+   *   · 后两张 = 2# / 4# 塔吊各自**最新一条历史抓拍**（视频监控，见 `craneShots`）。
+   *
+   * 顺序固定：航拍在前、抓拍在后（用户要求「新增照片排在现有照片之后」）。
+   *
+   * 抓拍取不到不影响前两张 —— 两条链的失败互不牵连，只有航拍那条彻底失败
+   * 才把整格标成 `error`（保留上一批，与 `loadYard` 同一套策略）。
+   *
+   * **航拍两张先上屏、抓拍后补**：抓拍是两张实打实的 JPEG（各约 300KB），
+   * 4G 下要 2~4 秒，让前两张陪着一起等没有道理 —— 现场看到的是「先有 2 张、
+   * 再变 4 张」，而不是这一格空 4 秒。
    */
   async function loadFacility(): Promise<void> {
+    const my = ++facilitySeq
     facilityState.value = 'loading'
     try {
       const g = await fetchFacilityGallery()
-      facility.value = g
+      if (my !== facilitySeq) return
+      const drone = g
         ? toPhotos({ id: g.jobId, taskId: g.taskId, taskName: g.taskName, start: g.start }, g.media)
         : []
+      // 先把航拍两张顶上去（上一轮那两张抓拍的 objectURL 这时可以撤了：
+      // 它们已经不在 `facility` 里，不会再被渲染）
+      facility.value = drone
+      cranePool.release()
+
+      const shots = await craneShots()
+      if (my !== facilitySeq) return
+      facility.value = [...facility.value, ...shots]
       facilityState.value = 'ok'
     } catch {
-      facilityState.value = 'error'
+      if (my === facilitySeq) facilityState.value = 'error'
     }
   }
 
@@ -478,7 +757,7 @@ export const usePatrolStore = defineStore('patrol', () => {
         return await fetchMediaJobs(jobId)
       } catch (e) {
         const code = e instanceof ApiError ? e.code : 0
-        if (code === THROTTLE_CODE && attempt === 0) {
+        if (THROTTLE_CODES.has(code) && attempt === 0) {
           await sleep(THROTTLE_WAIT)
           continue
         }
@@ -557,6 +836,9 @@ export const usePatrolStore = defineStore('patrol', () => {
 
     state.value = 'loading'
     inflight = (async () => {
+      // 这一次刷新里五条链查的是同一个 30 天窗口 —— 开个批次让它们共享同一份
+      // 执行记录，否则一次刷新要打 25+ 个 task-record 请求（见 api/drone.ts）。
+      beginRecordBatch()
       try {
         const now = nowKey()
         let lastErr: unknown = null
@@ -568,13 +850,14 @@ export const usePatrolStore = defineStore('patrol', () => {
         // 尺寸缓存跟着换：新一批照片的 id 可能完全不同，旧记录白占内存
         dims.value = {}
 
-        // 全景 / 全景航拍 / 材料堆场 / 设备设施 / 安全巡查各走另一条链
-        // （一次列表 + 一次媒体），与照片探测并行；各自吞错，不拖累照片墙
+        // 全景 / 全景航拍 / 材料堆场 / 设备设施 / 安全巡查 / 出入口管控各走另一条链
+        // （一次列表 + 一次媒体 / 5 张快照），与照片探测并行；各自吞错，不拖累照片墙
         const panoTask = loadPano(true)
         const spotTask = loadSpot()
         const yardTask = loadYard()
         const facilityTask = loadFacility()
         const safetyTask = loadSafety()
+        const gateTask = loadGate()
 
         for (const days of WINDOWS) {
           let rows
@@ -593,7 +876,7 @@ export const usePatrolStore = defineStore('patrol', () => {
           if (photos.value.length) break
         }
 
-        await Promise.all([panoTask, spotTask, yardTask, facilityTask, safetyTask])
+        await Promise.all([panoTask, spotTask, yardTask, facilityTask, safetyTask, gateTask])
         // 上面几条专用链也算「有内容」：只飞了这些航线时不该当整页失败
         if (
           !photos.value.length &&
@@ -602,6 +885,7 @@ export const usePatrolStore = defineStore('patrol', () => {
           !yard.value.length &&
           !facility.value.length &&
           !safety.value.length &&
+          !gate.value.length &&
           lastErr
         ) {
           throw lastErr
@@ -617,6 +901,7 @@ export const usePatrolStore = defineStore('patrol', () => {
         // 已有照片保留（见上，探测阶段可能已经上屏一批）
         lastFailAt = Date.now()
       } finally {
+        endRecordBatch()
         inflight = null
       }
     })()
@@ -640,16 +925,31 @@ export const usePatrolStore = defineStore('patrol', () => {
     return load(true)
   }
 
-  /** 测试接线点：直接灌数据（等价于「刚刚同步完」，不会触发再次拉取） */
-  function apply(listIn: PatrolPhotoReal[]): void {
-    photos.value = listIn
-    flightCount.value = listIn.length
+  /**
+   * 测试接线点：直接灌数据（等价于「刚刚同步完」，不会触发再次拉取）。
+   *
+   * `target` 指定灌进哪一格：默认照片墙（`photos`），`'gate'` 是「出入口管控」
+   * 那 5 张。2026-11-20 起六格各有专用链、照片墙不再上屏，所以「卡片 / 弹层
+   * 通用渲染」的用例改灌 `'gate'`（那一格就是 `PatrolPhotoReal[]` 直接铺）。
+   */
+  function apply(listIn: PatrolPhotoReal[], target: 'photos' | 'gate' = 'photos'): void {
+    if (target === 'gate') {
+      gate.value = listIn
+      gateState.value = 'ok'
+    } else {
+      photos.value = listIn
+      flightCount.value = listIn.length
+    }
     state.value = 'ok'
     error.value = ''
     lastOkAt = Date.now()
   }
 
   function reset(): void {
+    // 登出时正在飞的那次 `loadFacility` / `loadGate` 不许再落地
+    // （否则会把照片写回已清空的 store）
+    facilitySeq += 1
+    gateSeq += 1
     photos.value = []
     pano.value = null
     panoState.value = 'idle'
@@ -657,8 +957,13 @@ export const usePatrolStore = defineStore('patrol', () => {
     spotState.value = 'idle'
     yard.value = []
     yardState.value = 'idle'
+    // 抓拍的 objectURL 也要撤（登出 / 换账号后旧图不该留在内存里）
+    cranePool.release()
     facility.value = []
     facilityState.value = 'idle'
+    gatePool.release()
+    gate.value = []
+    gateState.value = 'idle'
     safety.value = []
     safetyState.value = 'idle'
     flightCount.value = 0
@@ -681,6 +986,8 @@ export const usePatrolStore = defineStore('patrol', () => {
     facilityState,
     safety,
     safetyState,
+    gate,
+    gateState,
     flightCount,
     dims,
     state,
@@ -696,6 +1003,7 @@ export const usePatrolStore = defineStore('patrol', () => {
     loadYard,
     loadFacility,
     loadSafety,
+    loadGate,
     apply,
     load,
     refresh,

@@ -9,11 +9,12 @@
  *   ② 没有抓拍图就保持空 —— 页面继续用原来的分类示意图，且不会每次滚动重试；
  *   ③ 登出清空，不把现场照片留在内存里。
  */
-import { flushPromises } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearPictureCache } from '@/api/video'
+import ThumbRing from '@/components/ui/ThumbRing.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { shrinkDataUrl } from '@/utils/imageThumb'
 import { toAlarms } from '@/utils/videoAlarm'
@@ -233,5 +234,58 @@ describe('报警缩略图', () => {
     alarm.clearLive()
     expect(alarm.thumbBusyOf(id)).toBe(false)
     expect(alarm.thumbPctOf(id)).toBe(0)
+  })
+
+  /* ---------- 环到底渲不渲染（2026-11-20 回归） ---------- */
+
+  /**
+   * 报警侧三处（消息页「监控预警」、巡检列表、首页轮播）**都不传** `busy`，
+   * 全靠 store 决定。2026-11-20 给无人机加可选 `busy` / `pct` 时踩了 Vue 的
+   * Boolean 缺省转换：`isAbsent && !hasDefault` 时 `props.busy` 会被写成 `false`，
+   * 于是 `props.busy ?? alarm.thumbBusyOf(id)` 永远取到 `false` —— 环整颗不渲染，
+   * 而显式传值的无人机页照旧，看起来就像「只有两处的进度条消失了」。
+   *
+   * 这条用例只挂 `:id`（与三处调用点一致），store 说在下载就必须有环。
+   */
+  it('不传 busy 时环按 store 渲染，图到了就消失', async () => {
+    const alarm = useAlarmStore()
+    const id = seed('108')
+    const { res, release } = streamResponse({ total: 400 })
+    vi.stubGlobal('fetch', vi.fn(async () => res))
+
+    alarm.ensureThumb('t', id)
+    await flushPromises()
+    await flushPromises()
+    expect(alarm.thumbBusyOf(id)).toBe(true)
+
+    const w = mount(ThumbRing, { props: { id } })
+    await flushPromises()
+    expect(w.find('.tile-ring').exists()).toBe(true)
+    // 有真实字节进度 → 确定性态（弧长按百分比），不该挂旋转
+    expect(w.find('.tile-ring').classes()).not.toContain('is-indeterminate')
+
+    release()
+    await flushPromises()
+    await flushPromises()
+    await flushPromises()
+    expect(w.find('.tile-ring').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('没在下载时一颗环都不铺；显式 busy=false 同样不铺', async () => {
+    const alarm = useAlarmStore()
+    const id = seed('109')
+    expect(alarm.thumbBusyOf(id)).toBe(false)
+
+    // ① 只给 id（报警侧形态）：store 没在下载 → 无环
+    expect(mount(ThumbRing, { props: { id } }).find('.tile-ring').exists()).toBe(false)
+
+    // ② 显式传 false（无人机側形态）：也不许因为「有传值」就点亮
+    const w = mount(ThumbRing, { props: { id: 'x', busy: false, pct: 0 } })
+    expect(w.find('.tile-ring').exists()).toBe(false)
+
+    // ③ 显式传 true（无人机侧真在下载）→ 有环
+    const on = mount(ThumbRing, { props: { id: 'y', busy: true, pct: 40 } })
+    expect(on.find('.tile-ring').exists()).toBe(true)
   })
 })

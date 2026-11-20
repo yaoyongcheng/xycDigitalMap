@@ -67,6 +67,18 @@ const KH_DOCK_DEVICE_ID = 23452
 /** 单次请求超时（现场 4G 抖动时不要一直挂着 loading） */
 const TIMEOUT = 12_000
 
+/**
+ * 媒体接口（`/media/task/job/{id}`）单独的超时。
+ *
+ * 2026-11-20 实测：同一个 jobId（182507，42 个文件）连发 4 次，耗时
+ * **1.2s / 3.2s / 10.8s / 13.2s**，第 5 次直接 `ECONNRESET`。全局的 12 秒
+ * 正好压在这条链耗时的上沿 —— 正常响应也会被判成超时，而超时又会触发重试，
+ * 重试把限流窗口打满，于是「照片一直加载不出来」。媒体接口是这条链上最慢的
+ * 一个，给它单独放宽到 25 秒（仍远小于用户能忍受的「一直转圈」），
+ * 其余接口保持 12 秒不动。
+ */
+const MEDIA_TIMEOUT = 25_000
+
 /** 令牌有效期：validate 返回的 timestamp 是毫秒时间戳 */
 const TOKEN_TTL = 30 * 60 * 1000
 
@@ -306,13 +318,18 @@ function str(v: unknown): string {
   return String(v)
 }
 
+/** keehang 请求的扩展参数：`base` 换服务地址，`timeout` 覆盖单次超时 */
+type KhInit = RequestInit & { base?: string; timeout?: number }
+
 /** 带超时的 fetch；网络错统一收敛成 ApiError */
-async function khFetch(path: string, init: RequestInit & { base?: string } = {}): Promise<Response> {
-  const base = init.base ?? KH_IOT_BASE
+async function khFetch(path: string, init: KhInit = {}): Promise<Response> {
+  // `base` / `timeout` 是本层扩展字段，不能透传给 fetch
+  const { base: baseIn, timeout, ...rest } = init
+  const base = baseIn ?? KH_IOT_BASE
   const ctrl = new AbortController()
-  const timer = window.setTimeout(() => ctrl.abort(), TIMEOUT)
+  const timer = window.setTimeout(() => ctrl.abort(), timeout ?? TIMEOUT)
   try {
-    return await fetch(`${base}${path}`, { ...init, signal: ctrl.signal })
+    return await fetch(`${base}${path}`, { ...rest, signal: ctrl.signal })
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw new ApiError(0, '无人机平台请求超时')
@@ -324,7 +341,7 @@ async function khFetch(path: string, init: RequestInit & { base?: string } = {})
 }
 
 /** 解析 keehang 响应包；`code !== 200` 视为业务失败 */
-async function khJson<T>(path: string, init: RequestInit & { base?: string } = {}): Promise<T> {
+async function khJson<T>(path: string, init: KhInit = {}): Promise<T> {
   const res = await khFetch(path, init)
   let body: Record<string, unknown> | null = null
   try {
@@ -423,39 +440,55 @@ export function clearSession(): void {
   session = null
   // 项目清单跟着账号走：登出/换账号后必须重取，否则会把上一个账号的项目 id 带进来
   resetProjectIds()
+  // 批次缓存同理：换账号后不能复用上一个会话取到的执行记录
+  recordBatch = null
 }
 
-/** 带业务令牌的 GET */
-async function khAuthGet<T>(path: string): Promise<T> {
+/**
+ * 带业务令牌的请求（GET / POST 共用）。
+ *
+ * 令牌失效（401/403）清一次再重登重试，避免用户每次进页面都卡在鉴权失败。
+ * 开放接口 `/api/open/v1/*` 也用同一组头 —— 实测「用户令牌」这一层校验就够，
+ * 服务端没有再要 appKey / 签名（见 docs/api-migration.md 六点二十八）。
+ */
+async function khAuthSend<T>(path: string, init: KhInit = {}): Promise<T> {
+  const withAuth = (s: KhSession): KhInit => ({
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      ...(init.headers as Record<string, string> | undefined),
+      'KH-USER-ID': s.uid,
+      'KH-TOKEN': s.token,
+    },
+  })
   const s = await ensureSession()
   try {
-    return await khJson<T>(path, {
-      headers: {
-        Accept: 'application/json',
-        'KH-USER-ID': s.uid,
-        'KH-TOKEN': s.token,
-      },
-    })
+    return await khJson<T>(path, withAuth(s))
   } catch (err) {
-    // 令牌失效：清一次再重登重试，避免用户每次进页面都卡在鉴权失败
     if (err instanceof ApiError && (err.code === 401 || err.code === 403)) {
       clearSession()
       const s2 = await ensureSession()
-      return khJson<T>(path, {
-        headers: {
-          Accept: 'application/json',
-          'KH-USER-ID': s2.uid,
-          'KH-TOKEN': s2.token,
-        },
-      })
+      return khJson<T>(path, withAuth(s2))
     }
     throw err
   }
 }
 
+/** 带业务令牌的 GET */
+function khAuthGet<T>(path: string, init: KhInit = {}): Promise<T> {
+  return khAuthSend<T>(path, init)
+}
+
 /* ---------- 收敛 ---------- */
 
-/** 把执行记录收敛成前端类型；缺关键字段的行直接丢 */
+/**
+ * 旧接口 `/task/exec/list/record` 的收敛（**只剩站点索引在用**）。
+ *
+ * ⚠️ 这里的 `id` 不能拿去取媒体：2026-11-20 起该接口部分记录的 `id` 变成了
+ * 19 位雪花号（如 `5968386048883676116`），而 `/media/task/job/{id}` 要的是
+ * 自增号 —— 拿雪花号请求会 200 + 空数组。需要用 id 的地方一律走
+ * `fetchTaskRecords()`（开放接口，`id` = `taskRecordId`）。
+ */
 export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
   const list = Array.isArray(raw) ? raw : []
   const out: DroneTaskRecord[] = []
@@ -554,30 +587,234 @@ export function toTaskStat(raw: unknown): DroneTaskStat {
 
 /* ---------- 业务接口 ---------- */
 
+/* ---------- 开放接口（V2 `/api/open/v1`） ---------- */
+
+/**
+ * 开放接口的记录分页上限。
+ *
+ * 服务端把 `size` **硬压在 100**：实测传 500 / 1000 / 2000，回显都是 `size=100`、
+ * 实际也只回 100 行（2026-11-20）。所以「一次拿全」不可能，只能翻页。
+ */
+const OPEN_PAGE_SIZE = 100
+/** 单次查询最多翻多少页（90 天实测 1133 条 → 12 页，留一倍余量防跑飞） */
+const OPEN_MAX_PAGES = 30
+
+/** 开放接口的一行执行记录（字段名照抄服务端，不要改名） */
+interface OpenRecordRow {
+  taskRecordId?: unknown
+  /* 旧接口字段（同一批数据两条链都返回过，映射时兜底） */
+  id?: unknown
+  uuid?: unknown
+  lineId?: unknown
+  dockId?: unknown
+  pid?: unknown
+  taskId?: unknown
+  taskName?: unknown
+  projectId?: unknown
+  airlineId?: unknown
+  dockDeviceId?: unknown
+  status?: unknown
+  result?: unknown
+  scheduled?: unknown
+  startTime?: unknown
+  endTime?: unknown
+  start?: unknown
+  end?: unknown
+}
+
+interface OpenRecordPage {
+  total?: unknown
+  list?: unknown
+}
+
+/**
+ * 开放接口的记录 → 前端类型。
+ *
+ * **`id` 取的是 `taskRecordId`（自增序列号，如 182745），不是旧接口的 `id`。**
+ * 2026-11-20 实测：旧接口 `/task/exec/list/record` 的 `id` 从 11 月中开始换成了
+ * 19 位雪花号（如 `5968386048883676116`），**而取媒体要的是自增号** ——
+ * 拿雪花号请求 `/media/task/job/{id}` 会 200 + 空数组，与「这班没拍」无法区分，
+ * 页面就静默回退到上一班，表现为「刷新后照片变旧」。开放接口两个号都给，
+ * 这里取能用的那个。
+ */
+export function toOpenTaskRecords(raw: unknown): DroneTaskRecord[] {
+  const list = Array.isArray(raw) ? (raw as OpenRecordRow[]) : []
+  const out: DroneTaskRecord[] = []
+  for (const o of list) {
+    if (!o || typeof o !== 'object') continue
+    // 字段名兼容：开放接口是 `taskRecordId` / `startTime`，旧接口是 `id` / `start`
+    // （同一批数据两条链都返回过，这里认两套，免得换端就整页空白）
+    const id = num(o.taskRecordId ?? o.id)
+    const name = str(o.taskName)
+    if (id === null || !name) continue
+    out.push({
+      id,
+      // 开放接口没有 uuid；调用方拿它做去重键，缺失时退回 id
+      uuid: str(o.uuid),
+      taskName: name,
+      taskId: num(o.taskId),
+      lineId: num(o.airlineId ?? o.lineId) ?? 0,
+      dockId: num(o.dockDeviceId ?? o.dockId) ?? 0,
+      // 服务端给的是「空格分隔」的 `2026-11-20 08:00:00`，这里统一成
+      // `T` 分隔 —— 项目里所有 `start` 比较 / `.slice(0, 10)` / 日期解析
+      // 都按这个口径写的，换格式会静默比错。
+      start: str(o.startTime ?? o.start).replace(' ', 'T'),
+      end: str(o.endTime ?? o.end).replace(' ', 'T'),
+      status: num(o.status) ?? 0,
+      scheduled: o.scheduled === true,
+      pid: num(o.projectId ?? o.pid),
+    })
+  }
+  return out
+}
+
+/** `YYYY-MM-DD` → 开放接口要的 `YYYY-MM-DD HH:mm:ss`（传 `T` 分隔会 400） */
+function openDay(day: string, hms = '00:00:00'): string {
+  return `${day} ${hms}`
+}
+
+/**
+ * 一页执行记录。
+ *
+ * 请求：`POST /api/open/v1/task-record/page`
+ * 请求体：`{ page, size, projectIds: [pid], startTime, endTime }`
+ *   · `projectIds` 必填 —— 不传会跨项目（实测账号下还有光谷元著）；
+ *   · `startTime` / `endTime` 是 **`yyyy-MM-dd HH:mm:ss`**，`end` 不含端点；
+ *   · `sort` 传什么都被忽略（实测 `startTime,desc` / `-startTime` 全部原样升序），
+ *     排序只能自己来。
+ */
+async function fetchOpenRecordPage(body: {
+  page: number
+  size: number
+  projectIds: number[]
+  startTime?: string
+  endTime?: string
+}): Promise<{ rows: DroneTaskRecord[]; total: number }> {
+  const data = await khAuthSend<OpenRecordPage | OpenRecordRow[]>('/api/open/v1/task-record/page', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  // 正常是 `{total, list}`；裸数组（老版本 / 网关改写）也认，免得整页空白
+  const list = Array.isArray(data) ? data : data?.list
+  const rows = toOpenTaskRecords(list)
+  const total = Array.isArray(data) ? rows.length : (num(data?.total) ?? rows.length)
+  return { rows, total }
+}
+
 /**
  * 任务的执行记录（本项目的）。
  *
- * ## 必须带 `start` / `end`，否则拿到的是**最旧**的记录
+ * ## 为什么走开放接口
  *
- * 不带日期时服务端按**开始时间升序**返回，实测 `page=1&size=8` 回来的是
- * 2026-07-14 那几条 —— 拿它当「今天的任务」过滤，结果永远是 0 条。
- * `start` / `end` 是 `YYYY-MM-DD`，**`end` 不含当天**（查今天要传明天）。
+ * 旧接口 `/task/exec/list/record` 有两个硬伤：
+ *   1. `id` 混杂 —— 老记录是自增号（能当 jobId 用），新记录是 19 位雪花号
+ *      （当 jobId 用会 200 + 空数组），媒体就「查不到」；
+ *   2. `size` 不生效、`sort` 也没有，只能一次拉整段。
  *
- * ## `size` 不生效
+ * `/api/open/v1/task-record/page` 两个号都返回（`taskRecordId` 才是 jobId），
+ * 而且 `page` / `size` / 时间区间都真的生效，所以记录一律从这里取。
  *
- * 实测 `size=20` 仍返回该区间全部记录（11 月整月 424 条、今天 30 条）。
- * 所以别用它做分页，也别一次拉太大的区间（手机流量）。
+ * ## 语义保持与旧实现一致
+ *
+ * 调用方（智眸照片墙 / 今日任务 / 预计时长）原来就当「这一段区间的全部记录」
+ * 用（旧接口忽略 `size`），所以这里翻页翻到 `total` 为止，返回值仍是全量，
+ * 只是把「一次大请求」换成「每页 100 条」。
+ *
+ * ## 批次共享（2026-11-20）
+ *
+ * 智眸一次 `load()` 同时起五条链，查的是**同一个**时间窗口。不共享时一次刷新
+ * 要打 25+ 个 `task-record/page`，把媒体接口的配额一起挤掉（实测十条媒体请求
+ * 八条被 429）。调用方在 `beginRecordBatch()` / `endRecordBatch()` 之间调用本函数，
+ * 同 key 的请求只发一次，其余复用同一个 Promise。
+ *
+ * 缓存只在批次内有效：`RECORD_BATCH_TTL` 是"忘了 end"的兜底过期时间，
+ * 不是常规缓存时长 —— 现场照片不该跨批次复用。
  */
+interface RecordBatch {
+  at: number
+  map: Map<string, Promise<DroneTaskPage>>
+}
+
+let recordBatch: RecordBatch | null = null
+/** 批次兜底过期（正常由 `endRecordBatch` 立即释放） */
+const RECORD_BATCH_TTL = 8_000
+
+/** 开一个取数批次：期间 `fetchTaskRecords` 的相同请求共享同一个 Promise */
+export function beginRecordBatch(): void {
+  recordBatch = { at: Date.now(), map: new Map() }
+}
+
+/** 结束批次并释放缓存 */
+export function endRecordBatch(): void {
+  recordBatch = null
+}
+
+/** 当前是否有可用批次（给 `runInRecordBatch` 判断能不能复用） */
+function hasRecordBatch(): boolean {
+  return Boolean(recordBatch) && Date.now() - (recordBatch?.at ?? 0) < RECORD_BATCH_TTL
+}
+
+/**
+ * 在批次里执行；**已有批次就复用**（可嵌套，不会把外层的共享打断）。
+ *
+ * 「一条链里要按多条航线各取一次」时用它：这些取数查的是同一个时间窗口，
+ * 各拉一遍记录纯属浪费，而 keehang 的媒体接口会被这种请求量直接打成 429 ——
+ * 安全巡查「有时只剩一张」就是这么来的（见 `fetchSafetyGallery`）。
+ */
+export async function runInRecordBatch<T>(fn: () => Promise<T>): Promise<T> {
+  if (hasRecordBatch()) return fn()
+  beginRecordBatch()
+  try {
+    return await fn()
+  } finally {
+    endRecordBatch()
+  }
+}
+
 export async function fetchTaskRecords(
   opts: { page?: number; size?: number; pid?: number; start?: string; end?: string } = {},
 ): Promise<DroneTaskPage> {
   const { page = 1, size = 50, pid = KH_PROJECT_ID, start, end } = opts
-  let q = `?page=${page}&size=${size}&pid=${pid}`
-  if (start) q += `&start=${start}`
-  if (end) q += `&end=${end}`
-  const raw = await khAuthGet<unknown>(`/task/exec/list/record${q}`)
-  const rows = toTaskRecords(raw)
-  return { rows, total: rows.length }
+  const pageSize = Math.min(Math.max(size, 1), OPEN_PAGE_SIZE)
+
+  /*
+   * 同一批次内共享：智眸一次 `load()` 会同时起五条链（照片墙 / 全景航拍 /
+   * 材料堆场 / 设备设施 / 安全巡查），它们查的是**同一个 30 天窗口**。
+   * 2026-11-20 实测：不共享时一次刷新要打 25+ 个 `task-record/page`
+   * （每条链各自翻 5 页），把媒体接口的限流配额一起挤掉。
+   */
+  const key = `${pid}|${start ?? ''}|${end ?? ''}|${page}|${pageSize}`
+  if (recordBatch && Date.now() - recordBatch.at < RECORD_BATCH_TTL) {
+    const hit = recordBatch.map.get(key)
+    if (hit) return hit
+  }
+
+  const task = (async (): Promise<DroneTaskPage> => {
+    const rows: DroneTaskRecord[] = []
+    let total = 0
+    let p = page
+    for (let i = 0; i < OPEN_MAX_PAGES; i += 1) {
+      const res = await fetchOpenRecordPage({
+        page: p,
+        size: pageSize,
+        projectIds: [pid],
+        ...(start ? { startTime: openDay(start) } : {}),
+        ...(end ? { endTime: openDay(end) } : {}),
+      })
+      total = res.total
+      rows.push(...res.rows)
+      // 已翻到末尾：`p * pageSize >= total`（服务端 total 是本次区间的总条数）
+      if (!res.rows.length || p * pageSize >= total) break
+      p += 1
+    }
+    return { rows, total }
+  })()
+
+  if (recordBatch && Date.now() - recordBatch.at < RECORD_BATCH_TTL) {
+    recordBatch.map.set(key, task)
+  }
+  return task
 }
 
 /**
@@ -799,9 +1036,12 @@ export async function fetchRoutes(
  *
  * 返回的 `url` 是 OSS 签名直链（`X-Amz-Expires` 有限，实测 7200 秒），
  * 所以不能长期缓存 —— 过期后再取媒体要重新拉一遍拿新签名。
+ *
+ * 超时用 `MEDIA_TIMEOUT`（25 秒）而不是全局 12 秒：这条接口实测能跑 13 秒，
+ * 全局超时会把正常响应判成失败（见 `MEDIA_TIMEOUT` 上的实测记录）。
  */
 export async function fetchMediaJobs(jobId: number): Promise<DroneMedia[]> {
-  const raw = await khAuthGet<unknown>(`/media/task/job/${jobId}`)
+  const raw = await khAuthGet<unknown>(`/media/task/job/${jobId}`, { timeout: MEDIA_TIMEOUT })
   if (!Array.isArray(raw)) return []
   const out: DroneMedia[] = []
   for (const r of raw) {
@@ -925,36 +1165,45 @@ export const STATION_WINDOW_DAYS = 90
  * 站点清单必须覆盖同一段区间。停飞一段时间的站点仍在列表里，
  * 不会因为「最近 30 天没飞」就从下拉里消失。
  *
- * 注意 `size` 不生效（见 `fetchTaskRecords`），一次会把整段区间拉回来；
- * 90 天实测约一千余条，会话内还缓存 5 分钟，可以接受。
+ * ## 这里**故意**还用旧接口（唯一一处）
+ *
+ * 站点索引只要「名字 + 最近一次开始时间」，不取媒体，所以 `id` 是否可靠无所谓；
+ * 而旧接口一次就能回整段区间（90 天约 1100 条），开放接口每页 100、
+ * 要翻 12 次 —— 为了一个下拉框多打 11 个请求不值得。
+ *
+ * ⚠️ 因此这里返回的 `id` **不要**拿去调 `/media/task/job/{id}`；要取媒体请用
+ * `fetchStationDay()` / `fetchLatestGalleryOf()`，它们走开放接口。
  */
 export async function fetchRecentRecords(): Promise<DroneTaskRecord[]> {
   const now = spotNow()
-  const page = await fetchTaskRecords({
-    page: 1,
-    size: 200,
-    start: spotDay(1 - STATION_WINDOW_DAYS),
-    end: spotDay(1),
-  })
-  return page.rows
+  const q =
+    `?page=1&size=200&pid=${KH_PROJECT_ID}` +
+    `&start=${spotDay(1 - STATION_WINDOW_DAYS)}&end=${spotDay(1)}`
+  const raw = await khAuthGet<unknown>(`/task/exec/list/record${q}`)
+  return toTaskRecords(raw)
     .filter((r) => !r.start || r.start <= now)
     .sort((a, b) => b.start.localeCompare(a.start))
 }
 
-/** 每换一个站点，最多探几班媒体（每班一次请求，keehang 有限流） */
-const STATION_PROBE = 4
-/** 媒体被限流时的等待（服务端提示 2 秒，与 `stores/patrol.ts` 一致） */
-const STATION_THROTTLE_WAIT = 2_200
-const STATION_THROTTLE_CODE = 42901
+/**
+ * 媒体被限流时的等待（与 `stores/patrol.ts` 的 `THROTTLE_WAIT` 保持一致）。
+ *
+ * 原来是 2.2 秒（照抄服务端那句「请2秒后再试」）。2026-11-20 实测服务端改回了
+ * 「当前查询较多，请稍后再试！」，2.2 秒回来仍然 429，3 秒后成功率明显回升，
+ * 所以两边一起放宽到 3 秒 —— 只重试一次，再失败就交给页面写「取不到」。
+ */
+const STATION_THROTTLE_WAIT = 3_000
+/** keehang 的限流业务码：`42901` 是媒体接口的，`429` 是开放接口的（2026-11-20 实测） */
+const STATION_THROTTLE_CODES = new Set([429, 42901])
 
-/** 取一班的媒体；被限流（42901）等 2 秒重试一次，其余失败返回 null */
+/** 取一班的媒体；被限流时等 3 秒重试一次，其余失败返回 null */
 async function stationMedia(jobId: number): Promise<DroneMedia[] | null> {
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await fetchMediaJobs(jobId)
     } catch (e) {
       const code = e instanceof ApiError ? e.code : 0
-      if (code === STATION_THROTTLE_CODE && attempt === 0) {
+      if (STATION_THROTTLE_CODES.has(code) && attempt === 0) {
         await new Promise((r) => setTimeout(r, STATION_THROTTLE_WAIT))
         continue
       }
@@ -964,40 +1213,78 @@ async function stationMedia(jobId: number): Promise<DroneMedia[] | null> {
 }
 
 /**
+ * 这一班的回传进度（`POST /api/open/v1/media/job/page`）。
+ *
+ * 只在「一张图都没取到」时问一次，用来区分两件完全不同的事：
+ *   · 还在回传（`uploadedCount < fileCount`）—— 等一会儿就有，别拿上一班顶；
+ *   · 真没有（`fileCount === 0` 或已传完）—— 这一班确实没拍。
+ *
+ * 接口要求 `taskId` + `taskRecordId` 同时给（只给记录号会回
+ * `{"code":400,"msg":"taskId 不能为空"}`）。
+ */
+async function stationProgress(
+  job: DroneTaskRecord,
+): Promise<{ uploaded: number; total: number } | null> {
+  if (job.taskId === null) return null
+  try {
+    const data = await khAuthSend<{ list?: unknown[] }>('/api/open/v1/media/job/page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: 1, size: 20, taskId: job.taskId, taskRecordId: job.id }),
+    })
+    const list = Array.isArray(data?.list) ? (data.list as Record<string, unknown>[]) : []
+    const row = list.find((r) => num(r.taskRecordId) === job.id) ?? list[0]
+    if (!row) return null
+    const total = num(row.fileCount) ?? 0
+    const uploaded = num(row.uploadedCount) ?? 0
+    // 有文件但没传完 = 正在回传；`uploadState === 3` / 传完都算有结论
+    return total > 0 && uploaded < total ? { uploaded, total } : null
+  } catch {
+    // 进度只是提示：拿不到就按「没有照片」处理，不额外报错
+    return null
+  }
+}
+
+/**
  * 某站点**最新一次采集**的全部照片（含采集顺序）。
  *
- * 「最新一次」= 该站点 `status === 2` 且已开始的班次里，按 `start` 倒序
- * **第一个有图片媒体**的那班 —— 实测存在「已完成但 0 条媒体」的班次
- * （2026-11-18 08:20 那班），直接取最新一条会显示空白，所以往下找。
+ * 口径（2026-11-20 改）：**只认最新一班**，不再「往下找第一个有图的」。
  *
- * 返回**全部** `image/*`（不再截 9 张）：用户要求「该站点最新记录中的所有
- * 采集照片」，全局定点拍照那班正好 9 张，正射那种上百张也照给，列表靠
- * 懒加载顶住。每班混着的 1 个 `.DAT` 飞行日志不算照片。
+ * 旧实现会从新到旧最多探 4 班，把「最新班还在回传」误当成「这班没拍」，
+ * 于是拿上一班的照片顶上 —— 用户每次刷新看到的批次时刻都在变，正是这条回退。
+ * 现在：最新一班的媒体为空时，先用 `media/job/page` 问一次回传进度，
+ * 还在传就返回**空 media + `pending`**（页面写「正在回传 x/y」），
+ * 传完了确实没有才返回 `null`。
+ *
+ * 返回**全部** `image/*`：用户要求「该站点最新记录中的所有采集照片」，
+ * 全局定点拍照那班正好 9 张，正射那种上百张也照给，列表靠懒加载顶住。
+ * 每班混着的 `.DAT` 飞行日志不算照片。
  *
  * 返回 null = 这个站点近期确实没有照片。
  */
 export async function fetchLatestGalleryOf(
   taskName: string,
-  rows: DroneTaskRecord[],
+  days = 7,
 ): Promise<DroneSpotGallery | null> {
+  const name = taskName.trim()
+  if (!name) return null
+  // 只查最近几天：每页 100 条，7 天通常 1~2 页
+  const page = await fetchTaskRecords({ start: spotDay(1 - days), end: spotDay(1) })
   const now = spotNow()
-  const jobs = rows
-    .filter((r) => r.taskName.trim() === taskName)
+  const jobs = page.rows
     .filter((r) => r.status === 2 && (!r.start || r.start <= now))
-    .sort((a, b) => b.start.localeCompare(a.start))
-
-  return probeGallery(jobs)
+  return probeGallery(pickLatest(jobs, name))
 }
 
 /**
- * 某站点在**指定日期**的采集（航拍照片恢复日期控件之后的数据源）。
+ * 某站点在**指定日期**的采集（航拍照片日期控件的数据源）。
  *
- * 不开窗口、也不翻页：服务端 `start` / `end` 是 `YYYY-MM-DD` 且 `end` 不含当天，
- * 直接传「这一天 + 次日」就只回这一天的记录（`size` 不生效，正好一次拿全）。
+ * 只查这一天：`start` / `end` 是 `YYYY-MM-DD` 且 `end` 不含当天，
+ * 传「这一天 + 次日」就只回当天的记录（通常 1~20 条，一页拿全）。
  * 因此历史任意一天都能查，与 `recordings` 那份 90 天窗口互不影响。
  *
- * 口径与「最新一次」一致：只认 `status === 2` 且已开始的班次，按 `start`
- * 倒序挑第一个**有图片媒体**的 — 同一天飞了两班时给的是后一班。
+ * 口径：只认 `status === 2` 且已开始的班次，**同一天飞了两班只取后一班**
+ * （按任务名去重，只留最新的一条，见 `pickLatest`）。
  *
  * 返回 null = 这一天该站点没有照片（页面据此给空态，不拿别的日期凑）。
  */
@@ -1007,29 +1294,53 @@ export async function fetchStationDay(
 ): Promise<DroneSpotGallery | null> {
   const name = taskName.trim()
   if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null
-  const page = await fetchTaskRecords({ page: 1, size: 200, start: day, end: nextDayKey(day) })
+  const page = await fetchTaskRecords({ page: 1, size: OPEN_PAGE_SIZE, start: day, end: nextDayKey(day) })
   const now = spotNow()
-  const jobs = page.rows
-    .filter((r) => r.taskName.trim() === name)
+  const rows = page.rows
     .filter((r) => r.status === 2 && (!r.start || r.start <= now))
     .filter((r) => (r.start || '').slice(0, 10) === day)
-    .sort((a, b) => b.start.localeCompare(a.start))
-
-  return probeGallery(jobs)
+  return probeGallery(pickLatest(rows, name))
 }
 
-/** 在给定的班次里按新→旧探媒体，返回第一个有图片的班 */
+/**
+ * 按任务名去重：同名记录只留 `start` 最新的一条（tie-break 用 id，大的更新）。
+ *
+ * 服务端不支持按任务名过滤、也不支持排序，所以「同任务名多条记录」只能在
+ * 这里收敛。返回数组是为了保持 `probeGallery` 的入参形状（实际最多一条）。
+ */
+function pickLatest(rows: DroneTaskRecord[], name: string): DroneTaskRecord[] {
+  const same = rows
+    .filter((r) => r.taskName.trim() === name)
+    .sort((a, b) => b.start.localeCompare(a.start) || b.id - a.id)
+  return same.length ? [same[0]!] : []
+}
+
+/**
+ * 取这一班的图片媒体（按文件名升序 = 拍摄先后）。
+ *
+ * 没有图片时再问一次回传进度：正在回传就回 `pending`，让页面说清楚
+ * 「不是没有，是在传」，而不是退回上一班。
+ */
 async function probeGallery(jobs: DroneTaskRecord[]): Promise<DroneSpotGallery | null> {
-  for (const job of jobs.slice(0, STATION_PROBE)) {
-    const media = await stationMedia(job.id)
-    if (!media) continue
-    const imgs = media
-      .filter((m) => m.mediaType.startsWith('image/'))
-      .sort((a, b) => a.name.localeCompare(b.name))
-    if (!imgs.length) continue
+  const job = jobs[0]
+  if (!job) return null
+  const media = await stationMedia(job.id)
+  const imgs = (media ?? [])
+    .filter((m) => m.mediaType.startsWith('image/'))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  if (imgs.length) {
     return { jobId: job.id, start: job.start, taskId: job.taskId, taskName: job.taskName, media: imgs }
   }
-  return null
+  const pending = await stationProgress(job)
+  if (!pending) return null
+  return {
+    jobId: job.id,
+    start: job.start,
+    taskId: job.taskId,
+    taskName: job.taskName,
+    media: [],
+    pending,
+  }
 }
 
 /** 'YYYY-MM-DD' → 次日（服务端 `end` 不含当天） */
@@ -1196,6 +1507,13 @@ export interface DroneSpotGallery {
   taskName: string
   /** 图片媒体，按文件名（拍摄先后）升序；挑几张由调用方决定（9 张 / 第 1、2、37 张 / 第 2、7 张） */
   media: DroneMedia[]
+  /**
+   * 这一班**还在回传**（`media` 为空时才有值）：已传 / 总数。
+   *
+   * 用来把「正在传」和「真没拍」分开 —— 前者不该回退到上一班的旧照片，
+   * 页面应写「正在回传 350/944，稍后刷新」，而不是「没有照片」。
+   */
+  pending?: { uploaded: number; total: number }
 }
 
 /** 本地 `YYYY-MM-DD`，offset 为天 */
@@ -1224,11 +1542,15 @@ function spotNow(): string {
  * 规则（与 V2「任务记录 → 采集数据 → 采集图片」同一条链）：
  *   · 任务名 **完全相等**；
  *   · 只要 `status === 2` 且 `start <= now`（记录里混着未来排班）；
- *   · 按 `start` 倒序，跳过媒体为空的那班（实测有 `status=2` 但 0 条媒体的班）；
+ *   · 按 `start` 倒序，跳过媒体为空的班（实测有 `status=2` 但 0 条媒体的班）；
  *   · 只留 `image/*`（每班混着 1 个 `.DAT` 飞行日志）；
  *   · 按文件名升序 = DJI 拍摄序号。
  *
- * 返回 `null` = 近期确实没有照片；抛错 = 两个窗口都请求失败（页面要写"取不到"）。
+ * 返回 `null` = 近期确实没有照片；抛错 = 媒体/记录取不到（限流、超时、断网）。
+ *
+ * ⚠️ 这两种情况必须分开：`stationMedia` 失败时回 `null`，这里**显式抛错**，
+ * 不能当成「这班没拍到」往下退班 —— 否则限流时页面会拿上一班的旧照片冒充最新，
+ * 退到没有还会把已经显示的图清空（2026-11-20 实测，见 `latestTaskMedia` 内注释）。
  */
 async function latestTaskMedia(taskName: string): Promise<DroneSpotGallery | null> {
   const now = spotNow()
@@ -1251,14 +1573,17 @@ async function latestTaskMedia(taskName: string): Promise<DroneSpotGallery | nul
       .sort((a, b) => b.start.localeCompare(a.start))
 
     for (const job of jobs) {
-      let media: DroneMedia[]
-      try {
-        media = await fetchMediaJobs(job.id)
-      } catch {
-        // 某一班取不到（限流 / 404）不该让整组照片消失，继续往下一班找
-        continue
-      }
+      // 走 `stationMedia`：429 / 42901 会等 3 秒重试一次。
+      //
+      // ⚠️ 它**内部吞掉错误返回 null**（不抛），所以 `null` 只能理解为「取不到」。
+      // 旧实现写的是 `?? []`，把限流/超时当成「这班没拍到」，于是静默 `continue`
+      // 退到更早的一班 —— 那正是「刷新后照片变成上一批 / 突然全空」的来源
+      // （2026-11-20 实测：12 条记录里 10 条返回 `code:429` + 空数组）。
+      // 宁可让这一格显示「加载失败」，也不拿上一班的旧照片冒充最新。
+      const media = await stationMedia(job.id)
+      if (media === null) throw new ApiError(0, `${taskName}照片暂时取不到（接口限流）`)
       const imgs = media.filter((m) => m.mediaType.startsWith('image/'))
+      // 空媒体是「这班确实没拍到」，不是失败 —— 继续往下一班找（现场有这种班）
       if (!imgs.length) continue
       imgs.sort((a, b) => a.name.localeCompare(b.name))
       return { jobId: job.id, start: job.start, taskId: job.taskId, taskName: job.taskName, media: imgs }
@@ -1410,6 +1735,14 @@ export const SAFETY_SOURCES = [
 ] as const
 
 /**
+ * 一条来源被限流打掉后，补取前的等待。
+ *
+ * 比 `STATION_THROTTLE_WAIT`（3 秒）略长：`stationMedia` 内部已经重试过一次，
+ * 到这里说明连续两次都撞在限流窗口里，再等久一点才可能落到窗口外。
+ */
+const SAFETY_RETRY_WAIT = 3_200
+
+/**
  * 取「安全巡查」那 2 张：每条航线各取**最近一班有照片的飞行**里指定的那一张。
  *
  * 与 `fetchYardGallery` / `fetchFacilityGallery` 同一套（`latestTaskMedia` +
@@ -1417,25 +1750,64 @@ export const SAFETY_SOURCES = [
  * 的来源一项），而不是单条 `DroneSpotGallery` —— 两班的 `jobId / taskName`
  * 不同，合成一条会让卡片标题和弹层 id 都错。
  *
- * 逐条**串行**取（每条一次列表 + 一次媒体）：并行会在同一秒打两个媒体请求，
- * keehang 那侧直接 42901。
+ * ## 为什么会「有时只剩一张」（2026-11-20 定位）
  *
- * 容错：一条挂了不影响另一条（只少一张）；两条都挂才抛错，页面才写「取不到」。
+ * 不是查询条件或遍历写错 —— 两条来源（`土方1` 第 1 张 + `分区定点拍照` 第 34 张）
+ * 实测每班分别有 **49~50 张 / 41 张**，序号都在。真正的原因是两个链路的容错叠加：
+ *
+ *   1. 两条来源**各自**调 `fetchTaskRecords`（各翻 5 页），一次刷新平白多打
+ *      一倍记录请求；keehang 媒体接口本身限流很紧，请求一多就回
+ *      `{code:429, msg:"当前查询较多，请稍后再试！"}`；
+ *   2. 被限流的那条在 `stationMedia` 里重试一次仍失败 → 抛错 → 这里的 `catch`
+ *      把它当成「这条航线没有」直接跳过，**整格就只剩另一条的一张**。
+ *
+ * 于是"有时两张、有时一张"完全取决于那一条有没有撞上限流。
+ *
+ * ## 现在的做法
+ *
+ *   · 两条来源**共享同一份执行记录**（`runInRecordBatch`，同窗口只查一次）；
+ *   · 一条失败时**不静默丢**：隔 3 秒只补那条（已拿到的不重取），补到就齐两张；
+ *   · 结果按 `SAFETY_SOURCES` 的下标存放，顺序永远与来源表一致
+ *     （补取是后发生的，直接 push 会把两张的顺序颠倒）。
+ *
+ * 仍然是逐条**串行**：并行会在同一秒打两个媒体请求，keehang 那侧直接 429。
  */
 export async function fetchSafetyGallery(): Promise<DroneSpotGallery[]> {
-  const out: DroneSpotGallery[] = []
+  // 按下标存，既保住来源表顺序，也让「补第二条」能填回原来的位置
+  const results: (DroneSpotGallery | null)[] = SAFETY_SOURCES.map(() => null)
+  const failed: number[] = []
   let firstErr: unknown = null
 
-  for (const s of SAFETY_SOURCES) {
+  /** 取一条来源；返回 false = 取数失败（与「这条航线近期确实没照片」区分开） */
+  const take = async (i: number): Promise<boolean> => {
+    const s = SAFETY_SOURCES[i]!
     try {
       const g = await latestTaskMedia(s.taskName)
       const picked = g ? pickByIndex(g, [s.pick]) : null
-      if (picked?.media.length) out.push(picked)
+      if (picked?.media.length) results[i] = picked
+      return true
     } catch (e) {
       firstErr ??= e
+      return false
     }
   }
 
+  await runInRecordBatch(async () => {
+    for (let i = 0; i < SAFETY_SOURCES.length; i += 1) {
+      if (!(await take(i))) failed.push(i)
+    }
+  })
+
+  // 一条被限流打掉、另一条已经拿到 → 只补失败那条，别让整格停在「一张」
+  // （两条都失败时不补：页面直接写「取不到」并给重试，等下去只会更久）
+  if (failed.length && results.some(Boolean)) {
+    await new Promise((r) => setTimeout(r, SAFETY_RETRY_WAIT))
+    await runInRecordBatch(async () => {
+      for (const i of failed) await take(i)
+    })
+  }
+
+  const out = results.filter((g): g is DroneSpotGallery => Boolean(g))
   if (!out.length && firstErr) {
     throw firstErr instanceof Error ? firstErr : new ApiError(0, '安全巡查加载失败')
   }
@@ -1730,3 +2102,256 @@ export const KH_IDS = {
   droneDeviceId: KH_DRONE_DEVICE_ID,
   dockDeviceId: KH_DOCK_DEVICE_ID,
 } as const
+
+/* ---------- 审核中心（无人机 AI 工单 = 大屏「工单列表」） ---------- */
+
+/**
+ * 审核中心基址：**独立端口 `:12666`**，不在 iot 网关（23443）上。
+ *
+ * 对齐 V2（`向阳村-万联装备集群作业系统V2`）大屏右侧那块「工单列表」：
+ * 同一条路径打到 23443 回 404；打到 `:12666` 用 GET 回 **405**、用 POST 回 200，
+ * 所以它是 POST，V2 里那个 `?pidList=` 只是查询串（2026-11-20 实测）。
+ *
+ * ## 参数口径（都是实测的，不是猜的）
+ *
+ * | 参数 | 结论 |
+ * |---|---|
+ * | `pidList`（query） | 项目过滤，传本项目 pid；返回行里 `pid` 全是本项目 |
+ * | `pageNum` / `pageSize` | body，从 1 开始；`pageSize=10` 时 `totalPage=105`、`totalRecord=1044` |
+ * | `deviceId`（body） | **必填，且必须是无人机**：23498 → 1044 条；23452（机库）→ 0 条；不传 → 500；传网关 263 → 「已拒绝该项目下的相关操作」 |
+ * | `auditStatusType`（body） | `UNAUDITED`（待处理）/ `AUDITED`（已完成）；**传空串会 400**，不筛选时整个字段都别给 |
+ *
+ * 鉴权仍是同一套 CAS 令牌（`KH-USER-ID` / `KH-TOKEN`），不需要另开账号。
+ *
+ * ## 字段（V2 详情页逐项对得上）
+ *
+ * `businessTime` = 详情页「检测时间」、`jobName` = 「任务名称」、
+ * `title` / `labelName` = 「识别结果」的类别、`lng`/`lat` = 「经纬度」、
+ * `rawFiles[0].fileUrl` = 详情页那张大图、`auditStatusType` = 待处理 / 已完成。
+ *
+ * ⚠️ 图片地址是 OSS **签名直链**（`X-Amz-Expires=7200`，实测单张 0.6~1.3MB，
+ * 且不接受 `x-oss-process` 缩放参数，会 403）。所以列表不铺图、只用文字，
+ * 详情页打开时才加载这一张 —— 20 条一次铺开就是十几 MB。
+ */
+const AUDIT_BASE = 'https://iot.keehang.com:12666'
+
+/** 审核状态（服务端只有这两个值） */
+export type WorkOrderStatus = 'UNAUDITED' | 'AUDITED'
+
+/** 一条 AI 识别工单（= 大屏工单列表的一项，也是 V2 的「预警详情」） */
+export interface DroneWorkOrder {
+  /** `dataPayloadId`（uuid，列表 key 与详情定位都用它） */
+  id: string
+  /** 检测时间，'YYYY-MM-DD HH:mm:ss' */
+  at: string
+  /** 识别类别（`title`，如「杂草生长」「人员佩戴不规范」） */
+  title: string
+  /** 标注类别（`labelName`，通常与 `title` 相同） */
+  label: string
+  /** 任务名称（`jobName`，如「向阳村-道路垃圾和杂草生长」） */
+  jobName: string
+  /** 项目名称 */
+  projectName: string
+  /** 待处理 / 已完成；取不到时是空串（不猜一个状态出来） */
+  status: WorkOrderStatus | ''
+  /** 审核方式：`MANUAL_AUDIT`（人工）等，服务端原样返回 */
+  auditType: string
+  /** 通知等级：`NOTIFICATION_LEVEN_0/1/2/3` */
+  level: string
+  /** 经纬度 / 相对高度（字符串，服务端原样；缺失是空串） */
+  lng: string
+  lat: string
+  alt: string
+  /** 现场大图（OSS 签名直链，2 小时过期；缺失是空串） */
+  image: string
+  /** 执行记录 id（`recordId`，与媒体接口的 jobId 同源，可交叉核对） */
+  recordId: string
+}
+
+/** 一页工单 */
+export interface DroneWorkOrderPage {
+  rows: DroneWorkOrder[]
+  /** 命中总数（按状态筛选后） */
+  total: number
+}
+
+/** 2026-11-20T13:28:03.716004 → 2026-11-20 13:28:03 */
+function spotStamp(v: unknown): string {
+  const s = str(v)
+  if (!s) return ''
+  return s.slice(0, 19).replace('T', ' ')
+}
+
+function toWorkOrder(r: Record<string, unknown>): DroneWorkOrder | null {
+  const id = str(r.dataPayloadId) || str(r.id)
+  if (!id) return null
+  const files = Array.isArray(r.rawFiles) ? (r.rawFiles as Record<string, unknown>[]) : []
+  const image = files.map((f) => str(f.fileUrl)).find(Boolean) ?? ''
+  return {
+    id,
+    at: spotStamp(r.businessTime),
+    title: str(r.title) || str(r.labelName),
+    label: str(r.labelName) || str(r.title),
+    jobName: str(r.jobName) || str(r.lineName),
+    projectName: str(r.projectName),
+    status: (str(r.auditStatusType) as WorkOrderStatus | '') || '',
+    auditType: str(r.auditType),
+    level: str(r.dataPayloadLevelType),
+    lng: str(r.lng),
+    lat: str(r.lat),
+    alt: str(r.alt),
+    image,
+    recordId: str(r.recordId),
+  }
+}
+
+/**
+ * 取一页 AI 工单（大屏「工单列表」）。
+ *
+ * `status` 不传 = 全部（待处理 + 已完成）；传了才带 `auditStatusType`
+ * （空串会 400，见上面的参数表）。
+ *
+ * 失败直接抛 —— 页面写「取不到」+ 重试，**不能**当「没有预警」：
+ * 这一格一旦静默为空，用户会以为现场真的没识别出问题。
+ */
+export async function fetchAuditWorkOrders(
+  opts: { page?: number; size?: number; status?: WorkOrderStatus } = {},
+): Promise<DroneWorkOrderPage> {
+  const { page = 1, size = 20, status } = opts
+  const body: Record<string, unknown> = {
+    pageNum: Math.max(1, page),
+    pageSize: Math.min(Math.max(size, 1), 100),
+    deviceId: KH_DRONE_DEVICE_ID,
+  }
+  if (status) body.auditStatusType = status
+  const data = await khAuthSend<{
+    data?: unknown[]
+    totalRecord?: number
+    pageNum?: number
+    pageSize?: number
+  }>(`/audit_center/get_by_device_id?pidList=${KH_PROJECT_ID}`, {
+    base: AUDIT_BASE,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const list = Array.isArray(data?.data) ? data.data : []
+  const rows: DroneWorkOrder[] = []
+  for (const r of list) {
+    if (!r || typeof r !== 'object') continue
+    const row = toWorkOrder(r as Record<string, unknown>)
+    if (row) rows.push(row)
+  }
+  return { rows, total: num(data?.totalRecord) ?? rows.length }
+}
+
+/* ---------- 工单现场图（列表图标位的缩略图来源） ---------- */
+
+/**
+ * 现场图单张 **200~300KB**（2026-11-20 实测 203KB / 218KB），8s 还没回就当超时。
+ *
+ * 与报警抓拍图（`api/video.ts::fetchAlarmPicture`，8s）同一条口径 —— 现场 4G
+ * 偶尔会把一个请求吊死，列表不能一直挂着一圈进度环等它。
+ */
+const WORK_PICTURE_TIMEOUT = 8_000
+
+/** 分块 btoa 的块长。**必须是 3 的倍数**，否则每块末尾补齐会错位 */
+const B64_CHUNK = 8190
+
+/** 二进制 → data URL（不走 FileReader / createObjectURL，单测与老 WebView 都不用兜底） */
+function bytesToDataUrl(buf: ArrayBuffer, type: string): string {
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += B64_CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + B64_CHUNK))
+  }
+  return `data:${type};base64,${btoa(binary)}`
+}
+
+/**
+ * 拉一张工单现场图，返回 data URL。
+ *
+ * ## 为什么这条路走得通（2026-11-20 实测，不是推断）
+ *
+ * `rawFiles[0].fileUrl` 是 OSS 预签名直链（`https://oss.keehang.com:19090/work-order/...`）：
+ *
+ *   · **CORS 是通的** —— 回显 `Access-Control-Allow-Origin`，并 `Expose` 了
+ *     `Content-Length` / `ETag`，所以能 `fetch` 读字节、也能画进 canvas 不污染；
+ *   · **不能用 `x-oss-process` 缩图** —— 预签名把 query 一起签了，追加
+ *     `x-oss-process=image/resize,...` 回 **`SignatureDoesNotMatch` 403**；
+ *   · 响应头是 `Content-Type: application/octet-stream`（不是 image/jpeg），
+ *     所以这里**强制标成 `image/jpeg`** —— 少数内核会按 MIME 拒绝解码；
+ *   · 没有 `Cache-Control`，但每次请求的签名不同 → 浏览器缓存命中率低，
+ *     所以缩略图由调用方落盘（`utils/thumbCache.ts`）。
+ *
+ * ## 为什么返回 data URL 而不是 Blob
+ *
+ * 下游是 `utils/imageThumb.ts::shrinkDataUrl`（它就是吃 URL 画 canvas），
+ * 而 data URL 既能直接喂 `<img>`，也不涉及 objectURL 的生命周期与
+ * `URL.createObjectURL` 缺失时的兜底分支。多出来的一份 base64 在缩完之后立刻丢弃。
+ *
+ * @param url       服务端给的现场图直链（2 小时过期）
+ * @param opts.signal     外部取消（切点位 / 退登录）
+ * @param opts.onProgress 真实下载进度 0~1；服务端没给 `Content-Length` 时不回调
+ */
+export async function fetchWorkOrderPicture(
+  url: string,
+  opts: { signal?: AbortSignal; onProgress?: (ratio: number) => void } = {},
+): Promise<string> {
+  if (!url) throw new ApiError(0, '该预警暂无现场图')
+
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), WORK_PICTURE_TIMEOUT)
+  const onOuterAbort = (): void => ac.abort()
+  opts.signal?.addEventListener('abort', onOuterAbort, { once: true })
+
+  try {
+    const res = await fetch(url, { signal: ac.signal, credentials: 'omit' })
+    if (!res.ok) {
+      // 403 = 签名过期（2 小时）/ 404 = 对象没了。都是**结论**：这张图取不回来了，
+      // 调用方据此永久放弃（见 `stores/droneAlarm.ts::runThumb`），不反复重试。
+      const msg =
+        res.status === 403 || res.status === 404
+          ? '现场图已失效'
+          : `现场图获取失败（${res.status}）`
+      throw new ApiError(res.status, msg)
+    }
+
+    const total = Number(res.headers.get('content-length') || 0)
+    const stream = res.body
+    let buf: ArrayBuffer
+    if (stream && typeof stream.getReader === 'function' && total > 0) {
+      const reader = stream.getReader()
+      const chunks: Uint8Array[] = []
+      let got = 0
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value) continue
+        chunks.push(value)
+        got += value.byteLength
+        if (got < total) opts.onProgress?.(Math.min(1, got / total))
+      }
+      const all = new Uint8Array(got)
+      let off = 0
+      for (const c of chunks) {
+        all.set(c, off)
+        off += c.byteLength
+      }
+      buf = all.buffer
+    } else {
+      // 没有长度信息（或被中间层剥掉了）：读完整包，不编一个百分比
+      buf = await res.arrayBuffer()
+    }
+    opts.onProgress?.(1)
+    return bytesToDataUrl(buf, 'image/jpeg')
+  } catch (e) {
+    if (e instanceof ApiError) throw e
+    // AbortError（超时 / 外部取消）与 TypeError（断网 / CORS）都是**暂时性失败**，
+    // 调用方冷却 30s 后可以再试一次 —— 不能把一次抖动当成「这张图没有」。
+    throw new ApiError(0, '现场图获取失败，请检查网络')
+  } finally {
+    clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', onOuterAbort)
+  }
+}

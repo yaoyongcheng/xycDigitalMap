@@ -1,5 +1,7 @@
 import type { CamGroup } from '@/types'
 
+import { CCTV_CHANNELS } from './cctv'
+
 /**
  * 现场监控点位（2026-11-19 按现场要求重排分组）
  *
@@ -23,7 +25,7 @@ import type { CamGroup } from '@/types'
  * ## 为什么用 channelId 而不是 channelNo
  *
  * 这里是**两套编号**，不能混：
- *   · `channelId`：20 位 GB28181 通道号，快照接口（`/api/video/snapshots`）的主键；
+ *   · `channelId`：20 位 GB28181 通道号，历史抓拍接口（`/api/video/snapshots/history`）的主键；
  *   · `channelNo`：视频报警（`:8085`）里的 2 / 3 这种小数字，报警详情用它。
  * 两者之间没有可靠映射，所以监控页只认 `channelId`，报警那边继续用 `channelNo`
  * （点位名走 `CAM_PLACE`，见 `data/config.ts`）。
@@ -37,7 +39,7 @@ import type { CamGroup } from '@/types'
 
 /** 一个监控点位 */
 export interface CamPoint {
-  /** 快照接口的通道号（20 位，服务端主键） */
+  /** 历史抓拍接口的通道号（20 位，服务端主键） */
   channelId: string
   /** 显示名：与设计稿芯片、服务端通道名逐字一致 */
   name: string
@@ -84,3 +86,52 @@ export const CAM_POINTS: CamPoint[] = [
 export function findCamPoint(channelId: string): CamPoint | undefined {
   return CAM_POINTS.find((p) => p.channelId === channelId)
 }
+
+/**
+ * 智眸「设备设施」里额外插进来的两张**塔吊抓拍**（2026-11-20）。
+ *
+ * 顺序即展示顺序：2# 塔吊在前、4# 塔吊在后，排在「塔吊定点」那两张航拍之后。
+ * `channelId` 不在这里另抄一份 —— 从 {@link CAM_POINTS} 按名字取，监控页改名 /
+ * 换通道时这里跟着变；两处写死迟早会对不上。
+ */
+export const CRANE_SHOTS: { channelId: string; name: string }[] = ['2#塔吊', '4#塔吊']
+  .map((n) => CAM_POINTS.find((p) => p.name === n))
+  .filter((p): p is CamPoint => Boolean(p))
+  .map((p) => ({ channelId: p.channelId, name: p.name }))
+
+/**
+ * 智眸「出入口管控」里的 5 张**历史抓拍**（2026-11-20）。
+ *
+ * 用户点名的 5 个来源，顺序即展示顺序 —— 这里**不做排序、不做合并**，
+ * 一个来源一条、只取各自最新的一张：
+ *
+ *   1. 视频监控A —— 通道号用户已点明 `34020000001310000001`，名字取监控页
+ *      `CCTV_CHANNELS` 里的「监控A」（同一路）。它**不在** {@link CAM_POINTS}
+ *      那 9 个白名单里（白名单只上墙塔吊 / 地磅 / 加工棚 / 堆场 / 四个门），
+ *      所以这一条不能按名字从 `CAM_POINTS` 里找；
+ *   2. 视频监控-2#门监控1 → `CAM_POINTS` 的「2#门监控1」；
+ *   3. 2#门监控2；
+ *   4. 4#门监控；
+ *   5. 4#门外监控。
+ *
+ * 后四条一律**按名字**从 `CAM_POINTS` 取 channelId，不在这里另抄一份通道号：
+ * 监控页改名 / 换通道时这里跟着变，两处写死迟早对不上。名字对不上时
+ * `channelId` 留空，取图那一步直接跳过（宁可少一张，也不猜个通道号去拍）。
+ */
+const GATE_SHOT_SOURCES: { name: string; channelId?: string }[] = [
+  { name: '监控A', channelId: '34020000001310000001' },
+  { name: '2#门监控1' },
+  { name: '2#门监控2' },
+  { name: '4#门监控' },
+  { name: '4#门外监控' },
+]
+
+export const GATE_SHOTS: { channelId: string; name: string }[] = GATE_SHOT_SOURCES.map((s) => {
+  // 点明了通道号的：名字以 `CCTV_CHANNELS` 为准（现场靠这个名字找摄像头）
+  if (s.channelId) {
+    const cctv = CCTV_CHANNELS.find((c) => c.channelId === s.channelId)
+    return { channelId: s.channelId, name: cctv?.name ?? s.name }
+  }
+  const p = CAM_POINTS.find((c) => c.name === s.name)
+  return { channelId: p?.channelId ?? '', name: p?.name ?? s.name }
+})

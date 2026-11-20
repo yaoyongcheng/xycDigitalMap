@@ -6,9 +6,11 @@ import { defineComponent, h, nextTick } from 'vue'
 import { clearSession } from '@/api/drone'
 import SheetHost from '@/components/overlays/SheetHost.vue'
 import { fetchFacilityGallery, fetchSafetyGallery, fetchSpotGallery, fetchYardGallery } from '@/api/drone'
+import { GATE_SHOTS } from '@/data/cams'
 import { PATROL_CATS, catOfTask } from '@/data/config'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { PANO_SHEET_ID, usePatrolStore, type PatrolPhotoReal } from '@/stores/patrol'
+import { clearShots, saveShot } from '@/utils/shotArchive'
 import HomeSheet from '@/views/home/HomeSheet.vue'
 import PatrolPanel from '@/views/home/PatrolPanel.vue'
 
@@ -37,15 +39,18 @@ function photo(n: Partial<PatrolPhotoReal> & { id: string; name: string }): Patr
     name: n.name,
     url: n.url ?? `https://oss.keehang.com/iot-media/${n.id}.jpeg`,
     thumbnail: n.thumbnail ?? `https://oss.keehang.com/thumbnail/iot/${n.id}.jpeg`,
-    // 默认给一条**还走照片墙分组**的航线（「出入口管控」= yard）。
-    // 2026-11-18 起 layout（安全巡查）改走专用链，`apply()` 灌进去的 layout
-    // 照片不再上墙，拿它当夹具会让「渲染通用行为」的用例全部落空。
+    // 默认给一条**归到「出入口管控」（yard）**的航线：2026-11-20 起六格各有
+    // 专用链，照片墙不再上屏，所以「卡片 / 弹层通用渲染」这类用例改成把夹具
+    // 灌进 `gate`（`patrol.apply(list, 'gate')`）—— 那一格就是 `PatrolPhotoReal[]`
+    // 直接铺在网格里，卡片渲染、缩略图兜底、点开大图的路径与其它格完全一致。
     taskName: n.taskName ?? '向阳村-材料堆场',
     taskId: n.taskId === undefined ? 4912 : n.taskId,
     jobId: n.jobId ?? 147744,
     time: n.time ?? '2026-07-15 09:38:39',
     size: n.size ?? 5_378_048,
     mediaType: n.mediaType ?? 'image/jpeg',
+    // 来源标记：`snap: true` = 视频监控抓拍（卡片写「抓拍 / 视频监控」）
+    ...(n.snap ? { snap: true } : {}),
   }
 }
 
@@ -85,7 +90,7 @@ describe('智眸面板（真实航拍照片）', () => {
 
   it('六类固定 3×2 显示（0 张也占位），没有「未分类」', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([photo({ id: 'a', name: 'a.jpeg', taskName: '向阳村-材料堆场' })])
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg', taskName: '向阳村-材料堆场' })], 'gate')
     const w = mount(PatrolPanel)
     await nextTick()
 
@@ -97,8 +102,8 @@ describe('智眸面板（真实航拍照片）', () => {
 
   it('默认落在第一个真有照片的分类上（不是写死的 VR 360环视）', async () => {
     const patrol = usePatrolStore()
-    // 只有场区材料堆（出入口管控）有照片
-    patrol.apply([photo({ id: 'a', name: 'a.jpeg', taskName: '向阳村-材料堆场' })])
+    // 只有「出入口管控」（5 个门禁点位）有照片
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg', taskName: '向阳村-材料堆场' })], 'gate')
     const w = mount(PatrolPanel)
     await nextTick()
 
@@ -120,32 +125,27 @@ describe('智眸面板（真实航拍照片）', () => {
     w.unmount()
   })
 
-  it('照片按拍摄时间倒序（最新的在前）', async () => {
+  it('照片墙按拍摄时间倒序（`list` 最新在前）', () => {
     const patrol = usePatrolStore()
     patrol.apply([
       photo({ id: 'a', name: '旧图.jpeg', time: '2026-07-14 10:00:00' }),
       photo({ id: 'b', name: '新图.jpeg', time: '2026-07-15 09:38:39' }),
     ])
-    const w = mount(PatrolPanel)
-    await nextTick()
 
-    const cards = w.findAll('.patrol-card')
-    expect(cards).toHaveLength(2)
-    // 卡片显示的是「所属航线 + 拍摄时间」，不是文件名
-    expect(cards[0].text()).toContain('2026-07-15 09:38')
-    expect(cards[1].text()).toContain('2026-07-14 10:00')
-    expect(w.find('.patrol-hd em').text()).toBe('2 张')
-    w.unmount()
+    // 六格各自的顺序有各自规则（采集序号 / 来源表），只有照片墙这份原始列表按时间倒序
+    expect(patrol.list.map((p) => p.time)).toEqual(['2026-07-15 09:38:39', '2026-07-14 10:00:00'])
   })
 
   it('卡片标题写真实航线名、徽标写归类（归错类也能看出是哪条航线）', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([photo({ id: 'a', name: 'a.jpeg', taskName: '向阳村-钢筋加工棚' })])
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg', taskName: '向阳村-钢筋加工棚' })], 'gate')
     const w = mount(PatrolPanel)
     await nextTick()
 
     const card = w.find('.patrol-card')
     expect(card.text()).toContain('向阳村-钢筋加工棚')
+    // 卡片显示的是「所属航线 + 拍摄时间」，不是文件名
+    expect(card.text()).toContain('2026-07-15 09:38')
     expect(card.text()).toContain('5.1MB')
     expect(card.findAll('.patrol-tag').map((t) => t.text())).toEqual(['出入口管控'])
     expect(card.text()).toContain('无人机')
@@ -165,12 +165,60 @@ describe('智眸面板（真实航拍照片）', () => {
     w.unmount()
   })
 
+  it('等待接口响应时写「图片刷新」（骨架同首屏），响应回来落回原文案', async () => {
+    const patrol = usePatrolStore()
+    // 别的分类已有照片 → 不是「整页首屏」那种全空骨架
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg' })])
+    // 「安全巡查」这条链还在等响应
+    patrol.safetyState = 'loading'
+    const w = mount(PatrolPanel)
+    await nextTick()
+
+    await w.findAll('.patrol-cats button')[5].trigger('click')
+    await nextTick()
+
+    // 说明文字是「图片刷新」，不是「这个分类下还没有照片」
+    expect(w.find('[data-state="patrol-refreshing"]').exists()).toBe(true)
+    expect(w.find('.patrol-refreshing-tip').text()).toBe('图片刷新')
+    expect(w.find('.patrol-empty').exists()).toBe(false)
+    // 视觉沿用智眸首次加载那一套：4 张同构骨架卡
+    expect(w.findAll('.patrol-card.is-skel')).toHaveLength(4)
+
+    // 响应回来、这班确实没照片 → 恢复原有说明文案
+    patrol.safetyState = 'ok'
+    await nextTick()
+    expect(w.find('[data-state="patrol-refreshing"]').exists()).toBe(false)
+    expect(w.find('.patrol-refreshing-tip').exists()).toBe(false)
+    expect(w.find('.patrol-empty').text()).toBe('这个分类下还没有照片')
+    w.unmount()
+  })
+
+  it('已有内容时刷新不铺骨架：旧图继续显示，不闪「图片刷新」', async () => {
+    const patrol = usePatrolStore()
+    // `apply` = 刚刚同步完（state=ok，挂载时的 refresh() 会直接复用，不再重拉）
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg' })])
+    // 「全景航拍」这条链重新拉（点重试），旧 9 张还在手里
+    patrol.spot = [photo({ id: 's1', name: 's1.jpeg', taskName: '向阳村-全局定点拍照' })]
+    patrol.spotState = 'loading'
+    const w = mount(PatrolPanel)
+    await nextTick()
+
+    expect(w.find('.patrol-cats button.on').text()).toContain('全景航拍')
+    expect(w.find('[data-state="patrol-refreshing"]').exists()).toBe(false)
+    expect(w.find('.patrol-refreshing-tip').exists()).toBe(false)
+    expect(w.findAll('.patrol-card')).toHaveLength(1)
+    w.unmount()
+  })
+
   it('有缩略图就渲染 img，没有则回退文字占位', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([
-      photo({ id: 'a', name: 'a.jpeg', thumbnail: 'https://oss.keehang.com/thumbnail/a.jpeg' }),
-      photo({ id: 'b', name: 'b.jpeg', thumbnail: '', time: '2026-07-15 09:00:00' }),
-    ])
+    patrol.apply(
+      [
+        photo({ id: 'a', name: 'a.jpeg', thumbnail: 'https://oss.keehang.com/thumbnail/a.jpeg' }),
+        photo({ id: 'b', name: 'b.jpeg', thumbnail: '', time: '2026-07-15 09:00:00' }),
+      ],
+      'gate',
+    )
     const w = mount(PatrolPanel)
     await nextTick()
 
@@ -188,7 +236,7 @@ describe('智眸面板（真实航拍照片）', () => {
 
   it('缩略图加载失败时回退文字占位（不留破图）', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([photo({ id: 'a', name: 'a.jpeg' })])
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg' })], 'gate')
     const w = mount(PatrolPanel)
     await nextTick()
 
@@ -226,14 +274,17 @@ describe('智眸大图弹层（真实航拍照片）', () => {
 
   it('点卡片开弹层，元信息用服务端字段', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([
-      photo({
-        id: 'a',
-        name: 'DJI_20260715093839_0001_V.jpeg',
-        taskName: '向阳村-材料堆场',
-        time: '2026-07-15 09:38:39',
-      }),
-    ])
+    patrol.apply(
+      [
+        photo({
+          id: 'a',
+          name: 'DJI_20260715093839_0001_V.jpeg',
+          taskName: '向阳村-材料堆场',
+          time: '2026-07-15 09:38:39',
+        }),
+      ],
+      'gate',
+    )
     const w = mount(Host)
     await nextTick()
 
@@ -256,7 +307,7 @@ describe('智眸大图弹层（真实航拍照片）', () => {
 
   it('点「查看原图」才换成原图（不点就一直在缩略图上）', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([photo({ id: 'a', name: 'DJI_0001_V.jpeg', size: 7_825_440 })])
+    patrol.apply([photo({ id: 'a', name: 'DJI_0001_V.jpeg', size: 7_825_440 })], 'gate')
     const w = mount(Host)
     await nextTick()
     await w.findAll('.patrol-card')[0].trigger('click')
@@ -298,10 +349,10 @@ describe('智眸大图弹层（真实航拍照片）', () => {
 
   it('2:1 全景图走进球面播放器，普通 4:3 仍是平面大图', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([
-      photo({ id: 'pano', name: 'pano.jpeg' }),
-      photo({ id: 'flat', name: 'flat.jpeg' }),
-    ])
+    patrol.apply(
+      [photo({ id: 'pano', name: 'pano.jpeg' }), photo({ id: 'flat', name: 'flat.jpeg' })],
+      'gate',
+    )
 
     // 尺寸来自列表里缩略图的 naturalWidth/Height；这里直接灌进 store
     patrol.setDims('pano', 8192, 4096)
@@ -329,7 +380,7 @@ describe('智眸大图弹层（真实航拍照片）', () => {
 
   it('弹层状态是 patrol', async () => {
     const patrol = usePatrolStore()
-    patrol.apply([photo({ id: 'a', name: 'a.jpeg' })])
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg' })], 'gate')
     const w = mount(Host)
     await nextTick()
 
@@ -447,6 +498,70 @@ function khOk(body: unknown): Response {
 }
 
 /**
+ * 抓拍图片的桩：`fetchCamShotImage` 要的是**直出图片字节**（不是 JSON）。
+ *
+ * 它会校验 `ok` / `content-type` 以 `image/` 开头 / `blob().size`，
+ * 三者缺一就被判成「没有返回图片」，所以桩必须把这三样都给出来。
+ */
+function imgOk(bytes = 200_000): Response {
+  const blob = new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' })
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'image/jpeg' : null) },
+    blob: async () => blob,
+    text: async () => '',
+    json: async () => ({}),
+  } as unknown as Response
+}
+
+/**
+ * 历史列表的桩：一条（`mark` 固定、`fileSize` 跟着 `bytes` 走）。
+ *
+ * 智眸这几格只查 `/snapshots/history`（旧「最近一帧」接口已下线）。
+ * 列表是 JSON 信封，不能拿 `imgOk` 顶 —— 那样会解析失败、一路掉进缓存兜底，
+ * 断言就测不到真实链路了。
+ */
+function histOk(bytes = 200_000, mark = '20261119120000'): Response {
+  const at = new Date(2026, 10, 19, 12, 0, 0)
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null),
+    },
+    json: async () => ({
+      code: 200,
+      message: 'success',
+      data: {
+        items: [
+          {
+            capturedAt: '2026-11-19T12:00:00+08:00',
+            fileSize: bytes,
+            imageUrl: `/api/video/snapshots?channelId=x&mark=${mark}&pid=P000000076`,
+            latest: true,
+            mark,
+            timestamp: at.getTime(),
+          },
+        ],
+        page: 1,
+        pageSize: 1,
+        total: 1,
+        rangeStart: '',
+        rangeEnd: '',
+      },
+    }),
+    text: async () => '',
+    blob: async () => new Blob([]),
+  } as unknown as Response
+}
+
+/** 抓拍系列路由：历史列表走 JSON，图片走字节 */
+function shotOk(url: string, bytes = 200_000): Response {
+  return String(url).includes('/snapshots/history') ? histOk(bytes) : imgOk(bytes)
+}
+
+/**
  * 一条全景成果。
  *
  * 现场实测（2026-11-15，record 181616）：一次飞行产出 3 个成果，名字按
@@ -541,7 +656,7 @@ function panoFetch(opts: { recreate?: unknown; records?: unknown[] } = {}): Retu
       if (!Array.isArray(recreate)) return recreate as Response
       return khOk({ code: 200, data: { total: recreate.length, page: 1, size: 30, list: recreate } })
     }
-    if (u.includes('/task/exec/list/record')) return khOk({ code: 200, data: records })
+    if (u.includes('/api/open/v1/task-record/page')) return khOk({ code: 200, data: records })
     if (u.includes('/media/task/job/')) {
       return khOk({
         code: 200,
@@ -1010,7 +1125,7 @@ describe('智眸大图弹层 · 单张照片工具条（查看原图 / 横屏）
   /** 打开一张 4:3 平面照片（尺寸非 2:1，不会走进球面播放器） */
   async function openFlat(): Promise<ReturnType<typeof mount>> {
     const patrol = usePatrolStore()
-    patrol.apply([photo({ id: 'a', name: 'DJI_202611171530_0001_V.jpeg', size: 7_825_440 })])
+    patrol.apply([photo({ id: 'a', name: 'DJI_202611171530_0001_V.jpeg', size: 7_825_440 })], 'gate')
     patrol.setDims('a', 4032, 3024)
     const w = mount(Host, { attachTo: document.body })
     await nextTick()
@@ -1114,15 +1229,15 @@ describe('全景航拍（全局定点拍照最新 9 张）', () => {
   }
 
   /**
-   * 三条记录：
+   * 三条记录（照 2026-11-20 实测的真实班次）：
    *   · 11-19 15:30 `status=-1` —— 未来排班，不能取；
-   *   · 11-18 08:20 `status=2`  —— 已完成但媒体 0 条（实测有这种班），要跳过；
-   *   · 11-17 15:30 `status=2`  —— **9 张图的那班**（截图里那班）。
+   *   · **11-19 08:20 `status=2` —— 最新一班，9 张**（用户说的「11-19 那 9 张」）；
+   *   · 11-17 15:30 `status=2` —— 更早的一班，也 9 张，**不该被取到**。
    */
   function spotFetch(): ReturnType<typeof vi.fn> {
     const rows = [
       job(31, '2026-11-19T15:30:00', -1),
-      job(30, '2026-11-18T08:20:00', 2),
+      job(30, '2026-11-19T08:20:00', 2),
       job(29, '2026-11-17T15:30:00', 2),
     ]
     return vi.fn(async (url: string) => {
@@ -1133,8 +1248,8 @@ describe('全景航拍（全局定点拍照最新 9 张）', () => {
       if (u.includes('/cas/auth/validate')) {
         return khOk({ code: 200, data: { uid: '42', token: 'TOKEN', timestamp: Date.now() } })
       }
-      if (u.includes('/task/exec/list/record')) return khOk({ code: 200, data: rows })
-      if (u.includes('/media/task/job/30')) return khOk({ code: 200, data: [] })
+      if (u.includes('/api/open/v1/task-record/page')) return khOk({ code: 200, data: rows })
+      if (u.includes('/media/task/job/30')) return khOk({ code: 200, data: mediaOfJob() })
       if (u.includes('/media/task/job/29')) return khOk({ code: 200, data: mediaOfJob() })
       if (u.includes('/dashboard/recreate/getProjectRecreateInfo')) {
         return khOk({ code: 200, data: { total: 0, list: [] } })
@@ -1143,12 +1258,12 @@ describe('全景航拍（全局定点拍照最新 9 张）', () => {
     })
   }
 
-  it('取最近一班有照片的已完成飞行：跳过未来排班与媒体为空的班次', async () => {
+  it('只认最新一班：跳过未来排班，也不因为「更早那班也有 9 张」就退回去', async () => {
     vi.stubGlobal('fetch', spotFetch())
 
     const g = await fetchSpotGallery()
-    expect(g?.jobId).toBe(29)
-    expect(g?.start).toBe('2026-11-17T15:30:00')
+    expect(g?.jobId).toBe(30)
+    expect(g?.start).toBe('2026-11-19T08:20:00')
     expect(g?.taskName).toBe('向阳村-全局定点拍照')
   })
 
@@ -1270,7 +1385,8 @@ describe('材料堆场（分区定点拍照第 1、2、37 张）', () => {
    */
   function yardFetch(picCount = 41): ReturnType<typeof vi.fn> {
     const rows = [
-      job(50, '2026-11-18T15:30:00', 2, '向阳村-全局定点拍照'),
+      // 名字相近但不是「分区定点拍照」；用未完成状态，免得它把默认落点抢走
+      job(50, '2026-11-18T15:30:00', -1, '向阳村-全局定点拍照'),
       job(41, '2026-11-19T12:30:00', -1),
       job(40, '2026-11-18T08:20:00', 2),
       job(39, '2026-11-17T12:30:00', 2),
@@ -1283,7 +1399,7 @@ describe('材料堆场（分区定点拍照第 1、2、37 张）', () => {
       if (u.includes('/cas/auth/validate')) {
         return khOk({ code: 200, data: { uid: '42', token: 'TOKEN', timestamp: Date.now() } })
       }
-      if (u.includes('/task/exec/list/record')) return khOk({ code: 200, data: rows })
+      if (u.includes('/api/open/v1/task-record/page')) return khOk({ code: 200, data: rows })
       if (u.includes('/media/task/job/50')) return khOk({ code: 200, data: mediaOf(9) })
       if (u.includes('/media/task/job/40')) return khOk({ code: 200, data: [] })
       if (u.includes('/media/task/job/39')) return khOk({ code: 200, data: mediaOf(picCount) })
@@ -1367,7 +1483,7 @@ describe('材料堆场（分区定点拍照第 1、2、37 张）', () => {
         if (u.includes('/cas/auth/validate')) {
           return khOk({ code: 200, data: { uid: '42', token: 'T2', timestamp: Date.now() } })
         }
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           // 又飞了一班（比 11-17 12:30 那班新，且已开始）
           return khOk({ code: 200, data: [job(42, '2026-11-17T18:30:00', 2)] })
         }
@@ -1399,7 +1515,7 @@ describe('材料堆场（分区定点拍照第 1、2、37 张）', () => {
  * 另外两张来自「视频监控-塔吊-2#/4# 塔吊」各自最新的一张 —— 监控侧没有照片
  * 查询接口，用户 2026-11-18 明确本轮不接入，所以这里断言的就是 **2 张**。
  */
-describe('设备设施（塔吊定点第 2、7 张）', () => {
+describe('设备设施（塔吊定点第 2、7 张 + 2#/4# 塔吊最新抓拍）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -1407,6 +1523,8 @@ describe('设备设施（塔吊定点第 2、7 张）', () => {
   afterEach(async () => {
     await flushPromises()
     clearSession()
+    // 本机抓拍档案是模块级状态（IndexedDB 没有时退内存）：不查清会串到下一条用例
+    await clearShots()
     vi.unstubAllGlobals()
   })
 
@@ -1467,10 +1585,12 @@ describe('设备设施（塔吊定点第 2、7 张）', () => {
       if (u.includes('/cas/auth/validate')) {
         return khOk({ code: 200, data: { uid: '42', token: 'TOKEN', timestamp: Date.now() } })
       }
-      if (u.includes('/task/exec/list/record')) return khOk({ code: 200, data: rows })
+      if (u.includes('/api/open/v1/task-record/page')) return khOk({ code: 200, data: rows })
       if (u.includes('/media/task/job/60')) return khOk({ code: 200, data: mediaOf(16) })
       if (u.includes('/media/task/job/51')) return khOk({ code: 200, data: [] })
       if (u.includes('/media/task/job/50')) return khOk({ code: 200, data: mediaOf(picCount) })
+      // 2# / 4# 塔吊的抓拍：设备设施后两张（视频监控）走这里
+      if (u.includes('/api/video/snapshots')) return shotOk(u)
       if (u.includes('/dashboard/recreate/getProjectRecreateInfo')) {
         return khOk({ code: 200, data: { total: 0, list: [] } })
       }
@@ -1508,7 +1628,7 @@ describe('设备设施（塔吊定点第 2、7 张）', () => {
     expect(g?.media.map((m) => seqOf(m.name))).toEqual(['0002'])
   })
 
-  it('面板：设备设施 2 张、默认落点、列表用缩略图，点开走大图弹层', async () => {
+  it('面板：设备设施 4 张（航拍 2 + 塔吊抓拍 2），默认落点、点开走大图弹层', async () => {
     vi.stubGlobal('fetch', facilityFetch())
 
     const w = mount(PatrolPanel)
@@ -1516,28 +1636,72 @@ describe('设备设施（塔吊定点第 2、7 张）', () => {
     await nextTick()
 
     const chips = w.findAll('.patrol-cats button')
-    expect(chips[2].text()).toBe('设备设施2')
+    expect(chips[2].text()).toBe('设备设施4')
     expect(chips[2].classes()).toContain('on')
-    expect(w.find('.patrol-hd em').text()).toBe('2 张')
+    expect(w.find('.patrol-hd em').text()).toBe('4 张')
 
     const cards = w.findAll('.patrol-card')
-    expect(cards).toHaveLength(2)
+    expect(cards).toHaveLength(4)
+    // 前两张仍是塔吊定点的航拍（第 2、第 7 张）
     expect(cards[0].text()).toContain('向阳村-塔吊定点')
+    expect(cards[0].text()).toContain('无人机')
+    expect(cards[1].text()).toContain('向阳村-塔吊定点')
     // 列表只加载缩略图（原图等点「查看原图」）
     expect(cards[0].find('.patrol-thumb img').attributes('src')).toContain('/thumbnail/')
 
+    // 后两张是 2# / 4# 塔吊的最新抓拍：标题是点位名、来源写「视频监控」
+    expect(cards[2].text()).toContain('2#塔吊')
+    expect(cards[3].text()).toContain('4#塔吊')
+    expect(cards[2].text()).toContain('视频监控')
+    expect(cards[2].find('.patrol-thumb-tag').text()).toBe('抓拍')
+
     const store = usePatrolStore()
-    expect(store.facility.map((p) => seqOf(p.name))).toEqual(['0002', '0007'])
+    expect(store.facility).toHaveLength(4)
+    expect(store.facility.slice(0, 2).map((p) => seqOf(p.name))).toEqual(['0002', '0007'])
+    expect(store.facility.slice(2).every((p) => p.snap)).toBe(true)
     // 弹层只拿到 id，store 得能在 facility 里找到这张
     expect(store.photoById(store.facility[1].id)?.name).toBe(store.facility[1].name)
+    expect(store.photoById(store.facility[3].id)?.taskName).toBe('4#塔吊')
     w.unmount()
   })
 
-  it('每次刷新重取最近一班：新班次飞完，两张跟着换', async () => {
+  it('抓拍取不到时退回档案里最新那条；档案也空就少这两张，不影响前两张', async () => {
+    // 相机/网络全挂：只有档案里那一条能用
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url)
+        if (u.includes('/api/video/snapshots')) {
+          return { ok: false, status: 502, headers: { get: () => null } } as unknown as Response
+        }
+        return facilityFetch()(url)
+      }),
+    )
+    // 先往本机档案里存一条 2#塔吊 的抓拍（= 之前看过监控留下的那张）
+    await saveShot(
+      '34020000001320000017',
+      '20261119120000',
+      new Date(2026, 10, 19, 12).getTime(),
+      new Blob([new Uint8Array(180_000)], { type: 'image/jpeg' }),
+    )
+
+    const patrol = usePatrolStore()
+    await patrol.loadFacility()
+    await flushPromises()
+
+    // 前两张不受影响；2#塔吊 用档案那条，4#塔吊 档案里没有 → 不出现
+    expect(patrol.facility.filter((p) => !p.snap).map((p) => seqOf(p.name))).toEqual(['0002', '0007'])
+    const snaps = patrol.facility.filter((p) => p.snap)
+    expect(snaps).toHaveLength(1)
+    expect(snaps[0].taskName).toBe('2#塔吊')
+    expect(patrol.facilityState).toBe('ok')
+  })
+
+  it('每次刷新重取最近一班：新班次飞完，两张航拍跟着换', async () => {
     const patrol = usePatrolStore()
     vi.stubGlobal('fetch', facilityFetch())
     await patrol.loadFacility()
-    expect(patrol.facility.map((p) => seqOf(p.name))).toEqual(['0002', '0007'])
+    expect(patrol.facility.slice(0, 2).map((p) => seqOf(p.name))).toEqual(['0002', '0007'])
     const first = patrol.facility[0].id
 
     // 再飞一班（更新的一班，媒体换成 9 张）→ 刷新后必须换成新的
@@ -1551,21 +1715,218 @@ describe('设备设施（塔吊定点第 2、7 张）', () => {
         if (u.includes('/cas/auth/validate')) {
           return khOk({ code: 200, data: { uid: '42', token: 'T2', timestamp: Date.now() } })
         }
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           // 又飞了一班（比 11-17 14:15 那班新，且已开始）
           return khOk({ code: 200, data: [job(61, '2026-11-17T18:15:00', 2)] })
         }
         if (u.includes('/media/task/job/61')) return khOk({ code: 200, data: mediaOf(9) })
+        if (u.includes('/api/video/snapshots')) return shotOk(u)
         return khOk({ code: 200, data: [] })
       }),
     )
     await patrol.loadFacility()
 
-    expect(patrol.facility[0].id).not.toBe(first)
+    const flights = patrol.facility.filter((p) => !p.snap)
+    expect(flights[0].id).not.toBe(first)
     // id 是 `${执行记录 id}-${文件名}`：换成 61 那班说明重取的是新班次，不是缓存
-    expect(patrol.facility.every((p) => p.id.startsWith('61-'))).toBe(true)
-    expect(patrol.facility.map((p) => seqOf(p.name))).toEqual(['0002', '0007'])
+    expect(flights.every((p) => p.id.startsWith('61-'))).toBe(true)
+    expect(flights.map((p) => seqOf(p.name))).toEqual(['0002', '0007'])
+    // 抓拍那两张与航拍那条链互不影响，仍是 2 张
+    expect(patrol.facility.filter((p) => p.snap)).toHaveLength(2)
     expect(patrol.facilityState).toBe('ok')
+  })
+})
+
+/* ================================================================ *
+ * 出入口管控：5 个门禁点位各取最新一张历史抓拍（固定 5 张）            *
+ * ================================================================ */
+
+/**
+ * 用户点名 5 个来源、每个来源只展示最新一张，**总数固定 5 张、不重复不缺项**：
+ *
+ *   1. 视频监控A（`34020000001310000001`，监控页叫「监控A」）；
+ *   2. 视频监控-2#门监控1；3. 2#门监控2；4. 4#门监控；5. 4#门外监控
+ *   —— 后四条按名字从 `CAM_POINTS` 取通道号。
+ *
+ * 取法与「设备设施」后两张同源（`snapShotOf`）：现取一帧落本机档案 → 取不到
+ * 退回档案里最新那条 → 都没有就不出现（不编照片）。这里钉住的是：
+ *
+ *   1. 来源表固定 5 条、通道号能解析且互不重复（改名 / 复制粘贴出错会当场挂）；
+ *   2. 5 张的顺序就是来源表顺序，标题是点位名、来源是「视频监控」；
+ *   3. 某一路没画面时其余照常，并**说出缺的是哪一路**；
+ *   4. 5 路全挂才写「暂时取不到」+ 重试，不当成「还没有照片」；
+ *   5. 每次刷新重取，不拿上一批当最新。
+ */
+describe('出入口管控（5 个点位各最新一张抓拍）', () => {
+  beforeEach(async () => {
+    setActivePinia(createPinia())
+    // 本机档案是跨用例的（happy-dom 没有 IndexedDB，走模块级内存兜底），先清空
+    await clearShots()
+  })
+
+  afterEach(async () => {
+    await flushPromises()
+    clearSession()
+    vi.unstubAllGlobals()
+  })
+
+  /**
+   * 快照接口的桩：按 `channelId` 分路，`over` 里的通道走指定响应。
+   *
+   * `bytes` 是这一帧的字节数 —— 同档同样字节约等于「服务端还没更新」，
+   * `saveShot` 会保留原记录，所以测「重取」时要换一个字节数。
+   */
+  function gateFetch(
+    over: Record<string, () => Response> = {},
+    bytes = 200_000,
+  ): ReturnType<typeof vi.fn> {
+    return vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/api/video/snapshots')) {
+        const ch = decodeURIComponent(/channelId=([^&]+)/.exec(u)?.[1] ?? '')
+        const hit = over[ch]
+        if (hit) return hit()
+        return shotOk(u, bytes)
+      }
+      return khOk({ code: 200, data: [] })
+    })
+  }
+
+  /** 一路取不到（相机离线 / 上游 502） */
+  const dead = (): Response => ({ ok: false, status: 502, headers: { get: () => null } }) as unknown as Response
+
+  it('来源表固定 5 条：通道号都能解析出来、互不重复', () => {
+    expect(GATE_SHOTS.map((s) => s.name)).toEqual([
+      '监控A',
+      '2#门监控1',
+      '2#门监控2',
+      '4#门监控',
+      '4#门外监控',
+    ])
+    expect(GATE_SHOTS.map((s) => s.channelId)).toEqual([
+      '34020000001310000001',
+      '34020000001320000003',
+      '34020000001320000006',
+      '34020000001320000007',
+      '34020000001320000004',
+    ])
+  })
+
+  it('取回 5 张，顺序即来源表顺序；标题是点位名、来源是视频监控', async () => {
+    vi.stubGlobal('fetch', gateFetch())
+    const patrol = usePatrolStore()
+    await patrol.loadGate()
+
+    expect(patrol.gate).toHaveLength(5)
+    expect(patrol.gate.map((p) => p.taskName)).toEqual(GATE_SHOTS.map((s) => s.name))
+    expect(patrol.gate.every((p) => p.snap)).toBe(true)
+    expect(patrol.gate.every((p) => p.time)).toBeTruthy()
+    // 弹层只拿 id：5 张必须都能在 gate 里找到，且 id 不重复
+    expect(new Set(patrol.gate.map((p) => p.id)).size).toBe(5)
+    for (const p of patrol.gate) expect(patrol.photoById(p.id)?.taskName).toBe(p.taskName)
+    expect(patrol.gateState).toBe('ok')
+  })
+
+  it('某一路没有画面：其余照常，状态仍是 ok（不整格变空）', async () => {
+    vi.stubGlobal('fetch', gateFetch({ '34020000001320000006': dead }))
+    const patrol = usePatrolStore()
+    await patrol.loadGate()
+
+    expect(patrol.gate).toHaveLength(4)
+    expect(patrol.gate.map((p) => p.taskName)).not.toContain('2#门监控2')
+    expect(patrol.gateState).toBe('ok')
+  })
+
+  it('相机离线时退回本机档案里最新那张（真实抓拍，不拿别的图顶替）', async () => {
+    // 之前看过 4#门监控，档案里留了一张
+    await saveShot(
+      '34020000001320000007',
+      '20261119120000',
+      new Date(2026, 10, 19, 12).getTime(),
+      new Blob([new Uint8Array(120_000)], { type: 'image/jpeg' }),
+    )
+    vi.stubGlobal('fetch', gateFetch({ '34020000001320000007': dead }))
+
+    const patrol = usePatrolStore()
+    await patrol.loadGate()
+
+    // 其余 4 路照常新鲜取回，只有 4#门监控 用的是档案里那张（字节数就是当年那张）
+    expect(patrol.gate).toHaveLength(5)
+    const fallback = patrol.gate.find((p) => p.taskName === '4#门监控')
+    expect(fallback?.size).toBe(120_000)
+    expect(fallback?.snap).toBe(true)
+  })
+
+  it('5 路全挂才算失败：状态 error、一张不留（面板写「暂时取不到」）', async () => {
+    const allDead = Object.fromEntries(GATE_SHOTS.map((s) => [s.channelId, dead]))
+    vi.stubGlobal('fetch', gateFetch(allDead))
+
+    const patrol = usePatrolStore()
+    await patrol.loadGate()
+
+    expect(patrol.gate).toHaveLength(0)
+    expect(patrol.gateState).toBe('error')
+  })
+
+  it('每次刷新重取一遍：字节变了就换成新的那张', async () => {
+    vi.stubGlobal('fetch', gateFetch())
+    const patrol = usePatrolStore()
+    await patrol.loadGate()
+    expect(patrol.gate.every((p) => p.size === 200_000)).toBe(true)
+
+    // 服务端换了一帧（字节数不同）→ 同一档位覆盖，体积跟着变
+    // （id 是「通道|日期|档位」，同一档不变 —— 弹层的 id 因此稳定，图是新的）
+    vi.stubGlobal('fetch', gateFetch({}, 260_000))
+    await patrol.loadGate()
+
+    expect(patrol.gate).toHaveLength(5)
+    expect(patrol.gate.every((p) => p.size === 260_000)).toBe(true)
+  })
+
+  it('面板：5 张都标「抓拍 / 视频监控」，标题是各自点位名', async () => {
+    const patrol = usePatrolStore()
+    patrol.apply(
+      GATE_SHOTS.map((s, i) => photo({ id: `g${i}`, name: `${s.name}.jpg`, taskName: s.name, snap: true })),
+      'gate',
+    )
+    // `apply` 已把 state / lastOkAt 摆成「刚同步完」，挂载时的 refresh() 会直接复用
+    offline()
+    const w = mount(PatrolPanel)
+    await nextTick()
+
+    expect(w.find('.patrol-hd em').text()).toBe('5 张')
+    const chips = w.findAll('.patrol-cats button')
+    expect(chips[4].text()).toBe('出入口管控5')
+
+    const cards = w.findAll('.patrol-card')
+    expect(cards).toHaveLength(5)
+    expect(cards.map((c) => c.find('.patrol-card-name strong').text())).toEqual(
+      GATE_SHOTS.map((s) => s.name),
+    )
+    expect(cards[0].find('.patrol-thumb-tag').text()).toBe('抓拍')
+    expect(cards[0].find('.alarm-src').text()).toBe('视频监控')
+    // 5 张都在时不显示缺项说明
+    expect(w.find('.patrol-gate-note').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('面板：少一路时把缺的点位名说出来（张数变 4 之外还要解释）', async () => {
+    const patrol = usePatrolStore()
+    patrol.apply(
+      // 缺最后一路「4#门外监控」
+      GATE_SHOTS.slice(0, 4).map((s, i) =>
+        photo({ id: `g${i}`, name: `${s.name}.jpg`, taskName: s.name, snap: true }),
+      ),
+      'gate',
+    )
+    offline()
+    const w = mount(PatrolPanel)
+    await nextTick()
+
+    expect(w.find('.patrol-hd em').text()).toBe('4 张')
+    expect(w.findAll('.patrol-card')).toHaveLength(4)
+    expect(w.find('.patrol-gate-note').text()).toBe('4#门外监控 暂时没有画面')
+    w.unmount()
   })
 })
 
@@ -1656,7 +2017,7 @@ describe('安全巡查（土方1 第 1 张 + 分区定点第 34 张）', () => {
       if (u.includes('/cas/auth/validate')) {
         return khOk({ code: 200, data: { uid: '42', token: 'TOKEN', timestamp: Date.now() } })
       }
-      if (u.includes('/task/exec/list/record')) return khOk({ code: 200, data: rows })
+      if (u.includes('/api/open/v1/task-record/page')) return khOk({ code: 200, data: rows })
       if (u.includes('/media/task/job/71')) return khOk({ code: 200, data: [] })
       if (u.includes('/media/task/job/70')) return khOk({ code: 200, data: mediaOf(soilPics, 'soil') })
       if (u.includes('/media/task/job/82')) return khOk({ code: 200, data: [] })
@@ -1751,7 +2112,7 @@ describe('安全巡查（土方1 第 1 张 + 分区定点第 34 张）', () => {
         if (u.includes('/cas/auth/validate')) {
           return khOk({ code: 200, data: { uid: '42', token: 'T2', timestamp: Date.now() } })
         }
-        if (u.includes('/task/exec/list/record')) {
+        if (u.includes('/api/open/v1/task-record/page')) {
           return khOk({
             code: 200,
             data: [
@@ -1770,5 +2131,42 @@ describe('安全巡查（土方1 第 1 张 + 分区定点第 34 张）', () => {
     expect(patrol.safety.map((p) => p.id.split('-')[0])).toEqual(['73', '81'])
     expect(patrol.safety.map((p) => seqOf(p.name))).toEqual(['0001', '0034'])
     expect(patrol.safetyState).toBe('ok')
+  })
+
+  /**
+   * 「有时只剩一张」的直接复现：一条来源取数失败时，旧实现把它当成
+   * 「这条航线没照片」静默跳过，整格就只剩另一条的一张。
+   */
+  it('一条来源取数失败时补取一次，最终仍是两张（顺序不回退）', async () => {
+    const base = safetyFetch()
+    let zoneCalls = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).includes('/media/task/job/80')) {
+          zoneCalls += 1
+          // 第一次 500（非限流码，`stationMedia` 不会原地重试）→ 直接进补取
+          if (zoneCalls === 1) return khOk({ code: 500, msg: 'boom' })
+        }
+        return base(url, init)
+      }),
+    )
+
+    const groups = await fetchSafetyGallery()
+    expect(zoneCalls).toBeGreaterThanOrEqual(2)
+    // 顺序仍按 SAFETY_SOURCES：补取是后发生的，不能把两张顺序颠倒
+    expect(groups.map((g) => g.taskName)).toEqual(['向阳村-土方1', '向阳村-分区定点拍照'])
+    expect(groups[1]!.media.map((m) => seqOf(m.name))).toEqual(['0034'])
+  }, 20_000)
+
+  /** 两条来源查同一个窗口：共享一份执行记录，别各翻 5 页（那是 429 的来源） */
+  it('两条来源共享执行记录：同一个窗口只查一次', async () => {
+    const stub = safetyFetch()
+    vi.stubGlobal('fetch', stub)
+
+    await fetchSafetyGallery()
+
+    const pages = stub.mock.calls.filter(([u]) => String(u).includes('/api/open/v1/task-record/page'))
+    expect(pages).toHaveLength(1)
   })
 })

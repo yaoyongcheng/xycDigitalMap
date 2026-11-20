@@ -4181,7 +4181,7 @@ object-fit:cover; border-radius:inherit }`，其余两处沿用原有 `.insp-pic
 | P0-1 | **缩略图落盘缓存**（IndexedDB，7 天 / 400 条，一条 4~6KB） | 唯一能真正消掉「每次重下 1MB」的手段：同一张图二次进入 0 网络 | `utils/thumbCache.ts`（新）、`stores/alarm.ts::runThumb` | 隐私：登出必须清库（已接 `clearThumbs`）；配额满写失败只会当没缓存 | 进入列表 → 退出 → 再进：Network 面板里 picture 请求为 0，图标立即出现；登出后 IndexedDB 里的 `xyc-alarm-thumb` 为空 |
 | P0-2 | **首屏预取**（数据到手后预取今日最新 4 条） | 打开页面再拉必然慢 3s+；提前在首页同步完成时排队，切过去已就绪 | `stores/alarm.ts::prefetchThumbs`（`syncFromVideo` 成功后调用） | 多花 4MB 流量 → 闸门：`navigator.connection.saveData` 为真、或 2G/3G 时不预取；只取今日最新 4 条 | 冷启动 → 首页停留 5s → 进消息页：前 4 行图标基本已出；开启「省流模式」后 Network 里没有 picture 请求 |
 | P0-3 | **缩略图尺寸策略改「性能优先」**：144px/0.72 → **96px/0.62** | 容器最大 48px，96 在 2 倍屏仍是点对点；解码像素少 55%，单张 8~12KB → **4~6KB**，`drawImage` 与 JPEG 编码都更快 | `utils/imageThumb.ts` | 3 倍屏会略软（现场接受「基本辨识度」）；要回退只改 `THUMB_MAX` 一个常量 | 列表里图标仍能认出是哪条现场；DevTools 里 `img.src` 长度约为原来一半 |
-| P0-4 | **8s 超时 + 30s 冷却重试** | 复现到 30s 卡住的请求；原来这种失败会被记为「永久没有图」，那一行永远停在占位图标 | `api/video.ts::fetchAlarmPicture`、`stores/alarm.ts` | 超时中断的请求服务端可能仍在跑（不会更糟）；「确实没有图」仍永久不重试 | 断网进入列表 → 行显示占位图标 → 恢复网络滚动一次 → 该行出图（30s 后） |
+| P0-4 | **8s 超时 + 30s 冷却重试**（2026-11-20 调为 **15s**，见下节补记） | 复现到 30s 卡住的请求；原来这种失败会被记为「永久没有图」，那一行永远停在占位图标 | `api/video.ts::fetchAlarmPicture`、`stores/alarm.ts` | 超时中断的请求服务端可能仍在跑（不会更糟）；「确实没有图」仍永久不重试 | 断网进入列表 → 行显示占位图标 → 恢复网络滚动一次 → 该行出图（30s 后） |
 | P1-1 | **并发维持 2（不调高）** | 实测 4 路的单张耗时是 2 路的 2 倍，总时长不变 | `stores/alarm.ts::THUMB_PARALLEL` | 无（只是不加） | —— |
 | P1-2 | 已取到图的行不再注册观察器 | 每次 patch 都会重建行内 `:ref`，重复 observe 是白开销 | `InspectItem.vue` / `MsgPage.vue` / `AlarmFeed.vue` | 无 | 滚动列表，Performance 面板无重复 observe 抖动 |
 | P1-3 | 原图比目标还小就直接用，不再走画布 | 省一次 `drawImage + toDataURL` | `utils/imageThumb.ts` | 无（尺寸本来就够） | 单测覆盖（缩不了退回原图） |
@@ -4243,3 +4243,782 @@ object-fit:cover; border-radius:inherit }`，其余两处沿用原有 `.insp-pic
 正常网络 → 环从 0 走到 99 再换成图；系统开「减弱动态效果」→ 环静止但仍有短弧；
 三处图标位尺寸/圆角/点击热区不变。`alarm-thumb.spec` 新增 3 例（真实百分比、
 无 `Content-Length`、登出清空），共 8 例。
+
+### 七、抓拍图超时 8s → 15s（2026-11-20）
+
+现场反馈「偶发加载失败 / 图不出来，过一会儿再看又好了」。对回上面的实测表就清楚了：
+
+| 实测场景 | 耗时 | 8s 超时的判定 |
+| --- | --- | --- |
+| 单张正常 | 2.7~3.4s | 通过 |
+| 同一张重拉（服务器抖动） | **8.6s** | **误杀** |
+| 4 路并发单张 | **8.4 / 9.5 / 10.3s** | **误杀** |
+| 真卡死（86601） | 30s+ 不返回 | 该杀 |
+
+8s 卡在「正常但慢」这一段中间，被拦下的其实都是会成功的请求。它们转成
+「可重试 + 30s 冷却」，表现出来就是偶发失败、随后自愈。
+
+改为 **15s**：覆盖实测上沿 10.3s 约 1.5 倍余量；仍远低于 30s 卡死，
+`THUMB_PARALLEL = 2` 下最坏占用一个并发位 15s，不会拖死队列。
+
+**只改了这一个常量**：
+
+- `api/video.ts::PIC_TIMEOUT_MS` 8000 → `15_000`；
+- 超时判定、`linkAbort` 桥接外部 signal、抛 `ApiError(0, '抓拍图请求超时，稍后重试')`、
+  store 的「可重试 / 30s 冷却 / 确实没有图永久不重试」**全部未改**；
+- 详情页大图与列表缩略图共用 `fetchAlarmPicture`，一处生效两边一致；
+- 其他接口的超时（`cctv.ts` 6s/8s、`scaffold.ts` 6s/8s）未动。
+
+回归：详情页打开大图不再在中速网络下报超时；列表滚动时偶发失败的条目变少；
+断网仍按原路径失败（立刻 reject，不等 15s）；「确实没有图」的条目仍不反复请求。
+
+### 八、报警接口是否下发「图标」字段：实测**否**（2026-11-20）
+
+背景：图标位现在由前端自己决定（抓拍缩略图 or 统一占位图标），需确认服务端有没有
+现成的图标地址 / 名称 / 类型标识可直接用。
+
+实测（真实登录 + 真实请求，不是看文档）：
+
+```text
+GET http://115.159.67.12:8085/api/video/alarms?page=1&page_size=100&sceneCode=P000000076
+→ 200, data.total=2172, 样本 100 条
+```
+
+`data.list[]` 每条**完整 17 个字段**，与 swagger `domain.VideoAlarmListItem` 一致：
+
+| 字段 | 类型 | 取值示例 | 是否图标相关 |
+| --- | --- | --- | --- |
+| `type` | string | `"alert"` | 否，消息类别（推送类型） |
+| `id` | number | `86654` | 否 |
+| `deviceNo` | string | `"06d0680610086"` | 否 |
+| `channelNo` | string | `"3"` | 否，通道号 |
+| `boxNo` | string | `"1"` | 否，检测框号 |
+| `alertType` | string | `"12"` | **间接**：报警类型码，前端查表换中文名，可据此选图标，但不是图标标识 |
+| `alertName` | string | `""` | 否（100 条样本全为空串） |
+| `captureTime` | string | `"2026-11-20 08:51:29"` | 否 |
+| `sceneCode` | string | `"P000000076"` | 否 |
+| `plateNo` | string | `""` | 否 |
+| `createTime` | string | `"2026-11-20T08:51:29.222578896+08:00"` | 否 |
+| `timestamp` | number | `1795135889` | 否 |
+| `extInfo` | object | `{}`（100/100 全空） | 唯一的可扩展位，实际未使用 |
+| `handleStatus` | number | `0` / `1` | **间接**：处理状态，不是图标状态 |
+| `createdAt` / `updatedAt` | string | ISO | 否 |
+| `handledAt` | string | `"2026-11-19T16:37:20.559+08:00"` | 只有已处理行才有（3/100） |
+
+递归搜索行内所有键名（含 `extInfo` 内部）命中 `icon|image|img|pic|photo|logo|badge|avatar|color|level|severity|symbol`：**0 个**。
+
+其余接口同样没有：
+
+| 接口 | 结果 |
+| --- | --- |
+| `GET /api/video/alarms/{id}` | **404**，没有单条读接口；详情页数据全部来自列表行 |
+| `GET /api/video/alarms/{id}/picture` | `{code,message,data:{id,pictureData}}`；`pictureData` 为 base64（本次 799,404 字符 ≈ 780KB），无名称/类型/状态 |
+| `GET /api/video/alarms/hjhy` | 另一路报警源（total 48762），14 字段：`alarm_type`（中文 `"安全帽检测"`）、`alarm_type_code`（`"1"`）、`alarm_picture_md5` 等，**无图标字段** |
+| `GET /api/video/cameras` | 24 字段（`camera_type`、`video_stream_url`、`status` …），**无图标字段** |
+| `/api/video/alarm/types`、`/alarm/icon`、`/icons`、`/alarm/type/list`、`/channels` | 全 **404** |
+| `GET /api/video/snapshots` | 直接回 JPEG 字节，没有 JSON 字段 |
+
+swagger 里唯一 image 类字段是 `domain.CameraResult.img`（交通态势的「抓拍图片」），
+与报警图标无关。
+
+结论：**图标不由接口下发**。现有图标位的两种来源都是前端行为 ——
+抓拍图缩略图（`/alarms/{id}/picture` 自己压）或灰底 `work-cam` 占位；
+分类名（环境/用电/扬尘/防护）由 `utils/videoAlarm.ts::CLASSIFY` 按关键词猜。
+若要让服务端控制图标，需要后端新增字段（建议 `iconUrl` 或 `iconKey` 放行级，
+不要塞进 `extInfo` 让前端猜）。
+
+### 九、智眸照片「不是最新」的成因（2026-11-20 实测）
+
+现象：刷新后展示的照片（批次时刻）有时变早，与「每次都应是最新一批」不符；
+同任务名存在多条记录。链路是 `fetchStationDay` → `probeGallery` → `fetchMediaJobs`。
+
+实测（真实 CAS 登录，11-20 09:1x / 09:2x）：
+
+| 事实 | 数据 | 影响 |
+| --- | --- | --- |
+| **记录 id 精度失真** | 当天 30 条记录里 **27 条** id 是 19 位雪花号；JSON 字面量 `5968386048883676116`，`JSON.parse` 后变 `5968386048883676000`（差 −44），另有 −391 / +388 等 | `toTaskRecords` 的 `num(o.id)` 拿到的已是舍入值；用它请求 `/media/task/job/{id}` 查不到 → 该班被当成「没有媒体」 |
+| **限流码对不上** | 密集请求返回 `{"code":429,"msg":"当前查询较多，请稍后再试！"}`；`stationMedia` 只对 `42901` 退避重试 | 429 直接 `return null`，与「这班没图」无法区分 → 静默跳到上一班 |
+| **「完成但 0 图」确实存在** | 11-19 各站 `status=2`：正射 108 张、三维 956 张、全景 78 张；同时有班次 0 张 | 最新班刚完成、媒体未上传完时，同样被跳过 |
+| **列表按文件名升序** | 正射 107 张，`sort(name)` 首图 `DJI_20261120080144`（08:01:44 拍），末张 `08:05:00`；`lastModified` 在 name 序上**不单调** | 列表首图是**最早**一张，"展示最新"的预期不成立 |
+| 重放 5 次（正常网络） | 11-20 正射 / 全局定点各 5 次均稳定选中同一班；11-19、11-18 多班组合 3 次也稳定 | 说明**不是排序随机**，而是「取不到就退一班」的失败回退 |
+
+结论（按影响排序）：
+
+1. **P0 雪花 id 精度**：浏览器 `response.json()` 阶段就丢了，前端改 `string` 也救不回。
+   必须服务端把 `id` 序列化成字符串；前端可行的临时方案是用 `res.text()` + 把
+   `"id":<16 位以上数字>` 包成字符串后再 parse。
+2. **P1 限流码**：`429` 与 `42901` 都要按限流处理（退避 + 重试），且不可与「无图」共用一个 `null`。
+3. **P1 语义**：`probeGallery` 是「最新**有图**的一班」，不是「最新一班」。最新班没图时
+   应显示该班空态，而不是回退展示上一班的旧照片 —— 否则用户看到的就是「旧数据」。
+4. **P2 排序**：列表按 `lastModified` 或文件名内嵌时间戳**降序**，首图 = 最新一张。
+5. **P2 去重**：在取数入口显式按 `taskName` 分组、组内 `start` 降序（tie-break 用 id），
+   只留一条，别依赖「sort 后取第一个有图的」这一隐含语义。
+
+### 十、记录改走 V2 开放接口 `/api/open/v1`（2026-11-20）
+
+**结论：能拿到最新数据，而且只有这条路能拿到。**
+
+#### 旧链路为什么必然"不是最新"
+
+`/task/exec/list/record` 的 `id` **不是取媒体的 jobId**：
+
+| 班次 | 旧接口 `id` | 取媒体结果 | 真实 jobId（`taskRecordId`） |
+| --- | --- | --- | --- |
+| 11-20 08:20 全局定点 | `182748` | 10 个文件 | 182748 |
+| 11-20 15:30 全局定点（排班） | `5626789748139799000`（雪花） | **200 + 空数组** | 1827xx |
+| 11-21 08:20 全局定点（排班） | `8511377620515822000` | 200 + 空数组 | 1827xx |
+
+雪花 id 与自增 jobId 是两套号，拿前者查媒体**不报错、回空数组**，代码把
+「空数组」当成「这班没拍照」→ 静默往下退一班 → 刷新一次看到的批次就可能变。
+
+另外两点：媒体接口限流返回 `code 429`（HTTP 200），旧实现只认 `42901`，
+429 被直接当失败跳过；`size` 在旧接口不生效、`sort` 也没有。
+
+#### 开放接口实测（真实登录、真实请求）
+
+```text
+POST https://iot.keehang.com:23443/api/open/v1/task-record/page
+body: {"page":1,"size":100,"projectIds":[193640872670213],
+       "startTime":"2026-11-20 00:00:00","endTime":"2026-11-21 00:00:00"}
+→ 200 {"code":200,"data":{"total":3,"page":1,"size":100,"list":[
+     {"taskRecordId":182761,"taskId":4974,"taskName":"向阳村-三维（加密）",
+      "projectId":193640872670213,"airlineId":...,"dockDeviceId":263,
+      "status":2,"result":0,"scheduled":true,
+      "startTime":"2026-11-20 09:00:00","endTime":"..."}]}}
+```
+
+| 能力 | 实测 | 说明 |
+| --- | --- | --- |
+| 分区（日期） | ✅ | `startTime`/`endTime` 必须 `yyyy-MM-dd HH:mm:ss`；**带 `T` 直接 400** |
+| 分页 | ✅ 但上限 100 | 传 500/1000/2000 都回显 `size:100`、只回 100 行 → 必须翻页 |
+| 排序 | ❌ 无效 | `sort=startTime,desc` / `-startTime` / `startTime desc` 全按开始时间**升序**，只能前端排 |
+| 项目过滤 | ✅ `projectIds[]` | 不传会带上账号下别的项目（光谷元著） |
+| 权限 | ✅ 现有 CAS 令牌 | 用同一个 `KH-USER-ID` + `KH-TOKEN` 头即可，没有再要 appKey/签名 |
+| 记录号 | ✅ 自增 | `taskRecordId` 可直接调 `/media/task/job/{id}`，也可调 `/api/open/v1/media/file/list` |
+| 媒体统计 | ✅ | `POST /api/open/v1/media/job/page`（**taskId + taskRecordId 都要**，只给记录号回 `taskId 不能为空`）→ `fileCount / uploadedCount / uploadState / processStatus` |
+| 媒体清单 | ✅ | `POST /api/open/v1/media/file/list`（只给 `taskRecordId`）→ `fileName / fileUrl / thumbnailUrl / mediaType / size / lastModified`，一次回全部（108 / 350 条实测都行） |
+
+`/v3/api-docs` 是公开的（317KB），331 条路径，上面这些都在里面；
+`/swagger/index.html`、`/swagger/doc.json` 是 404。
+
+#### 落地
+
+| 改动 | 文件 |
+| --- | --- |
+| 记录统一走开放接口：`fetchTaskRecords()` 内部分页翻到 `total`，`id = taskRecordId` | `api/drone.ts` |
+| 站点索引（90 天，只取名字/时间）**保留旧接口一次拉全**，避免为一个下拉框打 12 个分页请求 | `api/drone.ts::fetchRecentRecords` |
+| 航拍照片按「任务名去重 + 只取最新一班」：`pickLatest()`，同一天两班只留后一班 | `api/drone.ts` |
+| 最新一班没图时先问回传进度：`pending`（已传/总数），**不回退上一班**；页面标题写「本班照片正在回传」 | `api/drone.ts::stationProgress`、`stores/airHazard.ts`、`AirPlayer.vue` |
+| 媒体失败不再当「没图」：`stationMedia` 认 `429`+`42901` 各重试一次；`latestTaskMedia` 失败直接抛（页面写加载失败，重试即可），只有「200 且 0 张图」才退下一班 | `api/drone.ts` |
+
+#### 「全景航拍」为什么不是最新一批（2026-11-19 那 9 张）
+
+11-19 的两班都真实存在且能取到（实测 `taskRecordId 182577` / `182691`，各 9 张）：
+
+| 班次 | taskRecordId | 图片 |
+| --- | --- | --- |
+| 11-20 08:20 | 182748 | 9 |
+| **11-19 15:30** | 182691 | **9** |
+| **11-19 08:20** | 182577 | **9** |
+| 11-18 15:30 | 182540 | 9 |
+| 11-18 08:20 | 182447 | **0** |
+
+所以那 9 张**没有「未同步」**，也不是被规则按日期排除 —— 是旧实现的两个 bug 让它显示成更早的批次：
+
+1. 最新几班的 `id` 是雪花号（见上表），媒体查询回空数组 → 被当成「没拍」跳过；
+2. 媒体被限流（`429`）时旧代码只认 `42901`，直接 `continue` → 又跳过一班。
+
+两条都命中时就会落到 11-18 15:30 甚至 11-17，看起来就是「11-19 的 9 张没同步」。
+现在记录号换成 `taskRecordId`、限流会重试、失败不再静默退班，最新一班就是最新那班。
+
+#### 回归
+
+- 智眸「全景航拍」：11-20 08:20（9 张）→ 11-19 15:30（9 张）逐班对照；
+- 航拍照片页：选今天 → 本班正在回传时显示「本班照片正在回传（已传 x/y）」，不再是上一班；
+- 断网进入：显示加载失败 + 「重新获取」，不再显示旧批次；
+- `drone.spec` 76、`patrol.spec` 57、`device-page` 与 stores/stage5 共 300、全量 1177 passed；`vue-tsc` + `vite build` 通过。
+
+### 十一、智眸「一直刷新 / 照片加载不出来」与安全巡查「只剩一张」（2026-11-20 下午）
+
+#### 实测（真实登录、真实请求）
+
+| 观测项 | 结果 |
+|---|---|
+| `/media/task/job/{id}` 正常响应 | **1.2s / 3.2s / 10.8s / 13.2s**，第 5 次直接 `ECONNRESET` |
+| 连发 12 条媒体请求 | **10 条限流**：`HTTP 200` + `{code:429, msg:"当前查询较多，请稍后再试！"}` + `data: []` |
+| 同一 job 间隔 900ms 连发 6 次 | 6 次全 429 |
+| 冷却 60s 后单发 | 恢复 200，耗时 10.5s |
+| 缩略图响应头 | `Content-Type: application/octet-stream` + `nosniff` + `content-disposition: attachment`，字节是真 JPEG（430KB） |
+
+`application/octet-stream` **不是**图片加载失败的原因（Chrome 对 `<img>` 会按字节解码，实测同源/跨源、带 nosniff 均能渲染），只造成直链打开变下载，属服务端配置不规范。
+
+#### 前端五处修复
+
+1. **媒体接口单独超时 25s**（`drone.ts` 的 `MEDIA_TIMEOUT`）：全局 12s 正好压在实测耗时上沿，正常响应也会被判超时。
+2. **限流码统一**：`stores/patrol.ts` 的 `THROTTLE_CODES = Set([429, 42901])`（原只认 42901，碰上现在的 429 直接放弃）；`STATION_THROTTLE_WAIT` 2.2s → 3s。
+3. **`latestTaskMedia` 不再把「取不到」当「没拍到」**：`stationMedia` 内部吞错返回 `null`，旧写 `?? []` 会静默退到更早一班；现在显式抛错。
+4. **缩略图失败自愈**（`PatrolPanel.vue`）：`broken` 跟随当前照片集合重置 + 同一张图失败后 3 秒自动重试一次（原来永不复位，只能切标签重建组件）。
+5. **执行记录批次共享**（`drone.ts` 的 `beginRecordBatch / endRecordBatch / runInRecordBatch`）：一次 `load()` 里五条链查同一个 30 天窗口，原来各翻 5 页 ≈ 25+ 个 `task-record/page`，现在共享一份。
+
+#### 安全巡查「有时只剩一张」
+
+不是查询条件或遍历写错：`土方1` 第 1 张、`分区定点拍照` 第 34 张，实测每班分别 **49~50 张 / 41 张**，序号都在（5 班里 2~3 班返回 429）。
+
+根因是两条来源各自拉记录、各打一次媒体，任一条撞上 429 → `stationMedia` 重试一次仍失败 → `fetchSafetyGallery` 的 `catch` 把它当「这条航线没照片」静默跳过 → 整格只剩另一条的一张。
+
+修法：两条来源共享同一份执行记录；一条失败时**隔 3.2 秒只补那条**（已拿到的不重取）；结果按下标存放，补取后顺序仍与 `SAFETY_SOURCES` 一致。
+
+#### 回归
+
+- 智眸：进入面板 → 五格计数正常；「出入口管控」不再长期空；缩略图破图会在 3 秒内自愈；
+- 安全巡查：连点「重试」多次，稳定 2 张（不再随机变 1 张）；
+- `patrol.spec` 59（新增「补取后仍两张」「同窗口只查一次」两例）、全量 **1179 passed / 50 files**；`vue-tsc` + `vite build` 通过。
+
+---
+
+### 十二、「设备设施」由 2 张扩到 4 张：两张塔吊抓拍（2026-11-20）
+
+#### 需求
+
+「设备设施」原有 2 张（`向阳村-塔吊定点` 最近一班的第 2、第 7 张）。需再补两张：**2#塔吊**、**4#塔吊** 各自「按抓取时间最新的历史抓拍」，排在原有两张之后，共 4 张。
+
+#### 接口现实（决定了怎么取）
+
+| 能力 | 结果 |
+| --- | --- |
+| `GET https://115.159.67.12/api/video/snapshots?pid&channelId` | 200，直出 JPEG（实测 319,452 / 306,583 字节） |
+| 响应头里的拍摄时间 | **没有**（`Cache-Control: no-store`，无 `Last-Modified` / 自定义头） |
+| `snapshots/history`、`/list`、`/records` | 全 404（nginx），**服务端不保存历史** |
+
+所以「最新的一条历史抓拍」= **现取一帧** 与 **本机档案里最新一条** 里更新的那条：
+
+1. `fetchCamSnapshot(channelId)` 取一帧 → `saveShot()` 落本机档案（与监控页「历史抓拍」**同一份档案**，`utils/shotArchive.ts`）。同一档同样字节不覆盖，时刻保持第一次看到的那个，不会每次刷新都变成「刚刚拍的」；
+2. 取不到（相机离线 / 断网 / 429）→ `latestShot(channelId)` 退回档案里最新一条（真实抓拍，不是别的图顶替）；
+3. 两样都没有 → 这两张不出现。宁少两张，不编照片。
+
+通道号不另抄一份：`data/cams.ts` 的 `CRANE_SHOTS` 按名字 `2#塔吊 / 4#塔吊` 从 `CAM_POINTS` 取（`34020000001320000017` / `34020000001320000016`），顺序即展示顺序。
+
+#### 前端改动
+
+- `utils/shotArchive.ts`：新增 `latestShot(channelId)` —— 只查 `meta` 表挑出最新 `at` 的 key，再取那条完整记录（90 条元信息 vs 90 张原图）。
+- `stores/patrol.ts`：
+  - `PatrolPhotoReal` 新增可选 `snap?: boolean`（来源是视频监控抓拍）；
+  - 新增 `craneShots()`：**串行**取两台塔吊（并行会撞 `Retry-After` 429），产出 `taskName = '2#塔吊' / '4#塔吊'`、`time = 'YYYY-MM-DD HH:mm:ss'` 的四张之一；缩略图用档案里的 480 长边 WebP（约 20KB），原图用档案原始字节；
+  - `loadFacility()`：航拍两张**先上屏**，抓拍到了再追加（抓拍是 300KB×2，不让前两张陪着等）；加 `facilitySeq` 序号，连点「重试」时只让最后一次落地；objectURL 统一登记，重取 / `reset()` 时撤销；
+  - 失败互不牵连：抓拍取不到只少两张；只有航拍那条彻底失败才 `facilityState = 'error'`。
+- `views/home/PatrolPanel.vue`：卡片来源徽标按 `p.snap` 写「视频监控」（`alarm-src-cam` 绿标）/「无人机」（蓝标），缩略图角标写「抓拍」/「航拍」；样式、尺寸、间距、`grid` 布局与其余分类完全复用，没有新样式。
+- `components/sheets/PatrolSheet.vue`：抓拍的大图 meta 写「点位 / 视频监控」，航拍仍是「任务 / 无人机」。
+
+#### 回归
+
+- 智眸 →「设备设施」：4 张（前两张塔吊定点航拍、后两张 2#/4# 塔吊抓拍），计数与「N 张」都变 4；
+- 断网 / 相机离线：前两张照常，抓拍少几张就少几张，不报整格错、不显示旧图冒充；
+- 监控 → 2#塔吊 →「历史抓拍」：能看到今天那几张（与这里同源，同一份档案）；
+- `patrol.spec` 62（新增「抓拍取不到退回档案最新」「刷新只换航拍两张」）、全量 **1182 passed / 50 files**；`vue-tsc` + `vite build` 通过。
+
+---
+
+### 十三、「出入口管控」改为 5 张门禁抓拍（2026-11-20）
+
+#### 需求
+
+「出入口管控」新增 5 张历史抓拍，**固定 5 张**、来源不重复不缺项，每个来源只展示其历史抓拍中最新的一张：
+
+| # | 来源 | channelId | 怎么来的 |
+| --- | --- | --- | --- |
+| 1 | 视频监控A | `34020000001310000001` | 用户点名通道号；名字取 `CCTV_CHANNELS` 的「监控A」 |
+| 2 | 视频监控-2#门监控1 | `34020000001320000003` | 按名字从 `CAM_POINTS` 取 |
+| 3 | 2#门监控2 | `34020000001320000006` | 同上 |
+| 4 | 4#门监控 | `34020000001320000007` | 同上 |
+| 5 | 4#门外监控 | `34020000001320000004` | 同上 |
+
+来源表在 `data/cams.ts` 的 `GATE_SHOTS`：第一条只写 channelId（「监控A」不在智眸那 9 个白名单点位里），后四条只写名字，通道号**从 `CAM_POINTS` 现取**，不另抄一份。
+
+#### 实测（2026-11-20）
+
+| channelId | 结果 |
+| --- | --- |
+| …310000001（监控A） | 200 / 339,642B / image/jpeg，画面水印 11-20 12:06 |
+| …320000003（2#门监控1） | 200 / 367,983B |
+| …320000006（2#门监控2） | 200 / 244,629B |
+| …320000007（4#门监控） | 200 / 387,673B |
+| …320000004（4#门外监控） | 200 / 264,889B，画面水印 **11-19 19:46**（这路服务端最近一帧就是昨晚那张） |
+
+五路全通，所以「固定 5 张」成立。接口仍是既有那一个（`GET {MEDIA_ORIGIN}/api/video/snapshots?pid&channelId`，`X-API-Key`），**没有**新地址、新参数或新字段；服务端依旧不提供历史列表。
+
+#### 前端改动
+
+- `data/cams.ts`：新增 `GATE_SHOTS`（5 条，顺序即展示顺序；名字对不上时 `channelId` 留空，取图那步跳过，不猜通道）。
+- `stores/patrol.ts`：
+  - 拍出 `snapShotOf(channelId, name, pool)` —— 塔吊与门禁共用的「最新一条抓拍」：现取一帧 → `saveShot` 落本机档案（与监控页「历史抓拍」同一份）→ 取不到退 `latestShot` → 都没有就 `null`；通道号为空也 `null`；
+  - `snapSerial()`：**模块级串行队列**，一次只打一张快照。设备设施 2 张与出入口 5 张是两条并行链，各排各的等于没排（文档要求「多通道逐张请求」）；
+  - `makeUrlPool()`：objectURL 池抽成工厂，`cranePool` / `gatePool` 各持一个（两格刷新时机不同，共用会在一边重取时撤掉另一边正在显示的图）；
+  - 新增 `gate` / `gateState` / `loadGate()`：首屏逐张上屏（先看到第一张），已有内容时**攒齐再换**（避免张数 5→1→5 的跳动）；一张都取不到才 `error`；
+  - `photoById` 加 gate；`load()` 里 `gateTask` 并入 `Promise.all`、「有内容」判断加 gate；`reset()` 撤池 + 递增 `gateSeq`。
+- `views/home/PatrolPanel.vue`：
+  - 「出入口管控」不再走照片墙归组（`groups.get('yard')` 常年为空），`shown` / `chips` / `catLoading` 全部改读 `patrol.gate`；
+  - 空态区分「暂时取不到」+ 重试（`retryGate`，只重取 5 张，不重扫照片墙）；
+  - 少了几路时网格下方一行 `.patrol-gate-note`（`grid-column: 1 / -1`）写出缺的点位名。
+- `styles/app.css`：新增 `.patrol-gate-note`（字号 / 颜色同 `.patrol-empty`）；`.patrol-grid:has(.patrol-card:only-child)` → `only-of-type`（下面可能还有那行说明）。
+- `components/overlays/SheetHost.vue`：标题改走 `patrol.photoById()`（原来只查 `photos`，塔吊 / 门禁抓拍点开时标题退成「照片」）。
+
+#### 一张不编
+
+5 路里某一路相机离线、本机档案也没留过图时，那一张**不出现**，并写明是哪一路。不拿别的图顶替、不拿演示图凑数 —— 与「取不到就显示 `—`」同一条红线。
+
+#### 回归
+
+- 智眸 →「出入口管控」：固定 5 张，顺序 监控A / 2#门监控1 / 2#门监控2 / 4#门监控 / 4#门外监控，卡片「抓拍 / 视频监控」，标题是点位名；
+- 点开大图：标题是点位名（不是「照片」），meta 写「点位 / 视频监控」；
+- 断网 / 相机离线：少几张就少几张，网格下方写出缺的那路；5 路全挂才写「出入口管控照片暂时取不到」+ 重试；
+- 其它五格（VR 360环视 / 全景航拍 / 设备设施 / 材料堆场 / 安全巡查）计数与内容不变；
+- `patrol.spec` 70（新增 8 例：来源表 5 条通道号、取回 5 张与顺序、单路失败、档案兜底、全挂、刷新重取、面板 5 张、面板缺项说明）、全量 **1190 passed / 50 files**；`vue-tsc` + `vite build` 通过。
+
+## 六点二十八、消息页拆成「监控预警 / 无人机预警」两类（2026-11-20）
+
+### 需求
+
+消息页原来是一条报警一条消息（`:8085` 视频报警），设计稿 gx2 的消息页是**分类卡**。
+现场口径：现有报警统一算「监控预警」，另加一类「无人机预警」，随手拍预警**不接**。
+
+### 数据源：V2 的「工单列表」= 审核中心 AI 工单
+
+问的是「V2 里工单列表的数据从哪来」。keehang 那 331 个路径里 `work_order/*` 只有 4 个推送口，
+`/work_order/page` 全 404，`/algorithm/*` 对本项目设备统一 500。最后从 V2 Unity 客户端
+`HotUpdateScripts.dll` 的字符串堆里挖出 `auditCenterUrl` / `AuditWorkOrder` / `FetchAllAuditWorkOrdersAsync`
+→ `/audit_center/get_by_device_id?pidList=`，再实测：**23443（网关）404，`:12666` 上 GET 405 / POST 200**。
+
+```
+POST https://iot.keehang.com:12666/audit_center/get_by_device_id?pidList=193640872670213
+     { pageNum, pageSize, deviceId, auditStatusType? }        # 鉴权仍是 CAS 那套 KH-USER-ID / KH-TOKEN
+```
+
+| 参数 | 实测结论 |
+| --- | --- |
+| `pidList`（query） | 项目过滤；返回行的 `pid` 全是本项目 |
+| `pageNum` / `pageSize` | 从 1 开始；`pageSize=10` → `totalPage=105`、`totalRecord=1044` |
+| `deviceId` | **必填且必须是无人机**：23498 → 1044 条；23452（机库）→ 0 条；不传 → 500；传网关 263 → 「已拒绝该项目下的相关操作」 |
+| `auditStatusType` | `UNAUDITED` / `AUDITED`；**传空串 400**，不筛选就整个字段都别给 |
+| `startTime` / `endTime` / `businessStartTime` / `startDate` | **全部被忽略**（`totalRecord` 恒 1044）→ 做不了按日期筛 |
+
+信封是两层的：`{code, data: {data: [...], totalRecord}}`（`khJson` 先剥一层 `code/data`，
+业务侧还要再取 `data.data`）。本项目计数：**1044 条 / 待处理 717 / 已完成 316**。
+
+字段与 V2「预警详情」逐项对得上：`businessTime`=检测时间、`jobName`=任务名称、
+`title`/`labelName`=识别结果、`lng`/`lat`=经纬度、`rawFiles[0].fileUrl`=现场大图、`auditStatusType`=待处理/已完成。
+
+⚠️ 图片是 OSS **签名直链**（`X-Amz-Expires=7200`，单张 0.6~1.3MB，`x-oss-process` 一加就 403），
+所以**列表不铺缩略图**（20 条一次铺开十几 MB），只在详情页加载那一张。
+
+### 前端落地
+
+- `api/drone.ts`：`fetchAuditWorkOrders({page,size,status})` + `DroneWorkOrder` 收敛（`toWorkOrder`：
+  `businessTime` 的 `T` 换空格截到秒、`title ← labelName`、`jobName ← lineName`、`rawFiles[0].fileUrl`；
+  没有 `dataPayloadId` 的行直接跳过，不编一条假的）。
+- `stores/droneAlarm.ts`（新）：`load()` 一次打三趟 —— 全部 20 条 + `UNAUDITED size=1` + `AUDITED size=1`，
+  后两趟只要 `totalRecord`（卡片要「多少条待处理」，而 `totalRecord` 是**当前筛选**下的总数）；
+  `loadMore()` 只追加、下一页全是重复就判 `exhausted`；`setFilter()` 走服务端真支持的状态维度；
+  `apply()` 是测试接线点（不触发请求）。
+- `stores/msg.ts`（重写）：`categories`（监控 / 无人机两张卡）、`monitorUnread`、`unreadTotal`、`markRead`。
+  **tabbar 角标口径不变**（只算监控未读）—— 717 条待处理算进去角标永远钉在 99+，点开还不减。
+- `views/MsgPage.vue`：两张卡；未登录仍是一句话 + 去登录；条数没拿到写「—」不写 0；
+  骨架改成「灰条位先占着、`skel-fade` 280ms 后淡入」（不是先出内容再换灰条）。
+- `stores/subpage.ts`：新增 `work-orders` / `work-order-detail` 两个视图与 `openWorkOrders()` / `openWorkOrderDetail()`；
+  `isAlarm` 带上详情页（深色导航栏 + 通栏 hero）。
+- `components/overlays/SubPage.vue`：`LIST_KEYS` 加 `work-orders`（滚动记忆），垫底层与主层都接上。
+- `views/sub/WorkOrderList.vue`（新）：**不另起版式**，逐项复用监控子页那套 ——
+  `.home-stats/.home-stat`（待处理 / 已完成）、`.insp-tabs/.insp-tab`（全部 / 待处理 / 已完成）、
+  `.insp-list/.insp-item`（48px 无人机占位图标 + 标题 + `.alarm-src-drone`「无人机」徽标 + 任务名）、
+  `.wo-side`（相对时间 + `.alarm-src-todo`「待处理」橙 / `.alarm-src-done`「已完成」灰）、
+  `.insp-item.is-skel`、`.insp-empty`、`.msg-more` 四态。
+- `views/sub/WorkOrderDetail.vue`（新）：与 `AlarmDetail.vue` 同一套 `.alarm-hero` / `.alarm-info` / `.alarm-kv`；
+  三组信息（基础 / 识别结果 / 位置）；大图 `@load` / `@error` 走具名方法（模板里多行内联语句编译不过）。
+- `views/sub/InspectList.vue`：单条报警的已读入口从消息页迁到这里（点一条先 `msg.markRead(id)` 再进详情）。
+
+### 为什么不摆日期选择器
+
+审核中心接口没有时间筛选能力（见上表），摆一个点了不反应的日期芯片比没有更糟。
+页签按状态分：形态与监控子页一致，语义按各自数据能力来。
+
+### 回归
+
+- 消息页：两张卡（监控在前 / 无人机在后），监控未读=服务端 `handleStatus!==1` 的条数，
+  无人机卡写待处理数（>99 → `99+`），待处理数不进 tabbar 角标；
+- 点「监控预警」→ 巡检预警（今日）；点「无人机预警」→ 无人机预警列表；
+- 无人机列表：待处理 / 已完成两格是服务端 total，三条页签可切，点一条进详情、返回回列表；
+  一条都没有 → 「暂无无人机预警」；接口失败 → 写明原因 + 重试（不清空已有列表）；
+- 无人机详情：任务名称 / 检测时间 / 识别结果 / 经纬度 / 相对高度逐项照服务端，缺的写「—」；
+  图加载失败写「现场图加载失败」，没有图写「该预警暂无现场图」；
+- 测试：`msg-categories.spec`（9，替掉旧的 `msg-paging.spec`）、`work-order.spec`（20，新）、
+  `stage5.spec` 消息段与 `guards.spec` 的消息图标用例按分类卡改写；
+  全量 **1204 passed / 51 files**，`vue-tsc` + `vite build` 通过。
+
+## 六点二十九、监控预警：标题正名 + 今日未读红点（2026-11-20）
+
+### 口径
+
+1. 子页标题 `巡检预警` → **`监控预警`** —— 它就是消息页那张「监控预警」卡的明细，
+   两个入口叫两个名字会让人以为是不相干的两处。
+2. **今日预警**的未读条目在图标位右上角点一颗红点（微信的位置：压在头像角上、
+   外留一圈白边）；已读的不点。
+3. **历史预警不打点、也不参与未读判断**：点开历史某条只进详情，不发
+   `PATCH /status`。「已读」表达的是「今天这条我看过了」，把上周的报警标成已读没有意义。
+4. 消息页「监控预警」卡上的数字 = **今日未读**，与列表红点用同一个判据
+   （`handleStatus !== 1`），所以数字与红点个数永远一致；数字旁加了 11px 的
+   `今日未读` / `待处理` 标签，避免读成「今日总数」。
+
+### 落地
+
+- `stores/subpage.ts::titleOf('inspect-list')` → `监控预警`。
+- `components/ui/InspectItem.vue`：新增可选 `dot` 属性，图标位外包一层
+  `.insp-pic-box`（相对定位容器：有抓拍图时节点是 `SmartImg`、没有时是占位 `span`，
+  类名不同，直接在它们身上取定位会漏一种），红点是 `.insp-dot`（9px + `--danger`，
+  白圈用 `box-shadow` 不用 `border`，免得撑大圆点、改变定位基准）。
+- `views/sub/InspectList.vue`：今日列表传 `:dot="isUnread(a)"`，历史列表不传；
+  `onItemOpen(id, fromToday)` 只对今日 `markRead`；空态/登录文案同步改成「监控预警」。
+- `stores/msg.ts`：`monitorUnread` 从「全部已加载未读」改成 **`alarm.latest`（今日）
+  里 `handleStatus !== 1` 的条数**；`monitorLatest` 今日没有才退到最近一条（时间会写成
+  「昨天 21:41」，不会误读成今天）；`MsgCategory` 加 `hint`。
+- `views/MsgPage.vue` + `styles/app.css`：数字行 `.msg-count` + `.msg-hint`。
+
+### 回归
+
+- 进「监控预警」：标题是监控预警；今日列表未读带红点、已读没有；切「历史预警」整列无红点。
+- 点今日某条 → 红点立刻消失、发一次 `PATCH /api/video/alarms/{id}/status {status:1}`；
+  返回列表时该条仍无红点。
+- 点历史某条 → 进详情，列表红点状态不变、不发 PATCH。
+- 消息页「监控预警」卡：数字与今日列表红点个数一致；今日全部已读时不显示角标（不是「—」）。
+- 测试：`monitor-alarm.spec` 7 例（标题 / 红点 / 历史不打点 / 点开已读与 PATCH / 只对今日 /
+  数字与红点一致 / 全已读无角标）；`msg-categories.spec`、`stage5.spec`、`interaction.spec`、
+  `stores-views.spec` 同步。
+
+## 六点三十、无人机预警：版式对齐监控 + 红点按状态 + 角标两类之和（2026-11-20）
+
+### 一次复测，把「做不做得了日期筛选」钉死
+
+`POST https://iot.keehang.com:12666/audit_center/get_by_device_id?pidList=`（鉴权仍走 CAS 的
+`KH-USER-ID` / `KH-TOKEN`）在 2026-11-20 又试了一轮时间参数，结论与上次一致：
+
+| 传的参数 | 结果 |
+| --- | --- |
+| `startTime`/`endTime`、`beginTime`/`endTime`、`businessStartTime`/`businessTimeEnd`、`businessTimeBegin`、`businessTimeStart`、`createTimeBegin`、`createTime`、`startDate`/`endDate`、`timeStart`/`timeEnd`、`dateRange[]` | `code 200`、`totalRecord` 恒为 **1048**（当时）→ **全部被忽略** |
+| `auditStatusType=UNAUDITED` | `totalRecord=721`（服务端真支持的唯一筛选维度） |
+| `pageNum` / `pageSize` | 从 1 开始，`size=100` 时 `totalPage=11` |
+
+同时确认了**行里没有未读/已读字段**（整行只有 `auditStatusType` / `auditType` /
+`lastProcessedTime`，没有 `readStatus` / `handleStatus` 之类）。所以按现场规则：
+
+- 有未读字段 → 按监控那套 `handleStatus`（不适用，没有）；
+- 没有 → 按 **待处理 / 已完成** 控制红点（采用）。
+
+### 今日 / 历史：靠「倒序前缀」，不靠参数
+
+返回是按 `businessTime` 倒序的，于是「今日」就是这份有序数据的前缀：
+
+```
+load():  page=1..3, size=100
+         └ 每页追加；服务端不足 100 条 / 已够 total → 停
+         └ 最老一行的日期 < 今天-6 → 停（今日与 7 日窗口都齐了）
+```
+
+- 实测 100 条正好覆盖 11-14~11-20 这 7 天（今日 9 条），**通常一次请求就够**；
+- 「今日预警数」= 前缀里 `businessTime` 是今天的条数（精确值，不是估算）；
+- 「近 7 日预警趋势」= 同一批行按日期分桶（窗口内每天都被完整覆盖）；
+- 「历史预警」= 其余行，继续 `size=20` 往后翻（`nextPage` 接着扫描的页号，不用再算偏移）；
+- 首屏结果有 **120 秒保鲜期**（`STALE_MS`）：切 tab / 重进列表不重扫，过期才重来一趟。
+
+顺带删掉两趟只为拿「待处理 717 / 已完成 316」的 `size=1` 请求 —— 页面不再显示这两个全局总数，
+省下两次往返。列表页签也随之从「全部/待处理/已完成」改成**今日预警 / 历史预警**（与监控同名同位）。
+
+### 红点与角标口径（现场 2026-11-20 二次定稿）
+
+| 位置 | 数字 | 判据 |
+| --- | --- | --- |
+| 无人机列表 · 今日条目红点 | — | `status === 'UNAUDITED'` 且 `businessTime` 是今天 |
+| 无人机列表 · 历史条目 | — | **一律不点**，也不参与任何计数 |
+| 无人机列表 · 统计卡 | 今日预警数（含已完成） | 今日全部工单条数 |
+| 消息页 · 无人机卡 | 今日待处理 | 与红点同一条判据，所以「数字 = 红点个数」 |
+| 消息页 · 监控卡 | 今日未读 | `handleStatus !== 1`（原口径） |
+| 底栏「消息」角标 | **监控今日未读 + 无人机今日待处理** | 两者相加（本次改动） |
+
+点开无人机条目**不改状态**：审核平台里的人工动作，本 App 没有这个接口，不假装能做
+（所以红点只会随上游审核而消失，不会因为「看过了」而消失 —— 这是规则本身决定的）。
+
+### 落地
+
+- `stores/droneAlarm.ts`：`load()` 改成分页扫描 + `STALE_MS` 保鲜；新增
+  `todayItems/todayCount/todayPending/todayKnown/histItems/histCount/weekTrend/weekComplete/isUnread`；
+  删 `pending/done/pendingKnown/filter/setFilter/pageNo`（对应的「状态筛选」页签一并下线）。
+- `views/sub/WorkOrderList.vue`：与 `InspectList` 逐项同构 —— `.insp-tabs`（今日/历史）、
+  `.home-stats.alarm-row`（`.home-stat.alert` 今日预警数 + `.home-chart-card.alarm-mini` 近 7 日趋势，
+  图用同一个 `TouchChart` / `alarmTrendLive`，只把渐变 id 换成 `woAlarmFill` 免得和另两张图撞）、
+  `.insp-list/.insp-item`、`.insp-pic-box` + `.insp-dot`、`.insp-hist-hd`、`.insp-empty`、`.msg-more`。
+- `stores/msg.ts`：`unreadTotal = monitorUnread + drone.todayPending`；无人机卡 `hint` 改「今日待处理」。
+- `views/MsgPage.vue`：切回消息 tab 时补一次（该页常驻挂载，`onMounted` 一辈子只跑一次）。
+- `App.vue`：启动 / 登录后各拉一次无人机预警 —— 底栏角标要它，不能等用户点进消息页才有数。
+
+### 回归
+
+- 消息页：无人机卡写「今日待处理 N」，N 与无人机列表今日红点个数相等；底栏角标 = 两卡数字之和。
+- 无人机列表：标题下两个页签；今日页签有「今日预警数」+ 近 7 日趋势 + 今日条目（未处理带红点）；
+  历史页签是「更早的预警 N 条」+ 无红点列表 + 底部「还有 N 条 / 已显示全部」。
+- 今日没有工单时：今日页签写「今日暂无无人机预警」，趋势位写「近 7 日暂无预警」，页签仍可切。
+- 测试：`work-order.spec` 27 例（接口 4 + store 9 + 列表 10 + 详情 4）；`msg-categories` / `stage5` 的
+  角标断言按「两类之和」改写；`vue-tsc`、`vitest`（1218）、`vite build` 全绿。
+
+## 六点三十一、无人机预警图标位对齐监控（2026-11-20 当晚）
+
+### 需求
+
+无人机预警列表左侧 48px 图标位要与「监控预警」页的同类图标**显示条件、状态映射、
+样式、交互**全部一致，同时**原有那颗灰底无人机占位图标不能变**。
+
+### 监控那边是怎么做的（`components/ui/InspectItem.vue`）
+
+| 环 节 | 实现 |
+| --- | --- |
+| 何时取图 | `utils/thumbReveal.ts` 全站共用一个 `IntersectionObserver`，滚到视口 240px 内才请求；无 IO 时降级为「只加载前 30 条」 |
+| 有图 | `SmartImg class="insp-pic"`（48px + `--r-8` + `object-fit: cover`） |
+| 没图 | `.insp-pic.alarm-tile`：`--surface-2` 灰底 + 1px 内描边 + 图标 50% + 深灰描边 |
+| 取图中 | `ThumbRing`：占位图标外圈的**真实字节**进度环（无 `Content-Length` 走不确定态） |
+| 失败 | 「没有可用抓拍图」= 结论永久放弃；超时/断网 = 30s 冷却后可重试 |
+| 缓存 | `utils/thumbCache.ts` IndexedDB，96px / JPEG 0.62 / 7 天 / 400 条 |
+| 红点 | 与图无关，`.insp-dot` 由 `isUnread` 单独决定 |
+
+### 无人机这边为什么以前不铺图
+
+工单现场图是 OSS **预签名**直链，当初判定「不能缩图也不能缓存」所以只铺占位图标。
+2026-11-20 复测把三条结论钉死：
+
+| 试的 | 结果 |
+| --- | --- |
+| 响应头 | `Access-Control-Allow-Origin` **回显 Origin**（CORS 通）+ `Expose` 了 `Content-Length` / `ETag` |
+| 体积 | 单张 **203KB / 218KB**（两次取样），`Content-Type: application/octet-stream` |
+| `x-oss-process=image/resize,w_96` | **403 `SignatureDoesNotMatch`** —— 预签名把 query 一起签了，追加参数即失效 |
+| `Cache-Control` | **没有**（有 `ETag` / `Last-Modified`），所以浏览器缓存不可靠 |
+
+→ 缩图只能在前端做（`utils/imageThumb.ts` 本来就有），落盘走 `utils/thumbCache.ts`，
+**CORS 通就能 fetch 到字节**。原来的「不能铺图」只对「服务端缩图」成立。
+
+### 落地（只动这条图标链，别处一行没改）
+
+- `api/drone.ts::fetchWorkOrderPicture(url)`：`fetch` → 流式读字节（有 `Content-Length`
+  就报真实进度）→ **强制标成 `image/jpeg`** 的 data URL（服务端给的是 octet-stream，
+  少数内核按 MIME 拒绝解码）。8s 超时与报警抓拍图同口径。403/404 抛 `ApiError` 带状态码
+  （结论），其余统一 `code 0`（可重试）。
+  返回 data URL 而不是 Blob，是为了不引入 objectURL 生命周期、也不依赖
+  `URL.createObjectURL`（happy-dom / 老 WebView 都没有）—— 下游 `shrinkDataUrl` 直接吃它。
+- `stores/droneAlarm.ts`：新增 `thumbOf / thumbPctOf / thumbBusyOf / ensureThumb / clearThumbs`，
+  口径与 `stores/alarm.ts` 逐条对齐 —— 并发 2、同 id 去重、缓存键 `wo:<id>`（与报警
+  `va-…` 共用同一个库）、进度用 `reactive`（高频写）、403/404 永久放弃、超时断网 30s 冷却、
+  `reset()` 一并清空并清库。
+  **只有真缩下来才落盘**：没缩成的那份是 200KB 原图，400 条会把配额吃光。
+- `components/ui/ThumbRing.vue`：加两个**可选**入参 `busy` / `pct`。不传就仍读
+  `useAlarmStore()`（报警侧三处一个字节没动）；传了就用调用方的值。
+- `views/sub/WorkOrderList.vue`：今日 / 历史两个列表的图标位都改成
+  `SmartImg v-if="thumbOf"` / `else .insp-pic.alarm-tile + SvgIcon('drone') + ThumbRing`，
+  用行元素的函数 ref 登记 `revealThumb`（列表是 v-for，没有子组件挂 `onMounted`）；
+  `decorative` 垫底层不取图（主层已经在取同一批 id）。红点位置与判据不变。
+
+### 回归
+
+- 进无人机预警：先看到灰底无人机图标（**与改之前一模一样**），随后逐条换成现场图缩略图；
+  取图过程中图标外圈有一圈蓝色进度弧；图到了弧消失。
+- 行里没有现场图（`rawFiles` 为空）的条目：永远是占位图标，且**不发请求**。
+- 点一条照旧进详情，红点仍只表示「今日 + 待处理」，与有没有图无关。
+- 历史页签同样铺图，但不带红点。
+- 断网：图标停在占位图（不再转圈），30s 后滚回来会自己再试一次。
+- 测试：`work-order-thumb.spec` 13 例（接口 5 / store 5 / 列表 3）；`vue-tsc`、`vite build` 通过。
+
+## 六点三十二、首页预载占位改成与卡片同色（2026-11-20）
+
+`.alarm-tile` 铺的是全站浅灰 `--surface-2`，在白卡上是「图还没到」的正确表达；
+首页这套卡片底是深色 `--bg-3`，同一块浅灰成了整屏最亮的一块，看起来像一张白图。
+
+只加一条首页作用域覆盖，**不改正本**：
+
+```css
+#page-home .alarm-feed-pic.alarm-tile { background: var(--bg-3); box-shadow: none; }
+#page-home .alarm-feed-pic.alarm-tile > svg:not(.tile-ring) path,
+#page-home .alarm-feed-pic.alarm-tile > svg:not(.tile-ring) circle,
+#page-home .alarm-feed-pic.alarm-tile > svg:not(.tile-ring) rect { stroke: var(--bg-3); }
+```
+
+首页里这个占位只有一条渲染路径（`views/home/parts/AlarmFeed.vue`，SafetyPanel 用了它一次）。
+轮播的多页 slide 与回卷 clone 共用同一对类名，所以一条规则覆盖首页所有条目；
+`.tile-ring` 进度环不在覆盖范围，取图时仍能看到蓝色进度弧。
+`InspectItem`（48px 巡检/无人机）、`WorkOrderList`、`MsgPage` 的 `msg-ico`、设备卡 `eq-ico`
+选择器都不匹配，一个像素没动。
+
+## 六点三十三、首页进度环「不转 / 看不见」的定位与最小修复（2026-11-20）
+
+### 四个怀疑点逐条核对
+
+| 怀疑 | 结论 |
+| --- | --- |
+| 加载状态没设上 | **不成立**。`stores/alarm.ts::runThumb` 在 `fetchAlarmPicture` 之前置 `thumbBusy[id]=true`，`finally` 删 key；`pct` 按 `Content-Length` 真实字节推进（`api/video.ts::wfText` 每个 chunk 回调一次），store 侧 `<4` 个点不写、封顶 99。排队中刻意不点亮（`ensureThumb` → `thumbQueue`，`runThumb` 才亮）。 |
+| 组件没渲染 | **不成立**。`ThumbRing` 用 `v-if="busy"`，首页传 `:id` 走 store 版；`busy` 与 `pct` 都读得到。 |
+| 动画/类名不生效 | **成立，主因。** 旋转只挂在 `.tile-ring.is-indeterminate` 上，而 `is-indeterminate` 的条件是 `pct <= 0`。抓拍图带 `Content-Length`，第一个 chunk 就是几个百分点 → 挂载后一两帧就退出不确定态，**动画刚起头就被摘掉**；剩下只有 `.tile-ring-bar` 的 `transition: stroke-dashoffset .18s`，在 42px 上表现为「弧变长」，不是「转」。 |
+| 动画完成前被卸载 | **不成立**。`busy` 存活整段下载（2~3s），比 1s 的旋转周期长；只有「缓存命中」「失败」两种会提前清 —— 那两种本来就不该有环。 |
+| 颜色太深看不见 | **成立，次因（本次改动引入）。** 轨道 `rgba(16,24,40,.1)` 是按浅灰底调的，压在 `--bg-3`（#132033）上比底色还深，等于没画；只剩一条蓝弧，更像「卡死」。 |
+
+### 最小修复（只两处声明，且只在首页）
+
+```css
+#page-home .alarm-feed-pic .tile-ring-track { stroke: rgba(255, 255, 255, 0.18); }
+#page-home .alarm-feed-pic .tile-ring-bar   { stroke: rgba(110, 168, 255, 1); }
+
+@media (prefers-reduced-motion: no-preference) {
+  #page-home .alarm-feed-pic .tile-ring { animation: tile-ring-spin 1.1s linear infinite; }
+}
+```
+
+语义拆成两条互不干扰的信息：**「在转」= 仍在取图**（busy 才挂载，转即加载）；
+**「弧多长」= 取了百分之几**（`stroke-dashoffset` 仍按 pct 走）。没改组件、没改 store、
+没改其它三处（消息 44px / 巡检 48px / 无人机 48px）的任何一条既有规则。
+
+`prefers-reduced-motion: reduce` 时依旧不转（项目惯例，只留弧长变化）。
+
+## 六点三十四、进度环整颗消失：Vue 的 Boolean prop 缺省转换（2026-11-20）
+
+### 现象
+
+消息页「监控预警」（`InspectList` / `InspectItem`）与首页预警轮播（`AlarmFeed`）的
+图标位在取图期间**没有任何进度环**；无人机预警那边正常。
+
+### 链路核对（数据侧全部正常）
+
+```
+revealThumb(滚到视口 240px)
+  → alarm.ensureThumb(token, id)        入队（排队中刻意不点亮）
+    → runThumb: readThumb 未命中 → thumbBusy[id] = true
+      → fetchAlarmPicture(token, rid, undefined, onProgress)
+        → api/video.ts::wfText 按 chunk 报 got/total（响应带 Content-Length）
+          → store: pct <4 不写、封顶 99 → thumbPct[id] = pct
+      → 图到 / 失败 → finally: delete thumbBusy[id]、delete thumbPct[id]
+```
+
+`thumbBusyOf / thumbPctOf` 的取值本身没有丢，问题出在**组件读不到**。
+
+### 根因：可选 Boolean prop 的「没传」不是 `undefined`
+
+2026-11-20 给 `ThumbRing` 加可选入参时写的是：
+
+```ts
+const props = defineProps<{ id: string; busy?: boolean; pct?: number }>()
+const busy = computed(() => props.busy ?? alarm.thumbBusyOf(props.id))
+```
+
+Vue 的 `resolvePropValue`（runtime-core）对 Boolean prop 有一条缺省转换：
+
+```js
+if (opt[0 /* shouldCast */]) {
+  if (isAbsent && !hasDefault) value = false
+  else if (opt[1] && (value === '' || value === hyphenate(key))) value = true
+}
+```
+
+`<ThumbRing :id="a.id" />` 属于 **isAbsent**，于是 `props.busy === false`（不是 `undefined`），
+`false ?? store` 永远短路 → `busy` 恒为 false → `v-if="busy"` 的 `<svg class="tile-ring">`
+整颗不挂载。报警侧三处（消息页监控预警 / 巡检列表 / 首页轮播）都不传 `busy`，
+所以同时消失；无人机页显式传了 `:busy` / `:pct`，所以只有它还在 —— 与现场观察完全吻合。
+
+`pct` 是 Number，不受这条规则影响（所以「有没有在下载」错、「进度多少」没错）。
+
+### 修复（一行，且不加新 API）
+
+```ts
+const props = withDefaults(
+  defineProps<{ id: string; busy?: boolean; pct?: number }>(),
+  /* 显式给 undefined 默认值：hasDefault 为真 → 上面那条 false 转换被跳过，
+     「没传」保持 undefined，`??` 才能回落 store */
+  { busy: undefined },
+)
+```
+
+`withDefaults` 编译出来是 `{ type: Boolean, required: false, default: undefined }`，
+正好命中 `hasDefault`，语义与「可选」的原意一致。组件逻辑、样式、三处调用点都没动。
+
+### 回归闸
+
+`tests/unit/alarm-thumb.spec.ts` 新增两例：
+
+1. `不传 busy 时环按 store 渲染，图到了就消失` —— 只挂 `:id`（与三处调用点一致），
+   断言 `.tile-ring` 存在且不是 `is-indeterminate`（有真实字节进度时是确定性态）。
+   把默认值改回 `false` 复现旧行为，这条会红 —— 已反向验证过。
+2. `没在下载时一颗环都不铺；显式 busy=false 同样不铺` —— 空闲不误显示；
+   显式 `busy:true, pct:40` 才渲染（无人机侧形态不受影响）。
+
+## 六点三十五、历史抓拍改走服务端历史接口（2026-11-20）
+
+依据桌面《监控快照接口.docx》（简版，2026-11-20）改写，取代原先「只有最近一帧 + 本机按档存档」的做法。
+
+### 接口（全部 GET，`X-API-Key` 放请求头，密钥不能进 URL）
+
+| 用途 | 地址 | 关键返回 |
+| --- | --- | --- |
+| 历史列表 | `/api/video/snapshots/history?pid&channelId&page&pageSize[&date]` | `data.items[]` + `data.total`；`page` 从 1、`pageSize` ≤ 100、`date=YYYY-MM-DD` 只支持北京时间近 30 个自然日 |
+| 历史图片 | 行里的 `imageUrl`（拼 `MEDIA_ORIGIN`） | 直接是图片字节；响应头带 `X-Snapshot-Mark` / `X-Snapshot-Time` |
+| 最新一帧 | `/api/video/snapshots?pid&channelId` | 图片字节（同上响应头） |
+
+`items[]` 一行：`{ mark, capturedAt, timestamp(ms), fileSize, imageUrl, latest }`。
+**抓拍时刻以服务端为准**，不再用本机时钟猜「属于 08/12/18 哪一档」；`mark` 是唯一标识，直接当缓存主键。
+
+错误码：400 参数（`date` 越界会把原因写在 `message`）、401 密钥、403 项目无权限、404 无记录或无图、
+429 繁忙（按 `Retry-After` 重试一次）、502/503 上游或索引异常。
+
+### 代码位置
+
+- `api/camsnap.ts`：`fetchCamShotHistory()` / `fetchCamShotImage()` / `fetchCamSnapshotWithMeta()`；
+  `pageSize` 在 `camShotHistoryUrl()` 里夹到 1~100、`page` 不小于 1（越界服务端直接 400）；
+  404 当作「这天没有」返回空页，其余错误抛 `ApiError` 并优先用服务端 `message`。
+- `utils/shotArchive.ts`：本机**只做图片缓存**，键 `通道|mark`（IndexedDB v2，升级时整库重建，
+  旧「通道|日期|档位」记录直接丢弃）。`ensureShot()` 是唯一取图入口：缓存命中且字节数与
+  `fileSize` 一致就直接用，否则按 `imageUrl` 重下并生成 480px WebP 缩略图。保留 30 天 / 64MB。
+- `stores/cam.ts::loadShots()`：按 `date` 查列表 → **元信息先上屏** → 图片 2 路并发补（补一张亮一张）；
+  列表为空且选的是今天 → 补一次「最近一帧」，只有它的抓拍时刻确实落在今天才摆上来；
+  接口整体失败 → 有本机缓存就摆缓存并在说明里写「这是缓存」，没有才报错。
+
+### 首页智眸同步
+
+`stores/patrol.ts::snapShotOf()` 换成「历史列表最新一条（`pageSize=1`）→ 该通道无历史则退最近一帧 →
+都失败再用本机缓存最新一张」，与工作台同一个 `ensureShot()`、同一套缓存键。实测 2#/4# 塔吊、
+2#门监控等几路服务端没有历史索引（`total=0`）但「最近一帧」可用 —— 所以两条兜底都必须留，
+否则首页会从 7 张掉到 2 张；反过来，有历史的通道时刻用的是 `capturedAt`，不再拿「刚取到的这一刻」冒充拍摄时间。
+
+### 页面表现
+
+- 列表标签：`今天 12:00`（真实抓拍时刻）+ 网格三列；图未到时转圈、失败时写「重试」（点击重查这一天）。
+- 详情标题：`点位 · 今天 12:00 抓拍`，正文 `抓拍 12:00 · 原图 332KB`；「查看原图」仍是本机缓存里的原字节。
+- 空态：只写结论（「这一天没有抓拍记录」）+「重新获取」，失败才写服务端给的原因。
+
+## 六点三十六、下线旧「最新一帧」快照接口（2026-11-20 晚）
+
+现场要求：把旧的 `GET https://115.159.67.12/api/video/snapshots?pid=P000000076&channelId=…`
+（不带 `mark`、只回「最近一帧」）连同它的调用方、方法、配置、入口、测试一起删掉。
+**注意区分**：带 `mark` 的 `…/api/video/snapshots?channelId=…&mark=…&pid=…` 是历史列表
+行里的 `imageUrl`，属文档指定的取图方式，**保留**。
+
+### 删了什么
+
+| 位置 | 删掉的东西 |
+| --- | --- |
+| `api/camsnap.ts` | `camSnapshotUrl()` / `fetchCamSnapshot()` / `fetchCamSnapshotWithMeta()`；`CamSnapshot` 改名 `CamShotImage`；`camShotImageUrl()` 去掉 `channelId` 形参与「缺 `imageUrl` 就拼快照地址」的兜底（返回空串 → 取图时报「缺少抓拍图片地址」） |
+| `stores/cam.ts` | 整个取帧链路：`state` / `note` / `frames` / `frame` / `frameUrl` / `frameAt` / `load()` / `refresh()`；`applyCam`、`openCam` 不再取帧；`clearFrames` → `clearAll`（只清抓拍与档案）；`loadShots` 删掉「今天为空补一次最近一帧」分支 |
+| `components/overlays/CamPlayer.vue` | `<video poster>`、断流兜底的 `<img id="camPlayerFrame">`、`busy` / `playDisabled` / `playIcon` / `playLabel` 与被撤掉的中央播放键模板、`onRefresh` + 空态「重试」、`fetchedAt`；说明条不再写「· HH:mm 获取 / 当前为定时快照」 |
+| `stores/patrol.ts` | `latestShotOf` 只查 `/snapshots/history?page=1&pageSize=1`，无历史返回 `null`；去掉 `fetchCamSnapshotWithMeta` + `saveShot` 兜底 |
+| `styles/app.css` | `.cam-play` 整块（含 `::after` / `:hover` / `.is-busy` / `.is-playing` / 窄屏覆盖）与 `.cam-grid .cam-play` |
+| 注释 | `api/config.ts`、`data/cams.ts`、`shotArchive.ts`、`CamPlayer.vue` 里所有「最近一帧 / 定时快照作兜底」的说法 |
+| 测试 | `cam-player.spec`（取图 / 空态重试 / 晚到响应 / 快照模式点画面 4 例，改写成「不再取帧」）、`stores.spec`（frameUrl / refresh / 取图失败 3 例，改写 + 「退最近一帧」2 例合成「空就是空」）、`stage5.spec`、`patrol.spec`（`snapOk` → `imgOk`）、`shot-archive.spec`（缺 `imageUrl` 现在必须报错） |
+
+### 行为变化（有意为之，现场已确认）
+
+- **视频监控主画面不再有静态兜底**：`<video>` 没有 poster，断流 / 重连期间画面蒙起来
+  （`.is-veiled`，不销毁元素），说明条报引擎原话。iPhone 没有 MSE、FLV 播不了时
+  这里就是空的（只剩「仅 RTSP」行交地址）。
+- **历史抓拍不再有「最近一帧」兜底**：`/snapshots/history` 为空就是空态。实测
+  `2#塔吊 / 4#塔吊 / 钢筋加工棚 / 2#门监控1 / 2#门监控2` 五路 `total=0` —— 这些点位
+  今天不会有抓拍图。
+- **首页智眸**：抓拍格改成「历史最新一条 → 本机缓存最新一张 → 不出现」。上面那五路
+  （含塔吊 2 张、2#门 2 张）只会在本机留有缓存时出现，所以首页「设备设施」后两张
+  与「出入口管控」通常只剩 3 张（监控A / 4#门监控 / 4#门外监控）。

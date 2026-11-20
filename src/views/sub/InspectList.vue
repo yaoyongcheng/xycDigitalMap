@@ -8,24 +8,30 @@ import SvgIcon from '@/components/ui/SvgIcon.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
+import { useMsgStore } from '@/stores/msg'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendLive } from '@/utils/chart'
+import type { Alarm } from '@/types'
 import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/utils/date'
 import { useSlowLoading } from '@/utils/slowLoading'
 
 /**
- * 巡检预警列表（子页内容）
+ * 监控预警列表（子页内容）
  *
  * 对应原 js/app.js:730-778 renderInspectList() + subBody 上的事件委托（883-922）。
  *
  * 两个页签：
- *   今日预警  当日预警统计 + 近 7 日趋势图 + 列表
+ *   今日预警  当日预警统计 + 近 7 日趋势图 + 列表（**未读条目带红点**）
  *   历史预警  日期选择芯片 + 日历 + 当日列表（空态提示）
  *
  * 2026-11 数据收口：今日列表直接用 `alarm.latest`（真实今日报警），
  * 趋势图用 `alarm.trend` 的按日聚合值；两者都没有演示兜底。
  * 早先这里读的是 store 里的演示种子 `alarm.alarms`，接口接通后一直没改回来 ——
  * 表现是「首页已经是真数据，点进巡检列表还是那 4 条假报警」。
+ *
+ * 2026-11-20 已读改为**只在今日列表**判定：未读（`handleStatus !== 1`）的条目
+ * 在图标位右上角点一颗红点；历史预警既不打点、点开也不改已读状态 ——
+ * 「已读」表达的是「今天这条我看过了」，把上周的报警标成已读没有意义。
  */
 const props = defineProps<{
   /** 垫底层（右滑返回时露出的只读副本）不参与登录守卫 */
@@ -34,6 +40,7 @@ const props = defineProps<{
 
 const alarm = useAlarmStore()
 const auth = useAuthStore()
+const msg = useMsgStore()
 const subpage = useSubpageStore()
 
 /**
@@ -44,11 +51,21 @@ const subpage = useSubpageStore()
  */
 onMounted(() => {
   if (props.decorative) return
-  if (!auth.isLoggedIn) subpage.openLogin('登录后查看巡检预警', { kind: 'inspect-list' })
+  if (!auth.isLoggedIn) subpage.openLogin('登录后查看监控预警', { kind: 'inspect-list' })
 })
 
 const todayList = computed(() => alarm.latest)
 const histList = computed(() => alarm.alarmsOnDate(alarm.inspHistDate))
+
+/**
+ * 未读判定：服务端 `handleStatus === 1` 才算已读；取不到（旧数据 / 夹具）按未读。
+ *
+ * 与 `stores/msg.ts::isRead` 同一口径 —— 消息页那张卡的数字就是按这个数出来的，
+ * 两处不一致会直接表现为「卡片写 3 条未读、列表只有 1 颗红点」。
+ */
+function isUnread(a: Alarm): boolean {
+  return a.handleStatus !== 1
+}
 
 const onHist = computed(() => alarm.inspTab === 'hist')
 
@@ -70,7 +87,7 @@ const hasTrend = computed(() => alarm.trend.some((p) => p.value > 0))
 const emptyText = computed(() => {
   if (!auth.isLoggedIn) return '登录后查看现场实时报警'
   if (alarm.liveState === 'error') return alarm.liveError || '报警同步失败'
-  return '今日暂无巡检预警'
+  return '今日暂无监控预警'
 })
 
 /** 首屏还没有任何报警时的同步态（已有一批旧数据时不再显示骨架） */
@@ -81,7 +98,7 @@ const showSkel = useSlowLoading(() => syncing.value)
 
 /**
  * 历史窗格的同步态：翻到还没拉过的日期时 `ensureDate` 也走 liveState=loading
- * （按需回补），此时「该日暂无巡检预警 / 0条」是提前下的结论，换成骨架。
+ * （按需回补），此时「该日暂无监控预警 / 0条」是提前下的结论，换成骨架。
  */
 const histSyncing = computed(() => alarm.liveState === 'loading')
 const showHistSkel = useSlowLoading(() => histSyncing.value)
@@ -108,7 +125,10 @@ function onCalSelect(d: Date): void {
   void alarm.ensureDate(auth.token, d)
 }
 
-function onItemOpen(id: string): void {
+function onItemOpen(id: string, fromToday = true): void {
+  // 点开即已读 —— **仅今日预警**（2026-11-20）。历史预警只是回看，
+  // 把它标成已读没有意义，也会把「今日未读」这个口径搅乱。
+  if (fromToday) void msg.markRead(id)
   subpage.openAlarmDetail(id, true)
 }
 
@@ -156,7 +176,13 @@ function goLogin(): void {
         </div>
       </div>
       <div v-if="todayList.length" class="insp-list">
-        <InspectItem v-for="a in todayList" :key="a.id" :alarm="a" @open="onItemOpen(a.id)" />
+        <InspectItem
+          v-for="a in todayList"
+          :key="a.id"
+          :alarm="a"
+          :dot="isUnread(a)"
+          @open="onItemOpen(a.id)"
+        />
       </div>
       <!-- 同步中：按 .insp-item 的真实结构（48px 图 + 两行文字）铺 4 条灰条 -->
       <div v-else-if="syncing" class="insp-list skel-fade" :class="{ 'is-on': showSkel }" aria-hidden="true">
@@ -195,7 +221,12 @@ function goLogin(): void {
       />
 
       <div v-if="histList.length" class="insp-list">
-        <InspectItem v-for="a in histList" :key="a.id" :alarm="a" @open="onItemOpen(a.id)" />
+        <InspectItem
+          v-for="a in histList"
+          :key="a.id"
+          :alarm="a"
+          @open="onItemOpen(a.id, false)"
+        />
       </div>
       <!-- 按需回补中：结构同列表项，数据到了原位回填，不提前下「暂无」的结论 -->
       <div v-else-if="histSyncing" class="insp-list skel-fade" :class="{ 'is-on': showHistSkel }" aria-hidden="true">
@@ -207,7 +238,7 @@ function goLogin(): void {
           </div>
         </div>
       </div>
-      <div v-else class="insp-empty">该日暂无巡检预警</div>
+      <div v-else class="insp-empty">该日暂无监控预警</div>
     </div>
   </div>
 </template>

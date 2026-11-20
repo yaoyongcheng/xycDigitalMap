@@ -469,7 +469,13 @@ watch(
 
     <!-- 空 / 失败：说清结论，给一个能重试的动作（重试当前站点当前日期） -->
     <div v-else-if="air.airState === 'empty' || air.airState === 'error'" class="air-state">
-      <strong>{{ air.airState === 'error' ? '航拍照片加载失败' : `${air.airDateLabel}没有航拍照片` }}</strong>
+      <strong>{{
+        air.airState === 'error'
+          ? '航拍照片加载失败'
+          : air.airPending
+            ? '本班照片正在回传'
+            : `${air.airDateLabel}没有航拍照片`
+      }}</strong>
       <span>{{ air.airNote }}</span>
       <button class="data-empty-btn" type="button" @click="air.refreshAir()">重新获取</button>
     </div>

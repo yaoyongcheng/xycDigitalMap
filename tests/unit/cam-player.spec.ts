@@ -57,12 +57,13 @@ import { clearShots } from '@/utils/shotArchive'
  * 这一组钉住五件事，都是「改错了页面也不报错、但现场看到的是错的」那类：
  *   ① 点位是设计稿圈定的 9 个，分「设备设施 / 材料堆场 / 出入口管控」三组，
  *      设备设施置顶（2026-11-19 现场要求），顺序照 `CAM_POINTS`；
- *   ② 画面区只有控件（播放键 + 刷新 + 全屏），不叠时间戳 / 点位名那种文字标签；
- *   ③ 每次取图都带 `X-API-Key` 与当前 `channelId`，切点位按需取、来回切不重复下；
- *   ④ 取不到图给明确空态 + 重试，绝不挂示意图假装有画面；
+ *   ② 画面区只有控件（历史抓拍 + 全屏），不叠时间戳 / 点位名那种文字标签；
+ *   ③ 画面只来自直播流：打开层 / 切点位都**不再取「最近一帧」快照**（旧接口已下线），
+ *      要看这台相机过去的照片走历史抓拍（`/snapshots/history`）；
+ *   ④ 没有可播地址就给 RTSP 地址行，既不取图也不造假播放态；
  *   ⑤ 播放键与媒体状态一致：有流时点画面→play；**播放中再点不 pause**（手机误触
  *      不能把直播停住），状态由 `<video>` 的 play / pause / error 事件驱动，
- *      连点不叠加请求也不重复起流。
+ *      连点不重复起流。
  */
 
 const A = CAM_POINTS[0].channelId // 2#塔吊
@@ -75,7 +76,75 @@ function imgResponse(size = 512): Response {
     status: 200,
     headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? 'image/jpeg' : null) },
     blob: async () => new Blob([new Uint8Array(size)], { type: 'image/jpeg' }),
+    text: async () => '',
+    json: async () => ({}),
   } as unknown as Response
+}
+
+/** 历史列表的一行（今天 12:00，`mark` / 时刻都照服务端字段给） */
+function shotItem(at = shotAt()): Record<string, unknown> {
+  const d = new Date(at)
+  const p = (x: number): string => String(x).padStart(2, '0')
+  const mark = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  return {
+    capturedAt: d.toISOString(),
+    fileSize: 512,
+    imageUrl: `/api/video/snapshots?channelId=x&mark=${mark}&pid=P000000076`,
+    latest: true,
+    mark,
+    timestamp: at,
+  }
+}
+
+/** 今天 12:00（本地时间） */
+function shotAt(): number {
+  const d = new Date()
+  d.setHours(12, 0, 0, 0)
+  return d.getTime()
+}
+
+/** 本地自然日 'YYYY-MM-DD'（与服务端 `date` 参数同格式） */
+function localDay(d = new Date()): string {
+  const p = (x: number): string => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/**
+ * 历史列表信封（`{code,message,data:{items,total}}`，照实测结构）。
+ *
+ * 按 `date` 参数分日期：只有「今天」有这一条，别的日期空 —— 与服务端按天查、
+ * 只留近 30 天的行为一致；否则「点昨天」的用例会拿到今天的图。
+ */
+function historyResponse(url: string, items: Record<string, unknown>[] = [shotItem()]): Response {
+  let list: Record<string, unknown>[] = []
+  try {
+    list = new URL(url).searchParams.get('date') === localDay() ? items : []
+  } catch {
+    list = []
+  }
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get: (k: string) => (k.toLowerCase() === 'content-type' ? 'application/json' : null),
+    },
+    json: async () => ({
+      code: 200,
+      message: 'success',
+      data: { items: list, page: 1, pageSize: 100, total: list.length, rangeStart: '', rangeEnd: '' },
+    }),
+    text: async () => '',
+    blob: async () => new Blob([]),
+  } as unknown as Response
+}
+
+/** 路由式桩：历史列表走 JSON，图片 / 最新一帧走字节 */
+function camFetch(items?: Record<string, unknown>[]): ReturnType<typeof vi.fn> {
+  return vi.fn(async (url: string) =>
+    String(url).includes('/snapshots/history')
+      ? historyResponse(String(url), items)
+      : imgResponse(),
+  )
 }
 
 function failResponse(status = 500): Response {
@@ -117,7 +186,8 @@ describe('components/overlays/CamPlayer', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
     signIn()
-    vi.stubGlobal('fetch', vi.fn(async () => imgResponse()))
+    // 历史列表回 1 条今天的抓拍，其余（取帧 / 取图）回图片字节
+    vi.stubGlobal('fetch', camFetch())
     // objectURL 统一桩：每次用例从 blob:cam/1 开始，断言「有没有重复建图」才有意义
     urls = stubObjectUrl()
     cam = useCamStore()
@@ -186,12 +256,13 @@ describe('components/overlays/CamPlayer', () => {
 
   /* ---------------- 画面区：控件可以叠，文字标签不行 ---------------- */
 
-  it('画面区不叠时间戳 / 点位名，只有图和三颗控件', async () => {
+  it('画面区不叠时间戳 / 点位名，也没有任何静态图兜底', async () => {
     await mountPlayer()
     await open()
 
     const stage = wrapper.find('#camPlayerStage')
-    expect(stage.find('#camPlayerFrame').exists()).toBe(true)
+    // 旧「最近一帧」快照当 poster / 断流兜底的那张 <img> 已随接口一起删掉
+    expect(stage.find('#camPlayerFrame').exists()).toBe(false)
 
     // 文字标签（相机 OSD 已刻在图里，点位名在顶栏）一个都不留
     expect(stage.find('.cam-time').exists()).toBe(false)
@@ -205,48 +276,38 @@ describe('components/overlays/CamPlayer', () => {
     expect(stage.find('#camStageActs #btnCamLand').text()).toBe('全屏')
   })
 
-  it('画面在图片下方说明「什么时候取到的」，不写拍摄时间', async () => {
+  it('说明条只写当下的状态，不写「几点取的」', async () => {
     await mountPlayer()
     await open()
-    const stamp = wrapper.find('#camStamp').text()
-    expect(stamp).toMatch(/^现场画面 · \d{2}:\d{2} 获取$/)
+    // 没有流地址、也没点过画面：就是一句中性的「现场画面」
+    expect(wrapper.find('#camStamp').text()).toBe('现场画面')
     // 说明在画面区之外，不压在图上
     expect(wrapper.find('#camPlayerStage #camStamp').exists()).toBe(false)
   })
 
   /* ---------------- 取图 ---------------- */
 
-  it('打开时按当前 channelId 取图，请求带 X-API-Key 且不把密钥放 URL', async () => {
+  it('打开层不再请求「最近一帧」快照（该接口已下线）', async () => {
     await mountPlayer()
     await open()
 
+    // 画面只来自直播流；旧 `…/snapshots?pid&channelId` 那一路一次都不许再打
     const spy = fetch as unknown as ReturnType<typeof vi.fn>
-    expect(spy).toHaveBeenCalledTimes(1)
-    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
-    expect(url).toContain('/api/video/snapshots')
-    expect(url).toContain(`channelId=${A}`)
-    expect(url).not.toContain('1c7582231acd998de531f61d6cf1127')
-    expect((init.headers as Record<string, string>)['X-API-Key']).toBeTruthy()
-
-    expect(wrapper.find('#camPlayerFrame').attributes('src')).toBe('blob:cam/1')
+    expect(spy).not.toHaveBeenCalled()
+    expect(wrapper.find('#camPlayerFrame').exists()).toBe(false)
   })
 
-  it('切点位按需取图；切回已取过的点位不再重复请求', async () => {
+  it('切点位只换当前点位与流地址，不再取图', async () => {
     await mountPlayer()
     await open()
 
     const spy = fetch as unknown as ReturnType<typeof vi.fn>
     await wrapper.findAll('.cam-chip')[1].trigger('click')
     await flushPromises()
-    expect(spy).toHaveBeenCalledTimes(2)
-    expect(String(spy.mock.calls[1]?.[0])).toContain(`channelId=${B}`)
-    expect(urls.created).toEqual(['blob:cam/1', 'blob:cam/2'])
 
-    // 切回第一个：命中缓存，不再请求
-    await wrapper.findAll('.cam-chip')[0].trigger('click')
-    await flushPromises()
-    expect(spy).toHaveBeenCalledTimes(2)
-    expect(wrapper.find('#camPlayerFrame').attributes('src')).toBe('blob:cam/1')
+    expect(cam.camId).toBe(B)
+    expect(wrapper.find('.cam-chip.on').text()).toBe(CAM_POINTS[1].name)
+    expect(spy).not.toHaveBeenCalled()
   })
 
   /* ---------------- 只有 RTSP（V2 现状） ---------------- */
@@ -261,10 +322,10 @@ describe('components/overlays/CamPlayer', () => {
     // 地址与 V2 清单同构：/rtp/{设备编号}_{通道号}?originTypeStr=rtp_push
     expect(row.text()).toContain(`rtp/42010500441188000001_${A}?originTypeStr=rtp_push`)
 
-    // 播不了就不挂 <video>，画面里也不再有播放键（点画面 = 重新取一张）
+    // 播不了就不挂 <video>；也没有静态兜底图，更不会有播放键
     expect(wrapper.find('#camPlayerVideo').exists()).toBe(false)
     expect(wrapper.find('#btnCamPlay').exists()).toBe(false)
-    expect(wrapper.find('#camPlayerFrame').exists()).toBe(true)
+    expect(wrapper.find('#camPlayerFrame').exists()).toBe(false)
   })
 
   /* ---------------- 历史抓拍入口 ---------------- */
@@ -314,6 +375,8 @@ describe('components/overlays/CamPlayer', () => {
     expect(shots).toHaveLength(1)
     expect(shots[0].find('img').attributes('src')).toMatch(/^blob:cam\//)
     expect(shots[0].text()).toContain('今天')
+    // 一张抓拍两份 objectURL：列表用缩略图、详情用原图
+    expect(urls.created).toHaveLength(2)
   })
 
   it('点开抓拍进详情：默认压缩预览，右上角有「查看原图」「横屏」', async () => {
@@ -362,10 +425,11 @@ describe('components/overlays/CamPlayer', () => {
     const empty = wrapper.find('[data-empty="cam-shots"]')
     expect(empty.exists()).toBe(true)
     expect(empty.text()).toContain('抓拍获取失败')
-    expect(empty.text()).toContain('上游视频服务异常')
+    expect(empty.text()).toContain('上游视频服务或索引异常')
 
     // 重试：这次通了，网格里就有图
-    vi.stubGlobal('fetch', vi.fn(async () => imgResponse()))
+    // 历史列表回 1 条今天的抓拍，其余（取帧 / 取图）回图片字节
+    vi.stubGlobal('fetch', camFetch())
     await empty.find('button').trigger('click')
     await flushPromises()
     await nextTick()
@@ -375,7 +439,7 @@ describe('components/overlays/CamPlayer', () => {
     expect(wrapper.findAll('.cam-shot')).toHaveLength(1)
   })
 
-  it('历史抓拍：本机没留存的日期给空态，不用今天的图顶替', async () => {
+  it('历史抓拍：这一天服务端没有记录就给空态，不用今天的图顶替', async () => {
     await mountPlayer()
     await open()
     await wrapper.find('#btnCamShots').trigger('click')
@@ -391,7 +455,7 @@ describe('components/overlays/CamPlayer', () => {
     expect(wrapper.findAll('.cam-shot')).toHaveLength(0)
     const empty = wrapper.find('[data-empty="cam-shots"]')
     expect(empty.text()).toContain('这一天没有抓拍记录')
-    // 2026-11-19 按反馈去掉空态长说明：只留结论 + 「重新获取」，不再念一遍缘由
+    // 空态只留结论 + 「重新获取」，不念长说明
     expect(empty.text()).not.toContain('本机也没有留存记录')
     expect(empty.find('span').exists()).toBe(false)
   })
@@ -425,84 +489,21 @@ describe('components/overlays/CamPlayer', () => {
     expect(cam.shotsOpen).toBe(false)
   })
 
-  it('取图失败给明确空态 + 重试，不挂示意图', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => failResponse(502)))
-
+  it('没有可播地址时点画面什么都不做：不取图、不假装连一下', async () => {
     await mountPlayer()
     await open()
 
+    const spy = fetch as unknown as ReturnType<typeof vi.fn>
+    await wrapper.find('#camPlayerStage').trigger('click')
+    await wrapper.find('#camPlayerStage').trigger('click')
+    await flushPromises()
+
+    expect(spy).not.toHaveBeenCalled()
     expect(wrapper.find('#camPlayerFrame').exists()).toBe(false)
-    const empty = wrapper.find('[data-empty="cam-live"]')
-    expect(empty.text()).toContain('画面获取失败')
-    expect(empty.text()).toContain('上游视频服务异常')
-
-    // 重试：这次成功，画面换上去
-    vi.stubGlobal('fetch', vi.fn(async () => imgResponse()))
-    await empty.find('button').trigger('click')
+    // 同一个点位再点一次芯片也不发请求
+    await wrapper.findAll('.cam-chip')[0].trigger('click')
     await flushPromises()
-    expect(wrapper.find('#camPlayerFrame').attributes('src')).toBe('blob:cam/1')
-  })
-
-  it('切点位时晚到的旧响应不会顶掉新点位', async () => {
-    let releaseFirst: (r: Response) => void = () => undefined
-    const first = new Promise<Response>((resolve) => {
-      releaseFirst = resolve
-    })
-    let call = 0
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        call += 1
-        return call === 1 ? first : imgResponse()
-      }),
-    )
-
-    await mountPlayer()
-    cam.openCam()
-    await nextTick()
-
-    // 第一个点位还没回来就切到第二个
-    await wrapper.findAll('.cam-chip')[1].trigger('click')
-    await flushPromises()
-    expect(wrapper.find('#camPlayerFrame').attributes('src')).toBe('blob:cam/1')
-
-    // 旧请求现在才回来：不能把画面换成 A
-    releaseFirst(imgResponse())
-    await flushPromises()
-    expect(cam.camId).toBe(B)
-    expect(wrapper.find('#camPlayerFrame').attributes('src')).toBe('blob:cam/1')
-  })
-
-  it('快照模式下点画面＝重取一帧；取图中连点只发一次请求', async () => {
-    let release: (r: Response) => void = () => undefined
-    let n = 0
-    const fetchSpy = vi.fn(async () => {
-      n += 1
-      if (n === 1) return imgResponse()
-      return new Promise<Response>((res) => {
-        release = res
-      })
-    })
-    vi.stubGlobal('fetch', fetchSpy)
-
-    await mountPlayer()
-    await open()
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-
-    // 播放键已撤掉，取帧入口改成点画面
-    expect(wrapper.find('#btnCamPlay').exists()).toBe(false)
-    await wrapper.find('#camPlayerStage').trigger('click')
-    await nextTick()
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
-
-    // 取图中：入口在 busy 上挡着，连点不再堆请求（这就是「重复点击不出异常」）
-    await wrapper.find('#camPlayerStage').trigger('click')
-    await wrapper.find('#camPlayerStage').trigger('click')
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
-
-    release(imgResponse())
-    await flushPromises()
-    expect(wrapper.find('#camPlayerFrame').attributes('src')).toBe('blob:cam/2')
+    expect(spy).not.toHaveBeenCalled()
   })
 
   /* ---------------- 横屏与返回 ---------------- */
@@ -568,22 +569,25 @@ describe('components/overlays/CamPlayer', () => {
     expect(wrapper.find('#camPlayer').attributes('hidden')).toBeDefined()
   })
 
-  it('已打开时登录态失效：画面被清掉，不留给下一个人', async () => {
+  it('已打开时登录态失效：播放态复位、抓拍清空，不留给下一个人', async () => {
     await mountPlayer()
     await open()
-    expect(wrapper.find('#camPlayerFrame').exists()).toBe(true)
+    cam.openShots()
+    await flushPromises()
+    expect(cam.shots.length).toBeGreaterThan(0)
 
     useAuthStore().clear()
     await flushPromises()
-    expect(wrapper.find('#camPlayerFrame').exists()).toBe(false)
-    expect(cam.state).toBe('idle')
+    expect(cam.shots).toEqual([])
+    expect(cam.playState).toBe('idle')
   })
 })
 
 /**
  * 播放键 ↔ 视频联动（2026-11-18）
  *
- * 万方媒体服务目前只给定时快照，没有流地址，所以「有流」这条路要靠注入才能测：
+ * 组件用例里默认把「网关拼出的可播地址」压成空串（见文件头的 mock），
+ * 「有流」这条路因此要靠注入一个点位 `stream` 才能测：
  * 第一个点位临时挂一个 `stream`（真实环境走 `VITE_CAM_STREAM_TEMPLATE` 或点位
  * 自带的 `stream`），下面钉住的就是「接上流之后行为必须对」——
  *   · 点一下立刻播当前通道，按钮同步变「暂停」；
@@ -635,7 +639,8 @@ describe('components/overlays/CamPlayer · 播放与视频联动', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     signIn()
-    vi.stubGlobal('fetch', vi.fn(async () => imgResponse()))
+    // 历史列表回 1 条今天的抓拍，其余（取帧 / 取图）回图片字节
+    vi.stubGlobal('fetch', camFetch())
     stubObjectUrl()
     live.stream = `https://gw.test/live/${live.channelId}.m3u8`
     installMedia()
@@ -714,7 +719,8 @@ describe('components/overlays/CamPlayer · 播放与视频联动', () => {
     expect(cam.playState).toBe('playing')
     // 已经在播就不再叫 play：连点既不暂停，也不重复起流
     expect(playSpy).toHaveBeenCalledTimes(1)
-    expect(fetch).toHaveBeenCalledTimes(1) // 只取过一张 poster，没被点击带出额外请求
+    // 点画面不会带出任何取图请求（没有快照兜底这条路了）
+    expect(fetch).not.toHaveBeenCalled()
     expect(wrapper.find('#camPlayerVideo').attributes('src')).toBe(live.stream)
   })
 
@@ -732,7 +738,7 @@ describe('components/overlays/CamPlayer · 播放与视频联动', () => {
     expect(wrapper.find('#camPlayerVideo').exists()).toBe(true)
   })
 
-  it('原生流打不开：先回落快照并说清原因；点画面重连，不自动取快照', async () => {
+  it('原生流打不开：只把画面蒙起来并说清原因；点画面换元素重连', async () => {
     await open()
 
     await wrapper.find('#camPlayerVideo').trigger('error')
@@ -741,10 +747,10 @@ describe('components/overlays/CamPlayer · 播放与视频联动', () => {
     // 元素留着、只蒙起来：销毁元素等于丢掉解码管线，重连还得从头建
     expect(wrapper.find('#camPlayerVideo').exists()).toBe(true)
     expect(wrapper.find('#camPlayerVideo').classes()).toContain('is-veiled')
-    expect(wrapper.find('#camPlayerFrame').isVisible()).toBe(true)
-    expect(wrapper.find('#camPlayerFrame').classes()).not.toContain('is-veiled')
+    // 不再回落任何静态图
+    expect(wrapper.find('#camPlayerFrame').exists()).toBe(false)
     // 原因说清楚（不再被一句笼统的「不可用」盖掉）
-    expect(wrapper.find('#camStamp').text()).toBe('直播流连接失败，已回到定时快照')
+    expect(wrapper.find('#camStamp').text()).toBe('直播流连接失败，正在自动重连')
     expect(wrapper.find('#btnCamPlay').exists()).toBe(false)
 
     // 再点画面：原生播法换一个 <video> 元素重来，而不是偷偷换成取快照

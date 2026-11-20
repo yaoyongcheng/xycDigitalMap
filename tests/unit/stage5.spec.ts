@@ -102,18 +102,8 @@ describe('阶段 5 · 真实数据', () => {
       w.unmount()
     })
 
-    it('登录后从工作台进入：打开监控层并取首个点位画面', async () => {
+    it('登录后从工作台进入：打开监控层并选中首个点位', async () => {
       signIn()
-      // 快照接口直出图片字节，与上面那条 JSON 桩不同，这里单独给一份
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async () => ({
-          ok: true,
-          status: 200,
-          headers: { get: () => 'image/jpeg' },
-          blob: async () => new Blob([new Uint8Array(64)], { type: 'image/jpeg' }),
-        })),
-      )
 
       const w = mount(WorkPage)
       await w.find('[data-work="cam"]').trigger('click')
@@ -122,75 +112,48 @@ describe('阶段 5 · 真实数据', () => {
       const cam = useCamStore()
       expect(cam.isOpen).toBe(true)
       expect(cam.camId).toBe(cam.points[0].channelId)
-      expect(cam.state).toBe('ok')
       w.unmount()
     })
   })
 
   describe('消息中心与 tabbar 角标', () => {
-    it('一条真实报警一条消息，未读按 id 清而不是按类型全清', async () => {
+    it('未登录：只说一句 + 去登录，不摆分类卡', async () => {
+      const w = mount(MsgPage)
+      expect(w.find('[data-empty="msg"]').text()).toContain('登录后可查看现场预警消息')
+      expect(w.find('.data-empty-btn').exists()).toBe(true)
+      expect(w.find('.msg-item').exists()).toBe(false)
+
+      await w.find('.data-empty-btn').trigger('click')
+      expect(useSubpageStore().view.kind).toBe('login')
+      w.unmount()
+    })
+
+    it('登录后是两张分类卡（监控 / 无人机），不再一条报警一条消息', async () => {
       const feed = camAlarmFixtures().slice(0, 3)
       useAlarmStore().liveAlarms = feed
-      const msg = useMsgStore()
-      expect(msg.messages.map((m) => m.id)).toEqual(feed.map((a) => a.id))
-      expect(msg.messages.every((m) => m.kind === 'video')).toBe(true)
-      expect(msg.unreadTotal).toBe(3)
-
-      msg.markRead(feed[1].id)
-      await nextTick()
-      expect(msg.unreadTotal).toBe(2)
-      expect(msg.messages[1].unread).toBe(0)
-      expect(msg.messages[0].unread).toBe(1)
-    })
-
-    it('没有报警时消息页是空态，未登录给去登录入口', async () => {
-      const w = mount(MsgPage)
-      expect(w.find('[data-empty="msg"]').text()).toContain('登录后可查看现场报警消息')
-      expect(w.find('.data-empty-btn').exists()).toBe(true)
-
+      useAlarmStore().liveState = 'ok'
       signIn()
-      await nextTick()
-      expect(w.find('[data-empty="msg"]').text()).toContain('暂无消息')
-      expect(w.find('.msg-item').exists()).toBe(false)
-      w.unmount()
-    })
 
-    it('报警首屏同步期间不先说「暂无消息」，只铺同构灰条', async () => {
-      const alarm = useAlarmStore()
-      alarm.liveState = 'loading'
       const w = mount(MsgPage)
       await nextTick()
-      expect(w.find('[data-skel="msg"]').exists()).toBe(true)
-      expect(w.find('[data-empty="msg"]').exists()).toBe(false)
-
-      alarm.liveState = 'ok'
-      await nextTick()
-      expect(w.find('[data-skel="msg"]').exists()).toBe(false)
-      expect(w.find('[data-empty="msg"]').exists()).toBe(true)
+      const cards = w.findAll('.msg-item')
+      expect(cards).toHaveLength(2)
+      expect(cards.map((c) => c.attributes('data-kind'))).toEqual(['monitor', 'drone'])
+      // 角标 = 监控今日未读 + 无人机今日待处理（这里是 3 + 0）
+      expect(useMsgStore().unreadTotal).toBe(3)
+      expect(cards[0].find('.msg-badge').text()).toBe('3')
       w.unmount()
     })
 
-    it('点开消息落回对应报警详情', async () => {
-      const feed = camAlarmFixtures().slice(0, 2)
-      useAlarmStore().liveAlarms = feed
-      const w = mount(MsgPage)
-      await w.findAll('.msg-item')[1].trigger('click')
-      expect(useSubpageStore().view).toEqual({ kind: 'alarm-detail', id: feed[1].id })
-      expect(useMsgStore().unreadTotal).toBe(1)
-      w.unmount()
-    })
-
-    it('已读状态来自服务端 handleStatus，未读红点据此显示', () => {
+    it('已读状态来自服务端 handleStatus，未读数与角标据此算', () => {
       const feed = camAlarmFixtures().slice(0, 3)
       feed[1].handleStatus = 1 // 这条已读
       useAlarmStore().liveAlarms = feed
       const msg = useMsgStore()
 
-      // 已读那条不显示未读角标
-      expect(msg.messages[0].unread).toBe(1)
-      expect(msg.messages[1].unread).toBe(0)
-      expect(msg.messages[2].unread).toBe(1)
-      expect(msg.unreadTotal).toBe(2) // 3 条里 1 条已读
+      expect(msg.monitorUnread).toBe(2) // 3 条里 1 条已读
+      expect(msg.categories[0].unread).toBe(2)
+      expect(msg.unreadTotal).toBe(2)
     })
 
     it('点开消息乐观置已读并发 PATCH /status，body 为 {status:1}', async () => {

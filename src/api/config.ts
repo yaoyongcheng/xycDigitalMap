@@ -124,7 +124,7 @@ export const MIXED_CONTENT_HINT =
  *
  * 它和登录域是同一台机器，但**只提供两类只读图片**，都不要 Bearer：
  *   · `/api/file/scene-screenshots` —— 2D/3D 场景截图（首页底图）
- *   · `/api/video/snapshots`        —— 20 路监控通道的快照
+ *   · `/api/video/snapshots/history` —— 20 路监控通道的历史抓拍（列表 + 行里给的取图地址）
  *
  * 两者用**同一个第三方只读密钥**（`MEDIA_KEY`），文档见桌面
  * `场景截图接口使用.md` 与 `监控快照接口使用说明-向阳村.md`。

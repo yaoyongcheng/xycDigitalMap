@@ -106,6 +106,13 @@ export const useAirHazardStore = defineStore('airHazard', () => {
   const airState = ref<'idle' | 'loading' | 'ok' | 'empty' | 'error'>('idle')
   /** 空态 / 失败态的说明（失败时是接口原话） */
   const airNote = ref('')
+  /**
+   * 这次空态是不是「本班还在回传」。
+   *
+   * 与「真的没有照片」分开：前者的标题要写「正在回传」，让现场知道等一会儿
+   * 再刷新就有；后者才是「这一天这个站点没飞 / 没拍」。
+   */
+  const airPending = ref(false)
   /** 最近一次采集的开始时间（'YYYY-MM-DDTHH:mm:ss'，页头写「最近采集 …」） */
   const airAt = ref('')
 
@@ -355,6 +362,7 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     station.value = name
     airState.value = 'loading'
     airNote.value = ''
+    airPending.value = false
     airPhotos.value = []
     airPano.value = null
     airAt.value = ''
@@ -370,7 +378,7 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     try {
       const g = wantDay
         ? await fetchStationDay(name, wantDay)
-        : await fetchLatestGalleryOf(name, recordings.value)
+        : await fetchLatestGalleryOf(name)
       if (my !== airSeq) return
       if (!g) {
         airState.value = 'empty'
@@ -395,6 +403,17 @@ export const useAirHazardStore = defineStore('airHazard', () => {
       } else if (!Number.isNaN(at.getTime())) {
         airDate.value = startOfDay(at)
         airCalMonth.value = monthStart(airDate.value)
+      }
+      // 最新一班还在回传：不给「上一班的旧照片」，也不说「没有照片」，
+      // 直接写清进度 —— 现场要的是「等到什么时候」，不是一张更早的图。
+      if (!g.media.length && g.pending) {
+        airState.value = 'empty'
+        airPending.value = true
+        const hhmm = g.start.slice(11, 16)
+        airNote.value =
+          `${name} 本班 ${hhmm} 采集的 ${g.pending.total} 个文件正在回传` +
+          `（已传 ${g.pending.uploaded} 个），稍后刷新即可看到最新照片`
+        return
       }
       airPhotos.value = g.media.map((m) => ({
         id: `${g.jobId}-${m.name}`,
@@ -682,6 +701,7 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     airPano,
     airState,
     airNote,
+    airPending,
     airAt,
     airHint,
     airDate,

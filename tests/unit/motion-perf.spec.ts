@@ -367,22 +367,25 @@ describe('第二轮体验优化回归', () => {
       // 「分类」按钮删掉了（分类是设计稿的人工归类，服务端没有这个字段）。
       // 照片卡片本身仍是原生 button，键盘可达性要保住。
       const patrol = usePatrolStore()
-      patrol.apply([
-        {
-          id: '147744-DJI_1.jpeg',
-          name: 'DJI_1.jpeg',
-          url: 'https://oss.keehang.com/iot-media/DJI_1.jpeg',
-          thumbnail: 'https://oss.keehang.com/thumbnail/iot/DJI_1.jpeg',
-          // 用仍走照片墙分组的航线（「出入口管控」）：2026-11-18 起
-          // 「安全巡查」改走专用链，apply() 灌的 layout 照片不再上墙
-          taskName: '向阳村-材料堆场',
-          taskId: 4912,
-          jobId: 147744,
-          time: '2026-07-15 09:38:39',
-          size: 5_378_048,
-          mediaType: 'image/jpeg',
-        },
-      ])
+      patrol.apply(
+        [
+          {
+            id: '147744-DJI_1.jpeg',
+            name: 'DJI_1.jpeg',
+            url: 'https://oss.keehang.com/iot-media/DJI_1.jpeg',
+            thumbnail: 'https://oss.keehang.com/thumbnail/iot/DJI_1.jpeg',
+            // 灌进「出入口管控」那一格：2026-11-20 起六格各有专用链、照片墙
+            // 不再上屏，卡片渲染的夹具改用它
+            taskName: '向阳村-材料堆场',
+            taskId: 4912,
+            jobId: 147744,
+            time: '2026-07-15 09:38:39',
+            size: 5_378_048,
+            mediaType: 'image/jpeg',
+          },
+        ],
+        'gate',
+      )
 
       const wrapper = mount(PatrolPanel)
       const cards = wrapper.findAll('.patrol-card')

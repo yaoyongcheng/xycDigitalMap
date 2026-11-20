@@ -4,6 +4,7 @@ import { computed, nextTick, onUnmounted, watch } from 'vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { mineNotes } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
+import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { titleOf, useSubpageStore, type SubView } from '@/stores/subpage'
 import { takeSilentBack } from '@/utils/backAction'
 import AlarmDetail from '@/views/sub/AlarmDetail.vue'
@@ -13,6 +14,8 @@ import DevicePage from '@/views/sub/DevicePage.vue'
 import InspectList from '@/views/sub/InspectList.vue'
 import LoginPage from '@/views/sub/LoginPage.vue'
 import UavPage from '@/views/sub/UavPage.vue'
+import WorkOrderDetail from '@/views/sub/WorkOrderDetail.vue'
+import WorkOrderList from '@/views/sub/WorkOrderList.vue'
 
 /**
  * 子页栈
@@ -32,6 +35,7 @@ import UavPage from '@/views/sub/UavPage.vue'
  */
 const sub = useSubpageStore()
 const alarm = useAlarmStore()
+const droneAlarm = useDroneAlarmStore()
 
 /** 当前层元素。刻意用 id 取而不是模板 ref：本组件是多根（垫底层 + 当前层），
  *  模板 ref 在这种结构下没绑定上（实测 pageEl 恒为 null，导致转场全部走兜底） */
@@ -48,6 +52,11 @@ let suppressEnter = false
 let leaving = false
 
 const detail = computed(() => (sub.view.kind === 'alarm-detail' ? alarm.byId(sub.view.id) : undefined))
+
+/** 无人机预警详情：数据在 droneAlarm store 里，找不到就不渲染（不会出现空白页） */
+const workDetail = computed(() =>
+  sub.view.kind === 'work-order-detail' ? droneAlarm.byId(sub.view.id) : undefined,
+)
 
 const placeholderName = computed(() => (sub.view.kind === 'placeholder' ? sub.view.name : ''))
 
@@ -75,13 +84,74 @@ const under = computed<SubView | null>(() => (sub.isOpen ? sub.back : null))
 const underTitle = computed(() => (under.value ? titleOf(under.value) : ''))
 
 /** 视图标识：kind / 具体预警 id / 设备类型变化都算「换页」，要播进入动画 */
-const viewKey = computed(() => {
-  if (!sub.isOpen) return ''
-  const v = sub.view
+function keyOf(v: SubView | null): string {
+  if (!v || v.kind === 'none') return ''
   if (v.kind === 'alarm-detail') return `detail:${v.id}`
-  if (v.kind === 'device') return `${v.kind}:${v.device}`
+  if (v.kind === 'work-order-detail') return `work:${v.id}`
+  if (v.kind === 'device') return `device:${v.device}`
   return v.kind
-})
+}
+
+const viewKey = computed(() => keyOf(sub.view))
+
+/**
+ * 子页内的滚动位置记忆（2026-11-20）
+ *
+ * 现象：报警预警列表滚到中段 → 点某条进详情 → 返回，列表回到顶部。
+ *
+ * 原因不在列表自己：子页栈是**同一个 `.subpage-body` 换 v-if 内容**
+ * （见下方模板），进详情时 `AlarmHist` / `InspectList` 被整棵卸载，滚动容器
+ * 的高度瞬间塌成 0，浏览器把 `scrollTop` 归零；返回时列表是新挂载的，
+ * 自然从头开始。列表数据、页签、日期都在 store 里，所以「浏览状态」其实
+ * 保住了 —— 只有滚动位置没有落脚点。
+ *
+ * 做法：切换前把**列表类**视图的 `scrollTop` 记在这个按视图 key 索引的表里，
+ * 切换后 nextTick 写回。
+ *
+ *   · 只记列表（{@link LIST_KEYS}）：详情页自己的位置没有意义，而且它的 key
+ *     带报警 id，记下去会让这张表随浏览条数无界增长；
+ *   · 关闭子页（viewKey → ''）时清空：从首页重新点进来该从头看，而不是回到
+ *     上次离开时的中段；
+ *   · 垫底层（右滑 / 返回时露出的那一层）同步写回同一位置，否则退出动画的
+ *     0.22s 里露出的是列表顶部，落位后再「啪」地跳到记忆位置。
+ */
+const scrollMemo = new Map<string, number>()
+const LIST_KEYS = new Set(['inspect-list', 'alarm-hist', 'work-orders'])
+
+watch(
+  viewKey,
+  (next, prev) => {
+    // pre：DOM 还是旧视图，读到的就是离场那一刻的真实位置
+    const body = document.getElementById('subBody')
+    if (prev && LIST_KEYS.has(prev)) scrollMemo.set(prev, body?.scrollTop ?? 0)
+    if (!next) scrollMemo.clear()
+  },
+  { flush: 'pre' },
+)
+
+/*
+ * 写回用 post 而不是在 pre 里 nextTick：
+ *
+ *   · post 在本次更新的 DOM patch 之后**同一个 flush 内**执行，写完就是稳定值；
+ *   · 在 pre 里 `nextTick(cb)` 会排到这一轮 flush 结束之后，等于多隔一个微任务 ——
+ *     列表已经渲染出来、可能已经画过一帧，才跳回记忆位置，肉眼能看到一次跳动。
+ *
+ * 数据都在 store 里，列表是同步渲染的，post 这一刻新内容的高度已经到位。
+ */
+watch(
+  viewKey,
+  (next) => {
+    if (!next) return
+    const y = scrollMemo.get(next) ?? 0
+    const cur = document.getElementById('subBody')
+    if (cur) cur.scrollTop = y
+    // 垫底层是这次返回的目标页（见 under 的注释），它得和落地后的位置一致，
+    // 否则退出动画的 0.22s 里露出的是列表顶部，落位后再「啪」地跳一下
+    const underBody = document.querySelector<HTMLElement>('.subpage-under .subpage-body')
+    if (underBody) underBody.scrollTop = scrollMemo.get(keyOf(under.value)) ?? 0
+  },
+  { flush: 'post' },
+)
 
 watch(
   viewKey,
@@ -257,6 +327,7 @@ onUnmounted(() => {
     <div class="subpage-body">
       <InspectList v-if="under.kind === 'inspect-list'" decorative />
       <AlarmHist v-else-if="under.kind === 'alarm-hist'" decorative />
+      <WorkOrderList v-else-if="under.kind === 'work-orders'" decorative />
     </div>
   </section>
 
@@ -289,6 +360,11 @@ onUnmounted(() => {
       <UavPage v-else-if="sub.view.kind === 'uav'" />
       <ClimbPage v-else-if="sub.view.kind === 'climb'" />
       <AlarmHist v-else-if="sub.view.kind === 'alarm-hist'" />
+      <WorkOrderList v-else-if="sub.view.kind === 'work-orders'" />
+      <WorkOrderDetail
+        v-else-if="sub.view.kind === 'work-order-detail' && workDetail"
+        :work="workDetail"
+      />
       <LoginPage v-else-if="sub.view.kind === 'login'" />
       <div v-else-if="sub.view.kind === 'placeholder'" class="card">
         <h4 class="sub-ph-title">{{ placeholderName }}</h4>

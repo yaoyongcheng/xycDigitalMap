@@ -283,7 +283,7 @@ describe('交互优化回归', () => {
       const w = mount(SubPage)
       const under = w.find('.subpage-under')
       expect(under.exists()).toBe(true)
-      expect(under.find('.nav-title').text()).toBe('巡检预警')
+      expect(under.find('.nav-title').text()).toBe('监控预警')
       // 垫底层不可交互，也不能被手势当成当前层
       expect(under.find('[data-back]').exists()).toBe(false)
     })

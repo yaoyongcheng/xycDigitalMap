@@ -29,16 +29,16 @@ import { useImageZoom } from '@/utils/zoom'
  *   · `.cam-time`（每秒跳动的时间戳）—— **不要**。相机自己的 OSD 已经把时间
  *     刻在画面里了，再叠一层就是两块表互相打架，而且它挡画面。
  *   · `.cam-pos-tag`（分组 · 点位名）—— **不要**。顶栏标题已经写着当前点位。
- *   · `.cam-play`（中央播放键）+ `.cam-stage-acts`（右上「历史抓拍」「全屏」）——
- *     要，照设计稿的尺寸/圆角/位置还原。它们是**控件**，不是贴在画面上的标签，
- *     只占一圈按钮那么大，看画面时不会挡人挡设备。
+ *   · `.cam-play`（中央播放键）—— **不要**（2026-11-18 撤掉；打开自动连、断了
+ *     无限重连，它只会盖画面，还容易被误读成「要点一下才开始」，样式也一并删了）。
+ *   · `.cam-stage-acts`（右上「历史抓拍」「全屏」）—— 要，照设计稿的尺寸/圆角/
+ *     位置还原。它们是**控件**，不是贴在画面上的标签。
  *
  * ## 画面上的点击（2026-11-18 三改）
  *
- * 中央那颗 `.cam-play` 播放键已经整颗撤掉（打开自动连、断了无限重连，它只会盖画面，
- * 还容易被误读成「要点一下才开始」），它的能力挂到画面区本身：
+ * 中央那颗播放键已经整颗撤掉，它的能力挂到画面区本身：
  *   · 有可播地址 → 只做「起播 / 立即重连」，**绝不暂停**（见 `onPlay`）；
- *   · 只有 RTSP（V2 现状）→ 本页只拿得到定时快照，这一下就是「重新拉一帧」。
+ *   · 只有 RTSP（V2 现状）→ 这一下不做任何事（地址在下方「仅 RTSP」行里给出）。
  *
  * 特别是「点一下就暂停」必须不存在：手机上手指落在画面上多半是误触，
  * 一停画面就定在最后一帧，看着像卡死。
@@ -74,7 +74,7 @@ const videoEl = ref<HTMLVideoElement | null>(null)
  * 「这一路暂时不行」。
  *
  * 不是判决：FLV 断流时引擎会一直重连（快速三次后退到每 10 秒一次，不设上限），
- * 这期间把画面让给快照，重连成功（playing）就切回来。所以它只决定**谁在上面**。
+ * 这期间画面蒙起来，重连成功（playing）就亮回来。所以它只决定**画面亮不亮**。
  */
 const streamBroken = ref(false)
 
@@ -99,23 +99,7 @@ const wantPlay = ref(true)
  */
 const isPhone = isMobileDevice()
 
-/**
- * 画面里那颗播放键还要不要画：**不画**（2026-11-18 三改，按现场要求）。
- *
- * 直播这条链路上它从来没有「非点不可」的时刻：
- *   · 打开就自动连（`startStream` 在挂载/切点位时执行）；
- *   · 断了引擎自己**无限重连**（快速 2/4/6s → 每 10s，直到恢复或关层）；
- *   · 连上自动续播（`wantPlay` 记着用户意图）。
- * 而它一旦出现（尤其 error 态）就会盖住画面中间，还容易被误读成「要点一下才开始」，
- * 所以整颗撤掉。「起播 / 立即重连」这两种能力改由**点击画面**承担
- * （同一个 `onPlay`，见 `onStageClick`）；**暂停不提供** —— 点画面永远不会停掉直播。
- *
- * 保留这个开关而不是把模板那段删掉：万一将来某类设备必须靠一次手势才能起播，
- * 只改这一行就能把按钮放回来。
- */
-const showPlayBtn = computed(() => false)
-
-/** 真正把直播画面亮出来：有地址，且当前这一路没被打挂（挂了先看快照） */
+/** 真正把直播画面亮出来：有地址，且当前这一路没被打挂（挂了先蒙起来） */
 const showLive = computed(() => hasStream.value && !streamBroken.value)
 
 /**
@@ -126,22 +110,6 @@ const showLive = computed(() => hasStream.value && !streamBroken.value)
  * 由运维决定怎么开，绝不在这里假装在播。
  */
 const onlyRtsp = computed(() => !hasStream.value && cam.playUrl === '' && cam.rtspUrl !== '')
-
-/** 底下的快照还在取 → 播放键转圈（快照模式下这一下发的是取图请求） */
-const busy = computed(() => cam.state === 'loading')
-
-/** 播放键是否禁用：只有快照取图中禁用（此时按下去是「重新取一帧」） */
-const playDisabled = computed(() => (hasStream.value ? false : busy.value))
-
-/** 播放键此刻的图形：只剩「快照取图中」需要转圈，其余就是三角 */
-const playIcon = computed(() => (!hasStream.value && busy.value ? 'is-busy' : ''))
-
-const playLabel = computed(() => {
-  if (!hasStream.value) return '重新获取最新画面'
-  if (cam.playState === 'paused') return '播放'
-  // 走到这里只可能是 error（环境不可恢复）或原生播法还没起播
-  return cam.playState === 'error' ? '重新连接直播流' : '播放'
-})
 
 /**
  * 切点位：换一条流。
@@ -186,8 +154,8 @@ const mediaNonce = ref(0)
  * 引擎状态 → store。
  *
  * 页面只认 store 这一份，组件不另记一套 —— 否则按钮图形、说明条、播放态
- * 三处迟早会互相矛盾。重连期间**画面退回快照**：宁可让人看一张旧图，
- * 也别盯着黑屏等；重连成功（playing）再切回直播画面。
+ * 三处迟早会互相矛盾。重连期间**画面蒙起来**（`.is-veiled`，不销毁元素）：
+ * 移动端 display:none 会停解码、回来等不到 playing；重连成功再亮回来。
  */
 function applyStreamState(state: FlvState, note: string): void {
   switch (state) {
@@ -200,8 +168,8 @@ function applyStreamState(state: FlvState, note: string): void {
       streamBroken.value = true
       cam.markConnecting(note)
       break
-    // 断流重连：画面让给快照（不黑屏），但**状态是「在恢复」而不是「失败」**。
-    // 播放键因而保持转圈 + 「立即重连」，不会退回三角让人误以为没在播。
+    // 断流重连：画面蒙起来，但**状态是「在恢复」而不是「失败」** ——
+    // 说明条据它报引擎原话，不会让人误以为彻底没戏了。
     case 'reconnecting':
       streamBroken.value = true
       cam.markReconnecting(note)
@@ -385,23 +353,19 @@ onBeforeUnmount(() => {
  * 画面就定在最后一帧，看着像卡死；而监控画面本身也不需要「暂停」这个动作。
  * 所以这里只做「加法」：
  *
- *   · 没有可播地址（只有 RTSP / 没清单）→ 重新取一帧快照；
+ *   · 没有可播地址（只有 RTSP / 没清单）→ **什么都不做**（旧版这里会去取一帧
+ *     快照，那个接口已下线；地址在下方「仅 RTSP」行里原样给出）；
  *   · 正在重连 / 环境不可恢复（reconnecting / error）→ 立刻重连，不等退避；
  *   · 已暂停（自动播放被策略拦下、被系统停掉）→ 继续播；
  *   · **正在播 → 什么都不做**（以前这里是 `pause()`）。
  *
- * 连点为什么不会出事：取图有 `busy` 挡着不发第二发；重连是单飞
- * （同一时刻只有一条连接）；已经在播则直接返回，不重复起流。
- * 全局也只有一个 `<video>`，`:key` 绑通道，切点位换元素而不是给同一元素改 src。
+ * 连点为什么不会出事：重连是单飞（同一时刻只有一条连接）；已经在播则直接返回，
+ * 不重复起流。全局也只有一个 `<video>`，`:key` 绑通道，切点位换元素而不是给同一
+ * 元素改 src。
  */
 function onPlay(): void {
-  if (!hasStream.value) {
-    // 取图中再点不出第二发：以前靠按钮 `disabled` 挡，现在按钮撤了，
-    // 就在入口挡一道 —— 否则连点画面会堆出一串取图请求。
-    if (busy.value) return
-    cam.refresh()
-    return
-  }
+  // 没有可播地址就没有「这一下能做的事」：不取图、不假装连一下
+  if (!hasStream.value) return
   /*
    * 重连 / 恢复中：**什么都不做**（2026-11-19 改）。
    *
@@ -441,7 +405,7 @@ function onPlay(): void {
  * 点击画面 = 原来那颗播放键（只是**不能再暂停**，见 `onPlay`）。
  *
  * 右上角两颗控件（历史抓拍 / 全屏）有自己的点击语义，冒泡上来时要放行 ——
- * 否则「没有流时点全屏」会顺带打一发取图请求，「重连中点全屏」会顺带重连一次。
+ * 否则「重连中点全屏」会顺带重连一次。
  */
 function onStageClick(e: MouseEvent): void {
   const el = e.target as HTMLElement | null
@@ -483,7 +447,8 @@ function onMediaBuffering(): void {
  *
  * FLV 的失败由引擎统一收口（先按退避重连，重试用完才把 error 抛回来），
  * 这里必须放行 —— 否则一次抖动就被判成「永久不可用」，再也不会自己恢复。
- * 只有原生直连（mp4 之类）才会走到这里，确实没有重连能力，回落快照并说清原因。
+ * 只有原生直连（mp4 / m3u8）才会走到这里：画面蒙起来 + 说明原因，
+ * 点画面换一个元素重试（不再回落任何快照）。
  */
 function onMediaError(): void {
   if (cam.playMode === 'flv') return
@@ -492,27 +457,16 @@ function onMediaError(): void {
 }
 
 /**
- * 画面是什么时候取到的（HH:mm）。
- *
- * 只说明「这次什么时候拿到的」—— 相机自己的拍摄时间刻在画面里，两者可能差几小时
- * （快照一天只更新几次）。写成「现场画面 · 15:47 获取」，不会被误读成拍摄时间。
- */
-const fetchedAt = computed(() => {
-  if (!cam.frameAt) return ''
-  const d = new Date(cam.frameAt)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-})
-
-/**
  * 说明条这一句：先说「现在到底是什么情况」。
  *
  * 顺序是刻意的 ——
  *   ① 引擎 / 媒体报上来的原因优先：它带「第几次、几秒后、还在后台继续」，
- *      比任何兜底文案都有用。旧版把 `streamBroken` 那句挡在前面，
- *      等于把具体原因吞掉，只剩一句「不可用」，没法判断是断网还是上游没推流；
- *   ② 再到「直播中」（别让人以为是定时快照）；
- *   ③ 再是兜底的「已回落快照」；
- *   ④ 最后才是「几点取的这一帧」。
+ *      比任何兜底文案都有用；
+ *   ② 再到「直播中」（别让人以为画面是截图）；
+ *   ③ 最后才是兜底的「现场画面」。
+ *
+ * 旧版还有「· HH:mm 获取」与「当前为定时快照」两句，都是定时快照时代的产物：
+ * 快照接口下线后画面只有直播流，没有「几点取的这一帧」这回事。
  */
 const stampText = computed(() => {
   /*
@@ -532,30 +486,27 @@ const stampText = computed(() => {
   if (cam.playState === 'error' && note) return note
   if (cam.playState === 'buffering' && note) return note
   if (showLive.value && cam.playState === 'playing') return '现场画面 · 直播中'
-  if (streamBroken.value) return '直播流不可用 · 当前为定时快照'
-  return fetchedAt.value ? `现场画面 · ${fetchedAt.value} 获取` : '现场画面'
+  return '现场画面'
 })
 
-/** 没有画面时的说明（画面区此时是空的，写字不算「叠在画面上」） */
+/**
+ * 没有画面时的说明（画面区此时是空的，写字不算「叠在画面上」）。
+ *
+ * 只剩「没登录」一种：登录后画面只来自直播流，连不上由说明条报引擎原话、
+ * 「仅 RTSP」行交地址 —— 不再有「取图失败 → 重试」这条路（旧快照接口已下线）。
+ */
 const stageEmpty = computed(() => {
   if (!auth.isLoggedIn) {
     return { title: '登录后可查看现场监控', sub: '监控画面需要登录后获取', act: 'login' as const }
   }
-  if (cam.state === 'error') {
-    return { title: '画面获取失败', sub: cam.note || '请稍后重试', act: 'retry' as const }
-  }
-  return { title: '正在获取监控画面…', sub: '', act: null }
+  return null
 })
 
 /** 全屏键的文案与图标跟着横屏状态换（设计稿 .cam-land-enter / .cam-land-exit） */
 const landText = computed(() => (shell.isLand ? '退出全屏' : '全屏'))
 const landIcon = computed(() => (shell.isLand ? 'cam-collapse' : 'cam-expand'))
 
-function onRefresh(): void {
-  cam.refresh()
-}
-
-/* ---------------- 历史抓拍（2026-11-19：真实快照 + 本机档案） ---------------- */
+/* ---------------- 历史抓拍（2026-11-20：服务端历史列表 + 本机图片缓存） ---------------- */
 
 /** 时刻（HH:mm），详情里写「本机什么时间取得的」 */
 function hhmm(at: number): string {
@@ -563,32 +514,21 @@ function hhmm(at: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-/**
- * 档位时刻（08:00 / 12:00 / 18:00）。
- *
- * 列表上标的是**这一档**而不是取图时刻：服务端一天只更新三次，我们拿到的是
- * 「最近一次已完成的更新」，把取图时刻写上去会让人以为图是那一刻拍的。
- * 真实的取图时刻放在详情里（「本机 09:19 取得」），两个信息都不丢。
- */
-function slotHm(slot: number): string {
-  return `${String([8, 12, 18][slot] ?? 8).padStart(2, '0')}:00`
-}
-
-/** 详情里的标题：点位 · 日期 档位 */
+/** 详情里的标题：点位 · 日期 抓拍时刻（时刻由服务端给，不再按「档」估） */
 const shotTitle = computed(() => {
   const s = cam.shotPop
   if (!s) return ''
-  return `${cam.current.name} · ${cam.shotDateLabel} ${slotHm(s.slot)} 档`
+  return `${cam.current.name} · ${cam.shotDateLabel} ${s.hm} 抓拍`
 })
 
-/** 详情正文那句：本机取得时刻 + 体积 */
+/** 详情正文那句：服务端抓拍时刻 + 原图体积 */
 const shotMeta = computed(() => {
   const s = cam.shotPop
   if (!s) return ''
   const size = s.size >= 1024 * 1024
     ? `${(s.size / 1024 / 1024).toFixed(1)}MB`
     : `${Math.max(1, Math.round(s.size / 1024))}KB`
-  return `本机 ${hhmm(s.at)} 取得 · 原图 ${size}`
+  return `抓拍 ${hhmm(s.at)} · 原图 ${size}`
 })
 
 /** 详情当前显示哪一版：默认压缩预览，点「查看原图」换原图（与智眸一致） */
@@ -729,7 +669,8 @@ function goLogin(): void {
       <div class="cam-player-stage" id="camPlayerStage" @click="onStageClick">
         <!--
           有可播地址就挂 <video>（FLV 由引擎喂 MSE，直连走原生）。
-          poster 放最近一帧快照：连流的那一两秒看到的是现场图，不是黑块。
+          连流的那一两秒是黑块 —— 旧版用「最近一帧」快照当 poster，那个接口已下线，
+          这里不再垫图（点了历史抓拍可以看这台相机过去拍到的画面）。
 
           `:key` 绑通道 —— 切点位直接换元素，而不是给同一个元素改 src：
           后者会把上一个通道的缓冲/播放态带过来，也是「连点就卡住」的老根因。
@@ -746,7 +687,6 @@ function goLogin(): void {
           class="cam-frame"
           :class="{ 'is-veiled': !showLive }"
           :src="cam.playMode === 'flv' ? undefined : cam.playUrl"
-          :poster="cam.frameUrl || undefined"
           muted
           playsinline
           webkit-playsinline
@@ -757,37 +697,6 @@ function goLogin(): void {
           @waiting="onMediaBuffering"
           @error="onMediaError"
         ></video>
-
-        <img
-          v-if="cam.frameUrl"
-          id="camPlayerFrame"
-          class="cam-frame"
-          :class="{ 'is-veiled': showLive }"
-          :src="cam.frameUrl"
-          alt=""
-          draggable="false"
-        />
-
-        <!--
-          中央播放键：**已撤掉**（2026-11-18 三改）。
-          打开自动连、断了无限重连、连上自动续播 —— 它没有「非点不可」的时刻，
-          留着只会盖住画面中间。「起播 / 立即重连」改由点击画面承担
-          （`onStageClick` → 同一个 `onPlay`），点画面**不会暂停**。
-          `showPlayBtn` 恒为 false，
-          这段保留成开关：将来某类设备必须点一下才能起播时，改一行就能放回来。
-        -->
-        <button
-          v-if="showPlayBtn"
-          class="cam-play"
-          :class="playIcon"
-          id="btnCamPlay"
-          type="button"
-          :aria-label="playLabel"
-          :title="playLabel"
-          :aria-pressed="showLive ? cam.isPlaying : undefined"
-          :disabled="playDisabled"
-          @click="onPlay"
-        ></button>
 
         <!-- 右上角操作（设计稿 #camPlayerStage > .cam-stage-acts） -->
         <div class="cam-stage-acts" id="camStageActs">
@@ -820,25 +729,10 @@ function goLogin(): void {
           </button>
         </div>
 
-        <div v-if="!cam.frameUrl && !hasStream" class="cam-stage-empty" data-empty="cam-live">
+        <div v-if="stageEmpty" class="cam-stage-empty" data-empty="cam-live">
           <strong>{{ stageEmpty.title }}</strong>
           <span v-if="stageEmpty.sub">{{ stageEmpty.sub }}</span>
-          <button
-            v-if="stageEmpty.act === 'retry'"
-            class="data-empty-btn"
-            type="button"
-            @click="onRefresh"
-          >
-            重试
-          </button>
-          <button
-            v-else-if="stageEmpty.act === 'login'"
-            class="data-empty-btn"
-            type="button"
-            @click="goLogin"
-          >
-            去登录
-          </button>
+          <button class="data-empty-btn" type="button" @click="goLogin">去登录</button>
         </div>
       </div>
 
@@ -890,7 +784,7 @@ function goLogin(): void {
       结构照设计稿：标题条 → 日期芯片（今天 / 昨天 / 选日期）→ 三列照片网格；
       「选日期」展开的是全站共用那份月历（`ui/MonthCalendar.vue`，与航拍、巡检
       历史同一个组件，样式一份）。数据来自 `cam.shots`，存取见 store 的
-      `loadShots()`（真实快照 + 本机档案），加载 / 空 / 失败三态都在这里。
+      `loadShots()`（服务端历史列表 + 本机图片缓存），加载 / 空 / 失败三态都在这里。
     -->
     <div class="cam-shots-view" :class="{ hide: !cam.shotsOpen }" id="camShotsView">
       <div class="cam-shots">
@@ -919,25 +813,35 @@ function goLogin(): void {
             v-for="s in cam.shots"
             :key="s.id"
             class="cam-shot"
+            :class="{ 'is-loading': s.state === 'loading', 'is-failed': s.state === 'error' }"
             type="button"
             :data-shot="s.id"
-            :aria-label="`${cam.shotDateLabel} ${slotHm(s.slot)} 档抓拍，查看大图`"
+            :data-state="s.state"
+            :aria-label="`${cam.shotDateLabel} ${s.hm} 抓拍，查看大图`"
             @click="onShotClick(s.id)"
           >
-            <img
-              :src="s.thumb"
-              :alt="`${cam.current.name} ${cam.shotDateLabel} ${slotHm(s.slot)} 档抓拍`"
-              loading="lazy"
-            />
-            <span>{{ cam.shotDateLabel }} {{ slotHm(s.slot) }}</span>
+            <!--
+              元信息先到、图后到：还没取回时摆一块转圈底（不是灰方块假装有图），
+              取失败的给「重试」——点一下重查这一天，本机已缓存的会立刻上屏。
+            -->
+            <span class="cam-shot-pic">
+              <img
+                v-if="s.thumb"
+                :src="s.thumb"
+                :alt="`${cam.current.name} ${cam.shotDateLabel} ${s.hm} 抓拍`"
+                loading="lazy"
+              />
+              <i v-else-if="s.state === 'loading'" class="cam-shots-spin" aria-hidden="true"></i>
+              <em v-else>重试</em>
+            </span>
+            <span class="cam-shot-hm">{{ cam.shotDateLabel }} {{ s.hm }}</span>
           </button>
         </div>
 
         <!--
-          空 / 失败：标题说结论，失败才给原因。
-          空态**不写长说明**（2026-11-19 按反馈去掉）：服务端不存历史这件事
-          说一次就够了，每次点进空日期都念一遍既占屏又像报错；日期范围的边界
-          交给日历与 toast 去说。
+          空 / 失败：标题说结论，失败才给原因（服务端 `message` 原样带上）。
+          空态**不写长说明**：服务端近 30 天有就列、没有就是没有，每次点进空日期
+          都念一遍既占屏又像报错；日期范围的边界交给日历与 toast 去说。
         -->
         <div
           v-if="cam.shotsState === 'empty' || cam.shotsState === 'error'"
@@ -998,6 +902,10 @@ function goLogin(): void {
               draggable="false"
               v-on="shotZoomHandlers"
             />
+            <p v-else class="cam-shot-wait">
+              <i class="cam-shots-spin" aria-hidden="true"></i>
+              <span>正在读取原图…</span>
+            </p>
             <span v-if="shotZoomed" class="zoom-badge">{{ shotZoomLabel }}</span>
             <span class="patrol-view-tag">{{ cam.shotShowFull ? '原图' : '压缩预览' }}</span>
 

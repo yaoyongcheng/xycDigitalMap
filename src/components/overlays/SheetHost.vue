@@ -29,7 +29,10 @@ const patrol = usePatrolStore()
 /** 当前巡检照片（kind 为 patrol 时有效；2026-11 阶段 8 起是真实航拍照片） */
 const photo = computed(() => {
   if (sheet.kind !== 'patrol') return undefined
-  return patrol.photos.find((p) => p.id === sheet.id)
+  // 走 store 的 `photoById`：六格（照片墙 / 全景航拍 / 材料堆场 / 设备设施 /
+  // 安全巡查 / 出入口管控）各存一个数组，只查 `photos` 会让后面几格的标题
+  // 退成「照片」——塔吊抓拍、门禁抓拍都是这么点开的
+  return patrol.photoById(sheet.id)
 })
 
 /** 当前设备详情机组（device-info / device-history 时有效） */

@@ -1,119 +1,113 @@
 <script setup lang="ts">
 import Skel from '@/components/ui/Skel.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
-import ThumbRing from '@/components/ui/ThumbRing.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
-import { useMsgStore } from '@/stores/msg'
+import { useDroneAlarmStore } from '@/stores/droneAlarm'
+import { useMsgStore, type MsgCategory } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { useSlowLoading } from '@/utils/slowLoading'
-import { revealThumb } from '@/utils/thumbReveal'
-import { onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import type { IconName } from '@/data/icons'
-import type { Message } from '@/types'
 
 /**
- * 消息页（2026-11 阶段 5：改真实报警派生；阶段 6：下滑加载更多）
+ * 消息页（2026-11-20 改为**两类预警**）
  *
- * 原先渲染 2 条写死消息，点「巡检预警」跳巡检列表。现在一条真实报警一条
- * 消息，点开跳对应报警详情；没有报警数据时给明确空态（未登录给去登录），
- * 不再用「人员预警」这种编造条目把页面填满。
+ * 设计稿消息页是「分类卡」而不是「一条一条消息」：原本两行是随手拍预警 /
+ * 巡检预警。按现场要求（2026-11-20）：
+ *   · 去掉随手拍（没接入，也不打算接）；
+ *   · 巡检预警拆成 **监控预警** 与 **无人机预警** 两类 ——
+ *     前者还是 `:8085` 视频报警（原数据源不动），后者接 keehang 审核中心的
+ *     AI 工单（= V2 大屏「工单列表」，见 `stores/droneAlarm.ts`）。
  *
- * 报警首屏同步 400 条、现场全量 1800+，列表按 20 条一屏展开：滚到底自动
- * 追加一屏，本机数据见底了再让 alarm store 去拉下一页。列表不足一屏时，
- * 底部「还有 N 条」按钮也是可点的入口（键盘 / 无滚动场景）。
+ * 所以这一页只做两件事：把两类的「几条 + 最新时间」摆出来、点开进各自列表。
+ * 明细（分页、已读、日历、状态筛选）都在子页里，不在这里重复一套。
  */
 const msg = useMsgStore()
 const shell = useShellStore()
 const auth = useAuthStore()
 const subpage = useSubpageStore()
 const alarm = useAlarmStore()
+const drone = useDroneAlarmStore()
 
-/**
- * 消息来自 `:8085` 报警同步。首屏同步慢时在列表原位铺灰条，
- * 不能在数据还没回来时就断言「暂无消息」（0 是结论，不是加载态）。
- */
-const showSkel = useSlowLoading(() => !alarm.hasLive && alarm.liveState === 'loading')
-
-/** 翻下一页同样按支付宝口径：快请求不闪，慢请求才在列表末尾铺同构灰条 */
-const showMoreSkel = useSlowLoading(() => msg.loadingMore)
-
-/**
- * 消息类型 → 图标名；video 是现场视频报警，用工作台那套监控图标
- *
- * 2026-11-19 起视频报警这张图标会被「该条报警在详情页里的同一张抓拍图」替换
- * （见 `alarm.thumbOf`），图标只在还没取到图时继续当占位 —— 布局、尺寸不变。
- */
-const msgIcon: Record<Message['kind'], IconName> = {
-  people: 'msg-people',
-  inspect: 'drone',
-  video: 'work-cam',
+/** 分类卡的图标：监控用摄像机、无人机用无人机（都在 data/icons.ts 里） */
+const catIcon: Record<MsgCategory['id'], IconName> = {
+  monitor: 'work-cam',
+  drone: 'drone',
 }
 
 /**
- * 行的 `ref` 回调：登记「滚到视口附近再取缩略图」。
+ * 首屏同步慢时在列表原位铺灰条 —— 数据还没回来就断言「暂无预警」是错的。
  *
- * 消息可能 20 条一页、越翻越多，绝不能渲染即全量请求（单张约 1MB）。
- * 触发逻辑在 `utils/thumbReveal.ts`，全站共用一个观察器。
+ * 判据：监控首屏还在转、且无人机那边连「今日几条待处理」都还没拿到。任意一侧
+ * 有了结论就先立卡（先看到已知的那一侧，比干等两边一起到好）。
  */
-function bindThumb(el: unknown, id: string): void {
-  if (!(el instanceof Element)) return
-  // 已经有图（内存命中 / 首页预取先到）：不必再登记观察器，省一次观察与回调
-  if (alarm.thumbOf(id)) return
-  revealThumb(el, () => {
-    if (auth.token) alarm.ensureThumb(auth.token, id)
-  })
-}
-
-/** 触底阈值：离底 160px 就提前拉，别等用户滑到卡住才转圈 */
-const BOTTOM_AHEAD = 160
+const pendingSkel = computed(
+  () => !alarm.hasLive && alarm.liveState === 'loading' && !drone.todayKnown,
+)
 
 /**
- * 刷新后直接落在消息 tab 时，报警首屏同步可能还没跑过（它原先挂在首页面板上）。
- * 这里补一次，否则列表会停在「暂无消息」，而服务端其实有上千条。
- * `syncFromVideo` 自带 loading / 60s 失败冷却，重复调用无副作用。
+ * 灰条只在**真的慢**的时候淡入（`useSlowLoading` 280ms）：内网快请求全程
+ * 看不到灰条。注意灰条位本身在 `pendingSkel` 期间一直占着（`.skel-fade`
+ * 是 opacity 过渡），不是「先出内容再换成灰条」—— 那等于往回退一步。
+ */
+const showSkel = useSlowLoading(() => pendingSkel.value)
+
+/**
+ * 刷新后直接落在消息 tab 时，两边的首屏同步可能都还没跑过。
+ * `syncFromVideo` 自带 loading / 失败冷却，`drone.load()` 自带去重 —— 重复调用无副作用。
  */
 onMounted(() => {
   if (auth.token && !alarm.hasLive && alarm.liveState !== 'loading') {
     void alarm.syncFromVideo(auth.token)
   }
+  if (auth.token) void drone.load()
 })
 
-function requestMore(): void {
-  // token 显式传入：未登录时 loadMore 会在 store 里直接返回，不打带空 Bearer 的请求
-  void msg.loadMore(auth.token)
+/**
+ * 每次切回消息 tab 补一次。
+ *
+ * 这一页是**常驻挂载**的（用 `.active` 切显隐），`onMounted` 一辈子只跑一次；
+ * 而底栏角标读的就是这两份数据 —— 不补的话早上点开的数字会一直挂到晚上。
+ * 过期判定在 store 里（`STALE_MS` 2 分钟），切 tab 不会白打请求。
+ */
+watch(
+  () => shell.activeTab,
+  (t) => {
+    if (t !== 'msg' || !auth.token) return
+    if (!alarm.hasLive && alarm.liveState !== 'loading') void alarm.syncFromVideo(auth.token)
+    void drone.load()
+  },
+)
+
+function onItemClick(c: MsgCategory): void {
+  if (!auth.isLoggedIn) {
+    subpage.openLogin('登录后可查看现场预警消息')
+    return
+  }
+  if (c.id === 'drone') {
+    subpage.openWorkOrders()
+    return
+  }
+  subpage.openInspectList('today')
 }
 
-function onScroll(e: Event): void {
-  const el = e.currentTarget as HTMLElement | null
-  if (!el) return
-  // 列表变高后 scrollHeight 会跟着涨，一次触底只追加一屏，不会连锁拉完全量
-  if (el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_AHEAD) requestMore()
-}
-
-/** 键盘等价操作（Enter / Space）：消息条此前是裸 div + click，键盘不可达 */
-function onItemKey(e: KeyboardEvent, m: Message): void {
+function onItemKey(e: KeyboardEvent, c: MsgCategory): void {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
-    onItemClick(m)
-  }
-}
-
-function onItemClick(m: Message): void {
-  // 点击即视为已读：tabbar 角标与列表内角标同步减少
-  msg.markRead(m.id)
-  if (m.kind === 'video') {
-    subpage.openAlarmDetail(m.id, true)
-  } else if (m.kind === 'inspect') {
-    subpage.openInspectList('today')
-  } else {
-    shell.showToast('该类消息详情接入中，敬请期待', 'info')
+    onItemClick(c)
   }
 }
 
 function goLogin(): void {
-  subpage.openLogin('登录后可查看现场报警消息')
+  subpage.openLogin('登录后可查看现场预警消息')
+}
+
+/** 卡片右侧数字：还没拿到数据时写「—」，不写 0（0 是个结论） */
+function badgeOf(c: MsgCategory): string {
+  if (!c.unread) return ''
+  return c.unread > 99 ? '99+' : String(c.unread)
 }
 </script>
 
@@ -122,102 +116,70 @@ function goLogin(): void {
     class="page"
     id="page-msg"
     :class="{ active: shell.activeTab === 'msg' }"
-    @scroll.passive="onScroll"
   >
-    <template v-if="!alarm.hasLive && alarm.liveState === 'loading'">
-      <span class="sr-only" role="status">正在同步现场报警消息</span>
-      <div class="card msg-list skel-fade" :class="{ 'is-on': showSkel }" data-skel="msg" aria-hidden="true">
-        <div v-for="i in 4" :key="i" class="msg-item">
-          <div class="msg-ico"><Skel w="36px" h="36px" circle /></div>
+    <!-- 未登录：仍然是明确的一句话 + 去登录，不铺分类卡（点开也是空的） -->
+    <div v-if="!auth.isLoggedIn" class="data-empty" data-empty="msg">
+      <p>登录后可查看现场预警消息</p>
+      <button class="data-empty-btn" type="button" @click="goLogin">去登录</button>
+    </div>
+
+    <template v-else-if="pendingSkel">
+      <span class="sr-only" role="status">正在同步现场预警消息</span>
+      <div
+        class="card msg-list skel-fade"
+        :class="{ 'is-on': showSkel }"
+        data-skel="msg"
+        aria-hidden="true"
+      >
+        <div v-for="i in 2" :key="i" class="msg-item">
+          <div class="msg-ico"><Skel w="44px" h="44px" r="var(--r-12)" /></div>
           <div class="meta">
-            <Skel w="116px" h="14px" />
-            <Skel class="skel-mt-sm" w="78%" h="11px" />
+            <Skel w="96px" h="14px" />
+            <Skel class="skel-mt-sm" w="72%" h="11px" />
           </div>
           <div class="msg-side"><Skel w="38px" h="10px" /></div>
         </div>
       </div>
     </template>
-    <div v-else-if="!msg.messages.length" class="data-empty" data-empty="msg">
-      <p>{{ auth.isLoggedIn ? '暂无消息' : '登录后可查看现场报警消息' }}</p>
-      <p v-if="auth.isLoggedIn" class="data-empty-sub">消息来自现场视频报警，有新的报警时会出现在这里。</p>
-      <button v-if="!auth.isLoggedIn" class="data-empty-btn" type="button" @click="goLogin">去登录</button>
-    </div>
+
     <div v-else class="msg-stream">
       <div class="card msg-list" id="msgList">
         <div
-          v-for="m in msg.messages"
-          :key="m.id"
-          :ref="(el) => bindThumb(el, m.id)"
-          class="msg-item"
-          :class="{ 'is-link': m.kind !== 'people' }"
-          :data-kind="m.kind"
-          :data-msg-id="m.id"
+          v-for="c in msg.categories"
+          :key="c.id"
+          class="msg-item is-link"
+          :data-kind="c.id"
           role="button"
           tabindex="0"
-          @click="onItemClick(m)"
-          @keydown="onItemKey($event, m)"
+          @click="onItemClick(c)"
+          @keydown="onItemKey($event, c)"
         >
-          <!--
-            图标位：取到该条报警的抓拍图就换成图（等比铺满、圆角跟着容器），
-            没取到 / 没有图就还是原来那颗图标 —— 尺寸与位置都不变。
-            视频类取的就是该条报警的抓拍图，加载中在图标外圈叠一圈真实进度。
-          -->
-          <div class="msg-ico" :class="m.kind">
-            <img
-              v-if="alarm.thumbOf(m.id)"
-              class="msg-shot"
-              :src="alarm.thumbOf(m.id)"
-              :alt="m.title"
-              loading="lazy"
-              decoding="async"
-            />
-            <template v-else>
-              <SvgIcon :name="msgIcon[m.kind]" />
-              <ThumbRing v-if="m.kind === 'video'" :id="m.id" />
-            </template>
+          <div class="msg-ico" :class="c.id === 'monitor' ? 'cam' : 'drone'">
+            <SvgIcon :name="catIcon[c.id]" />
           </div>
           <div class="meta">
-            <h4>{{ m.title }}</h4>
-            <p>{{ m.desc }}</p>
+            <h4>{{ c.title }}</h4>
+            <p>{{ c.desc }}</p>
           </div>
           <div class="msg-side">
-            <span class="msg-time">{{ m.time }}</span>
-            <b v-if="m.unread" class="msg-badge">{{ m.unread }}</b>
+            <span class="msg-time">{{ c.time }}</span>
+            <!-- 数字旁边写出含义：「今日未读 3」/「今日待处理 5」。
+                 单摆一个 3，读的人不知道是今日未读还是今日总数 -->
+            <span class="msg-count">
+              <span class="msg-hint">{{ c.hint }}</span>
+              <b v-if="badgeOf(c)" class="msg-badge">{{ badgeOf(c) }}</b>
+              <!-- 条数还没拿到：写「—」，不写 0（0 是个结论，这里只是还不知道） -->
+              <span v-else-if="!c.known" class="msg-unknown">—</span>
+            </span>
           </div>
         </div>
       </div>
 
-      <!-- 下滑加载的四态：加载中 / 失败可重试 / 还有更多 / 已到底 -->
-      <div v-if="msg.loadingMore" class="msg-more" data-more="loading">
-        <span role="status">正在加载更多消息…</span>
-        <div
-          v-if="showMoreSkel"
-          class="card msg-list msg-more-skel"
-          data-skel="msg-more"
-          aria-hidden="true"
-        >
-          <div v-for="i in 2" :key="i" class="msg-item">
-            <div class="msg-ico"><Skel w="36px" h="36px" circle /></div>
-            <div class="meta">
-              <Skel w="116px" h="14px" />
-              <Skel class="skel-mt-sm" w="78%" h="11px" />
-            </div>
-            <div class="msg-side"><Skel w="38px" h="10px" /></div>
-          </div>
-        </div>
-      </div>
-      <div v-else-if="msg.loadError" class="msg-more" data-more="error">
-        <span>{{ msg.loadError }}</span>
-        <button class="msg-more-btn" type="button" @click="requestMore">重试</button>
-      </div>
-      <div v-else-if="msg.hasMore" class="msg-more" data-more="more">
-        <button class="msg-more-btn" type="button" @click="requestMore">
-          还有 {{ msg.hiddenCount }} 条，点击或下滑加载
-        </button>
-      </div>
-      <div v-else class="msg-more is-end" data-more="end">
-        已显示全部 {{ msg.messages.length }} 条消息
-      </div>
+      <!--
+        两类都为空时才说「暂无预警」。数据没取到时由各自的列表页说明原因
+        （监控：同步失败；无人机：接口报错），这里不替它们下结论。
+      -->
+      <p v-if="msg.isEmpty" class="msg-empty-note">暂无预警消息</p>
     </div>
   </section>
 </template>

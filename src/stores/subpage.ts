@@ -32,6 +32,10 @@ export type SubView =
   | { kind: 'climb' }
   /** 报警预警历史（2026-11 设计稿 gx2 版新增，今日/历史两页签） */
   | { kind: 'alarm-hist' }
+  /** 无人机预警（2026-11-20 新增，数据源 = keehang 审核中心的 AI 工单） */
+  | { kind: 'work-orders' }
+  /** 无人机预警详情（大图 + 基础信息 + 识别结果） */
+  | { kind: 'work-order-detail'; id: string }
   /** 账号登录（2026-11 新增，「我的」入口，真实接口鉴权） */
   | { kind: 'login' }
 
@@ -44,7 +48,8 @@ export type SubView =
 export function titleOf(v: SubView): string {
   switch (v.kind) {
     case 'inspect-list':
-      return '巡检预警'
+      // 2026-11-20 现场口径：这一页就是消息页「监控预警」的明细
+      return '监控预警'
     case 'alarm-detail':
       return '预警详情'
     case 'placeholder':
@@ -57,6 +62,10 @@ export function titleOf(v: SubView): string {
       return '智能爬架'
     case 'alarm-hist':
       return '报警预警'
+    case 'work-orders':
+      return '无人机预警'
+    case 'work-order-detail':
+      return '预警详情'
     case 'login':
       return '账号登录'
     default:
@@ -106,7 +115,9 @@ export const useSubpageStore = defineStore('subpage', () => {
    * 若照原版做成独立 ref，close() 回退到列表时就会忘记移除，导致列表页
    * 仍带深色导航栏与零 padding（实测确实复现过该 bug）。
    */
-  const isAlarm = computed(() => view.value.kind === 'alarm-detail')
+  const isAlarm = computed(
+    () => view.value.kind === 'alarm-detail' || view.value.kind === 'work-order-detail',
+  )
 
   /** .subpage.open */
   const isOpen = computed(() => view.value.kind !== 'none')
@@ -157,6 +168,23 @@ export const useSubpageStore = defineStore('subpage', () => {
     alarm.histCalOpen = false
     back.value = null
     view.value = { kind: 'alarm-hist' }
+  }
+
+  /**
+   * 打开无人机预警列表（2026-11-20 新增，消息页「无人机预警」入口）。
+   *
+   * 数据在 `stores/droneAlarm.ts`，页面自己 `load()`；这里只负责导航，
+   * 与 `openInspectList` 同一套语义（回到根，不留上一级）。
+   */
+  function openWorkOrders(): void {
+    back.value = null
+    view.value = { kind: 'work-orders' }
+  }
+
+  /** 无人机预警详情：返回键回到列表（与 openAlarmDetail 的 fromList 一致） */
+  function openWorkOrderDetail(id: string): void {
+    back.value = { kind: 'work-orders' }
+    view.value = { kind: 'work-order-detail', id }
   }
 
   /** 打开设备详情（原 openCranePage / openLiftPage / openUavPage） */
@@ -273,6 +301,8 @@ export const useSubpageStore = defineStore('subpage', () => {
     openInspectList,
     openAlarmDetail,
     openAlarmHist,
+    openWorkOrders,
+    openWorkOrderDetail,
     openDevice,
     openUav,
     openClimb,

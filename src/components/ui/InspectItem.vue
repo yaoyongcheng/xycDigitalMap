@@ -33,7 +33,18 @@ import { revealThumb } from '@/utils/thumbReveal'
  *   · 取图过程中由 `ThumbRing` 在图标外圈叠一圈真实下载进度，图到了自己消失。
  *   · 尺寸、圆角、`object-fit: cover` 全部沿用 `.insp-pic`，等比铺满不拉伸。
  */
-const props = defineProps<{ alarm: Alarm; useTitle?: boolean }>()
+const props = defineProps<{
+  alarm: Alarm
+  useTitle?: boolean
+  /**
+   * 未读红点（2026-11-20）。
+   *
+   * 由调用方决定要不要点：只有**今日预警**参与已读/未读（见 InspectList 注释），
+   * 历史列表不传即为关闭。红点位置照微信：压在头像（这里是指摄图 / 占位图标）
+   * 右上角，圆点外留一圈白边，压在照片上也不会糊掉。
+   */
+  dot?: boolean
+}>()
 const emit = defineEmits<{ open: [] }>()
 
 const alarmStore = useAlarmStore()
@@ -82,11 +93,15 @@ function onKey(e: KeyboardEvent): void {
     @keydown="onKey"
   >
     <!-- 图标位：有抓拍图铺图，没有就铺灰底占位图标（尺寸/圆角都由 .insp-pic 定）；
-         取图过程中在图标外圈叠一圈真实下载进度，图到了自动消失 -->
-    <SmartImg v-if="thumb" class="insp-pic" :src="thumb" :alt="alarm.type" />
-    <span v-else class="insp-pic alarm-tile" aria-hidden="true">
-      <SvgIcon name="work-cam" />
-      <ThumbRing :id="alarm.id" />
+         取图过程中在图标外圈叠一圈真实下载进度，图到了自动消失。
+         未读时在右上角压一颗红点（微信位置），白圈让它压在图上也看得清 -->
+    <span class="insp-pic-box">
+      <SmartImg v-if="thumb" class="insp-pic" :src="thumb" :alt="alarm.type" />
+      <span v-else class="insp-pic alarm-tile" aria-hidden="true">
+        <SvgIcon name="work-cam" />
+        <ThumbRing :id="alarm.id" />
+      </span>
+      <i v-if="dot" class="insp-dot" role="img" aria-label="未读" />
     </span>
     <div class="insp-meta">
       <div class="insp-hd">

@@ -1381,14 +1381,21 @@ describe('无人机页', () => {
     // 这里按真实响应形状返回，用例改写 stub* 即可。
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, init?: RequestInit) => {
         const u = String(url)
         const ok = (data: unknown) => ({ ok: true, status: 200, json: async () => ({ code: 200, data }) })
         if (u.includes('/cas/auth/login')) return ok({ tgt: 'T', st: 'ST' })
         if (u.includes('/cas/auth/validate')) return ok({ uid: '1', token: 'TK' })
-        if (u.includes('/task/exec/list/record')) {
-          // 两个区间分开：今天（三格与执行中卡）和近 7 天（进度条的历史分母）
-          const m = /[?&]start=(\d{4}-\d{2}-\d{2})/.exec(u)
+        if (u.includes('/api/open/v1/task-record/page')) {
+          // 两个区间分开：今天（三格与执行中卡）和近 7 天（进度条的历史分母）。
+          // 日期在 POST body 的 startTime 里（`yyyy-MM-dd HH:mm:ss`）
+          let body: { startTime?: string } = {}
+          try {
+            body = JSON.parse(String((init as { body?: string } | undefined)?.body ?? '{}'))
+          } catch {
+            body = {}
+          }
+          const m = /(\d{4}-\d{2}-\d{2})/.exec(String(body.startTime ?? ''))
           const today = new Date()
           const p = (n: number): string => String(n).padStart(2, '0')
           const todayKey = `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`
@@ -1853,7 +1860,7 @@ describe('无人机页', () => {
 
       const tel = hits('/telemetry/23498/1')
       const dock = hits('/telemetry/23452/2')
-      const rec = hits('/task/exec/list/record')
+      const rec = hits('/api/open/v1/task-record/page')
       const stream = hits('/live/stream/list')
 
       // 过 2 秒：机载与机库各走一轮（同频才谈得上「风速和网络一起动」）
@@ -1862,13 +1869,13 @@ describe('无人机页', () => {
       expect(hits('/telemetry/23498/1')).toBe(tel + 1)
       expect(hits('/telemetry/23452/2')).toBe(dock + 1)
       // 慢变那几样一动不动
-      expect(hits('/task/exec/list/record')).toBe(rec)
+      expect(hits('/api/open/v1/task-record/page')).toBe(rec)
       expect(hits('/live/stream/list')).toBe(stream)
 
       // 满 30 秒：慢变那一档才动
       await vi.advanceTimersByTimeAsync(28_000)
       await nextTick()
-      expect(hits('/task/exec/list/record')).toBeGreaterThan(rec)
+      expect(hits('/api/open/v1/task-record/page')).toBeGreaterThan(rec)
       expect(hits('/live/stream/list')).toBeGreaterThan(stream)
 
       w.unmount()

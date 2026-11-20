@@ -43,22 +43,25 @@ let wrapper: ReturnType<typeof mount> | null = null
 
 /** 灌一条真实形态的航拍照片（结构与 keehang 媒体一致） */
 function seedPhoto(): void {
-  usePatrolStore().apply([
-    {
-      id: '147744-DJI_1.jpeg',
-      name: 'DJI_1.jpeg',
-      url: 'https://oss.keehang.com/iot-media/DJI_1.jpeg',
-      thumbnail: 'https://oss.keehang.com/thumbnail/iot/DJI_1.jpeg',
-      // 用一条仍走照片墙分组的航线（「出入口管控」= yard）当夹具：
-      // 2026-11-18 起「安全巡查」改走专用链，`apply()` 灌进去的 layout 照片不上墙
-      taskName: '向阳村-材料堆场',
-      taskId: 4912,
-      jobId: 147744,
-      time: '2026-07-15 09:38:39',
-      size: 5_378_048,
-      mediaType: 'image/jpeg',
-    },
-  ])
+  usePatrolStore().apply(
+    [
+      {
+        id: '147744-DJI_1.jpeg',
+        name: 'DJI_1.jpeg',
+        url: 'https://oss.keehang.com/iot-media/DJI_1.jpeg',
+        thumbnail: 'https://oss.keehang.com/thumbnail/iot/DJI_1.jpeg',
+        // 灌进「出入口管控」那一格：2026-11-20 起六格各有专用链、照片墙不再
+        // 上屏，所以「点卡片开弹层」的夹具走 `gate`（卡片与弹层用的是同一套）。
+        taskName: '向阳村-材料堆场',
+        taskId: 4912,
+        jobId: 147744,
+        time: '2026-07-15 09:38:39',
+        size: 5_378_048,
+        mediaType: 'image/jpeg',
+      },
+    ],
+    'gate',
+  )
 }
 
 /** 打开一张巡检大图（弹层唯一的稳定入口现在是智巡照片墙） */

@@ -262,7 +262,7 @@ describe('stores · alarm / home / subpage', () => {
         sub.openInspectList('hist')
         expect(sub.view).toEqual({ kind: 'inspect-list' })
         expect(alarm.inspTab).toBe('hist')
-        expect(sub.title).toBe('巡检预警')
+        expect(sub.title).toBe('监控预警')
         expect(sub.isOpen).toBe(true)
         expect(sub.isAlarm).toBe(false)
       })

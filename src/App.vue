@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, watchEffect } from 'vue'
+import { onMounted, watch, watchEffect } from 'vue'
 
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAuthStore } from '@/stores/auth'
 import { useCamStore } from '@/stores/cam'
+import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { setThemeColor, THEME_COLORS } from '@/utils/themeColor'
@@ -49,6 +50,7 @@ const cam = useCamStore()
 const air = useAirHazardStore()
 const sub = useSubpageStore()
 const auth = useAuthStore()
+const droneAlarm = useDroneAlarmStore()
 
 /** 全局右滑返回手势（微信式）：见 utils/swipeBack.ts 的约束说明 */
 useSwipeBack()
@@ -73,7 +75,23 @@ useHistoryBack()
  */
 onMounted(() => {
   if (!auth.isLoggedIn) sub.openLogin('当前未登录，请先登录后查看现场数据')
+  else void droneAlarm.load()
 })
+
+/**
+ * 登录态变化时补拉无人机预警。
+ *
+ * tabbar 的消息角标 = 监控未读 + 无人机今日待处理，而消息页可能一直没被打开
+ * （角标却一直挂在底栏上）。所以由外壳负责把这一趟补上：登录成功后拉一次，
+ * 退出登录由 `droneAlarm` 自己的 token watch 清空。
+ * `load()` 自带 `todayKnown` 去重与并发保护，与消息页同时挂载也只跑一趟。
+ */
+watch(
+  () => auth.token,
+  (t) => {
+    if (t) void droneAlarm.load()
+  },
+)
 
 /**
  * 系统状态栏区域的底色

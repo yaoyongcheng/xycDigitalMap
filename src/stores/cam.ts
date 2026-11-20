@@ -1,16 +1,21 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchCamSnapshot } from '@/api/camsnap'
+import {
+  fetchCamShotHistory,
+  SHOT_PAGE_SIZE,
+  SHOT_RANGE_DAYS,
+  SNAP_UPDATE_HOURS,
+  type CamShotItem,
+} from '@/api/camsnap'
 import { findMonitorEntry, loadMonitorList, pickStreamUrl, type MonitorEntry } from '@/api/cctv'
 import { CAM_GROUPS, CAM_POINTS, findCamPoint } from '@/data/cams'
 import { cctvPlayableUrl, cctvRtspUrl, streamModeOf, type StreamMode } from '@/data/cctv'
 import { addDays, dateKey, formatCamDate, monthStart, startOfDay } from '@/utils/date'
 import {
   clearShots as clearShotArchive,
-  listShots,
-  saveShot,
-  SHOT_SLOT_HOURS,
+  ensureShot,
+  listCachedShots,
   type ShotRecord,
 } from '@/utils/shotArchive'
 import { useAirHazardStore } from './airHazard'
@@ -27,30 +32,23 @@ import { useSubpageStore } from './subpage'
  * 于是监控页只有「材料堆场 / 安全讲台」两个点位），所谓「直播位」其实是最近一次
  * 报警抓拍，还挂着一个假的播放按钮 —— 点下去只弹一句「实时视频流未开放」。
  *
- * 现在改走万方媒体服务的**监控快照接口**（`api/camsnap.ts`，V2 桌面端同源画面）：
- *   · 点位是写死的 8 个白名单（`data/cams.ts`），分「出入口 / 场内 / 塔吊」三组；
- *   · 每个点位取自己通道的最新画面，按需加载 + 会话内缓存；
- *   · 不做轮询 —— 快照一天只更新几次，轮询只是白下流量。
+ * 点位是写死的 9 个白名单（`data/cams.ts`），分「设备设施 / 材料堆场 /
+ * 出入口管控」三组；画面一律来自直播流（`data/cctv.ts` 按通道拼的 HTTP-FLV，
+ * 生命周期在 `utils/flvStream.ts`）。
  *
- * ## 双模：有流就播流，没流就取帧（2026-11-18 补播放联动）
+ * ## 不再取定时快照（2026-11-20 晚）
  *
- * 播放键不是摆设，也不假装：`streamUrl` 有值（点位自带 `stream`，或 `.env` 里配了
- * `VITE_CAM_STREAM_TEMPLATE`）才渲染 `<video>`，播放键走 `play()/pause()`，按钮图标
- * 由 `<video>` 抛的 play / pause / waiting / error 事件驱动 —— 状态以媒体元素为准，
- * 不以点击次数为准，所以连点、切换、断流都不会把按钮和画面点岔。
- *
- * 没有流时（当前就是这种情况：媒体服务只提供定时快照）播放键 = 「重新取一帧」，
- * 与「刷新」同源，`state==='loading'` 时进禁用态，连点也只发一次请求。
+ * 旧实现每打开一个点位就 GET 一次 `/api/video/snapshots?pid&channelId` 取「最近
+ * 一帧」，再把它当 `<video poster>` 和断流时的兜底图。该接口已随历史接口上线下线：
+ *   · 画面只留直播流 —— 连不上就是空的，不再拿一张定时图冒充「现场画面」；
+ *   · 要「这台相机最近的照片」走历史抓拍（`loadShots` → `/snapshots/history`），
+ *     与首页智眸同一套数据源。
  *
  * ## 状态只留「当前点位」一份
  *
- * 一次只显示一个画面，所以 `state / note` 是单份而不是按通道存：切点位时旧请求
- * 直接 abort（`seq` 兜住晚到的响应），不会出现「切到 A 却显示 B 的图」。
- * 已经取到的画面按通道缓存，来回切不重复下载（单张 200~500KB）。
+ * 一次只显示一个画面，播放态（`playState / playNote`）是单份而不是按通道存：
+ * 切点位时复位，不把上一个点位的「在播」带过来。
  */
-
-/** idle 未取 / loading 取图中 / ok 已到手 / error 取失败 */
-export type CamFrameState = 'idle' | 'loading' | 'ok' | 'error'
 
 /**
  * 播放态（只有「有直播流」的点位才会离开 idle）。
@@ -64,8 +62,8 @@ export type CamFrameState = 'idle' | 'loading' | 'ok' | 'error'
  *   · error   → error（快速重试用完，说清原因；**注意引擎仍在后台低频重连**，
  *     不是永久判决 —— 流一回来就会自己变成 playing）
  *
- * 为什么单独留一个 `reconnecting`：重连期间画面临时让给快照、按钮该是转圈 +
- * 「立即重连」，和「暂停 / 播放」是两种语义。混进 `buffering` 的话，按钮会在
+ * 为什么单独留一个 `reconnecting`：重连期间画面蒙着、说明条写「在恢复」，
+ * 与「暂停 / 播放」是两种语义。混进 `buffering` 的话，状态会在
  * 三角和转圈之间来回跳，用户以为点坏了。
  */
 export type CamPlayState = 'idle' | 'buffering' | 'reconnecting' | 'playing' | 'paused' | 'error'
@@ -73,44 +71,37 @@ export type CamPlayState = 'idle' | 'buffering' | 'reconnecting' | 'playing' | '
 /**
  * 一张历史抓拍。
  *
- * 字段按「接入真实接口后视图不用改」来定：缩略图与原图分开（列表只下缩略图）、
- * 记通道（换点位后仍能说清是哪台相机）、记时刻（分组与排序都靠它）。
+ * 字段以服务端历史列表为准（`mark` / 抓拍时刻 / 字节数），本机只补两样东西：
+ * 图片的 objectURL（列表用缩略图、详情用原图）与「这张图还没取回来」的状态。
  */
 export interface CamShot {
-  /** 主键 = `通道|日期|档位` */
+  /** 主键 = 服务端 `mark`（`YYYYMMDDHHmmss`，同通道唯一） */
   id: string
-  /** 压缩预览（列表用，长边 480 的 WebP） */
+  /** 同上，单独留一份便于排查 */
+  mark: string
+  /** 压缩预览（列表用，长边 480 的 WebP；未取回时为空串） */
   thumb: string
-  /** 原图（点开看大图用） */
+  /** 原图（详情「查看原图」用；未取回时为空串） */
   url: string
-  /** 抓拍时刻（ms） */
+  /** 抓拍时刻（ms，服务端给的） */
   at: number
-  /** 档位序号 0/1/2（08:00 / 12:00 / 18:00） */
-  slot: number
-  /** 原图字节数 */
+  /** 抓拍时刻（'HH:mm'，列表标签直接用） */
+  hm: string
+  /** 原图字节数（服务端声明） */
   size: number
   /** 所属点位 */
   channelId: string
+  /** 图片本身的状态（元信息先上屏，图逐张补） */
+  state: 'loading' | 'ok' | 'error'
 }
 
 /**
  * 历史抓拍的可查范围：以今天为基准的**近 30 天**（含今天）。
  *
- * 上下界都不是随便定的：
- *   · 上界必须是今天 —— 服务端只有「最近一帧」，未来日期连数据源都不存在；
- *   · 下界跟着本机档案的淘汰天数走（`SHOT_KEEP_DAYS`），比档案更早的日期
- *     必然是空的，放开了只会让人白点一次、看到「本机没有记录」。
- * 两边一起改，别只改一边（改一边就会出现「能选但永远没图」的死日期）。
+ * 跟服务端的口径对齐（文档：北京时间近 30 个自然日），越界请求会被服务端 400，
+ * 所以日期芯片 / 日历必须在这里就先拦下来，别把用户送进一次必然失败的请求。
  */
-export const SHOT_RANGE_DAYS = 30
-
-/** 一个通道已取到的画面 */
-interface CamFrame {
-  /** objectURL（换图时 revoke） */
-  url: string
-  /** 取图时刻（ms）—— 画面本身带相机 OSD 时间，这里只记「什么时候拿到的」 */
-  at: number
-}
+export { SHOT_RANGE_DAYS }
 
 export const useCamStore = defineStore('cam', () => {
   const shell = useShellStore()
@@ -120,16 +111,6 @@ export const useCamStore = defineStore('cam', () => {
 
   /** 当前点位（channelId）。默认第一个，关掉再开保持上次选择 */
   const camId = ref<string>(CAM_POINTS[0].channelId)
-
-  const state = ref<CamFrameState>('idle')
-  const note = ref('')
-
-  /** channelId → 已取到的画面（会话内缓存） */
-  const frames = ref<Record<string, CamFrame>>({})
-
-  /** 取图序号：切点位/重取时只让最后一次落地 */
-  let seq = 0
-  let inflight: AbortController | null = null
 
   const points = CAM_POINTS
 
@@ -141,14 +122,6 @@ export const useCamStore = defineStore('cam', () => {
       (g) => g.items.length > 0,
     ),
   )
-
-  const frame = computed<CamFrame | null>(() => frames.value[current.value.channelId] ?? null)
-
-  /** 当前点位画面地址（空串 = 还没有，页面上是加载态/空态） */
-  const frameUrl = computed(() => frame.value?.url ?? '')
-
-  /** 当前画面是什么时候取到的（ms，0 = 没取到） */
-  const frameAt = computed(() => frame.value?.at ?? 0)
 
   /* ---------------- 直播流（有则播、无则只有快照） ---------------- */
 
@@ -266,14 +239,14 @@ export const useCamStore = defineStore('cam', () => {
   }
 
   /**
-   * 流打不开：记下**引擎给的具体原因**，页面回到快照兜底。
+   * 流打不开：记下**引擎给的具体原因**。
    *
-   * 这不是「放弃」—— `msg` 里已经写明还会继续自动重连、可以点播放键立即重试；
+   * 这不是「放弃」—— `msg` 里已经写明还会继续自动重连、点画面可以立即重试；
    * 流一旦回来，引擎会再抛 `playing` 把这里盖掉。
    */
   function markPlayError(msg = ''): void {
     playState.value = 'error'
-    playNote.value = msg || '直播流连接失败，已回到定时快照'
+    playNote.value = msg || '直播流连接失败，正在自动重连'
   }
 
   /** 切点位/关层时复位，别把上一个点位「正在播放」带过来 */
@@ -282,7 +255,7 @@ export const useCamStore = defineStore('cam', () => {
     playNote.value = ''
   }
 
-  /* ---------------- 历史抓拍（2026-11-19：接真实快照 + 本机档案） ---------------- */
+  /* ---------------- 历史抓拍（2026-11-20：走服务端历史接口） ---------------- */
 
   /** 是否停在「历史抓拍」视图（画面视图与之互斥） */
   const shotsOpen = ref(false)
@@ -297,6 +270,7 @@ export const useCamStore = defineStore('cam', () => {
    *
    * 写成 computed 而不是常量：应用挂在前台跨过零点时，「今天」会变，
    * 区间要跟着挪一天，否则第二天早上打开还是只能选到昨天。
+   * 这个区间与服务端的「近 30 个自然日」逐日对齐（实测 rangeStart = 今天 - 29）。
    */
   const shotMaxDate = computed(() => startOfDay(new Date()))
   const shotMinDate = computed(() => addDays(shotMaxDate.value, 1 - SHOT_RANGE_DAYS))
@@ -324,12 +298,12 @@ export const useCamStore = defineStore('cam', () => {
   /**
    * 标题右侧那句说明。
    *
-   * 设计稿写的是「每天 3 张，点开查看照片」—— 前半句是真的（上游每天
-   * 08:00 / 12:00 / 18:00 各更新一次），但「3 张」指的是**服务端的更新次数**，
-   * 不是一份随时可查的历史列表。所以这里把口径写实：更新节奏 + 当天留了几张。
+   * 更新节奏来自接口文档（每天 08:00 / 12:00 / 18:00 由服务端逐通道更新，不是整点
+   * 同时完成），「当天 N 张」是这次列表真的返回了几张 —— 有的通道三张、有的通道
+   * 服务端没有历史索引一张没有，所以数字以接口为准，不写死 3。
    */
   const shotsHint = computed(() => {
-    const hours = SHOT_SLOT_HOURS.join(' / ')
+    const hours = SNAP_UPDATE_HOURS.join(' / ')
     return `每天 ${hours} 点更新 · 当天 ${shots.value.length} 张`
   })
 
@@ -338,12 +312,18 @@ export const useCamStore = defineStore('cam', () => {
     return `${d.getMonth() + 1}月${d.getDate()}日`
   }
 
+  /** 'HH:mm'（列表标签、详情标题都用它） */
+  function hmOf(at: number): string {
+    const d = new Date(at)
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+
   /** 空态那句话（今天 / 历史日口径不同） */
   function shotEmptyNote(): string {
     if (shotDateLabel.value === '今天') {
-      return '服务端只保留最近一帧快照（每天 08 / 12 / 18 点各更新一次），今天还没取到画面。点下面「重新获取」立刻抓一张。'
+      return '服务端今天还没有这个点位的历史抓拍（相机离线，或今天的几次更新都没成功）。点下面「重新获取」再查一次。'
     }
-    return `服务端只保留最近一帧快照、不保存历史；这一天本机也没有留存记录（本机只存近 ${SHOT_RANGE_DAYS} 天）。`
+    return `服务端只保留近 ${SHOT_RANGE_DAYS} 天（${md(shotMinDate.value)} 起）的抓拍，这一天没有记录。`
   }
 
   function releaseShotUrls(): void {
@@ -357,116 +337,202 @@ export const useCamStore = defineStore('cam', () => {
     shotUrls = []
   }
 
-  /** 一条档案 → 视图用的 CamShot（两份 objectURL：缩略图 / 原图） */
-  function toCamShot(rec: ShotRecord): CamShot {
-    const make = (b: Blob): string => {
-      if (typeof URL.createObjectURL !== 'function') return ''
-      const u = URL.createObjectURL(b)
-      shotUrls.push(u)
-      return u
+  function revokeShotUrl(u: string): void {
+    if (!u) return
+    try {
+      URL.revokeObjectURL(u)
+    } catch {
+      /* 忽略 */
     }
+    const i = shotUrls.indexOf(u)
+    if (i >= 0) shotUrls.splice(i, 1)
+  }
+
+  /** blob → objectURL（登记到 `shotUrls`，重查 / 关层统一撤） */
+  function makeShotUrl(b: Blob): string {
+    if (typeof URL.createObjectURL !== 'function') return ''
+    const u = URL.createObjectURL(b)
+    shotUrls.push(u)
+    return u
+  }
+
+  /** 列表行（元信息）→ 视图：图还没取回来，先摆时刻与张数 */
+  function metaShot(item: CamShotItem, channelId: string): CamShot {
     return {
-      id: rec.key,
-      at: rec.at,
-      slot: rec.slot,
-      size: rec.size,
-      channelId: rec.channelId,
-      thumb: make(rec.thumb),
-      url: make(rec.full),
+      id: item.mark,
+      mark: item.mark,
+      thumb: '',
+      url: '',
+      at: item.at,
+      hm: hmOf(item.at),
+      size: item.size,
+      channelId,
+      state: 'loading',
     }
   }
 
+  /** 缓存记录 → 视图（两份 objectURL：缩略图 / 原图） */
+  function toCamShot(rec: ShotRecord): CamShot {
+    return {
+      id: rec.mark,
+      mark: rec.mark,
+      thumb: makeShotUrl(rec.thumb),
+      url: makeShotUrl(rec.full),
+      at: rec.at,
+      hm: hmOf(rec.at),
+      size: rec.size,
+      channelId: rec.channelId,
+      state: 'ok',
+    }
+  }
+
+  /** 就地替换一条（`shots` 是 ref 数组，整体换引用才触发渲染） */
+  function patchShot(mark: string, fn: (s: CamShot) => CamShot): void {
+    const i = shots.value.findIndex((s) => s.mark === mark)
+    if (i < 0) return
+    const next = shots.value.slice()
+    next[i] = fn(next[i])
+    shots.value = next
+  }
+
   /**
-   * 查询某天某点位的抓拍。**这里是唯一的数据接入点。**
+   * 取回一张抓拍图片（缓存优先）。
    *
-   * 服务端能力（《监控快照接口使用说明》+ 2026-11-19 实测）：
-   *   · 只有 `GET /api/video/snapshots?pid&channelId` 一种，回**最近一帧**；
-   *   · 带 `date` / `startTime` 之类参数直接 400「不支持的查询参数」；
-   *   · `/snapshots/history`、`/list`、`/records`、`/count` 全 404。
+   * 单张 200~340KB，文档要求「逐张请求、别并发占带宽」；这里用 2 路（与报警
+   * 缩略图同口径）：三列网格里上屏够快，也不至于把现场上行打满。
+   */
+  async function loadShotImage(
+    channelId: string,
+    item: CamShotItem,
+    signal: AbortSignal,
+    alive: () => boolean,
+  ): Promise<void> {
+    try {
+      const rec = await ensureShot(channelId, item, signal)
+      if (!alive()) return
+      const prev = shots.value.find((s) => s.mark === item.mark)
+      if (prev) {
+        revokeShotUrl(prev.thumb)
+        revokeShotUrl(prev.url)
+      }
+      patchShot(item.mark, (s) => ({
+        ...s,
+        thumb: makeShotUrl(rec.thumb),
+        url: makeShotUrl(rec.full),
+        size: rec.size,
+        state: 'ok',
+      }))
+    } catch (e) {
+      if (!alive()) return
+      // 自己取消的不算失败；内部的 12s 超时（同样是 AbortError）要给「重试」，
+      // 不能留一张永远转圈的格子。
+      if ((e as Error)?.name === 'AbortError' && signal.aborted) return
+      patchShot(item.mark, (s) => ({ ...s, state: 'error' }))
+    }
+  }
+
+  /** 把一页里所有图片按 2 路并发补上（元信息已经在屏上了） */
+  async function loadShotImages(
+    channelId: string,
+    items: CamShotItem[],
+    signal: AbortSignal,
+    alive: () => boolean,
+  ): Promise<void> {
+    const queue = items.slice()
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const it = queue.shift()
+        if (!it || !alive()) return
+        await loadShotImage(channelId, it, signal, alive)
+      }
+    }
+    await Promise.all([worker(), worker()])
+  }
+
+  /**
+   * 查询某天某点位的抓拍。**这里是历史抓拍的唯一数据接入点。**
    *
-   * 所以流程是：
-   *   ① 先读本机档案 → 本机有的照片立刻上屏（不等网络）；
-   *   ② 选中的是**今天**时，再真请求一次快照，按「更新档」存进档案
-   *      （同档重复取到同样大小的字节不覆盖，时刻保持第一次看到的那个），落档后重画；
-   *   ③ 今天请求失败但档案里有旧记录 → 照常显示，只在说明里提一句失败。
+   * 文档（《监控快照接口.docx》）：`GET /api/video/snapshots/history?pid&channelId&page&pageSize[&date]`，
+   * `data.items` 是当前页、`data.total` 是总数；`date` 只支持北京时间近 30 天，
+   * `pageSize` 最大 100 —— 一天最多 3~7 张，所以一次取满不翻页。
    *
-   * 将来万方开了历史接口，只改 ② 这一段（换成 `fetchCamShots(channelId, day)`），
-   * 视图、日期芯片、日历、详情弹层都不用动。
+   * 流程：
+   *   ① 调历史列表 → **元信息先上屏**（时刻、张数立刻是真的）；
+   *   ② 图片逐张补（缓存优先、2 路并发），补一张亮一张；
+   *   ③ 列表为空就是「这一天没有」—— 不再退「最近一帧」（那个接口已下线）；
+   *   ④ 接口整体失败 → 有本机缓存就摆缓存并说明「这是缓存」，没有才报错。
+   *
+   * 图片地址一律用服务端行里的 `imageUrl`（拼测试环境入口 + 带 `X-API-Key`），
+   * **不自己拼 mark** —— 这是文档明确要求的一条。
    */
   async function loadShots(): Promise<void> {
     const id = camId.value
     if (!id) return
     const day = dateKey(shotDate.value)
-    const isToday = day === dateKey(new Date())
 
     shotInflight?.abort()
     const ac = new AbortController()
     shotInflight = ac
     const my = ++shotSeq
+    const alive = (): boolean => my === shotSeq && !ac.signal.aborted
 
     releaseShotUrls()
     shots.value = []
     shotPopId.value = ''
+    shotShowFull.value = false
     shotsState.value = 'loading'
     shotsNote.value = ''
 
-    /** 把一批档案铺到页面上（`keepWhenEmpty` 为真时不清掉已经显示的照片） */
-    const paint = async (keepWhenEmpty = false): Promise<boolean> => {
-      const recs = await listShots(id, day)
-      if (my !== shotSeq) return false
-      if (!recs.length && keepWhenEmpty) return false
-      releaseShotUrls()
-      shots.value = recs.map(toCamShot)
-      return true
+    /** 收尾：放开 inflight，别让「加载中」把下一次查询挡住 */
+    const done = (): void => {
+      if (shotInflight === ac) shotInflight = null
     }
 
-    /**
-     * ① 先出档案：本机有的照片立刻显示，不等网络。
-     * 手机在工地上网慢，为了「取最新一帧」让整页转好几秒是不划算的。
-     */
-    let shown = false
+    let items: CamShotItem[] = []
     try {
-      shown = await paint()
-      if (my !== shotSeq) return
-      if (shown) {
+      const page = await fetchCamShotHistory(
+        id,
+        { date: day, page: 1, pageSize: SHOT_PAGE_SIZE },
+        ac.signal,
+      )
+      if (!alive()) return
+      items = page.items
+    } catch (e) {
+      if (!alive()) return
+      const timedOut = (e as Error)?.name === 'AbortError'
+      // 只有「自己取消的」才安静退出（切日期 / 关层 / 换点位）；
+      // 内部 10s 超时也是 AbortError，但它得落到失败态，否则页面一直转圈。
+      if (timedOut && ac.signal.aborted) return
+      const why = timedOut ? '监控服务响应超时' : (e as Error)?.message || '抓拍获取失败'
+      // 接口挂了：本机缓存里这一天的照片还能看（`mark` / 时刻都是服务端给过的真值），
+      // 说明一句「这是缓存」，不拿别的日期顶替。
+      const cached = await listCachedShots(id, day)
+      if (!alive()) return
+      if (cached.length) {
+        shots.value = cached.map(toCamShot)
         shotsState.value = 'ok'
+        shotsNote.value = `服务端暂时取不到（${why}），下面是本机缓存的抓拍`
+      } else {
+        shotsState.value = 'error'
+        shotsNote.value = why
       }
-    } catch {
-      /* 档案读不出来不致命，下面还会试接口 */
+      done()
+      return
     }
 
-    /**
-     * ② 今天再补一次最新：真请求 `/api/video/snapshots`，落档后重画。
-     * 别的日期不发请求 —— 服务端没有按天查询这回事。
-     */
-    let snapErr = ''
-    if (isToday) {
-      try {
-        const blob = await fetchCamSnapshot(id, ac.signal)
-        if (my !== shotSeq) return
-        await saveShot(id, blob)
-        if (my !== shotSeq) return
-        shown = (await paint(true)) || shown
-      } catch (e) {
-        if (ac.signal.aborted || (e as Error)?.name === 'AbortError') return
-        if (my !== shotSeq) return
-        snapErr = (e as Error)?.message || '监控画面获取失败'
-      }
-    }
-    if (my !== shotSeq) return
-
-    if (shots.value.length) {
-      shotsState.value = 'ok'
-      shotsNote.value = snapErr ? `最近一帧获取失败（${snapErr}），下面是已留存的历史` : ''
-    } else if (snapErr) {
-      shotsState.value = 'error'
-      shotsNote.value = snapErr
-    } else {
+    if (!items.length) {
       shotsState.value = 'empty'
       shotsNote.value = shotEmptyNote()
+      done()
+      return
     }
 
-    if (shotInflight === ac) shotInflight = null
+    // ① 元信息先上屏 ② 图片逐张补
+    shots.value = items.map((it) => metaShot(it, id))
+    shotsState.value = 'ok'
+    await loadShotImages(id, items, ac.signal, alive)
+    if (!alive()) return
+    done()
   }
 
   /** 展开 / 收起日历（展开时把月份对齐到选中日，同设计稿 showCamCal） */
@@ -541,9 +607,19 @@ export const useCamStore = defineStore('cam', () => {
     shotsNote.value = ''
   }
 
-  /** 打开一张抓拍的大图（从压缩预览起步，与智眸一致） */
+  /**
+   * 打开一张抓拍的大图（从压缩预览起步，与智眸一致）。
+   *
+   * 图还没取回来（或上次失败）时不硬开一张空白大图：重查这一天 —— 缓存已经在
+   * 本机的会立刻上屏，没取到的重新下一张。
+   */
   function openShot(id: string): void {
-    if (!shots.value.some((s) => s.id === id)) return
+    const s = shots.value.find((x) => x.id === id)
+    if (!s) return
+    if (s.state !== 'ok') {
+      void loadShots()
+      return
+    }
     shotShowFull.value = false
     shotPopId.value = id
   }
@@ -553,7 +629,7 @@ export const useCamStore = defineStore('cam', () => {
     shotShowFull.value = false
   }
 
-  /** 详情里切「查看原图」（原图就在本机档案里，切换是即时的） */
+  /** 详情里切「查看原图」（原图已随缩略图一起落本机缓存，切换是即时的） */
   function showShotFull(): void {
     if (!shotPop.value) return
     shotShowFull.value = true
@@ -565,54 +641,6 @@ export const useCamStore = defineStore('cam', () => {
   }
 
   /**
-   * 取当前点位的画面。
-   *
-   * - 已有缓存且不是 `force` → 不再请求（来回切点位不重复下 200~500KB）；
-   * - 切点位时 abort 上一次 —— 慢请求回来得晚也不会盖掉新点位的图；
-   * - 失败只记状态与原因，页面给重试按钮，不清掉别的点位已取到的画面。
-   */
-  async function load(force = false): Promise<void> {
-    const id = camId.value
-    if (!id) return
-    if (!force && frames.value[id]) {
-      state.value = 'ok'
-      note.value = ''
-      return
-    }
-
-    inflight?.abort()
-    const ac = new AbortController()
-    inflight = ac
-    const my = ++seq
-    state.value = 'loading'
-    note.value = ''
-
-    try {
-      const blob = await fetchCamSnapshot(id, ac.signal)
-      if (my !== seq) return
-      if (typeof URL.createObjectURL !== 'function') throw new Error('当前环境不支持 objectURL')
-      const url = URL.createObjectURL(blob)
-      const prev = frames.value[id]
-      frames.value = { ...frames.value, [id]: { url, at: Date.now() } }
-      if (prev && prev.url !== url) URL.revokeObjectURL(prev.url)
-      state.value = 'ok'
-    } catch (e) {
-      // 自己取消的（切了点位 / 关了页面）不算失败
-      if (ac.signal.aborted || (e as Error)?.name === 'AbortError') return
-      if (my !== seq) return
-      state.value = 'error'
-      note.value = (e as Error)?.message || '监控画面获取失败'
-    } finally {
-      if (inflight === ac) inflight = null
-    }
-  }
-
-  /** 手动刷新当前画面（页面上的「刷新」；快照更新后想立刻看到最新一张时用） */
-  function refresh(): void {
-    void load(true)
-  }
-
-  /**
    * 切点位。
    *
    * 不做 `keepLive` 之类的判断 —— 切过去就是取那张图；若新点位有直播流，
@@ -620,11 +648,10 @@ export const useCamStore = defineStore('cam', () => {
    */
   function applyCam(id: string): void {
     if (!findCamPoint(id)) return
-    if (id === camId.value && frames.value[id]) return
+    if (id === camId.value) return
     camId.value = id
     resetPlay()
     closeShots()
-    void load()
   }
 
   /** 打开监控层（入口：工作台「视频监控」）。未登录先去登录，不摆空播放器 */
@@ -641,7 +668,6 @@ export const useCamStore = defineStore('cam', () => {
     resetPlay()
     closeShots()
     isOpen.value = true
-    void load()
     void loadManifest()
   }
 
@@ -652,12 +678,8 @@ export const useCamStore = defineStore('cam', () => {
     isOpen.value = false
   }
 
-  /** 撤掉所有 objectURL（登出 / 换账号时用；单张 200~500KB，攒着没意义） */
-  function clearFrames(): void {
-    for (const f of Object.values(frames.value)) URL.revokeObjectURL(f.url)
-    frames.value = {}
-    state.value = 'idle'
-    note.value = ''
+  /** 登出 / 换账号：抓拍列表、objectURL、本机档案都不留给下一个人 */
+  function clearAll(): void {
     resetPlay()
     closeShots()
     shotInflight?.abort()
@@ -670,15 +692,13 @@ export const useCamStore = defineStore('cam', () => {
     shotShowFull.value = false
     // 抓拍档案也是按会话存的：登出后下一个人不该看到上一个人的现场照
     void clearShotArchive()
-    inflight?.abort()
-    inflight = null
   }
 
   // 会话失效就清画面：现场监控不该留给下一个人
   watch(
     () => auth.token,
     (t) => {
-      if (!t) clearFrames()
+      if (!t) clearAll()
     },
   )
 
@@ -688,10 +708,6 @@ export const useCamStore = defineStore('cam', () => {
     points,
     current,
     grouped,
-    state,
-    note,
-    frameUrl,
-    frameAt,
     monitorList,
     manifestSource,
     loadManifest,
@@ -734,11 +750,9 @@ export const useCamStore = defineStore('cam', () => {
     closeShot,
     showShotFull,
     setCamLand,
-    load,
-    refresh,
     applyCam,
     openCam,
     closeCam,
-    clearFrames,
+    clearAll,
   }
 })

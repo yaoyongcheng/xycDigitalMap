@@ -359,13 +359,19 @@ describe('结构性守卫', () => {
       expect(useShellStore().toast).toBe('功能待定')
     })
 
-    it('消息页：真实报警派生的视频消息图标正确', () => {
-      // 阶段 5：消息不再是写死的「人员预警 / 巡检预警」，一条报警一条消息
+    it('消息页：两张分类卡的图标都是真的 SVG（监控摄像机 / 无人机）', () => {
+      // 2026-11-20 起消息页是「监控预警 / 无人机预警」两张分类卡，
+      // 不再一条报警一条消息；未登录只给空态，所以要先登进去
+      const auth = useAuthStore()
+      auth.token = 'test-token'
+      auth.expiresAt = Date.now() + 3_600_000
       useAlarmStore().liveAlarms = camAlarmFixtures().slice(0, 2)
+
       const w = mount(MsgPage)
       const icons = w.findAll('.msg-ico')
       expect(icons).toHaveLength(2)
-      expect(icons.every((i) => i.classes().includes('video'))).toBe(true)
+      expect(icons[0].classes()).toContain('cam')
+      expect(icons[1].classes()).toContain('drone')
       expect(shapes(w)).toBeGreaterThan(0)
       assertAllSvgReal(w)
     })

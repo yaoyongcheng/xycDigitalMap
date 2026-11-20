@@ -1,67 +1,53 @@
+import { camShotImageUrl, fetchCamShotImage } from '@/api/camsnap'
 import { dateKey } from './date'
 
 /**
- * 历史抓拍的本机档案（2026-11-19）
+ * 历史抓拍的数据层（2026-11-20 改走服务端历史接口）
  *
- * ## 为什么需要「本机档案」
+ * ## 这次改了什么
  *
- * 《监控快照接口使用说明》写得很明确：`/api/video/snapshots` 只回**最近一次
- * 成功更新**的那一帧，且「万方不保存截图、不做历史快照留存」，实测也不接受
- * `date` / `startTime` 之类的参数（带未知参数直接 400），
- * `/snapshots/history`、`/list`、`/records`、`/count` 全是 nginx 404。
+ * 更早的版本服务端只有「最近一帧」快照、没有历史（`/snapshots/history` 当时 404），
+ * 于是历史抓拍页只能靠**本机档案**：每打开一次监控就把那一帧按「08/12/18 档」
+ * 存进 IndexedDB，换设备 / 清缓存后以前的日期全是空的。
  *
- * 也就是说**服务端根本没有按天查询的能力**。设计稿里「每天 3 张」来自上游的
- * 更新节奏（08:00 / 12:00 / 18:00，每天三次），不是一份可查的历史列表。
+ * 现在服务端只有历史接口（《监控快照接口.docx》，近 30 天、按天可查、带 `mark`），
+ * 旧的「最近一帧」地址（`…/snapshots?pid&channelId`）已下线，本机档案不再负责
+ * 「补一张最新画面」，只做图片缓存：
+ *   · **列表与时刻都以服务端为准** —— `mark` / `capturedAt` / `fileSize` 原样用，
+ *     不再用本机时钟猜「属于哪一档」；
+ *   · 本机只做**图片缓存**：一张 200~340KB，同一张反复看没必要重复下；
+ *     缩略图（长边 480 的 WebP）也在首次落盘时生成，列表只挂它。
  *
- * 所以这里做的是：**每取到一帧就按「通道 + 更新档」存到本机**（IndexedDB），
- * 历史抓拍页读这份档案。好处是照片、时刻、张数全是真的，不拿演示图凑数；
- * 代价是**换设备 / 清缓存后，之前的日期没有记录** —— 页面会明确说出来，
- * 而不是显示一张看着像历史的假图。
+ * ## 为什么还要本机缓存
  *
- * 将来万方真开了历史接口，只需要替换 `stores/cam.ts` 的 `loadShots()`：
- * 本文件是存储层，不掺业务判断。
+ * 图片必须带 `X-API-Key` 头取（文档要求），不能塞 `<img src>`；工地弱网下一张
+ * 要一两秒。缓存按 `通道|mark` 存（`mark` 是服务端唯一标识，天然去重），
+ * 有效期跟着接口的 30 天走，超出按最旧淘汰。
  *
- * ## 存什么
- *
- * 每条记录两份字节：
- *   · `thumb` —— 列表用的**压缩预览**（长边 480 的 WebP，约 20KB）；
- *   · `full`  —— 详情「查看原图」用的原始字节（实测 200~500KB）。
- *
- * 原图必须留下：快照接口每次返回的都是同一张，下次未必还在（上游会覆盖），
- * 所以「历史」的意义就在于把当时那张原图留住。
- *
- * 容量靠淘汰兜住：只留最近 {@link SHOT_KEEP_DAYS} 天，总量超过
- * {@link SHOT_MAX_BYTES} 时从最旧的开始删（一张原图 280KB，一个通道一天
- * 最多 3 张，正常用不到上限）。
+ * 本文件同时是**唯一取图入口**（{@link ensureShot}）：工作台的「历史抓拍」与
+ * 首页智眸的「塔吊 / 出入口抓拍」都调它，两条路径的缓存键、超时、缩略图规则
+ * 才不会各写一套。
  */
 
-/** 每天的快照更新档（北京时间 08:00 / 12:00 / 18:00，见接口文档第 3 节） */
-export const SHOT_SLOT_HOURS = [8, 12, 18] as const
-
-/**
- * 档案保留天数（超过就淘汰最旧的）。
- *
- * 必须 ≥ `stores/cam.ts` 的 `SHOT_RANGE_DAYS`（可选日期范围）：日期选得进来
- * 档案却已经删了，用户看到的就是一排「没有记录」的死日期。两边对齐到 30 天。
- */
+/** 缓存保留天数：与接口可查范围一致（近 30 个自然日） */
 export const SHOT_KEEP_DAYS = 30
 
-/** 档案总字节上限（超出按最旧淘汰） */
+/** 缓存总字节上限（超出按最旧淘汰） */
 export const SHOT_MAX_BYTES = 64 * 1024 * 1024
 
 /** 缩略图长边（像素） */
 const THUMB_MAX_W = 480
 
-/** 一条抓拍档案 */
+/** 一条抓拍缓存 */
 export interface ShotRecord {
-  /** 主键：`通道|日期|档位`，同一档重复取图直接覆盖，天然去重 */
+  /** 主键：`通道|mark`（同一张重复落到同一条） */
   key: string
   channelId: string
-  /** 'YYYY-MM-DD'，按**档位归属日**算（凌晨取到的是昨天 18:00 那一档） */
+  /** 服务端抓拍标识 `YYYYMMDDHHmmss` */
+  mark: string
+  /** 'YYYY-MM-DD'（按服务端抓拍时刻换算的本地自然日） */
   day: string
-  /** 档位序号 0 / 1 / 2 */
-  slot: number
-  /** 这张图第一次被抓到的时刻（ms）—— 页面上显示的就是它 */
+  /** 抓拍时刻（ms，服务端给的） */
   at: number
   /** 原图字节数 */
   size: number
@@ -71,43 +57,29 @@ export interface ShotRecord {
   full: Blob
 }
 
-/** 一条档案的轻量元信息（淘汰 / 计数用，不带图片字节） */
+/** 列表里一行最少需要的信息（够了就能取到图，也能落到缓存） */
+export interface ShotItemRef {
+  mark: string
+  at: number
+  /** 服务端声明的字节数：与缓存一致就直接用缓存，不必再下 */
+  size?: number
+  /** 服务端给的图片地址（为空时退回「最近一帧」） */
+  imageUrl?: string
+}
+
+/** 一条缓存的轻量元信息（淘汰 / 找最新用，不带图片字节） */
 interface ShotMeta {
   key: string
   channelId: string
+  mark: string
   day: string
   at: number
   size: number
 }
 
-/** 某一时刻属于哪一档 */
-export interface ShotSlotRef {
-  /** 档位归属日 'YYYY-MM-DD' */
-  day: string
-  /** 档位序号 */
-  slot: number
-  /** 该档的整点时刻（ms） */
-  boundary: number
-}
-
-/**
- * 取 `ts` 所属的更新档。
- *
- * 语义是「**最近一次已经发生的更新**」：09:19 取到的图属于 08:00 那一档；
- * 07:30 取到的还是昨天 18:00 那一档（今天 08:00 的还没生成）。
- * 所以凌晨打开监控时，那张图会记到昨天，不会被算成今天的第一张。
- */
-export function slotAt(ts: number): ShotSlotRef {
-  const d = new Date(ts)
-  for (let i = SHOT_SLOT_HOURS.length - 1; i >= 0; i--) {
-    const b = new Date(d)
-    b.setHours(SHOT_SLOT_HOURS[i], 0, 0, 0)
-    if (b.getTime() <= ts) return { day: dateKey(b), slot: i, boundary: b.getTime() }
-  }
-  const y = new Date(d)
-  y.setDate(y.getDate() - 1)
-  y.setHours(SHOT_SLOT_HOURS[SHOT_SLOT_HOURS.length - 1], 0, 0, 0)
-  return { day: dateKey(y), slot: SHOT_SLOT_HOURS.length - 1, boundary: y.getTime() }
+/** 缓存主键 */
+export function shotKey(channelId: string, mark: string): string {
+  return `${channelId}|${mark}`
 }
 
 /* ------------------------------------------------------------------ *
@@ -115,7 +87,8 @@ export function slotAt(ts: number): ShotSlotRef {
  * ------------------------------------------------------------------ */
 
 const DB_NAME = 'xyc-cam-shots'
-const DB_VER = 1
+/** v2：主键从「通道|日期|档位」换成「通道|mark」，旧键不再有意义，升级时整库重建 */
+const DB_VER = 2
 const STORE_SHOT = 'shots'
 const STORE_META = 'meta'
 
@@ -146,16 +119,18 @@ function openDb(): Promise<IDBDatabase | null> {
     }
     req.onupgradeneeded = () => {
       const db = req.result
-      if (!db.objectStoreNames.contains(STORE_SHOT)) {
-        const os = db.createObjectStore(STORE_SHOT, { keyPath: 'key' })
-        os.createIndex('channel_day', ['channelId', 'day'])
+      // 旧版本（v1）的键是 `通道|日期|档位`，与新口径对不上：与其逐条迁移，
+      // 不如丢掉 —— 它只是缓存，重看一遍就能补回来。
+      for (const name of [STORE_SHOT, STORE_META]) {
+        if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name)
       }
-      if (!db.objectStoreNames.contains(STORE_META)) {
-        db.createObjectStore(STORE_META, { keyPath: 'key' })
-      }
+      const os = db.createObjectStore(STORE_SHOT, { keyPath: 'key' })
+      os.createIndex('channel_day', ['channelId', 'day'])
+      os.createIndex('channel', 'channelId')
+      const meta = db.createObjectStore(STORE_META, { keyPath: 'key' })
+      meta.createIndex('channel', 'channelId')
     }
     // 某些隐私模式下 open 既不成功也不报错：给个超时，别把页面吊死。
-    // 成功 / 失败都要把它清掉，否则一条 3 秒的空定时器会把进程多吊一会儿。
     let settled = false
     const done = (db: IDBDatabase | null): void => {
       if (settled) return
@@ -189,8 +164,8 @@ function txDone(tx: IDBTransaction): Promise<void> {
 /**
  * 生成压缩预览。
  *
- * 用 canvas 缩到长边 480 的 WebP（质量 0.72），实测一张 280KB 的 JPEG 出来
- * 约 18~25KB —— 列表里 3 张也只有 60KB 上下。
+ * 用 canvas 缩到长边 480 的 WebP（质量 0.72），实测一张 300KB 的 JPEG 出来
+ * 约 20KB —— 三列网格里 3~7 张也只有 100KB 上下。
  *
  * 任何一步拿不到（单测环境没有 canvas / 解码失败 / toBlob 不支持 webp）都
  * **退回原始字节**：预览大一点不影响正确性，卡住列表才是问题。
@@ -253,8 +228,10 @@ function toBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   })
 }
 
-/** 读一条（只用于判断「这一档是不是同一张图」） */
-async function getShot(key: string): Promise<ShotRecord | null> {
+/** 读一条缓存 */
+export async function getShot(channelId: string, mark: string): Promise<ShotRecord | null> {
+  if (!channelId || !mark) return null
+  const key = shotKey(channelId, mark)
   const db = await openDb()
   if (!db) return memShots.get(key) ?? null
   try {
@@ -278,6 +255,7 @@ async function putShot(rec: ShotRecord): Promise<void> {
   const meta: ShotMeta = {
     key: rec.key,
     channelId: rec.channelId,
+    mark: rec.mark,
     day: rec.day,
     at: rec.at,
     size: rec.size,
@@ -287,28 +265,28 @@ async function putShot(rec: ShotRecord): Promise<void> {
 }
 
 /**
- * 存一帧快照。
+ * 存一张抓拍。
  *
- * 同一档（同一天同一个更新时段）再取到**同样大小**的字节时，认为服务端还没
- * 更新，保留原来那条（时刻也不动）—— 否则每打开一次监控，照片的「拍摄时刻」
- * 就往后跳一次，看着像刚刚拍的。字节大小变了才覆盖：那是真的换了新一张。
+ * 同一 `mark` 再取到**同样大小**的字节时直接复用原来那条（缩略图也不必重做）——
+ * 服务端同一张图不会变，重做只是白烧 CPU。
  */
 export async function saveShot(
   channelId: string,
+  mark: string,
+  at: number,
   blob: Blob,
-  at: number = Date.now(),
 ): Promise<ShotRecord> {
-  const ref = slotAt(at)
-  const key = `${channelId}|${ref.day}|${ref.slot}`
-  const prev = await getShot(key)
+  if (!channelId || !mark) throw new Error('缺少通道号或抓拍标识')
+  const key = shotKey(channelId, mark)
+  const prev = await getShot(channelId, mark)
   if (prev && prev.size === blob.size) return prev
 
   const thumb = await makeThumb(blob)
   const rec: ShotRecord = {
     key,
     channelId,
-    day: ref.day,
-    slot: ref.slot,
+    mark,
+    day: dateKey(at),
     at,
     size: blob.size,
     thumb,
@@ -319,19 +297,44 @@ export async function saveShot(
   return rec
 }
 
-/** 读某通道某天的全部抓拍（按档位正序：08:00 → 12:00 → 18:00） */
-export async function listShots(channelId: string, day: string): Promise<ShotRecord[]> {
+/**
+ * 取一张抓拍（**唯一取图入口**）：缓存优先，没有再按服务端给的 `imageUrl` 下载。
+ *
+ * - 缓存命中且字节数与服务端声明一致 → 直接用（不花流量、不用等）；
+ * - 不一致（服务端换了图 / 缓存是旧的）→ 重下并覆盖；
+ * - `item.imageUrl` 为空 → 直接报「缺少抓拍图片地址」（数据问题，不拿别的地址顶替；
+ *   原来的「最近一帧」兜底地址已随旧接口一起下线）。
+ */
+export async function ensureShot(
+  channelId: string,
+  item: ShotItemRef,
+  signal?: AbortSignal,
+): Promise<ShotRecord> {
+  const cached = await getShot(channelId, item.mark)
+  if (cached && (!item.size || cached.size === item.size)) return cached
+
+  const img = await fetchCamShotImage(camShotImageUrl(item.imageUrl ?? ''), signal)
+  return await saveShot(
+    channelId,
+    item.mark || img.mark,
+    item.at || img.at,
+    img.blob,
+  )
+}
+
+/** 某通道某天的缓存（服务端取不到时兜底展示，带上真实 `mark` 与时刻） */
+export async function listCachedShots(channelId: string, day: string): Promise<ShotRecord[]> {
   const db = await openDb()
   if (!db) {
     return [...memShots.values()]
       .filter((r) => r.channelId === channelId && r.day === day)
-      .sort((a, b) => a.slot - b.slot)
+      .sort((a, b) => b.at - a.at)
   }
   try {
     const tx = db.transaction(STORE_SHOT, 'readonly')
     const idx = tx.objectStore(STORE_SHOT).index('channel_day')
     const rows = await reqDone<ShotRecord[]>(idx.getAll([channelId, day]))
-    return rows.sort((a, b) => a.slot - b.slot)
+    return rows.sort((a, b) => b.at - a.at)
   } catch {
     return []
   }
@@ -389,6 +392,32 @@ export async function prune(now = Date.now()): Promise<void> {
     await txDone(tx)
   } catch {
     /* 淘汰失败不影响本次展示，下次再说 */
+  }
+}
+
+/**
+ * 某通道缓存里最新的一张（按服务端抓拍时刻倒序）。
+ *
+ * 用途：接口整体不可用（断网 / 502）时，智眸那一格还能显示上次看过的那张真照片，
+ * 而不是空一格。新设备 / 清过缓存时返回 `null` —— 宁可少一张，也不拿别的图顶替。
+ */
+export async function latestShot(channelId: string): Promise<ShotRecord | null> {
+  if (!channelId) return null
+  const db = await openDb()
+  if (!db) {
+    const rows = [...memShots.values()].filter((r) => r.channelId === channelId)
+    return rows.sort((a, b) => b.at - a.at)[0] ?? null
+  }
+  try {
+    const tx0 = db.transaction(STORE_META, 'readonly')
+    const metas = await reqDone<ShotMeta[]>(
+      tx0.objectStore(STORE_META).index('channel').getAll(channelId),
+    )
+    const mine = metas.slice().sort((a, b) => b.at - a.at)
+    if (!mine.length) return null
+    return await getShot(channelId, mine[0].mark)
+  } catch {
+    return null
   }
 }
 
