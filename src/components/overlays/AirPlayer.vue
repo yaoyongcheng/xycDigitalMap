@@ -12,6 +12,7 @@ import { addDays } from '@/utils/date'
 import { fetchBlobWithProgress } from '@/utils/blobFetch'
 import { useLandscape } from '@/utils/landscape'
 import { useSlideOverlay } from '@/utils/slideOverlay'
+import { fetchDetailOriginal } from '@/utils/photoOriginal'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -32,7 +33,8 @@ import { useImageZoom } from '@/utils/zoom'
  * 就查「站点 + 日期」那一天（同一天飞了两班取后一班）。全景仍排第一格，
  * 点开是球面环视（`ui/PanoViewer.vue`，与智眸同一套）。
  *
- * 大图弹层只保留「原图」（照片）与「复位 / 看高清 / 全屏」（全景）——
+ * 大图弹层：**照片打开即原图**（首帧先铺缩略图，原图字节带进度到位后无声换源，
+ * 不再有「原图」按钮 —— 2026-11-23 现场口径）；全景保留「复位 / 看高清 / 全屏」。
  * 2026-11-19 按现场要求去掉下载：OSS 直链在移动端存相册依赖分享面板，
  * 现场这条链不可靠，按钮留着反而误导。
  */
@@ -115,7 +117,10 @@ function bindMoreIO(): void {
 
 // 网格与哨兵都是 v-if 出来的：进入 ok 态、换站点 / 换日期后都要重新挂
 watch([gridEl, moreEl], bindMoreIO, { flush: 'post' })
-onUnmounted(() => moreIO?.disconnect())
+onUnmounted(() => {
+  moreIO?.disconnect()
+  releaseImgHd()
+})
 
 function onPopClose(): void {
   air.airPopOpen = false
@@ -161,34 +166,55 @@ function releaseImgHd(): void {
   imgObjUrl.value = ''
   imgHdBusy.value = false
   imgHdPct.value = 0
+  hd.value = false
 }
 
+/** 画面左上角状态角标：压缩预览（还在缩略图上）→ 原图 42% → 原图 */
+const imgTag = computed(() => {
+  if (hd.value) return '原图'
+  if (imgHdBusy.value) return imgHdPct.value ? `原图 ${imgHdPct.value}%` : '原图加载中'
+  return '压缩预览'
+})
+
 // 换照片或关弹层时复位（原图态、在途下载、缩放都别带到下一张）
-watch([() => air.airPopOpen, () => air.airPopIdx], () => {
+watch([() => air.airPopOpen, () => air.airPopIdx], ([open]) => {
   releaseImgHd()
-  hd.value = false
   resetZoom()
   releasePanoHd()
+  if (!open) return
+  // 照片：先铺缩略图，原图马上开始拉（带进度），下完无声换源；
+  // 全景：高清贴图（13MB）同样立刻开始拉，视觉上先看预览那张 185KB 的
+  if (isPano.value) void loadPanoHd()
+  else void loadHd()
 })
+
+// 全景数据晚到（当天刚拼好 / 换日期后才拉到）：到手就接着拉高清
+watch(
+  () => air.airPano?.full ?? '',
+  (full) => {
+    if (!full || !air.airPopOpen || !isPano.value) return
+    void loadPanoHd()
+  },
+)
 watch(() => currentShot.value?.img, resetZoom)
 
 /**
- * 原图：**真下载一遍**（OSS 直链 4~8MB），按真实字节显示进度，下完再换源。
+ * 拉这张照片的原图（2026-11-23 现场口径：打开即原图，不再点按钮）。
  *
- * 为什么不直接把 `src` 换成原图直链：那样下载进度完全不可见，4G 下停几秒
- * 没有任何反馈，用户会以为没点上。这里与智眸全景的「看高清」同一套：
- * `fetchBlobWithProgress` 拿字节 → 按钮显示百分比 → 底边压一条进度带 →
- * 解码完再换图（避免切过去空一帧）。
+ * 之前是「点原图才下载」，现在把触发时机提前到打开弹层那一下，其余一条没改：
+ *   · 进度是已收字节 / `Content-Length`（压在图底边那条），不是估算动画；
+ *   · 下完先解码再换源，切过去不闪白；
+ *   · 关弹层 / 换张 / 卸载直接 abort，4~8MB 不留在后台白烧；
+ *   · 拉不到就退回直链（浏览器自己加载，慢但能看；角标仍写「原图」）。
  *
- * 下载中可以关弹层：`releaseImgHd()` 会 abort，请求不会留在后台空跑。
+ * 同一张再打开时命中 `utils/photoOriginal.ts` 的内存缓存，直接就是原图。
  */
-async function onHd(): Promise<void> {
+async function loadHd(): Promise<void> {
   const s = currentShot.value
-  if (!s || hd.value || imgHdBusy.value) return
-  // 没有原图直链（理论上不会）就当已是原图，别让按钮点着没反应
+  if (!s || isPano.value) return
+  // 没有原图直链（理论上不会）：缩略图就是能拿到的最高清版本
   if (!s.full) {
     hd.value = true
-    resetZoom()
     return
   }
   const key = ++imgSeq
@@ -196,14 +222,13 @@ async function onHd(): Promise<void> {
   imgHdPct.value = 0
   imgCtrl = new AbortController()
   try {
-    const blob = await fetchBlobWithProgress(
-      s.full,
-      (loaded, total) => {
+    const blob = await fetchDetailOriginal(s.full, {
+      signal: imgCtrl.signal,
+      onProgress: (loaded, total) => {
         if (key !== imgSeq) return
         imgHdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
       },
-      imgCtrl.signal,
-    )
+    })
     const url = URL.createObjectURL(blob)
     await preload(url)
     if (key !== imgSeq) {
@@ -212,32 +237,23 @@ async function onHd(): Promise<void> {
     }
     if (imgObjUrl.value) URL.revokeObjectURL(imgObjUrl.value)
     imgObjUrl.value = url
-    hd.value = true
-    resetZoom()
-    shell.showToast('原图已加载', 'success')
   } catch {
-    if (key !== imgSeq) return
-    shell.showToast('原图加载失败，请稍后重试', 'warn')
+    // 拉不到（CORS / 断网 / 被取消）：交给浏览器直接加载直链
   } finally {
     if (key === imgSeq) {
       imgCtrl = null
       imgHdBusy.value = false
       imgHdPct.value = 0
+      hd.value = true
+      resetZoom()
     }
   }
 }
 
-/** 按钮文案：原图 → 下载中 / 原图 42% → 已是原图 */
-const hdLabel = computed(() => {
-  if (hd.value) return '已是原图'
-  if (imgHdBusy.value) return imgHdPct.value ? `原图 ${imgHdPct.value}%` : '下载中'
-  return '原图'
-})
-
 /**
- * 现在该显示哪张：默认**缩略图**（约 440KB，列表里已经下过，秒开），
- * 点「原图」下载完成后换成原图字节（objectURL），失败则仍留缩略图。
+ * 现在该显示哪张：**原图（含直链兜底）→ 缩略图**。
  *
+ * 两种都是 objectURL / 直链，换源不重开弹层；原图到位时画面只会从糊变清。
  * 不能用 `photoHd()` 那套：它映射的是站内 `img/hd/` 的静态资源清单，
  * 真实媒体的原图在 OSS 上，路径规则完全不同。
  */
@@ -275,12 +291,6 @@ const panoSrc = computed(() => {
   return p.preview
 })
 
-const panoSizeText = computed(() => {
-  const n = air.airPano?.size ?? 0
-  if (!n) return ''
-  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.round(n / 1024)}KB`
-})
-
 function releasePanoHd(): void {
   panoSeq += 1
   panoCtrl?.abort()
@@ -310,10 +320,13 @@ function preload(url: string): Promise<void> {
 }
 
 /**
- * 看高清：先把原图（约 13MB）拉下来、带真实字节进度，再换源。
- * 拉不到就退回直链（慢，但图还是会出来），与智眸里的处理一致。
+ * 拉全景高清（约 13MB 的贴图集）：**打开详情就拉**，不再点按钮
+ * （2026-11-23 现场口径，那颗「看高清」已下线）。
+ *
+ * 先带真实字节进度把原图拉下来再换源；拉不到就退回直链（慢，但图还是会出来），
+ * 与智眸里的处理一致。
  */
-async function onPanoHd(): Promise<void> {
+async function loadPanoHd(): Promise<void> {
   const p = air.airPano
   if (!p?.full || panoHd.value || panoHdBusy.value) return
   const key = panoSeq
@@ -351,10 +364,13 @@ async function onPanoHd(): Promise<void> {
   }
 }
 
-const panoHdLabel = computed(() => {
-  if (panoHdBusy.value) return panoHdPct.value ? `高清 ${panoHdPct.value}%` : '高清加载中'
-  if (!panoHd.value) return '看高清'
-  return panoHdWait.value ? '高清加载中' : '已是高清'
+/** 角标：全景 · 可环视 → 全景 · 高清 42% → 全景 · 高清 */
+const panoTag = computed(() => {
+  if (panoHd.value) return panoHdWait.value ? '全景 · 高清加载中' : '全景 · 高清'
+  if (panoHdBusy.value) {
+    return panoHdPct.value ? `全景 · 高清 ${panoHdPct.value}%` : '全景 · 高清加载中'
+  }
+  return '全景 · 可环视'
 })
 
 function onPanoError(): void {
@@ -539,25 +555,12 @@ watch(
       :hidden="!air.airPopOpen"
       :aria-hidden="!air.airPopOpen"
     >
+      <!-- 顶栏只剩「关闭 + 标题」：照片打开即原图，不再有「原图」按钮 -->
       <div class="photo-bar">
         <button class="photo-bar-btn" id="btnAirClose" type="button" @click="onPopClose">
           关闭
         </button>
         <strong>{{ popTitle }}</strong>
-        <div class="photo-bar-acts">
-          <template v-if="!isPano">
-            <button
-              class="photo-bar-btn"
-              type="button"
-              :disabled="hd"
-              :aria-disabled="hd || imgHdBusy ? 'true' : undefined"
-              :aria-label="imgHdBusy ? `正在下载原图 ${imgHdPct}%` : '查看原图'"
-              @click="onHd"
-            >
-              {{ hdLabel }}
-            </button>
-          </template>
-        </div>
       </div>
 
       <Teleport to="body" :disabled="!panoLand">
@@ -575,8 +578,9 @@ watch(
             @error="onPanoError"
             @ready="onPanoReady"
           />
-          <span class="patrol-view-tag is-pano">{{ panoHd ? '全景 · 高清' : '全景 · 可环视' }}</span>
+          <span class="patrol-view-tag is-pano">{{ panoTag }}</span>
 
+          <!-- 工具条只剩复位 / 全屏：「看高清」下线，高清贴图打开就自动拉 -->
           <div class="pano-tools">
             <button
               v-if="!panoUnsupported"
@@ -586,15 +590,6 @@ watch(
               @click="panoRef?.reset()"
             >
               复位
-            </button>
-            <button
-              class="pano-tool"
-              type="button"
-              :disabled="panoHd || panoHdBusy"
-              :aria-label="`看高清，原图 ${panoSizeText}`"
-              @click="onPanoHd"
-            >
-              {{ panoHdLabel }}
             </button>
             <button
               class="pano-tool"
@@ -631,9 +626,20 @@ watch(
           v-on="zoomHandlers"
         />
         <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
+        <!-- 角标：压缩预览（还在缩略图上）→ 原图 42% → 原图 -->
+        <span class="patrol-view-tag">{{ imgTag }}</span>
 
-        <!-- 原图下载进度：与智眸全景同一条（压在图底边，不占版面、不挡操作） -->
-        <div v-if="imgHdBusy" class="hd-progress is-in-stage" data-state="air-hd-progress">
+        <!-- 原图加载的真实字节进度：压在图底边，不占版面、不挡操作 -->
+        <div
+          v-if="imgHdBusy"
+          class="hd-progress is-in-stage"
+          data-state="air-hd-progress"
+          role="progressbar"
+          :aria-valuenow="imgHdPct"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-label="`原图加载 ${imgHdPct}%`"
+        >
           <i :style="{ width: `${imgHdPct}%` }"></i>
         </div>
       </div>

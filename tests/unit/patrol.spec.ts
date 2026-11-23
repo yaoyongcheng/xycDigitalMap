@@ -272,7 +272,7 @@ describe('智眸大图弹层（真实航拍照片）', () => {
     vi.unstubAllGlobals()
   })
 
-  it('点卡片开弹层，元信息用服务端字段', async () => {
+  it('点卡片开弹层：元信息用服务端字段，首帧铺缩略图并自动开始拉原图', async () => {
     const patrol = usePatrolStore()
     patrol.apply(
       [
@@ -288,6 +288,9 @@ describe('智眸大图弹层（真实航拍照片）', () => {
     const w = mount(Host)
     await nextTick()
 
+    // 原图请求挂着不回：只为钉住「打开就开始拉」这一帧，不等它落地
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<never>(() => {})))
+
     await w.findAll('.patrol-card')[0].trigger('click')
     await nextTick()
 
@@ -295,22 +298,22 @@ describe('智眸大图弹层（真实航拍照片）', () => {
     expect(meta).toContain('向阳村-材料堆场')
     expect(meta).toContain('无人机')
     expect(meta).toContain('2026-07-15 09:38')
-    // 2026-11-16 起首屏只给缩略图（微信式两层）：原图 4~8MB，点「查看原图」才拉
+    // 首帧仍是列表那张缩略图（4~8MB 的原图还在路上），不白屏
     const src = w.find('.patrol-view img').attributes('src') ?? ''
     expect(src).toContain('oss.keehang.com')
     expect(src).toContain('/thumbnail/')
-    // 2026-11-18：那颗按钮挪到画布右上角，与「全屏」并排（与 VR 360 同一套胶囊）
-    const hdBtn = w.findAll('.patrol-view .pano-tool').find((b) => b.text().includes('原图'))
-    expect(hdBtn?.text()).toBe('查看原图')
+    // 2026-11-23：右上角「查看原图」整颗下线，工具条只剩「全屏」
+    expect(w.findAll('.patrol-view .pano-tool').map((b) => b.text())).toEqual(['全屏'])
+    // 打开即开始拉原图：画布底边有真实字节进度，角标写「原图…」
+    expect(w.find('.hd-progress.is-in-stage').exists()).toBe(true)
+    expect(w.find('.patrol-view-tag').text()).toContain('原图')
     w.unmount()
   })
 
-  it('点「查看原图」才换成原图（不点就一直在缩略图上）', async () => {
+  it('原图拉完自动换源：不用点任何按钮，进度条收掉、角标写「原图」', async () => {
     const patrol = usePatrolStore()
     patrol.apply([photo({ id: 'a', name: 'DJI_0001_V.jpeg', size: 7_825_440 })], 'gate')
     const w = mount(Host)
-    await nextTick()
-    await w.findAll('.patrol-card')[0].trigger('click')
     await nextTick()
 
     // 原图下载：返回一份真字节的 blob（带 content-length 才能算进度）
@@ -325,24 +328,21 @@ describe('智眸大图弹层（真实航拍照片）', () => {
       })),
     )
 
-    const hdBtn = () =>
-      w.findAll('.patrol-view .pano-tool').find((b) => b.text().includes('原图'))!
-    // 体积不挤在胶囊上（弹层下方 meta 的「大小」已经写了 7.5MB），与「看高清」一致
-    expect(hdBtn().text()).toBe('查看原图')
+    await w.findAll('.patrol-card')[0].trigger('click')
+    // 体积写在弹层下方 meta（角标只写状态与百分比，不挤体积）
     expect(w.find('.patrol-meta').text()).toContain('7.5MB')
-
-    await hdBtn().trigger('click')
     await nextTick()
-    // 拉流中：进度条压在画布底边（不再是画布外的一行），按钮变成加载态
-    expect(w.find('.hd-progress.is-in-stage').exists()).toBe(true)
 
-    // 等解码兜底（短则立刻，长则 1.2s 超时）；这里给足余量
-    await new Promise((r) => setTimeout(r, 1400))
+    // 等它落地：happy-dom 不解码图片，`preload` 走 1.2s 兜底 —— 轮询到「原图」为止
+    for (let i = 0; i < 40; i += 1) {
+      if (w.find('.patrol-view-tag').text() === '原图') break
+      await new Promise((r) => setTimeout(r, 100))
+    }
     await flushPromises()
 
     const src = w.find('.patrol-view img').attributes('src') ?? ''
     expect(src).not.toContain('/thumbnail/')
-    expect(hdBtn().text()).toBe('已是原图')
+    expect(w.find('.patrol-view-tag').text()).toBe('原图')
     expect(w.find('.hd-progress').exists()).toBe(false)
     w.unmount()
   })
@@ -964,15 +964,16 @@ describe('智眸面板 · VR 360环视卡片', () => {
 })
 
 /**
- * 全景弹层的工具条（2026-11-16 用户要求）
+ * 全景弹层的工具条
  *
- * 「看高清 / 下载」原本在图片下方那一行按钮里，用户要求：看高清挪到画布上、
- * 与「复位」并排且同样式，下载那颗改成「横屏」。所以这里钉住三件事：
- *   1. 工具条在画布上，只剩 复位 / 看高清 / 全屏，**下载下线**；
- *   2. 点看高清是「先带进度拉流、下完再换源」，不是把 13MB 直接塞给 img；
- *   3. 点全屏能把画布搬到 body 铺满视口，再点回得去（2026-11-23 文案从「横屏」改「全屏」）。
+ * 2026-11-16：看高清从图片下方挪到画布上，与「复位」并排，下载改成「横屏」；
+ * 2026-11-23：**「看高清」整颗下线** —— 打开全景就自动拉高清贴图（带真实进度），
+ * 工具条只剩 复位 / 全屏（「横屏」已改名「全屏」）。这里钉住：
+ *   1. 工具条在画布上，只剩 复位 / 全屏，看高清与下载都下线；
+ *   2. 打开就自动拉高清：「先带进度拉流、下完再换源」，不是把 13MB 直接塞给 img；
+ *   3. 点全屏能把画布搬到 body 铺满视口，再点回得去。
  */
-describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 全屏）', () => {
+describe('智眸大图弹层 · 全景工具条（复位 / 全屏）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     offline()
@@ -1011,28 +1012,27 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 全屏）
     return w
   }
 
-  it('工具条在画布上：看高清与复位并排，下载改成全屏', async () => {
+  it('工具条在画布上：只剩复位与全屏，看高清 / 下载都已下线', async () => {
     withPano()
     const w = await openPano()
 
     const tools = w.find('.pano-tools')
     expect(tools.exists()).toBe(true)
     const labels = tools.findAll('.pano-tool').map((b) => b.text())
-    expect(labels).toContain('看高清')
+    // 无 WebGL（happy-dom）时「复位」按设计隐藏，所以这里只钉「全屏仍在、看高清已无」
     expect(labels).toContain('全屏')
+    expect(labels).not.toContain('复位')
+    // 2026-11-23：高清改为打开即自动拉，那颗按钮整颗下线
+    expect(tools.text()).not.toContain('看高清')
     // 原来的「下载」整颗下线（全景要存相册走长按图片 / 系统菜单）
     expect(w.text()).not.toContain('下载')
-    expect(tools.text()).not.toContain('下载')
     // 体积不再挤在按钮上（弹层下方 meta 的「大小」已经写了 13.1MB）
     expect(tools.text()).not.toContain('13.1MB')
     w.unmount()
   })
 
-  it('点「看高清」先拉流显示进度条，下完才换源', async () => {
+  it('打开全景即自动拉高清：底边有真进度条，下完换源（不用点按钮）', async () => {
     withPano()
-    const w = await openPano()
-    expect(w.find('.pano-stage img').attributes('src')).toContain('thumbnail')
-
     const bytes = 13_688_984
     let release: (() => void) | null = null
     const gate = new Promise<void>((r) => {
@@ -1056,18 +1056,23 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 全屏）
       }),
     )
 
-    const btn = w.findAll('.pano-tool').find((b) => b.text().includes('看高清'))
-    expect(btn).toBeTruthy()
-    await btn!.trigger('click')
+    const w = mount(Host, { attachTo: document.body })
     await nextTick()
+    await w.find('.patrol-card.is-pano').trigger('click')
+    // 等「重新取一次最新成果」落地 —— 高清是紧随其后自动开始的
+    await flushPromises()
 
-    // 下载中：画布底边有真进度条（宽度来自已收字节，不是估算），按钮变成加载态
+    expect(w.find('.pano-stage img').attributes('src')).toContain('thumbnail')
+    // 下载中：画布底边有真进度条（宽度来自已收字节，不是估算），角标写「高清…」
     expect(w.find('.hd-progress.is-in-stage').exists()).toBe(true)
-    expect(w.findAll('.pano-tool').some((b) => b.text().includes('高清'))).toBe(true)
+    expect(w.find('.patrol-view-tag').text()).toContain('高清')
 
     release!()
     // 等解码兜底（happy-dom 不解码图片，走 preload 的 1.2s 超时）
-    await new Promise((r) => setTimeout(r, 1400))
+    for (let i = 0; i < 40; i += 1) {
+      if (w.find('.patrol-view-tag').text() === '全景 · 高清') break
+      await new Promise((r) => setTimeout(r, 100))
+    }
     await flushPromises()
 
     expect(w.find('.hd-progress.is-in-stage').exists()).toBe(false)
@@ -1104,13 +1109,13 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 全屏）
 })
 
 /**
- * 单张照片（全景航拍 / 照片墙）的工具条（2026-11-18 用户要求）
+ * 单张照片（全景航拍 / 照片墙）的工具条
  *
- * 用户拿的是 VR 360 环视那张「看高清 + 横屏」的截图：要求照片那颗
- * 「查看原图」照它的位置、样式与状态改过来，另加一颗「全屏」（原名「横屏」），并把
- * 「下载」连同入口整块拿掉（要存图走长按 / 系统菜单，与全景一致）。
+ * 历史：2026-11-18 照 VR 360 的「看高清 + 横屏」放过「查看原图 + 全屏」；
+ * 2026-11-23 现场口径改成**打开即原图**，「查看原图」整颗下线，工具条只剩「全屏」。
+ * 「下载」早已整块拿掉（要存图走长按 / 系统菜单，与全景一致）。
  */
-describe('智眸大图弹层 · 单张照片工具条（查看原图 / 全屏）', () => {
+describe('智眸大图弹层 · 单张照片工具条（只剩全屏）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     offline()
@@ -1134,12 +1139,13 @@ describe('智眸大图弹层 · 单张照片工具条（查看原图 / 全屏）
     return w
   }
 
-  it('工具条在画布上：查看原图与全屏并排，「下载」整颗下线', async () => {
+  it('工具条在画布上：只剩「全屏」，查看原图与「下载」都已下线', async () => {
     const w = await openFlat()
 
     const tools = w.find('.patrol-view .pano-tools')
     expect(tools.exists()).toBe(true)
-    expect(tools.findAll('.pano-tool').map((b) => b.text())).toEqual(['查看原图', '全屏'])
+    // 2026-11-23：打开即原图，不再需要点一次「查看原图」
+    expect(tools.findAll('.pano-tool').map((b) => b.text())).toEqual(['全屏'])
     // 下方那行「原图 / 下载」整块不存在了
     expect(w.find('.photo-actions').exists()).toBe(false)
     expect(w.text()).not.toContain('下载')

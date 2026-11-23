@@ -7,23 +7,26 @@ import { useShellStore } from '@/stores/shell'
 import { fetchBlobWithProgress } from '@/utils/blobFetch'
 import { useLandscape } from '@/utils/landscape'
 import { isEquirect, panoLabel } from '@/utils/pano'
+import { fetchDetailOriginal } from '@/utils/photoOriginal'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
- * 巡检大图（2026-11 阶段 8 起是真实航拍照片；2026-11-16 改「缩略图 → 原图」两层）
+ * 巡检大图（2026-11 阶段 8 起是真实航拍照片）
  *
- * ## 为什么改成两层（用户要求：像微信那样）
+ * ## 详情就是原图（2026-11-23 现场口径，第三次收敛）
  *
- * 真实原图单张 4~8MB。原来的实现是点开就加载原图 —— 手机上一次十几秒白屏，
- * 用户不知道是在下还是卡了。现在：
+ * 真实原图单张 4~8MB。历次口径是：点开就拉原图（白屏十几秒）→「缩略图 + 点按钮
+ * 看原图」→ 后台预取一档 3840 预览 → **现在：打开详情直接加载原图，不再有按钮**。
  *
- *   1. 打开先显示**缩略图**（370~520KB，列表里已经加载过，通常在缓存里，秒开）；
- *   2. 底部给「查看原图 · 7.5MB」，点了才 `fetch` 原图，按钮上显示真实下载百分比；
- *   3. 下完先解码再换源，避免"换上去一瞬间白一下再出来"。
+ *   1. 打开的那一帧先铺**缩略图**（370~520KB，列表里加载过，通常命中浏览器缓存，
+ *      零请求），不会白屏；
+ *   2. 同时就开始拉原图：画布底边一条进度带（真实字节，不是估算动画），
+ *      左上角角标写「原图 42%」；
+ *   3. 下完先解码再换源 —— 换上去就是现成像素，不闪白、不重置缩放。
  *
  * 进度是真的：`utils/blobFetch.ts` 读流里的已收字节 / `Content-Length`
- * （OSS 两个域名都回 ACAO，实测可跨域读）。拉不到就退回直接塞给 `<img>`
- * —— 慢是慢，但图还是能出来。
+ * （OSS 两个域名都回 ACAO，实测可跨域读）。拉不到就退回直接把直链塞给 `<img>`
+ * —— 慢是慢，但图还是会出来（此时没有进度可报，角标直接写「原图」）。
  *
  * ## 两种「全景」，别搞混
  *
@@ -142,16 +145,16 @@ function releasePanoHd(): void {
 }
 
 /**
- * 看高清：**先把 13MB 拉下来（带进度），再换源**。
+ * 拉全景高清（13MB 的 pano.json 贴图集）：**打开详情就拉**，不再点按钮
+ * （2026-11-23 现场口径，之前那颗「看高清」整颗下线）。
  *
- * 之前是直接把 `p.full` 塞给 `<img>` —— 预览图不动声色地挂了十几秒，用户
- * 完全不知道是在下还是卡了。现在走 `fetchBlobWithProgress`，进度条的宽度
- * 是「已收字节 / Content-Length」，与照片弹层里「查看原图」那条是同一套
- * （用户要求：效果参考基坑区域里的图片加载效果）。
+ * 先把字节拉下来（带真实进度）再换源：之前是直接把 `p.full` 塞给贴图，
+ * 预览图不动声色地挂了十几秒，用户完全不知道是在下还是卡了。现在进度条的宽度
+ * 是「已收字节 / Content-Length」，与照片那一档是同一套。
  *
- * 拉不到（OSS 不回 ACAO / 断网 / 中途关掉）就退回直链：慢，但图还是会出来。
+ * 拉不到（OSS 不回 ACAO / 断网 / 中途关掉）就退回直链：慢，但全景还是会出来。
  */
-async function onPanoHd(): Promise<void> {
+async function loadPanoHd(): Promise<void> {
   const p = patrol.pano
   if (!p?.full || panoHd.value || panoHdBusy.value) return
   const key = panoSeq
@@ -190,11 +193,13 @@ async function onPanoHd(): Promise<void> {
   }
 }
 
-/** 按钮文案：看高清 / 高清 42% / 高清加载中 / 已是高清（体积在下方的 meta 里） */
-const panoHdLabel = computed(() => {
-  if (panoHdBusy.value) return panoHdPct.value ? `高清 ${panoHdPct.value}%` : '高清加载中'
-  if (!panoHd.value) return '看高清'
-  return panoHdWait.value ? '高清加载中' : '已是高清'
+/** 角标：全景 · 可环视（还在预览贴图上）→ 全景 · 高清 42% → 全景 · 高清 */
+const panoTag = computed(() => {
+  if (panoHd.value) return panoHdWait.value ? '全景 · 高清加载中' : '全景 · 高清'
+  if (panoHdBusy.value) {
+    return panoHdPct.value ? `全景 · 高清 ${panoHdPct.value}%` : '全景 · 高清加载中'
+  }
+  return '全景 · 可环视'
 })
 
 /* ---------- 全屏 ---------- */
@@ -258,21 +263,25 @@ function onPanoBackdrop(): void {
  * setup 里 —— 那样第二次点开就再也不取了，永远停在内存里那张（用户实测：想看
  * 最新的向阳村全景，结果还是几小时前那张）。两个入口都指向这里。
  */
-function enterPano(): void {
+async function enterPano(): Promise<void> {
   releasePanoHd()
   if (photoLand.value) void exitPhotoLand()
   if (panoLand.value) void exitPanoLand()
   panoBroken.value = false
   panoUnsupported.value = false
-  void patrol.loadPano(true)
+  await patrol.loadPano(true)
+  // 数据到位就拉高清：打开详情即高清，不再点「看高清」
+  if (props.id === PANO_SHEET_ID) await loadPanoHd()
 }
 
-if (props.id === PANO_SHEET_ID) enterPano()
+if (props.id === PANO_SHEET_ID) void enterPano()
 
 watch(
   () => props.id,
   (id) => {
-    if (id === PANO_SHEET_ID) enterPano()
+    // 从全景换到某张照片：把还在跑的 13MB 高清贴图掐掉，别留在后台白烧
+    if (id === PANO_SHEET_ID) void enterPano()
+    else releasePanoHd()
   },
 )
 
@@ -281,13 +290,18 @@ const thumb = computed(() => photo.value?.thumbnail ?? '')
 const original = computed(() => photo.value?.url ?? '')
 const sizeText = computed(() => patrol.sizeText(photo.value?.size ?? 0))
 
-/* ---------- 两层：缩略图 → 原图 ---------- */
+/* ---------- 详情即原图：打开就自动拉，带真实字节进度 ---------- */
 
-/** 是否已切到原图 */
+/**
+ * 已经在用原图。
+ *
+ * 字节没拉到（CORS / 断网）时也置 true —— 那时 `shown` 直接给原图直链，
+ * 浏览器自己加载，画面仍然是原图，只是没有进度可报。
+ */
 const hd = ref(false)
-/** 原图的本地 objectURL（下载完成后才有；失败时为空，直接走直链） */
+/** 原图的本地 objectURL（下载完成后才有；为空时走直链） */
 const hdUrl = ref('')
-/** 下载进度 0~100（服务端没给长度时停在 0，按钮显示「下载中」） */
+/** 下载进度 0~100（服务端没给长度时停在 0，角标写「原图加载中」） */
 const hdPct = ref(0)
 const hdBusy = ref(false)
 /** 当前 objectURL，换图 / 关闭时 revoke */
@@ -297,30 +311,26 @@ let ctrl: AbortController | null = null
 let seq = 0
 
 /**
- * 当前该显示哪一版。
+ * 当前该显示哪一版：原图（含直链兜底）→ 缩略图。
  *
- * 有缩略图就先用缩略图；没有缩略图（服务端没给）时原图是唯一选择 ——
- * 这时 `canHd` 为 false，按钮写「无压缩版」，不会让用户点了没反应。
+ * 打开的一瞬间还没有原图字节，先用列表里那张缩略图顶住（通常已在浏览器缓存里，
+ * 零请求），避免白屏；原图到手是**无声换源**：不重置缩放、不重开弹层。
  */
 const shown = computed(() => {
   if (hd.value) return hdUrl.value || original.value
   return thumb.value || original.value
 })
 
-/** 还能不能点「查看原图」 */
-const canHd = computed(() => Boolean(thumb.value && original.value) && !hd.value)
-
 /**
- * 按钮文案：四态（拉流中带真实百分比）。
+ * 画面左上角角标：压缩预览（还在缩略图上）→ 原图 42% → 原图。
  *
- * **不写体积** —— 与 VR360 环视的「看高清」保持一致：一颗 26px 的胶囊塞
- * 「查看原图 · 7.5MB」会把工具条顶宽，而弹层下方 meta 的「大小」已经写了。
+ * 与画布底边那条进度带同一个数据源（`hdPct`）：进度带说「到哪了」，角标说
+ * 「这是在加载原图」—— 加载中不会有人误以为图坏了。
  */
-const hdLabel = computed(() => {
-  if (hd.value) return '已是原图'
-  if (!thumb.value) return '无压缩版'
-  if (hdBusy.value) return hdPct.value ? `原图 ${hdPct.value}%` : '原图下载中'
-  return '查看原图'
+const viewTag = computed(() => {
+  if (hd.value) return '原图'
+  if (hdBusy.value) return hdPct.value ? `原图 ${hdPct.value}%` : '原图加载中'
+  return '压缩预览'
 })
 
 function dropHd(): void {
@@ -335,17 +345,6 @@ function dropHd(): void {
   hdPct.value = 0
 }
 
-/** 换照片时全部复位（否则会带着上一张的原图、进度与全屏态） */
-function resetForNext(): void {
-  dropHd()
-  if (photoLand.value) void exitPhotoLand()
-  dims.value = null
-  panoUnsupported.value = false
-  zoomReset()
-  probeDims()
-}
-
-/** 先把图下到内存里 → 解码完成 → 再换源，避免切源瞬间空一帧 */
 /**
  * 等这张图解码完成（最多 1.2s）。
  *
@@ -367,21 +366,33 @@ function preload(url: string): Promise<void> {
   })
 }
 
-async function onHd(): Promise<void> {
-  if (!canHd.value || hdBusy.value) return
-  const key = seq
+/**
+ * 拉原图（2026-11-23 现场口径：详情页**不做二次点击**）。
+ *
+ * 与之前「点查看原图才拉」的区别只有触发时机，那条链的其它性质一条没改：
+ *   · 进度是已收字节 / `Content-Length`，不是估算动画；
+ *   · 下完先解码再换源，切过去不闪白；
+ *   · 关弹层 / 换照片直接 abort，几 MB 的流量不留在后台白烧；
+ *   · 拉不到就退回直链（浏览器自己加载，慢但能看）。
+ *
+ * 同一张照片关了再开时命中 `utils/photoOriginal.ts` 的内存缓存，直接就是原图，
+ * 进度条收掉、不再发请求。
+ */
+async function loadHd(): Promise<void> {
+  const src = original.value
+  if (!photo.value || !src) return
+  const key = ++seq
   hdBusy.value = true
   hdPct.value = 0
   ctrl = new AbortController()
   try {
-    const blob = await fetchBlobWithProgress(
-      original.value,
-      (loaded, total) => {
+    const blob = await fetchDetailOriginal(src, {
+      signal: ctrl.signal,
+      onProgress: (loaded, total) => {
         if (key !== seq) return
         hdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
       },
-      ctrl.signal,
-    )
+    })
     const url = URL.createObjectURL(blob)
     await preload(url)
     if (key !== seq) {
@@ -393,7 +404,6 @@ async function onHd(): Promise<void> {
     hdUrl.value = url
   } catch {
     // 拉不到（CORS / 断网 / 被取消）：交给浏览器直接加载直链，慢但能看
-    if (key === seq) hdUrl.value = ''
   } finally {
     if (key === seq) {
       ctrl = null
@@ -402,6 +412,16 @@ async function onHd(): Promise<void> {
       hd.value = true
     }
   }
+}
+
+/** 换照片时全部复位（否则会带着上一张的原图、进度与全屏态） */
+function resetForNext(): void {
+  dropHd()
+  if (photoLand.value) void exitPhotoLand()
+  dims.value = null
+  panoUnsupported.value = false
+  zoomReset()
+  probeDims()
 }
 
 /* ---------- 平面大图的缩放 ---------- */
@@ -447,9 +467,17 @@ function probeDims(): void {
   img.src = patrol.previewOf(p)
 }
 
-/** 首次进入即取尺寸（列表里加载过就直接命中缓存）；换图见下一行的 watch */
+/** 首次进入即取尺寸（列表里加载过就直接命中缓存）；换图见下面的 watch */
 probeDims()
-watch(() => props.id, resetForNext)
+/** 打开就是原图：首帧先铺缩略图，原图字节带进度到位后无声换源 */
+loadHd()
+watch(
+  () => props.id,
+  () => {
+    resetForNext()
+    loadHd()
+  },
+)
 
 /** 拍摄时间：服务端给的是 'YYYY-MM-DD HH:mm:ss'，截到分钟 */
 const timeText = computed(() => {
@@ -460,9 +488,9 @@ const timeText = computed(() => {
 
 /*
  * 「下载 = 存进手机相册」那颗按钮 2026-11-18 下线（用户要求）：
- * 全景航拍的大图操作区只留画布上的「查看原图 / 全屏」，要存图走长按图片 /
- * 系统菜单 —— 与 VR 360 环视的做法一致，别在这里再长出一颗按钮。
- * `utils/photoHd.ts` 的 savePhoto 仍被 AirPlayer（环境抓拍）使用，没删。
+ * 平面照片的画布工具条现在只剩「全屏」（原图自动加载，见 `loadHd`），
+ * 要存图走长按图片 / 系统菜单 —— 与 VR 360 环视的做法一致，别在这里
+ * 再长出一颗按钮。`utils/photoHd.ts` 的 savePhoto 仍被 AirPlayer 使用，没删。
  */
 
 onBeforeUnmount(() => {
@@ -496,9 +524,12 @@ onBeforeUnmount(() => {
             @error="onPanoError"
             @ready="onPanoReady"
           />
-          <span class="patrol-view-tag is-pano">{{ panoHd ? '全景 · 高清' : '全景 · 可环视' }}</span>
+          <span class="patrol-view-tag is-pano">{{ panoTag }}</span>
 
-          <!-- 画布右上角工具条：复位 / 看高清 / 全屏（同一套胶囊样式） -->
+          <!--
+            画布右上角工具条：复位 / 全屏。
+            「看高清」已下线（2026-11-23）：高清贴图打开就自动拉，进度见底边那条。
+          -->
           <div class="pano-tools">
             <button
               v-if="!panoUnsupported"
@@ -512,15 +543,6 @@ onBeforeUnmount(() => {
             <button
               class="pano-tool"
               type="button"
-              :disabled="panoHd || panoHdBusy"
-              :aria-label="`看高清，原图 ${panoSize}`"
-              @click="onPanoHd"
-            >
-              {{ panoHdLabel }}
-            </button>
-            <button
-              class="pano-tool"
-              type="button"
               :aria-pressed="panoLand"
               :aria-label="panoLand ? '退出全屏，回到竖屏' : '全屏查看'"
               @click="togglePanoLand"
@@ -530,7 +552,7 @@ onBeforeUnmount(() => {
           </div>
 
           <!--
-            高清的字节进度：与照片弹层「查看原图」同一条 .hd-progress（宽度是
+            高清贴图的真实字节进度：与照片那条同一条 .hd-progress（宽度是
             已收字节 / Content-Length，不是估算）。压在画布底边而不是画布下方：
             不占版面高度，全屏时也还在视野里。
           -->
@@ -601,7 +623,8 @@ onBeforeUnmount(() => {
     </figure>
 
     <!--
-      平面照片：低清缩略图起步，点「查看原图」才换高清。
+      平面照片：打开即原图。首帧先铺缩略图（零请求），原图字节带进度到位后
+      无声换源 —— 不再有「查看原图」那颗按钮（2026-11-23 现场口径）。
 
       全屏时与上方全景一样 Teleport 到 body —— 弹层面板带 transform，会让
       position:fixed 以面板为包含块，DOM 不挪就永远铺不满视口。
@@ -622,24 +645,14 @@ onBeforeUnmount(() => {
           v-on="zoomHandlers"
         />
         <span v-if="imgZoomed" class="zoom-badge">{{ zoomLabel }}</span>
-        <span class="patrol-view-tag">{{ hd ? '原图' : '压缩预览' }}</span>
+        <!-- 角标：压缩预览（还在缩略图上）→ 原图 42% → 原图 -->
+        <span class="patrol-view-tag">{{ viewTag }}</span>
 
         <!--
-          画布右上角工具条：查看原图 / 全屏。
-          与 VR 360 环视那颗「看高清」是同一套胶囊、同一套状态机（拉流中带真实
-          百分比、已是原图则禁用、体积写在下方 meta 里），2026-11-18 用户要求
-          照它改过来；原来的「下载」整颗下线。
+          画布右上角工具条只剩「全屏」：原图是自动加载的，不需要再点一次
+          （2026-11-23 现场口径，原来那颗「查看原图」整颗下线）。
         -->
         <div class="pano-tools">
-          <button
-            class="pano-tool"
-            type="button"
-            :disabled="!canHd || hdBusy"
-            :aria-label="`查看原图，原图 ${sizeText}`"
-            @click="onHd"
-          >
-            {{ hdLabel }}
-          </button>
           <button
             class="pano-tool"
             type="button"
@@ -651,10 +664,14 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <!-- 拉原图的真实进度：压在画布底边，不占版面（全屏时也还在视野里） -->
+        <!--
+          原图的真实字节进度：压在画布底边，不占版面（全屏时也还在视野里）。
+          宽度 = 已收字节 / Content-Length，不是估算动画。
+        -->
         <div
           v-if="hdBusy"
           class="hd-progress is-in-stage"
+          data-state="patrol-hd-progress"
           role="progressbar"
           :aria-valuenow="hdPct"
           aria-valuemin="0"

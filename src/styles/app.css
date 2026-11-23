@@ -5473,12 +5473,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
   color: var(--ink-1-dark);
 }
 
-.photo-bar-acts {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
 .photo-bar-btn {
   flex-shrink: 0;
   height: 30px;
