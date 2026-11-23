@@ -3,14 +3,23 @@ import { defineStore } from 'pinia'
 
 import { titles } from '@/data/config'
 import type { TabId } from '@/types'
+import { enterNativeLandscape, exitNativeLandscape, settleViewport } from '@/utils/orientation'
+import { openLandscapeHint } from '@/utils/landscapeHint'
 
 /** 首页抽屉展开状态的持久化键（旧版布尔键，仅用于迁移读取） */
 const SHEET_UP_KEY = 'xyc.sheetUp'
 
-/** 首页抽屉档位（2026-10 改造新增）：0 收起 / 1 半开 / 2 全开 */
+/** 首页抽屉档位：1 半开 / 2 全开（2026-11-23 起取消「收起」档） */
 const SHEET_LEVEL_KEY = 'xyc.sheetLevel'
 
-export type SheetLevel = 0 | 1 | 2
+/**
+ * 抽屉档位：1 半开 / 2 全开。
+ *
+ * 原先是 0 收起 / 1 半开 / 2 全开三档；用户 2026-11-23 要求浮窗常驻、
+ * 只留两档，最低就是半开 —— 收起档连同它的吸附位置一起下线。
+ * 旧存储里的 0 在读档时被抬到 1（见 readSheetLevel）。
+ */
+export type SheetLevel = 1 | 2
 
 /**
  * Toast 语义类型。
@@ -26,16 +35,20 @@ const TOAST_MS = 1600
 
 /**
  * 读取上次的抽屉档位。
- * 优先读新的档位键；不存在时迁移旧布尔键（'1'→2 全开，'0'→0 收起）；
+ * 优先读新的档位键；不存在时迁移旧布尔键（'1'→2 全开，'0'→1 半开）；
  * 都没有则回退全开（原版 app.js:925 的初值 true）。
  * localStorage 不可用（隐私模式、配额满）时同样回退，不让读取失败影响启动。
+ *
+ * 2026-11-23：「收起」档已下线，历史数据里的 0 一律抬到 1（半开），
+ * 否则抽屉会按不存在的档位渲染。
  */
 function readSheetLevel(): SheetLevel {
   try {
     const v = localStorage.getItem(SHEET_LEVEL_KEY)
-    if (v === '0' || v === '1' || v === '2') return Number(v) as SheetLevel
+    if (v === '2') return 2
+    if (v === '1' || v === '0') return 1
     const old = localStorage.getItem(SHEET_UP_KEY)
-    return old === '0' ? 0 : 2
+    return old === '0' ? 1 : 2
   } catch {
     return 2
   }
@@ -46,7 +59,7 @@ function readSheetLevel(): SheetLevel {
  *
  * 覆盖原 js/app.js 中这些跨域共享的顶层变量：
  *   - homeMod 之外的 tab/导航/抽屉/横屏状态
- *   - sheetUp(925)   被抽屉与 window.resize(L950) 共用
+ *   - sheetLevel     抽屉档位（原 sheetUp 布尔，2026-11-23 起两档）
  *   - isLandscape    被 cam 与 mapLand 共用（原版有互相清除的缺陷，见迁移方案）
  *
  * 注意：原版有两个横屏 class，作用在不同元素上，不能合并：
@@ -114,28 +127,20 @@ export const useShellStore = defineStore('shell', () => {
   const isLand = ref(false)
 
   /**
-   * 首页半屏抽屉档位（0 收起 / 1 半开 / 2 全开），持久化到 localStorage。
+   * 首页半屏抽屉档位（1 半开 / 2 全开），持久化到 localStorage。
    *
-   * 原 sheetUp 布尔值的演进：拖拽改造（2026-10）引入中间档后，
-   * 布尔量不足以表达三档，故底层改为档位 ref；sheetUp 保留为
-   * 计算属性访问器（get: level > 0；set: true→2 / false→0），
-   * `shell.sheetUp = x` 的既有写法与 #page-home.is-sheet-up 的
-   * CSS 语义（抬起即 true）均不变。
+   * 原 sheetUp 布尔值的演进：拖拽改造（2026-10）引入中间档后，布尔量
+   * 不足以表达多档，故底层改为档位 ref；2026-11-23 再收成两档后，
+   * 「是否抬起」已恒为 true，sheetUp 这个访问器随之删除 —— 抽屉没有
+   * 收起态，代码里不该继续留一个永远为真的开关。
    */
   const sheetLevel = ref<SheetLevel>(readSheetLevel())
-
-  const sheetUp = computed<boolean>({
-    get: () => sheetLevel.value > 0,
-    set: (v: boolean) => {
-      sheetLevel.value = v ? 2 : 0
-    },
-  })
 
   watch(sheetLevel, (v) => {
     try {
       localStorage.setItem(SHEET_LEVEL_KEY, String(v))
-      // 同步写旧键，回退旧版本时状态不丢失
-      localStorage.setItem(SHEET_UP_KEY, v > 0 ? '1' : '0')
+      // 旧布尔键只用于回退版本时的迁移读取：现在恒为「已抬起」
+      localStorage.setItem(SHEET_UP_KEY, '1')
     } catch {
       // 存储不可用（隐私模式/配额满）时静默降级：本次会话内切换仍正常
     }
@@ -165,6 +170,18 @@ export const useShellStore = defineStore('shell', () => {
     isLandscape.value = true
     mapLandOpen.value = true
     mapLandReturn.value = false
+    /*
+     * 尽力让系统真的转成横屏（2026-11-23，见 utils/orientation.ts）。
+     *
+     * 必须在点击的同步栈里发起 —— `requestFullscreen` 要用户手势，
+     * 隔一个 await 就没了。iOS 上这两步都拿不到，落定后仍是竖屏就摆一条
+     * 横屏提示（`utils/landscapeHint.ts`：两行字 + 4.2s 自动消失）。
+     */
+    void enterNativeLandscape().then((ok) => {
+      // 等转屏动画的 320ms 里用户可能已经退了，别对着首页弹引导
+      if (ok || !mapLandOpen.value) return
+      openLandscapeHint()
+    })
   }
 
   /** 原 js/app.js:1708-1713 closeMapLand() */
@@ -172,6 +189,10 @@ export const useShellStore = defineStore('shell', () => {
     isLandscape.value = false
     mapLandOpen.value = false
     mapLandReturn.value = false
+    // 解锁方向 + 退系统全屏：漏了这步，用户的整台手机会被钉在横屏
+    // 退完再落定一次视口：iOS 退出全屏会留 scrollY、dvh / 安全区也不会自己刷新，
+    // 不收拾就是「回竖屏后整页向上偏移」（见 utils/orientation.ts::settleViewport）
+    void exitNativeLandscape().then(settleViewport)
   }
 
   /**
@@ -194,7 +215,6 @@ export const useShellStore = defineStore('shell', () => {
     showToast,
     isLandscape,
     isLand,
-    sheetUp,
     sheetLevel,
     mapLandOpen,
     mapLandReturn,

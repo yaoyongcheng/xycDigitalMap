@@ -7,9 +7,11 @@ import { clearPictureCache } from '@/api/video'
 import { buildScenes, type SceneAtte } from '@/api/person'
 import MsgPage from '@/views/MsgPage.vue'
 import PeopleDist from '@/views/home/parts/PeopleDist.vue'
+import PeopleDistSheet from '@/components/sheets/PeopleDistSheet.vue'
 import WorkPage from '@/views/WorkPage.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
+import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useCamStore } from '@/stores/cam'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useMsgStore } from '@/stores/msg'
@@ -299,45 +301,51 @@ describe('阶段 5 · 真实数据', () => {
       w.unmount()
     })
 
-    it('下钻 2#住宅楼：照 V2 列 1F~5F 五行，没人也占位', async () => {
+    it('点分类卡片打开底部浮窗，名字就是分类名', async () => {
       signIn()
       seed(buildScenes(PEOPLE, []).scenes, 4)
       const w = mount(PeopleDist)
       await nextTick()
 
+      const sheet = useBottomSheetStore()
       await w.findAll('.people-scene')[1].trigger('click')
-      await nextTick()
+      expect(sheet.kind).toBe('people-dist')
+      expect(sheet.id).toBe('2#住宅楼')
 
-      const rows = w.findAll('.people-group')
-      expect(rows).toHaveLength(5)
-      expect(rows.map((r) => r.find('.people-group-hd span').text())).toEqual(['1F', '2F', '3F', '4F', '5F'])
-      // 楼层是一行一条数据，不是分组小标题
-      expect(rows.every((r) => r.classes('is-floor'))).toBe(true)
-      // 0 人的层不摆「暂无名单」，只有 1F 有王五
-      expect(w.findAll('.people-no-member')).toHaveLength(0)
-      expect(w.findAll('.people-members .pm-name').map((n) => n.text())).toEqual(['王五'])
-      // 副标题按「层」计数
-      expect(w.text()).toContain('共5层')
+      await w.findAll('.people-scene')[0].trigger('click')
+      expect(sheet.id).toBe('场布图')
       w.unmount()
     })
 
-    it('点场景下钻，能看到管控区和人员姓名', async () => {
-      signIn()
+    it('浮窗里列 1F~5F 区域按钮，选中楼层才列姓名', async () => {
       seed(buildScenes(PEOPLE, []).scenes, 4)
-      const w = mount(PeopleDist)
+      const w = mount(PeopleDistSheet, { props: { name: '2#住宅楼' } })
       await nextTick()
 
-      await w.findAll('.people-scene')[0].trigger('click')
-      await nextTick()
-      expect(w.find('[data-people="areas"]').exists()).toBe(true)
-      expect(w.text()).toContain('管理区域')
-      // 姓名 + 工种都在
-      expect(w.findAll('.people-members .pm-name').map((n) => n.text())).toEqual(['雷承林', '何功纯'])
-      expect(w.findAll('.people-members .pm-trade').map((n) => n.text())).toEqual(['木工', '钢筋工'])
+      const chips = w.findAll('.pd-unit')
+      expect(chips.map((c) => c.find('span').text())).toEqual(['1F', '2F', '3F', '4F', '5F'])
+      // 默认停在第一个有人的楼层（1F），一进来就能看到名单
+      expect(chips[0].classes()).toContain('on')
+      expect(w.findAll('.people-members .pm-name').map((n) => n.text())).toEqual(['王五'])
 
-      await w.find('[data-people="back"]').trigger('click')
+      // 换到没人的 2F：不残留上一层名单
+      await chips[1].trigger('click')
+      expect(w.findAll('.people-members')).toHaveLength(0)
+      expect(w.text()).toContain('该区域暂无现场名单')
+      w.unmount()
+    })
+
+    it('场布图的浮窗列管控区，名单带姓名与工种', async () => {
+      seed(buildScenes(PEOPLE, []).scenes, 4)
+      const w = mount(PeopleDistSheet, { props: { name: '场布图' } })
       await nextTick()
-      expect(w.find('[data-people="scenes"]').exists()).toBe(true)
+
+      expect(w.findAll('.pd-unit').map((c) => c.find('span').text())).toEqual([
+        '管理区域',
+        '智能钢筋加工区',
+      ])
+      expect(w.findAll('.people-members .pm-name').map((n) => n.text())).toEqual(['雷承林'])
+      expect(w.findAll('.people-members .pm-trade').map((n) => n.text())).toEqual(['木工'])
       w.unmount()
     })
 

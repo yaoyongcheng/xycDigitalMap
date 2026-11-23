@@ -531,11 +531,16 @@ const shotMeta = computed(() => {
   return `抓拍 ${hhmm(s.at)} · 原图 ${size}`
 })
 
-/** 详情当前显示哪一版：默认压缩预览，点「查看原图」换原图（与智眸一致） */
+/**
+ * 详情当前显示哪一版：默认「详情预览」（长边 1280 的 WebP，2026-11-23），
+ * 还没生成时先用列表那张 480 顶着（同一条记录，生成完自动换上）；
+ * 点「查看原图」换原图（与智眸一致）。
+ */
 const shotSrc = computed(() => {
   const s = cam.shotPop
   if (!s) return ''
-  return cam.shotShowFull ? s.url : s.thumb
+  if (cam.shotShowFull) return s.url
+  return s.preview || s.thumb
 })
 
 /** 查看原图那颗按钮的文案（原图就在本机档案里，切换是即时的，没有进度条） */
@@ -564,14 +569,49 @@ watch(
 )
 
 /**
- * 详情大图的横屏（与智眸「横屏」同一套 `useLandscape`）：
- * `land` 为真时画布 Teleport 到 body 铺满视口，并尽力申请系统全屏 + 锁方向；
- * iOS 拿不到那两步就只铺满视口，用户自己转手机照样能看。
+ * 直播画面缩放（2026-11-23）
+ *
+ * 与上面的大图缩放**各持一套**：两块画布不同（16:9 直播 vs 原图大图），
+ * 共用一个实例会互相串状态 —— 大图放大到 2 倍，退回直播还停在 2 倍。
+ *
+ * 入口只有手势（双指捏合 / 双击 / 桌面滚轮 / 放大后拖动），**画面上不摆
+ * 任何按钮** —— 右下角那块位置留给「历史抓拍 / 全屏」的视觉呼吸，且
+ * 直播画面本身信息密度高，叠一排控件会挡到塔吊臂这类关键部位。
+ *
+ * 上限 3 倍：源是 1080p，再放大只剩马赛克；下限 1 倍（cover 铺满），
+ * 比它小就会在画面里露出底色，等于「缩成一个小窗口」，没有意义。
+ */
+const {
+  contentStyle: liveZoomStyle,
+  animating: liveZoomAnim,
+  handlers: liveZoomHandlers,
+  reset: resetLiveZoom,
+} = useImageZoom({ max: 3 })
+
+/**
+ * 换点位 / 关层 / 画面元素重挂（重连换 `:key`）时复位。
+ *
+ * 不复位的话：新元素挂上来会直接带着上一次的 transform，用户看到的是
+ * 「换了一台相机，画面还是歪的」。
+ */
+watch(
+  () => [cam.camId, cam.isOpen, mediaNonce.value] as const,
+  () => resetLiveZoom(),
+)
+
+/**
+ * 详情大图的全屏（2026-11-23 从「横屏」改为与智眸照片完全同一套）：
+ * `page: true` 对 `documentElement` 申请系统全屏（整页全屏），而不是只把画布
+ * 塞进全屏 —— 这样 `.phone-screen` 里的「把手机横过来看」提示卡也能一起进
+ * 全屏；`hint: true` 在 iOS / 微信 / 系统锁了旋转时给出提示。
+ *
+ * `land` 为真时画布 Teleport 到 body 铺满视口（`.cam-player` 有 transform，
+ * 不挪 DOM 的话 fixed 会以它为包含块，铺不满）。
  */
 const { land: shotLand, setStage: setShotStage, toggle: toggleShotLand, exit: exitShotLand } =
-  useLandscape()
+  useLandscape({ page: true, hint: true })
 
-/** 关弹层 / 换日期时把横屏收回来，别留一块全屏黑挂在页面上 */
+/** 关弹层 / 换日期时把全屏收回来，别留一块全屏黑挂在页面上 */
 watch(
   () => cam.shotPopId,
   (id) => {
@@ -617,7 +657,7 @@ function onLandToggle(): void {
 }
 
 /**
- * 返回：大图 → 日历 → 历史抓拍 → 横屏 → 关层，一级一级退。
+ * 返回：大图 → 日历 → 历史抓拍 → 全屏 → 关层，一级一级退。
  */
 function onBack(): void {
   if (cam.shotPopOpen) {
@@ -678,19 +718,25 @@ function goLogin(): void {
           重连期间只把画面「蒙起来」（is-veiled），**不销毁元素**：
           display:none 的 <video> 在部分移动浏览器里会停掉解码，回来就永远等不到
           playing 事件；用 opacity 藏着，管线照跑，恢复时无缝切回来。
+
+          2026-11-23：画面可缩放（双指捏合 / 桌面滚轮 / 右下三颗控件）。
+          `v-zoomable` 只声明 `touch-action: pan-y` —— 单指竖滑仍归页面，
+          捏合才缩放；倍率与位移都是等比 transform，画面宽高比不变。
         -->
         <video
           v-if="hasStream"
           :key="`${cam.camId}-${mediaNonce}`"
           ref="videoEl"
           id="camPlayerVideo"
-          class="cam-frame"
-          :class="{ 'is-veiled': !showLive }"
+          class="cam-frame v-zoomable"
+          :class="{ 'is-veiled': !showLive, 'is-anim': liveZoomAnim }"
+          :style="liveZoomStyle"
           :src="cam.playMode === 'flv' ? undefined : cam.playUrl"
           muted
           playsinline
           webkit-playsinline
           preload="none"
+          v-on="liveZoomHandlers"
           @play="onMediaPlay"
           @playing="onMediaPlay"
           @pause="onMediaPause"
@@ -756,7 +802,6 @@ function goLogin(): void {
       </div>
 
       <div class="cam-player-switch">
-        <p>切换点位</p>
         <div class="cam-player-chips" id="camPlayerChips">
           <div v-for="g in cam.grouped" :key="g.name" class="cam-chip-group">
             <h5>{{ g.name }}<em>{{ g.items.length }}</em></h5>
@@ -875,8 +920,8 @@ function goLogin(): void {
       />
 
       <!--
-        大图：默认压缩预览（列表那张），右上角「查看原图 / 横屏」与智眸同一套胶囊。
-        原图就在本机档案里，切换是即时的；横屏时整块画布 Teleport 到 body 铺满视口
+        大图：默认压缩预览（列表那张），右上角「查看原图 / 全屏」与智眸同一套胶囊。
+        原图就在本机档案里，切换是即时的；全屏时整块画布 Teleport 到 body 铺满视口
         （`.cam-player` 有 transform，fixed 会被当成包含块，不挪 DOM 就铺不满）。
       -->
       <div
@@ -923,10 +968,10 @@ function goLogin(): void {
                 class="pano-tool"
                 type="button"
                 :aria-pressed="shotLand"
-                :aria-label="shotLand ? '退出横屏' : '横屏查看'"
+                :aria-label="shotLand ? '退出全屏，回到竖屏' : '全屏查看'"
                 @click="toggleShotLand"
               >
-                {{ shotLand ? '竖屏' : '横屏' }}
+                {{ shotLand ? '退出' : '全屏' }}
               </button>
             </div>
           </figure>

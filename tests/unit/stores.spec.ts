@@ -62,7 +62,6 @@ describe('stores', () => {
       it('默认全开（与原版 sheetUp 初值 true 一致）', () => {
         const shell = useShellStore()
         expect(shell.sheetLevel).toBe(2)
-        expect(shell.sheetUp).toBe(true)
       })
 
       it('优先读新的档位键', () => {
@@ -70,9 +69,14 @@ describe('stores', () => {
         expect(useShellStore().sheetLevel).toBe(1)
       })
 
-      it('新键缺失时迁移旧布尔键：0→收起、1→全开', () => {
+      it('历史「收起」档（0）在读档时抬到半开', () => {
+        localStorage.setItem('xyc.sheetLevel', '0')
+        expect(useShellStore().sheetLevel).toBe(1)
+      })
+
+      it('新键缺失时迁移旧布尔键：0→半开、1→全开', () => {
         localStorage.setItem('xyc.sheetUp', '0')
-        expect(useShellStore().sheetLevel).toBe(0)
+        expect(useShellStore().sheetLevel).toBe(1)
 
         setActivePinia(createPinia())
         localStorage.setItem('xyc.sheetUp', '1')
@@ -82,20 +86,20 @@ describe('stores', () => {
       it('档位值非法时视为缺失，继续走旧键迁移', () => {
         localStorage.setItem('xyc.sheetLevel', 'x')
         localStorage.setItem('xyc.sheetUp', '0')
-        expect(useShellStore().sheetLevel).toBe(0)
+        expect(useShellStore().sheetLevel).toBe(1)
       })
 
-      it('档位变化同时写新键与旧键（回退旧版本不丢状态）', async () => {
+      it('档位变化同时写新键与旧键（旧键恒为「已抬起」）', async () => {
         const shell = useShellStore()
         shell.sheetLevel = 1
         await nextTick()
         expect(localStorage.getItem('xyc.sheetLevel')).toBe('1')
         expect(localStorage.getItem('xyc.sheetUp')).toBe('1')
 
-        shell.sheetLevel = 0
+        shell.sheetLevel = 2
         await nextTick()
-        expect(localStorage.getItem('xyc.sheetLevel')).toBe('0')
-        expect(localStorage.getItem('xyc.sheetUp')).toBe('0')
+        expect(localStorage.getItem('xyc.sheetLevel')).toBe('2')
+        expect(localStorage.getItem('xyc.sheetUp')).toBe('1')
       })
 
       it('存储不可用（隐私模式/配额满）时静默回退，不影响启动', async () => {
@@ -112,20 +116,6 @@ describe('stores', () => {
         await nextTick()
         // 写入失败但内存状态照常更新，本次会话内切换不受影响
         expect(shell.sheetLevel).toBe(1)
-      })
-
-      it('sheetUp 布尔访问器与档位双向映射', () => {
-        const shell = useShellStore()
-        shell.sheetUp = false
-        expect(shell.sheetLevel).toBe(0)
-        expect(shell.sheetUp).toBe(false)
-
-        shell.sheetUp = true
-        expect(shell.sheetLevel).toBe(2)
-        expect(shell.sheetUp).toBe(true)
-
-        shell.sheetLevel = 1
-        expect(shell.sheetUp).toBe(true)
       })
     })
 

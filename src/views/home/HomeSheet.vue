@@ -40,9 +40,13 @@ const home = useHomeStore()
  * 原先它被浮在抽屉边缘的「半开」药丸整个盖住，等于不存在；而那颗药丸
  * 又骑在抽屉上沿，滚动内容会从它下面穿过去（实测「01 预警」标题被压掉
  * 半行）。现在药丸撤掉，抓手条常驻吸顶，既是拖拽入口也是点击入口。
+ *
+ * 2026-11-23：抓手条右侧那枚 16px 小箭头（`.grab-chev`）按用户要求撤掉 ——
+ * 抽屉只剩「半开 / 全开」两档，箭头原本用来提示下一步是展开还是收起，
+ * 现在一根居中的横条反而更干净，手势与点按的语义也不靠它表达。
  */
 /** level 有默认值：抽屉默认全开（与 store 初值一致），单测里可以只传 dragTop */
-const props = withDefaults(defineProps<{ dragTop: number | null; level?: 0 | 1 | 2 }>(), {
+const props = withDefaults(defineProps<{ dragTop: number | null; level?: 1 | 2 }>(), {
   level: 2,
 })
 const emit = defineEmits<{ grab: [e: PointerEvent]; toggle: [] }>()
@@ -51,8 +55,8 @@ function onGrab(e: PointerEvent): void {
   emit('grab', e)
 }
 
-/** 点击抓手条要去的档位（与 HomePage 的循环一致：收起 → 全开 → 半开 → 收起） */
-const grabLabel = computed(() => ['展开面板', '收起面板', '半开面板'][props.level])
+/** 点击抓手条要去的档位（只有两档：半开 ↔ 全开） */
+const grabLabel = computed(() => (props.level === 2 ? '收到半开' : '展开面板'))
 
 /**
  * 三模块（2026-10 版本同步 · 第三批，2026-11 对齐设计稿 gx2 文案与图标）
@@ -85,8 +89,8 @@ const modIndex = computed(() => Math.max(0, mods.findIndex((m) => m.id === home.
   <div class="home-sheet" :style="dragTop !== null ? { top: dragTop + 'px' } : undefined">
     <!--
       抓手条：拖拽 + 点击同一个人体工学入口。
-      吸顶（position: sticky）是为了滚动时它不被内容顶走 —— 抽屉里内容很长，
-      滑到一半想收回面板时，手柄必须还在原地。
+      2026-11-23：抽屉改成「固定顶栏 + 内容区独立滚动」后，它作为 flex 头一项
+      固定在最上方，不再依赖 sticky，也不会被下面的面板内容卷走。
     -->
     <button
       class="sheet-grab"
@@ -96,19 +100,6 @@ const modIndex = computed(() => Math.max(0, mods.findIndex((m) => m.id === home.
       @click="emit('toggle')"
     >
       <i aria-hidden="true"></i>
-      <svg
-        class="grab-chev"
-        :class="{ up: props.level === 0 }"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M6 9l6 6 6-6" />
-      </svg>
     </button>
     <div class="home-mods" id="homeMods">
       <button

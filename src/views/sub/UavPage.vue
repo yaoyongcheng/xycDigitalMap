@@ -8,24 +8,29 @@ import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useUavStore } from '@/stores/uav'
 import { DASH } from '@/utils/lift'
 import { useSlowLoading } from '@/utils/slowLoading'
+import { useMissionClock } from '@/utils/missionClock'
 import { missionProgress } from '@/utils/uavProgress'
 
 /**
  * 无人机页（2026-11-13 按设计稿 gx2 重排）
  *
- * ## 四块照设计稿
+ * ## 四块照设计稿（2026-11-23 按现场要求删了两块）
  *
- * ① 实时监控：页签（无人机 / 机库）+ 画面区 + 五格实时读数
- * ② 任务管理：三格（今日任务 / 已完成 / 失败次数）+ 执行中任务的进度
+ * ① 实时监控：页签（只剩「无人机」，机库页签已删）+ 画面区
+ * ② 任务管理：三格（今日任务 / 已完成 / 失败次数，**只算本项目**）+ 执行中任务的进度
  * ③ 设备参数：八格（状态 / 电量 / 距机库 / 续航 / 风速 / 网络质量 / 网络速率 / 电池温度）
  * ④ 任务下发：**二期**，当前只给「接入中，敬请期待」占位（用户 2026-11-13 定）
+ *
+ * 2026-11-23 下线的两处：飞行参数七格（状态/海拔/飞行距离/两向速度/翻滚角/偏航角）
+ * 整块撤掉；「机库」页签撤掉，机库那套读数（无人机在库、充电、舱温、湿度、网速）
+ * 随之不再展示。遥测数据本身仍在 store 里刷新，设备参数那几格照旧。
  *
  * ## 数据全部来自 keehang（与 V2 同一批接口）
  *
  * | 区块 | 接口 |
  * |---|---|
- * | 任务管理三格 | `/dashboard/task/list/record`（`taskCount/finishedCount/failedCount`） |
- * | 今日任务明细 | `/task/exec/list/record?start=今天&end=明天` |
+ * | 任务管理三格 | `/dashboard/task/list/record?pid=本项目`（`taskCount/finishedCount/failedCount`） |
+ * | 今日任务明细 | `/task/exec/list/record?pid=本项目&start=今天&end=明天` |
  * | 飞行/机库读数 | `/dashboard/device/cache/telemetry/{无人机id}/1`、`{机库id}/2` |
  *
  * 2026-11-13 复盘发现：先前「风速 / 雨量 / 网络 / 距机库 / 剩余续航没有数据源」
@@ -38,10 +43,9 @@ import { missionProgress } from '@/utils/uavProgress'
  *    `live.keehang.com` 的 HTTP-FLV（`/live/stream/list` 直接给地址，
  *    与 V2 桌面端同一路流），不是萤石云 —— 之前那句「萤石云凭据失效」
  *    是错的：无人机画面从来不走萤石云。详见 `api/drone.ts` 的 `DroneLiveStream`。
- * ② **两个页签切的是两路流 + 两套读数**：无人机页签给机载遥测与机载画面，
- *    机库页签给机库遥测与机库摄像头。**有地址就先连**（`online` 只是 30s 快照，
- *    拿它当门禁会在起飞推流那半分钟里空窗）；连不上由播放器说「画面未开播」并
- *    每 20s 自动重连，不拿无人机画面顶替机库。
+ * ② **画面与读数只认无人机这一路**（2026-11-23 删掉机库页签后）：机库摄像头的流
+ *    与读数都不再上屏。**有地址就先连**（`online` 只是 30s 快照，拿它当门禁会在
+ *    起飞推流那半分钟里空窗）；连不上由播放器说「画面未开播」并每 20s 自动重连。
  * ③ **雨量口径未确认**。`rainfall` 实测为 1，同日机库湿度 99%，无法确认
  *    1 是「有雨」还是「无雨」，所以起飞条件按未知处理（不放行），
  *    并把原值写在原因里，等厂家确认口径再改判定。
@@ -53,24 +57,31 @@ const sheet = useBottomSheetStore()
 const uav = useUavStore()
 const auth = useAuthStore()
 
-/** 画面来源：无人机实拍 / 机库 */
+/**
+ * 画面来源。
+ *
+ * 2026-11-23 用户要求删掉「机库」页签，所以这里恒为 `'fly'` —— 状态与
+ * `streamNow` / 播放器 key 的写法一并保留：两路流的结构没拆，将来若要把
+ * 机库页签加回来，只需要补一个按钮，其余代码不用动。
+ */
 const tab = ref<'fly' | 'dock'>('fly')
 
-/** 进度条要「随时间走」，30s 刷一次（同时遥测也在刷） */
-const now = ref(Date.now())
-let ticker: number | null = null
+/**
+ * 进度条的时间源 —— **与首页卡片共用同一个时钟**（`utils/missionClock.ts`）。
+ *
+ * 这里原先自己 `ref(Date.now())` + 一条 30s `setInterval`，与首页那条的相位
+ * 由各自挂载时刻决定，同一条任务在两处能差近一拍：现场就是首页 50%、
+ * 进这一页 61%。现在两处读同一个 `now`，切页面不会再跳数。
+ */
+const now = useMissionClock()
 
 onMounted(() => {
   void uav.load()
   uav.startLive('uav-page')
-  ticker = window.setInterval(() => {
-    now.value = Date.now()
-  }, 30_000)
 })
 
 onBeforeUnmount(() => {
   uav.stopLive('uav-page')
-  if (ticker !== null) window.clearInterval(ticker)
 })
 
 /** 登录态后到再补一次（keehang 是项目级凭据，但遥测没取到时也要补拉） */
@@ -92,10 +103,10 @@ function pct(v: number | null): string {
 /**
  * 米 → 整数米 / 一位小数公里。
  *
- * 两处用它，语义不同但都指「一段距离」：飞行参数的**累计里程**
- * （`totalFlightDistance`，实测 10809054.8 ≈ 10809.1km）与设备参数的
- * **当前距机库**（`homeDistance`，在库里是 0.01m 这种）。V2 面板把里程原样
- * 打成 `10808461.45m`，这里统一折成 km —— 同一个数，只是别让人读八位数。
+ * 现在只有设备参数的**当前距机库**在用它（`homeDistance`，在库里是 0.01m 这种）。
+ * 原先飞行参数的累计里程（`totalFlightDistance`，实测 10809054.8 ≈ 10809.1km）
+ * 也走这里，2026-11-23 那一段读数整块下线后只剩这一处 —— 函数本身没动，
+ * 别再写回「10808461.45m」那种八位数。
  */
 function dist(m: number | null): string {
   if (m === null) return DASH
@@ -112,10 +123,6 @@ function remain(sec: number | null): string {
   return `${(sec / 3600).toFixed(1)}h`
 }
 
-function speed(v: number | null): string {
-  return v === null ? DASH : `${v.toFixed(1)}m/s`
-}
-
 /**
  * 风速 → `Nm/s`（**整数**，与 V2 一致）
  *
@@ -128,16 +135,6 @@ function speed(v: number | null): string {
  */
 function wind(v: number | null): string {
   return v === null ? DASH : `${Math.round(v)}m/s`
-}
-
-/**
- * 姿态角 → `xx.x°`（翻滚角 / 偏航角）
- *
- * 不做 0~360 归一化：`attitudeHead` 是 −180~180，负值本身是合法航向，
- * V2 面板也原样显示，两边并排核对时才不会被 209° / −151° 这种差异误导。
- */
-function deg(v: number | null): string {
-  return v === null ? DASH : `${v.toFixed(1)}°`
 }
 
 /**
@@ -207,16 +204,10 @@ watch(tab, () => {
 })
 
 /** 完全没有地址时才走整块占位（地址在但没推流由播放器说「未开播」） */
-const noStreamNote = computed(() =>
-  tab.value === 'dock' ? '机库没有配置摄像头直播流' : '平台没有这台无人机的直播流',
-)
+const noStreamNote = '平台没有这台无人机的直播流'
 
-/** 未开播时补的那句原因，各设备不同 */
-const offAirHint = computed(() =>
-  tab.value === 'dock'
-    ? '机库摄像头在库待机时不推流，无人机出库作业时会自动出画面'
-    : '无人机起飞推流后会自动出画面，不用手动刷新',
-)
+/** 未开播时补的那句原因 */
+const offAirHint = '无人机起飞推流后会自动出画面，不用手动刷新'
 
 /**
  * 状态 = 厂家状态码的文案（`utils/uavState.ts`），与 V2 同一张表。
@@ -225,19 +216,6 @@ const offAirHint = computed(() =>
  * 在库里飞控断电时 V2 写「关机」、我们写「停泊」，对不上。
  */
 const flyState = computed(() => uav.live.state)
-
-/** 无人机是否在库（机库遥测的 droneOnlineStatus） */
-const dockIn = computed(() => {
-  const v = uav.dockLive.droneIn
-  return v === null ? DASH : v ? '在库' : '出库'
-})
-
-/** 充电状态：厂家枚举只确认了 0 = 未充电，其它值原样说「充电中」 */
-const chargeText = computed(() => {
-  const v = uav.dockLive.chargeState
-  if (v === null) return DASH
-  return v === 0 ? '未充电' : '充电中'
-})
 
 /**
  * 执行中任务的进度：`(now − start) / (end − start)`。
@@ -279,7 +257,6 @@ function retry(): void {
         <h4>实时监控</h4>
         <div class="dev-tabs is-compact">
           <button type="button" :class="{ on: tab === 'fly' }" :aria-pressed="tab === 'fly'" @click="tab = 'fly'">无人机</button>
-          <button type="button" :class="{ on: tab === 'dock' }" :aria-pressed="tab === 'dock'" @click="tab = 'dock'">机库</button>
         </div>
       </div>
 
@@ -300,34 +277,17 @@ function retry(): void {
         <span v-if="liveState === 'playing'" class="uav-live"><i></i>LIVE</span>
 
         <template v-if="!hasStream">
-          <p>{{ tab === 'dock' ? '机库画面未开播' : '实时画面未开播' }}</p>
+          <p>实时画面未开播</p>
           <p class="uav-stage-sub">{{ noStreamNote }}</p>
         </template>
       </div>
 
-      <!-- 无人机页签：飞行参数（设计稿五格） -->
-      <div v-if="tab === 'fly'" class="uav-fly">
-        <div><span>状态</span><b :class="{ 'is-down': uav.live.stateDown }">{{ flyState }}</b></div>
-        <div><span>海拔</span><b>{{ uav.live.height !== null ? `${uav.live.height.toFixed(1)}m` : DASH }}</b></div>
-        <div><span>飞行距离</span><b>{{ dist(uav.live.flightDistance) }}</b></div>
-        <div><span>水平速度</span><b>{{ speed(uav.live.speed) }}</b></div>
-        <div><span>垂直速度</span><b>{{ speed(uav.live.verticalSpeed) }}</b></div>
-        <!-- 姿态两行对齐 V2 详情面板的「无人机翻滚角 / 无人机偏航角」 -->
-        <div><span>翻滚角</span><b>{{ deg(uav.live.roll) }}</b></div>
-        <div><span>偏航角</span><b>{{ deg(uav.live.heading) }}</b></div>
-      </div>
-
       <!--
-        机库页签：机库自己的读数。
-        不由「无人机」代答 —— 两个设备各自上报告，混在一起分不清是谁的数据。
+        飞行参数七格（状态 / 海拔 / 飞行距离 / 水平速度 / 垂直速度 / 翻滚角 / 偏航角）
+        2026-11-23 按现场要求**整块下线**：只留监控画面，读数不再占用版面。
+        遥测仍在 store 里照常刷新（设备参数那几格、起飞校验都还用着），
+        只是不再画在这一段。
       -->
-      <div v-else class="uav-fly">
-        <div><span>无人机</span><b :class="{ 'is-ok': dockIn === '在库' }">{{ dockIn }}</b></div>
-        <div><span>充电</span><b :class="{ 'is-ok': chargeText === '充电中' }">{{ chargeText }}</b></div>
-        <div><span>舱内温度</span><b>{{ uav.dockLive.cabinTemp !== null ? `${uav.dockLive.cabinTemp}℃` : DASH }}</b></div>
-        <div><span>环境湿度</span><b>{{ uav.dockLive.humidity !== null ? `${uav.dockLive.humidity}%` : DASH }}</b></div>
-        <div><span>网络速率</span><b>{{ netRate }}</b></div>
-      </div>
     </section>
 
     <!-- ② 任务管理 -->

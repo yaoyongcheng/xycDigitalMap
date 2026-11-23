@@ -299,14 +299,14 @@ describe('peopleHourModel 接真实数据', () => {
 
   it('未到时段在**画面**上贴底 0（V2 画法），但气泡里的值仍是 null', () => {
     const m = peopleHourModel(12, live)
-    // 曲线一路画到轴右端（x=304 是 23:00，y=126 是 0 线），与 V2 画面一致
-    expect(m.svg).toContain('304.0,126.0')
+    // 曲线一路画到轴右端（x=368 是 23:00，y=126 是 0 线），与 V2 画面一致
+    expect(m.svg).toContain('368.0,126.0')
     // 交互层不把「还没到」说成「0 个人」
     expect(m.series[0].values[22]).toBeNull()
     expect(m.ys[0][22]).toBeNull()
   })
 
-  it('横轴标签两两不遮挡（11px 字号下「21:00」约 28px 宽）', () => {
+  it('横轴标签两两不遮挡，末端挂 23:00', () => {
     const m = peopleHourModel(15, {
       hours: Array.from({ length: 17 }, (_, i) => i),
       workers: [0, 0, 0, 0, 0, 0, 4, 23, 22, 22, 23, 18, 30, 31, 27, 27, 0],
@@ -316,9 +316,9 @@ describe('peopleHourModel 接真实数据', () => {
     const xs = texts.map((g) => Number(g[1]))
     expect(xs.length).toBeGreaterThan(3)
     for (let i = 1; i < xs.length; i += 1) expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(30)
-    // 末标签是 21:00（与 V2 大屏可见区间一致），23:00 不再挂标签以免与它压字
-    expect(texts.map((g) => g[2])).toContain('21:00')
-    expect(texts.map((g) => g[2])).not.toContain('23:00')
+    // 画布加宽后末端挂 23:00；21:00 与它只隔两格会压字，让位给 23:00
+    expect(texts.map((g) => g[2])).toContain('23:00')
+    expect(texts.map((g) => g[2])).not.toContain('21:00')
   })
 
   it('数据不足两个整点时回落演示曲线', () => {

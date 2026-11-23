@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, watch, watchEffect } from 'vue'
+import { onBeforeUnmount, onMounted, watch, watchEffect } from 'vue'
 
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAuthStore } from '@/stores/auth'
@@ -8,6 +8,7 @@ import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { setThemeColor, THEME_COLORS } from '@/utils/themeColor'
+import { onFullscreenExit, settleViewport } from '@/utils/orientation'
 import { useHistoryBack } from '@/utils/historyBack'
 import { useSwipeBack } from '@/utils/swipeBack'
 import StatusBar from '@/components/shell/StatusBar.vue'
@@ -15,6 +16,7 @@ import NavBar from '@/components/shell/NavBar.vue'
 import TabBar from '@/components/shell/TabBar.vue'
 import Toast from '@/components/shell/Toast.vue'
 import UpdateBanner from '@/components/shell/UpdateBanner.vue'
+import LandscapeHint from '@/components/shell/LandscapeHint.vue'
 import MapLand from '@/components/overlays/MapLand.vue'
 import CamPlayer from '@/components/overlays/CamPlayer.vue'
 import AirPlayer from '@/components/overlays/AirPlayer.vue'
@@ -76,6 +78,36 @@ useHistoryBack()
 onMounted(() => {
   if (!auth.isLoggedIn) sub.openLogin('当前未登录，请先登录后查看现场数据')
   else void droneAlarm.load()
+})
+
+/**
+ * 系统侧退出全屏（Android 返回键 / 桌面 Esc / 系统手势）时把「横屏态」收回来。
+ *
+ * 全屏是页面自己申请的（`utils/orientation.ts`），退出却可能是系统干的：
+ * 不收的话 `isLandscape` 还停在 true，页面留在横屏版式里、屏幕已经转回竖的，
+ * 直接错位。全屏地图走「收层」（`closeMapLand` 顺带解锁方向），
+ * 监控只收横屏态、播放器本身留着。
+ */
+let offFullscreenExit: (() => void) | null = null
+
+onMounted(() => {
+  offFullscreenExit = onFullscreenExit(() => {
+    /*
+     * 先落定视口，再收状态（2026-11-23）。
+     *
+     * 系统方式退出全屏时，尺寸已经变了但页面还没意识到：iOS 会留下几十 px 的
+     * scrollY，`dvh` / `env(safe-area-inset-*)` 也要一次重排才刷新。放在这里
+     * 兜住所有退出路径（含智眸照片的全屏 —— 它不经过下面两个 store 开关）。
+     */
+    settleViewport()
+    if (shell.mapLandOpen) shell.closeMapLand()
+    else if (cam.isOpen && shell.isLand) cam.setCamLand(false)
+  })
+})
+
+onBeforeUnmount(() => {
+  offFullscreenExit?.()
+  offFullscreenExit = null
 })
 
 /**
@@ -198,6 +230,8 @@ watchEffect(() => {
         -->
         <SheetHost />
         <UpdateBanner />
+        <!-- 横屏引导：压在所有层之上（z-index 220 > toast 210），见组件注释 -->
+        <LandscapeHint />
       </div>
     </div>
   </div>

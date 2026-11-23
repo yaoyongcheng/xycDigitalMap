@@ -6,11 +6,18 @@ import { computed, ref } from 'vue'
  * 改造前预警详情大图与航拍大图都是死图：现场照片里看不清的细节没有任何
  * 办法放大，用户只能截图再放大 —— 而这恰恰是「看隐患照片」的核心诉求。
  *
- * 这里提供四种入口，覆盖触屏与桌面：
+ * 这里提供五种入口，覆盖触屏与桌面：
  *   · 双指捏合（以两指中点为锚，锚点下的画面不漂移）
  *   · 已放大时单指拖动平移（有边界，不会拖出黑边）
  *   · 双击 1× ↔ 2.4×（桌面与触屏都可用）
  *   · 桌面滚轮缩放（以光标为锚）
+ *   · `zoomTo / zoomIn / zoomOut`（2026-11-23 追加）—— 供按钮式控件调用。
+ *     **当前没有任何 UI 在用**：视频画面上的三颗按钮已于 2026-11-23 下线，
+ *     图片大图一直只用前四种入口。这三个方法留作能力储备（要恢复按钮
+ *     只需再写一份十几行的控件组件，内核不用动）。
+ *
+ * 视频（直播画面）也走这一套：transform 是等比缩放，天然保持画面宽高比；
+ * 容器加 `overflow: hidden` 即可裁掉放大后溢出的部分，不影响布局。
  *
  * 刻意返回「绑在 img 上的事件 + 一个 transform 字符串」而不是包一层容器：
  * 全站图片样式都是 `.alarm-hero img` / `.cam-shot-pop img` 这类元素/后代
@@ -40,6 +47,13 @@ const DOUBLE_TAP_MS = 280
 const REST_EPS = 0.02
 /** 滚轮每一格的缩放系数 */
 const WHEEL_STEP = 1.12
+/**
+ * 控件每点一次的倍率步进（2026-11-23）。
+ *
+ * 比滚轮的 1.12 大一档：点按钮是「离散动作」，一格走太慢会让人以为没生效；
+ * 1.4 下 1 → 1.4 → 1.96 → 2.74，点三下到上限（默认 4）。
+ */
+const BTN_STEP = 1.4
 
 export function useImageZoom(options: ImageZoomOptions = {}) {
   const maxScale = options.max ?? 4
@@ -222,6 +236,11 @@ export function useImageZoom(options: ImageZoomOptions = {}) {
 
   function onPointercancel(e: PointerEvent): void {
     pointers.delete(e.pointerId)
+    try {
+      ;(e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId)
+    } catch {
+      /* 与 pointerdown 同理，未捕获成功时释放会抛错 */
+    }
     if (pointers.size) {
       beginGesture()
       return
@@ -231,6 +250,24 @@ export function useImageZoom(options: ImageZoomOptions = {}) {
       apply(1, { x: 0, y: 0 })
     }
     lastTapAt = 0
+  }
+
+  /**
+   * 捕获被系统收回（来电、通知、全屏转场、浏览器接管手势）。
+   *
+   * 这时不会再有 pointerup，指针表里会残留一个 id：下一次点按钮时被当成
+   * 「第二根手指」，于是既不算点击、又触发了错误的捏合基准 —— 现场看到的是
+   * 「图上拖过一次以后，右上角的按钮怎么点都没反应」。
+   */
+  function onLostCapture(e: PointerEvent): void {
+    pointers.delete(e.pointerId)
+    if (pointers.size === 0) {
+      lastTapAt = 0
+      if (scale.value < 1 + REST_EPS) {
+        animating.value = true
+        apply(1, { x: 0, y: 0 })
+      }
+    }
   }
 
   /** 双击：放大到 dblScale（以双击点为锚）或还原 */
@@ -268,6 +305,29 @@ export function useImageZoom(options: ImageZoomOptions = {}) {
   }
 
   /**
+   * 以元素中心为锚缩放到指定倍率 —— 「＋ / － / 复位」三颗控件走这里
+   * （2026-11-23 追加，原本只有捏合 / 双击 / 滚轮三种入口，桌面端没有可点的控件）。
+   *
+   * 位移按同一比例跟着缩放：`translateFor` 在 a0 = a1 = 中心时化简为 `t1 = k·t0`，
+   * 所以放大后继续放大，画面不会往左上角漂。越界由 apply → clampPan 收住。
+   */
+  function zoomTo(next: number): void {
+    const s1 = clampScale(next)
+    if (Math.abs(s1 - scale.value) < 1e-3) return
+    animating.value = true
+    const k = s1 / scale.value
+    apply(s1, { x: tx.value * k, y: ty.value * k })
+  }
+
+  function zoomIn(): void {
+    zoomTo(scale.value * BTN_STEP)
+  }
+
+  function zoomOut(): void {
+    zoomTo(scale.value / BTN_STEP)
+  }
+
+  /**
    * 直接用于 `v-on="handlers"`。
    * 注意键名必须是事件名本身：Vue 的 toHandlers 会拼成 `on<Key>`，
    * 写成 `onPointerdown` 会得到 `onOnPointerdown`，监听器静默失效。
@@ -277,10 +337,30 @@ export function useImageZoom(options: ImageZoomOptions = {}) {
     pointermove: onPointermove,
     pointerup: onPointerup,
     pointercancel: onPointercancel,
+    lostpointercapture: onLostCapture,
     wheel: onWheel,
     /** 长按图片会触发原生拖拽，和手势打架 */
     dragstart: (e: Event) => e.preventDefault(),
   }
 
-  return { scale, zoomed, label, imgStyle, animating, handlers, reset }
+  /**
+   * 返回集合。
+   *
+   * `imgStyle` 是历史名（图片场景全在用），`contentStyle` 是它的别名 ——
+   * 视频等非图片内容读这个名字，避免为了「名字合不合适」再造一套 transform
+   * 拼装逻辑（那才是真正会各自漂移的地方）。
+   */
+  return {
+    scale,
+    zoomed,
+    label,
+    imgStyle,
+    contentStyle: imgStyle,
+    animating,
+    handlers,
+    zoomTo,
+    zoomIn,
+    zoomOut,
+    reset,
+  }
 }

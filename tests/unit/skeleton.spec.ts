@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, nextTick } from 'vue'
@@ -148,6 +148,14 @@ describe('历史窗格：回补期间铺骨架，不提前说「暂无」', () =
     const w = mount(AlarmHist)
     await nextTick()
     alarm.liveState = 'ok'
+    /*
+     * 2026-11-23：历史页的列表改成「监控预警 + 无人机预警」合并，所以「回补结束」
+     * 现在有两侧 —— 监控这边 liveState 一旦 ok 就有结论，无人机那边还要等首屏
+     * 扫描落地（`drone.load()` 在 onMounted 里发起，会走 CAS 两步登录）。
+     * 这里等一次宏任务把那条链走完（本文件的 fetch 桩是 500，落地即失败态，
+     * 失败也是结论），否则撤骨架的时机被另一路拖住，断言就成了时序测试。
+     */
+    await flushPromises()
     await nextTick()
     const pane = w.find('.insp-pane.insp-hist')
 

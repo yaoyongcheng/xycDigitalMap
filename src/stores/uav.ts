@@ -101,29 +101,33 @@ const ESTIMATE_GAP = 6 * 60 * 60 * 1000
 /** 历史时长算失败后的重试间隔：5 分钟（30s 刷新会反复触发，别空转） */
 const ESTIMATE_RETRY = 5 * 60 * 1000
 
-/** 任务执行状态 → 展示文案（服务端实测：2 = 已完成、1 = 执行中、-1 = 未执行） */
-function stateText(s: number): string {
-  switch (s) {
-    case -1:
-      return '未执行'
-    case 0:
-      return '待执行'
-    case 1:
-      return '执行中'
-    case 2:
-      return '已完成'
-    case 3:
-      return '已失败'
-    default:
-      return '未知'
-  }
+/**
+ * 任务状态 → 展示文案。
+ *
+ * **两个字段各有分工**（2026-11-23 实测近 14 天 204 行得出）：
+ * - `status`：记录处在哪个阶段（`-1` 未执行 / `0` 待执行 / `1` 执行中 / `2` 已执行）。
+ *   已执行的记录**恒为 2** —— 飞失败的那条也是 2。
+ * - `result`：飞行结果（`0` 成功 / `3` 失败 / `4` 未执行）。**成败只看它**。
+ *
+ * 早先只读 `status`，于是 15:00 那次失败的「安全巡检」一直显示「已完成」，
+ * 而三格里的「失败次数」又确实是 1 —— 同一份数据两处两个说法。
+ */
+function stateText(s: number, result: number | null): string {
+  if (result === 3) return '已失败'
+  if (result === 4 || s === -1) return '未执行'
+  if (s === 1) return '执行中'
+  if (s === 2) return '已完成'
+  if (s === 0) return '待执行'
+  // 兜底：万一哪天服务端把结果写进了 status
+  if (s === 3) return '已失败'
+  return '未知'
 }
 
-/** 任务执行状态 → 展示 class（沿用页面已有的 is-ok / is-done 语义） */
-function stateClass(s: number): string {
+/** 任务状态 → 展示 class（沿用页面已有的 is-ok / is-done / is-bad 语义） */
+function stateClass(s: number, result: number | null): string {
+  if (result === 3 || s === 3) return 'is-bad'
   if (s === 1) return 'is-ok'
   if (s === 2) return 'is-done'
-  if (s === 3) return 'is-bad'
   return ''
 }
 
@@ -156,12 +160,21 @@ export interface UavTaskView {
   /**
    * 是否本项目的任务。
    *
-   * 2026-11-16 起「今日任务」按账号口径取（三格 23 = 向阳村 15 + 光谷元著 8），
-   * 列表里会混进别的项目的记录。`当前巡检` 与进度条只认本项目的 ——
-   * 实时遥测来自向阳村那台机库，拿别的项目的任务去配它等于张冠李戴。
+   * 2026-11-16 起「今日任务」曾按账号口径取（三格 23 = 向阳村 15 + 光谷元著 8），
+   * 列表里会混进别的项目的记录；2026-11-23 用户要求**剔除光谷元著**后，
+   * 明细接口只传本项目 pid（见 `load()`），所以这里当前恒为 `true`。
+   * 字段保留：`running`（当前巡检）仍按它过滤，将来若要恢复账号口径不用再改结构。
    */
   own: boolean
 }
+
+/**
+ * 演示用的「执行中任务」曾在这里（`?simMission=1`，`import.meta.env.DEV` 守卫）。
+ *
+ * 2026-11-23 验收完即下线：进度条的两处一致性由 `utils/missionClock.ts` 保证，
+ * 不再需要一条假任务来制造「执行中」。`running` / `runningEstimate` 已恢复成
+ * **只认真实记录**，没有模拟分支。
+ */
 
 /** 起飞条件的一项 */
 export interface UavCheck {
@@ -217,6 +230,9 @@ export const useUavStore = defineStore('uav', () => {
    *
    * 2026-11-16 起是**账号口径**（`fetchTodayRecords` 合并了账号下各项目），
    * 条数与三格 `taskCount` 对齐（23 = 15 + 8）。
+   *
+   * 2026-11-23 起改回**只本项目**（用户要求剔除「光谷元著」）：明细只传
+   * `pids: [KH_IDS.pid]`，统计只传 `pid: KH_IDS.pid`，两边条数依然对得上。
    */
   const todayRecords = computed<DroneTaskRecord[]>(() => {
     const key = dayKey(0)
@@ -225,25 +241,76 @@ export const useUavStore = defineStore('uav', () => {
       .sort((a, b) => b.start.localeCompare(a.start))
   })
 
-  /** 今日任务（视图） */
-  const todayTasks = computed<UavTaskView[]>(() =>
-    todayRecords.value.map((r) => {
+  /**
+   * 当天还没飞的任务（统计接口的 `unfinishedTaskList`）。
+   *
+   * 为什么要它：三格的「今日任务」是**计划口径**（成功 + 失败 + 还没飞），
+   * 而执行记录接口只返回「已产生记录」的项。2026-11-23 现场 15 与明细 13 对不上，
+   * 差的就是当天剩下那两条排班（17:00 土方1 / 17:45 安全巡检）。用户要求
+   * 「查看今日任务」里**也要包含未执行的任务**，所以这里把它们补进清单。
+   *
+   * 与记录去重：同一 `taskId + 开始时间` 已经在记录里（例如正在执行的任务，
+   * 统计里仍算「未完成」但也已有记录），就不再补一条 —— 否则会出现
+   * 「执行中 + 未执行」两条同名同时间的行。
+   */
+  const todayPending = computed<UavTaskView[]>(() => {
+    const rows = stat.value?.pending ?? []
+    if (!rows.length) return []
+    const key = dayKey(0)
+    const seen = new Set(todayRecords.value.map((r) => `${r.taskId ?? r.taskName}|${r.start}`))
+    const out: UavTaskView[] = []
+    for (const p of rows) {
+      // 统计接口的 `unfinishedTaskList` 偶尔会跨到次日，按日期再滤一次
+      if (p.start.slice(0, 10) !== key) continue
+      const k = `${p.taskId ?? p.taskName}|${p.start}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      const a = Date.parse(p.start)
+      out.push({
+        key: `plan-${k}`,
+        time: p.start.slice(11, 16),
+        name: p.taskName,
+        taskId: p.taskId,
+        // 还没起飞：不写「待执行」以免与 status=0 混淆，就写「未执行」
+        state: '未执行',
+        stateClass: 'is-plan',
+        startAt: Number.isFinite(a) ? a : null,
+        own: true,
+      })
+    }
+    return out
+  })
+
+  /**
+   * 今日任务（视图）：**已执行的记录 + 还没飞的计划项**，按开始时间倒序。
+   *
+   * 两者合起来才等于三格的 `taskCount`；只列记录会让「15 与 13 对不上」
+   * 反复被当成丢数据。
+   */
+  const todayTasks = computed<UavTaskView[]>(() => {
+    const done = todayRecords.value.map((r) => {
       const a = Date.parse(r.start)
       return {
         key: r.uuid || String(r.id),
         time: r.start.slice(11, 16),
         name: r.taskName,
         taskId: r.taskId,
-        state: stateText(r.status),
-        stateClass: stateClass(r.status),
+        state: stateText(r.status, r.result),
+        stateClass: stateClass(r.status, r.result),
         startAt: Number.isFinite(a) ? a : null,
         // pid 缺失（老数据）按本项目算，不确定时不要凭空扣掉一条
         own: r.pid === null || r.pid === KH_IDS.pid,
       }
-    }),
-  )
+    })
+    return [...done, ...todayPending.value].sort((a, b) => (b.startAt ?? 0) - (a.startAt ?? 0))
+  })
 
-  /** 今日列表里是否有别的项目的任务（有才在弹层底部加一句说明） */
+  /**
+   * 今日列表里是否有别的项目的任务（有才在弹层底部加一句说明）。
+   *
+   * 2026-11-23 起明细只取本项目，正常恒为 `false`；保留它作兜底 ——
+   * 服务端若又混进别的项目的记录，弹层至少会说明「含其它项目」，不闷着。
+   */
   const todayHasOthers = computed(() => todayTasks.value.some((t) => !t.own))
 
   /**
@@ -466,8 +533,8 @@ export const useUavStore = defineStore('uav', () => {
     state.value = 'loading'
     inflight = (async () => {
       const [list, s, tel, dk, rt, fly, dockFly] = await Promise.allSettled([
-        fetchTodayRecords({ start: dayKey(0), end: dayKey(1) }),
-        fetchTaskStat(),
+        fetchTodayRecords({ start: dayKey(0), end: dayKey(1), pids: [KH_IDS.pid] }),
+        fetchTaskStat({ pid: KH_IDS.pid }),
         fetchTelemetry(),
         fetchDockTelemetry(),
         fetchRoutes(),
@@ -538,15 +605,56 @@ export const useUavStore = defineStore('uav', () => {
    *
    * 首页只要一个「今日作业次数」，不该为它触发 CAS + 四个请求。失败静默
    * （卡片留「—」），60s 冷却避免每次切回首页都重打。
+   *
+   * 2026-11-23：`pid` 只传本项目 —— 统计口径与无人机页那三格统一，
+   * 不再把「光谷元著」的架次算进向阳村的「今日作业次数」。
    */
   async function loadStat(): Promise<void> {
     if (stat.value) return
     if (Date.now() - lastFailAt < RETRY_GAP) return
     try {
-      stat.value = await fetchTaskStat()
+      stat.value = await fetchTaskStat({ pid: KH_IDS.pid })
     } catch {
       lastFailAt = Date.now()
     }
+  }
+
+  /** `loadMission` 的最小间隔：首页常驻时 30s 的本地 tick 会反复调到这里 */
+  const MISSION_GAP = 60_000
+  let missionAt = 0
+  let missionInflight: Promise<void> | null = null
+
+  /**
+   * 首页卡片「当前巡检」进度条的取数。
+   *
+   * 首页原先只打一个统计请求（`loadStat`），拿不到今日明细 → `running` 永远是空，
+   * 进度条也就无从显示。这里补一条**轻量**明细请求：只取本项目今日记录；
+   * 真有执行中的任务时才再补「预计时长」（`loadEstimates`，内部带 6 小时缓存）。
+   *
+   * - **失败静默**：取不到就不画进度条，不编一个百分比（与无人机页同一原则）。
+   * - **60s 冷却**：首页常驻时每 30s 会调一次，实际约两拍打一个请求；
+   *   一小时 ≈ 60 个请求，换来「任务一开始就自动出现」。
+   * - **不动 `state`**：这是卡片的补充信息，接口挂了不该把整页判成加载失败。
+   */
+  async function loadMission(force = false): Promise<void> {
+    if (missionInflight) return missionInflight
+    if (!force && Date.now() - missionAt < MISSION_GAP) return
+    missionAt = Date.now()
+    missionInflight = (async () => {
+      try {
+        records.value = await fetchTodayRecords({
+          start: dayKey(0),
+          end: dayKey(1),
+          pids: [KH_IDS.pid],
+        })
+        if (running.value) await loadEstimates()
+      } catch {
+        // 静默：卡片上少一条进度条，比摆一条假的进度条好
+      } finally {
+        missionInflight = null
+      }
+    })()
+    return missionInflight
   }
 
   /* ---------------- 实时刷新（子页「实时监控」） ---------------- */
@@ -593,8 +701,8 @@ async function refreshSlow(): Promise<void> {
   const [fly, dockFly, s, list] = await Promise.allSettled([
     fetchLiveStream(KH_IDS.droneDeviceId),
     fetchLiveStream(KH_IDS.dockDeviceId),
-    fetchTaskStat(),
-    fetchTodayRecords({ start: dayKey(0), end: dayKey(1) }),
+    fetchTaskStat({ pid: KH_IDS.pid }),
+    fetchTodayRecords({ start: dayKey(0), end: dayKey(1), pids: [KH_IDS.pid] }),
     fetchDockTelemetry(),
   ])
   // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
@@ -735,6 +843,7 @@ async function refreshSlow(): Promise<void> {
     applyStream,
     load,
     loadStat,
+    loadMission,
     startLive,
     stopLive,
     refreshLive,

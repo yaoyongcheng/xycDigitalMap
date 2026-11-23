@@ -36,8 +36,14 @@ const FIRST_PAGES = 2
 /** 按需回补的总页数上限：1807 条全量在手机上没必要，8 页 ≈ 4 个月 */
 const MAX_PAGES = 8
 
-/** 今日 0 条时轮播退到最近几条（2 页 × 3 条） */
-const FEED_FALLBACK_N = 6
+/**
+ * 今日 0 条时轮播退到最近几条（2 页 × 3 条）。
+ *
+ * 2026-11-23 起首页轮播是「监控 + 无人机」合并列表，这份条数也供
+ * `views/home/parts/AlarmFeed.vue` 的合并退场使用 —— 两侧各取这么多再合并，
+ * 保证「退到最近记录」时两张卡片口径一样。
+ */
+export const FEED_FALLBACK_N = 6
 
 /** 近 7 日趋势的天数 */
 const TREND_DAYS = 7

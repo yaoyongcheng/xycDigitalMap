@@ -12,9 +12,13 @@ import { findMonitorEntry, loadMonitorList, pickStreamUrl, type MonitorEntry } f
 import { CAM_GROUPS, CAM_POINTS, findCamPoint } from '@/data/cams'
 import { cctvPlayableUrl, cctvRtspUrl, streamModeOf, type StreamMode } from '@/data/cctv'
 import { addDays, dateKey, formatCamDate, monthStart, startOfDay } from '@/utils/date'
+import { enterNativeLandscape, exitNativeLandscape, settleViewport } from '@/utils/orientation'
+import { openLandscapeHint } from '@/utils/landscapeHint'
 import {
   clearShots as clearShotArchive,
   ensureShot,
+  ensureShotPreview,
+  getShot,
   listCachedShots,
   type ShotRecord,
 } from '@/utils/shotArchive'
@@ -81,6 +85,13 @@ export interface CamShot {
   mark: string
   /** 压缩预览（列表用，长边 480 的 WebP；未取回时为空串） */
   thumb: string
+  /**
+   * 详情预览（长边 1280 的 WebP，2026-11-23 新增）。
+   *
+   * 详情弹层默认显示它 —— 比列表那张 480 的清晰一档，又不是 200~340KB 的原图。
+   * 空串 = 还没生成（老缓存 / 刚取回）：此时先显示 `thumb`，生成完自动换上。
+   */
+  preview: string
   /** 原图（详情「查看原图」用；未取回时为空串） */
   url: string
   /** 抓拍时刻（ms，服务端给的） */
@@ -362,6 +373,7 @@ export const useCamStore = defineStore('cam', () => {
       id: item.mark,
       mark: item.mark,
       thumb: '',
+      preview: '',
       url: '',
       at: item.at,
       hm: hmOf(item.at),
@@ -371,12 +383,14 @@ export const useCamStore = defineStore('cam', () => {
     }
   }
 
-  /** 缓存记录 → 视图（两份 objectURL：缩略图 / 原图） */
+  /** 缓存记录 → 视图（三份 objectURL：缩略图 / 详情预览 / 原图） */
   function toCamShot(rec: ShotRecord): CamShot {
     return {
       id: rec.mark,
       mark: rec.mark,
       thumb: makeShotUrl(rec.thumb),
+      // 之前打开过这张详情 → 预览已经在缓存里，直接给（列表加载时一起建 URL）
+      preview: rec.preview ? makeShotUrl(rec.preview) : '',
       url: makeShotUrl(rec.full),
       at: rec.at,
       hm: hmOf(rec.at),
@@ -415,9 +429,13 @@ export const useCamStore = defineStore('cam', () => {
         revokeShotUrl(prev.thumb)
         revokeShotUrl(prev.url)
       }
+      // 缓存里已经存过详情预览（上次打开过）→ 一并挂上，详情打开即清晰
+      if (prev?.preview && rec.preview) revokeShotUrl(prev.preview)
+      const previewUrl = rec.preview ? makeShotUrl(rec.preview) : ''
       patchShot(item.mark, (s) => ({
         ...s,
         thumb: makeShotUrl(rec.thumb),
+        preview: previewUrl || s.preview,
         url: makeShotUrl(rec.full),
         size: rec.size,
         state: 'ok',
@@ -607,6 +625,32 @@ export const useCamStore = defineStore('cam', () => {
     shotsNote.value = ''
   }
 
+  /** 正在生成详情预览的 mark（反复开关同一张不重复缩） */
+  const previewBusy = new Set<string>()
+
+  /**
+   * 详情预览（长边 1280）—— **打开详情时按需生成一次**，生成后写回本机缓存。
+   *
+   * 生成期间详情先显示 480 的 `thumb`，生成完自动换上（同一条记录里换 objectURL，
+   * 不闪、不重开弹层）。环境不支持 canvas / 生成失败 → 什么都不做，
+   * 继续用 `thumb`，不弹任何错误。
+   */
+  async function loadShotPreview(s: CamShot): Promise<void> {
+    if (s.preview || previewBusy.has(s.mark) || s.state !== 'ok') return
+    previewBusy.add(s.mark)
+    try {
+      const rec = await getShot(s.channelId, s.mark)
+      if (!rec) return
+      const blob = await ensureShotPreview(rec)
+      if (!blob) return
+      patchShot(s.mark, (x) => ({ ...x, preview: makeShotUrl(blob) }))
+    } catch {
+      /* 预览只是优化：失败保留 thumb，不影响看大图 */
+    } finally {
+      previewBusy.delete(s.mark)
+    }
+  }
+
   /**
    * 打开一张抓拍的大图（从压缩预览起步，与智眸一致）。
    *
@@ -622,6 +666,8 @@ export const useCamStore = defineStore('cam', () => {
     }
     shotShowFull.value = false
     shotPopId.value = id
+    // 详情那张要比列表清晰：按需补一档 1280 的预览（老缓存没有，现做一次）
+    void loadShotPreview(s)
   }
 
   function closeShot(): void {
@@ -638,6 +684,21 @@ export const useCamStore = defineStore('cam', () => {
   function setCamLand(on: boolean): void {
     shell.isLandscape = on
     shell.isLand = on
+    /*
+     * 系统级转向（2026-11-23，与全屏地图同一套 utils/orientation.ts）：
+     * 先尽力申请全屏 + 锁横屏，失败就只剩「铺满视口」这一层，
+     * 落定后还是竖屏就摆一条横屏提示（iOS 恒走这条路）。
+     */
+    if (on) {
+      void enterNativeLandscape().then((ok) => {
+        // 等待期间用户可能已经退出全屏 / 关了播放器，别对着别的界面弹引导
+        if (ok || !shell.isLand) return
+        openLandscapeHint()
+      })
+    } else {
+      // 退完再落定视口：iOS 退出全屏会留 scrollY、dvh / 安全区也不会自己刷新
+      void exitNativeLandscape().then(settleViewport)
+    }
   }
 
   /**

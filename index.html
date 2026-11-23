@@ -8,10 +8,14 @@
   <title>向阳村项目智能建造管理平台</title>
 
   <!--
-    PWA 主题色：决定系统状态栏区域的底色。
+    PWA 主题色：决定系统状态栏区域的底色与状态栏文字的黑白。
     这里给的是首屏默认值（浅色，与导航栏 #fff 一致，iOS 会配深色文字）；
     运行后由 src/utils/themeColor.ts 按当前视图动态更新 ——
     首页与横屏覆盖层是深色顶，需要切回深色，避免切出白边。
+
+    2026-11-23 补充：iOS 26 的状态栏是一层玻璃，会取**页面根背景**向上延伸，
+    因此 themeColor.ts 现在同时写 `--chrome-bg`（html/body 底色），
+    只改这一条 meta 不足以让顶栏与页面同色。
   -->
   <meta name="theme-color" content="#ffffff" />
 
@@ -22,9 +26,11 @@
       · apple-mobile-web-app-capable —— 没有它，点主屏图标会在 Safari 里带地址栏打开，
         而不是独立窗口；manifest 的 display 在 iOS 上只是锦上添花，不能替代它。
       · apple-mobile-web-app-status-bar-style —— `default` 让系统状态栏保持不透明，
-        底色跟随 theme-color，文字颜色由系统按底色亮度决定（浅底黑字）。
+        底色跟随 theme-color（iOS 26 起表现为一层玻璃材质），文字颜色由系统
+        按底色亮度决定（浅底黑字）。
         刻意**不用** black-translucent：那会把页面顶到状态栏下面并要求状态栏用白字，
         而本项目大量页面是白色顶栏（工作台 / 消息 / 我的），白字会看不见。
+        也不要用 `black`：首页之外的浅色页面顶端会被刷成一条黑带。
       · apple-mobile-web-app-title —— 主屏显示名。不写就会拿 <title> 截断成
         「向阳村项目智能建造…」，写成短名才看得清。
     安卓侧对应的是 mobile-web-app-capable 与 manifest 的 display（见 vite.config.ts）。

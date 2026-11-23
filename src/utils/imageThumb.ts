@@ -16,7 +16,8 @@
  *     但图标位只是「认得出这是哪条现场」，不需要看清细节；
  *   · 解码像素少 55%，`drawImage` 与 JPEG 编码都更快，滚动更不容易掉帧；
  *   · 落盘缓存与网络回传（若有）也只有原来一半大小。
- * 现场如果反馈「看不清」，把 {@link THUMB_MAX} 调回 144 即可 —— 只有这一个常量。
+ * 列表图标位「看不清」的问题 2026-11-23 已确认**暂不处理**（现场只要详情清晰）；
+ * 真要调，只有 {@link THUMB_MAX} 与 {@link THUMB_QUALITY} 两个常量。
  *
  * ## 失败就退回原图，绝不返回空
  *
@@ -33,13 +34,21 @@
 export const THUMB_MAX = 96
 
 /**
+ * 缩略图 JPEG 质量。
+ *
+ * 0.62：图标位够用，再高只是白占字节（2026-11-23 现场确认「图标暂不处理」，
+ * 清晰度预算全部留给详情页那一档，见 `utils/shotArchive.ts::PREVIEW_MAX_W`）。
+ */
+export const THUMB_QUALITY = 0.62
+
+/**
  * 把一张 data URL 缩到长边不超过 `max` 的小图。
  *
  * @param url  原图 data URL（也可能是 http 地址，同样适用）
  * @param max  长边上限（px，默认 {@link THUMB_MAX}）
- * @param quality JPEG 质量（0~1，默认 0.62 —— 图标位够用，再高只是白占字节）
+ * @param quality JPEG 质量（0~1，默认 {@link THUMB_QUALITY}）
  */
-export function shrinkDataUrl(url: string, max = THUMB_MAX, quality = 0.62): Promise<string> {
+export function shrinkDataUrl(url: string, max = THUMB_MAX, quality = THUMB_QUALITY): Promise<string> {
   return new Promise((resolve) => {
     if (!url || typeof document === 'undefined') {
       resolve(url)

@@ -55,6 +55,15 @@
   --ok-wash: #E8F8F1;
   --danger-wash: #FDECEE;
   /*
+   * 深色底上的告警底色（2026-11-23）
+   *
+   * `--danger-wash` 是给白卡用的浅粉，落在智控面板（深色浮层）上会变成一块
+   * 发光白斑。参考稿里的爬架超限行是「红 12% 叠在卡片底色上」的暗红 ——
+   * 取实测值反解：`(49,39,57)` 叠在卡片底 `(21,31,50)` 上，正好是
+   * `rgba(255,107,107,.12)`（`--danger-dark` 的 12%），与设计稿同值。
+   */
+  --danger-wash-dark: rgba(255, 107, 107, 0.12);
+  /*
    * 底部安全区。
    *
    * 原为硬编码 8px。Face ID 机型（iPhone X 及以后，含灵动岛）屏幕最底部
@@ -69,23 +78,56 @@
    */
   --safe-bot: max(8px, env(safe-area-inset-bottom, 0px));
   /*
-   * 顶部留白高度。
+   * 顶部留白高度（**桌面预览壳专用值**，真机由媒体查询覆盖，见下）。
    *
-   * 内置假状态栏（中国电信 / 4G / 86%）已移除，但**保留原有的 32px 顶距**，
-   * 使各页面内容的垂直位置与移除前完全一致，只去掉那条视觉行本身。
+   * 32px 只服务桌面预览：那时 `.phone` 是一张手机形状的卡片，需要一个模拟
+   * 状态条的留白，否则导航栏贴着卡片上沿。
    *
-   * 用 max() 而非直接写 32px：刘海屏真机上若安全区更高（iPhone 约 47px），
-   * 取更大值以免导航栏被摄像头挖孔遮挡；桌面端与无刘海设备恒为 32px，
-   * 与移除前逐像素一致。
+   * 真机（≤480px，见文件末尾「真机顶部留白与页面根色」）把它换成
+   * `env(safe-area-inset-top)`，**不带 32px 兜底**。原来的写法是
+   * `max(32px, env(...))`，在两种宿主下都出过问题（2026-11-23 iPhone 截图）：
+   *   · 微信 / 手机浏览器 / 部分 WebView：宿主已经把系统状态栏让出去了，
+   *     `env()` 回 0，再垫 32px 就是凭空多出一条白条 —— 顶栏比微信高 32px，
+   *     而且这条白和宿主状态栏的底色不一致，看上去就是「顶上一块突兀色块」；
+   *   · 独立窗口（添加到主屏）：`env()` 才是 47~62px 的真实刘海高度，
+   *     这时顶栏自己从 y=0 铺底，状态栏区与顶栏同色，不存在接缝。
    *
    * 该变量被 5 处复用：4 个全屏覆盖层的 inset、.status-bar 高度、
    * 以及 .navbar 的 padding-top（顶栏自己撑开顶部留白，见 .navbar 注释）。
-   * 故改这一处即可整体生效。兼容基线为 iOS ≥14 / Chromium ≥80，
-   * 二者均支持 max() 与 env()。
+   * 故改这一处即可整体生效。兼容基线 iOS ≥14 / Chromium ≥80，均支持 env()。
    */
-  --status-h: max(32px, env(safe-area-inset-top, 0px));
+  --status-h: 32px;
+  /*
+   * 首页顶部的底色（顶栏留白 / 底图上沿 / 系统状态栏取色共用）。
+   *
+   * 取值来自底图 `public/img/site-map.webp` 最顶一行的实际像素 rgb(1, 11, 21)：
+   * 这张图（以及接口同源导出的 3D 场景图）顶部就是一片纯黑天空，首页顶栏
+   * 若用别的深蓝（原 #0b1a2b）压上去，接缝处会看出「两段深色」的拼缝。
+   *
+   * 三处必须同值才能无缝：
+   *   1. `#page-home` / `.home-map` / `.app.home-mode` 的底色（图片未到时的空窗期）
+   *   2. `.status-bar` 首页态透出的那一层（见下方 :has 规则）
+   *   3. `THEME_COLORS.home`（utils/themeColor.ts，宿主状态栏取色用，与这里同值）
+   */
+  --home-top: #010b15;
+  /*
+   * 页面根色（html/body 的底色）。
+   *
+   * 由 `utils/themeColor.ts` 跟着当前视图改写，与 theme-color 同源同值。
+   * iOS 26 的顶栏是**一层玻璃**，会把页面根背景向上延伸/取色：根色写死
+   * 浅蓝灰（原 body 的 #d7e2ee）时，无论页面是白顶栏还是首页深色地图，
+   * 顶端都会被糊成同一条灰蓝带。让它跟随视图，玻璃取到的就是顶栏本身的色。
+   *
+   * 初始值取首页黑（深色底不会在白页首帧闪黑条，且与启动图同色系）。
+   */
+  --chrome-bg: var(--home-top);
   --navbar-h: 44px;
-  --tabbar-h: 50px;
+  /*
+   * 底栏内容高度。2026-11-23 由 50 调到 52：字阶上调后 tab 文字 13px
+   * （行高约 18）+ 图标 24 + 间距 2 = 44，原内容区（50 - 6 内边距 = 44）
+   * 正好卡满，圆角描边容易被压；留 2px 余量。
+   */
+  --tabbar-h: 52px;
 
   /*
    * 数字排印阶梯（2026-10 视觉改造第一批）
@@ -102,11 +144,15 @@
    *
    * 配合 body 上的 tabular-nums：CountUp 从 0 滚到 160 时数字宽度不变，
    * 整排 KPI 不会左右微抖 —— 「不精致」最常被感知到的就是这个。
+   *
+   * 2026-11-23：与文字字阶同步两轮各 +1（共 +2）。hero 从 30 → 31 后，
+   * 三列指标卡的两位数（约 35px 宽）仍在内边距内；lg/md/unit 同步上移，
+   * 层级差仍为 lg > md > unit > 正文。
    */
-  --num-hero: 30px;
-  --num-lg: 24px;
-  --num-md: 18px;
-  --num-unit: 11px;
+  --num-hero: 31px;
+  --num-lg: 26px;
+  --num-md: 20px;
+  --num-unit: 13px;
   /*
    * ===== 设计令牌（2026-10 视觉改造第三批）=====
    *
@@ -181,19 +227,36 @@
   --r-pill: 99px;
 
   /*
-   * 字阶（同样只收录高频值）。
-   * 刻意不做「1.25 比例重整」：字号一变行宽就变，会把已经调好的排版
-   * 全部推翻。9/15/17/19/26/28 是各自处境的特殊值，保留字面量。
+   * 字阶。
+   *
+   * 2026-11-23（全局可读性，两轮）：整体上调 2px（约 +13%~20%）。
+   * 做法是「九档等量上移」而不是按比例重整 —— 每档都 +2，档位之间的距离
+   * 不变，已经调好的标题 / 正文 / 辅助文字的层级关系与排版节奏原样保留，
+   * 只是整体更松、更清楚。中文小字（原来 11~13px）在手机上最难读，
+   * 上移后提升最明显：辅助文字 13、正文 15、列表标题 17、导航 19。
+   *
+   * 令牌名故意保留「基准像素」的叫法（--fs-12 指原来 12px 那一档），
+   * 值为基准 +2；别按名字当成实际像素读。这样正文一处都不用改，
+   * 也不会有人为某一处再写一份字面量字号（tokens.spec 守着）。
+   *
+   * 9 / 15 / 17 三档原先散落在正文里（图表轴与点位名、卡片小标题与按钮、
+   * 导航标题与横屏项目名），这次一并收进阶梯。
+   *
+   * 校验配套：≥360px 用这里的值；≤359px 在文件末尾回退到「基准 +1」，
+   * 避免 320px 老机上的三列 KPI / 底栏四字标签贴边。
    */
-  --fs-10: 10px;
-  --fs-11: 11px;
-  --fs-12: 12px;
-  --fs-13: 13px;
-  --fs-14: 14px;
-  --fs-16: 16px;
-  --fs-18: 18px;
-  --fs-20: 20px;
-  --fs-22: 22px;
+  --fs-9: 11px;    /* 基准 9  → 11：图表轴标签、地图点位名、工具按钮说明 */
+  --fs-10: 12px;
+  --fs-11: 13px;
+  --fs-12: 14px;
+  --fs-13: 15px;
+  --fs-14: 16px;
+  --fs-15: 17px;   /* 基准 15 → 17：卡片小标题、表单按钮、列表标题 */
+  --fs-16: 18px;
+  --fs-17: 19px;   /* 基准 17 → 19：导航标题、横屏项目名 */
+  --fs-18: 20px;
+  --fs-20: 22px;
+  --fs-22: 24px;
 
   /*
    * 动效：三套缓动此前在文件里各写各的，
@@ -241,6 +304,16 @@
 
 html, body {
   height: 100%;
+  /*
+   * 禁止 iOS 自动放大字号（2026-11-23 全局字阶 +1 的配套）。
+   *
+   * Safari 在横屏、以及把页面判定为「正文块」时，会按自己的启发式把字号
+   * 放大 1.1~1.3 倍 —— 那是我们算不准的第二次放大：原本刚好排下的三列 KPI、
+   * 底栏四字标签会因此换行或顶出容器。写 100% 让它只按 CSS 的字号渲染。
+   * 老内核只认 -webkit- 前缀，两条都留。
+   */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   /* 页面本身不可上下拖动：
      overflow: hidden 杜绝页面级滚动；
      overscroll-behavior: none 关闭滚动链传递与 iOS 橡皮筋回弹
@@ -341,7 +414,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 不设的话透出 .phone 的浅色底 —— 就是「底部白条」。
  */
 .app.home-mode {
-  background: rgb(5, 10, 21);
+  background: var(--home-top);
 }
 
 /*
@@ -367,7 +440,17 @@ button, input, textarea { font-family: inherit; color: inherit; }
   top: 0;
   left: 0;
   right: 0;
-  height: var(--status-h);
+  /*
+   * 顶部留白 = 桌面壳的 32px 与真机安全区的较大值。
+   *
+   * 为什么不直接写 `var(--status-h)`（2026-11-23）：`--status-h` 在真机分支
+   * 是 `env(safe-area-inset-top, 0px)`，而**自定义属性里的 env() 会缓存**——
+   * iOS 全屏进出一趟（横屏时该 inset 为 0）之后，变量可能仍按旧方向给值，
+   * 顶栏就矮了整整一个状态栏高度，整页看起来「向上偏移」。写在 height 上的
+   * `env()` 参与每次布局计算，新方向一定生效；桌面上 env() 为 0，
+   * `max(32px, 0)` 仍是 32px，与改动前逐像素一致。
+   */
+  height: max(var(--status-h), env(safe-area-inset-top, 0px));
   z-index: 200;
   /* 基类白底：工作台 / 消息 / 我的等非首页视图都走这个默认值。
      内容已移除，故不再设 color / font-size。 */
@@ -451,19 +534,20 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 扣掉 padding-top 与下边框后内容盒仍为 navbar-h - 1，纵向居中结果不变。
  */
 .navbar {
-  height: calc(var(--status-h) + var(--navbar-h));
+  /* height 与 padding-top 必须取同一个值，否则内容盒会被挤扁 */
+  height: calc(max(var(--status-h), env(safe-area-inset-top, 0px)) + var(--navbar-h));
   flex-shrink: 0;
   display: grid;
   grid-template-columns: 48px 1fr 48px;
   align-items: center;
-  padding: var(--status-h) 8px 0;
+  padding: max(var(--status-h), env(safe-area-inset-top, 0px)) 8px 0;
   background: #fff;
   border-bottom: 1px solid var(--line);
 }
 
 .nav-title {
   text-align: center;
-  font-size: 17px;
+  font-size: var(--fs-17);
   font-weight: 600;
   color: var(--text);
 }
@@ -487,7 +571,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   background: none;
   border: 0;
   cursor: pointer;
-  font-size: 15px;
+  font-size: var(--fs-15);
 }
 
 .nav-btn svg { width: 24px; height: 24px; }
@@ -608,7 +692,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
 #page-home {
   padding: 0;
   overflow: hidden;
-  background: rgb(5, 10, 21);
+  /* 与底图上沿同色：顶栏透出的就是这一层，差一个色阶都会显出一条拼缝 */
+  background: var(--home-top);
 }
 
 #page-home.active {
@@ -628,7 +713,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   right: 0;
   top: 0;
   height: calc(42% + 20px);
-  background-color: rgb(5, 10, 21);
+  background-color: var(--home-top);
   /* 底图兜底色。真正显示的是 MapViewer 里的 <img>（2026-11-18 起由场景截图
      接口动态给，见 stores/scene）；这里这张内置 site-map.webp 只在接口没通、
      或图片字节还没到的空窗期露出来，保证首屏不塌。
@@ -652,7 +737,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
   position: absolute;
   left: 16px;
   right: 16px;
-  top: 40px;
+  /*
+   * 40px 是「宿主已让出状态栏」时的位置（微信 / 浏览器里首页标题的观感）。
+   * 独立窗口下安全区有 47~62px，写死 40 会让标题钻到刘海/灵动岛底下，
+   * 故取两者较大值：`--status-h` 在浏览器里是 0，这里就仍是 40px。
+   * 后面再 max 一次 env()，理由同 `.status-bar`：自定义属性里的 env() 会缓存，
+   * 全屏进出一趟后可能仍是横屏时的 0，标题就会钻到刘海底下。
+   */
+  top: max(40px, calc(max(var(--status-h), env(safe-area-inset-top, 0px)) + 8px));
   z-index: 2;
   color: #fff;
 }
@@ -711,7 +803,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .map-land {
   display: none;
   position: absolute;
-  inset: var(--status-h) 0 0;
+  inset: max(var(--status-h), env(safe-area-inset-top, 0px)) 0 0;
   z-index: 80;
   background: rgb(5, 10, 21);
 }
@@ -888,7 +980,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .land-project {
-  font-size: 17px;
+  font-size: var(--fs-17);
   font-weight: 700;
   letter-spacing: 0.4px;
   line-height: 1.3;
@@ -1158,14 +1250,30 @@ button, input, textarea { font-family: inherit; color: inherit; }
      观感像「浮在屏幕中间的一张卡」。首页抽屉是全宽的底部面板，直接贴边更干净。 */
   left: 0;
   right: 0;
-  top: 42%;
+  /*
+   * 默认落在「全开」位：--sheet-up-top 由 HomePage 测量项目名行后写到
+   * #page-home 上，取不到时退回 118px。
+   * 2026-11-23 起抽屉没有「收起」档，最低只到半开 —— 半开位依赖页面高度，
+   * 由 HomePage 以 inline top 覆盖这条默认值。
+   */
+  top: var(--sheet-up-top, 118px);
   bottom: 0;
   z-index: 3;
   background: #F3F7FB;
   border-radius: 24px 24px 0 0;
-  /* 顶部内边距交给 .sheet-grab 自己撑（它要吸顶，不能靠父级的 padding） */
+  /* 顶部内边距交给 .sheet-grab 自己撑（它占着抽屉最顶上那一行） */
   padding: 0 16px 10px;
-  overflow: auto;
+  /*
+   * 顶栏固定、只有内容区滚动（2026-11-23）：外层不再自己滚（原 overflow: auto
+   * 会把抓手条和模块标签一起卷走），改成纵向 flex —— 抓手条与 .home-mods
+   * 作为不参与压缩的头两项，剩下高度全给 .home-panels 自己滚。
+   *
+   * overflow: hidden 同时兜住圆角裁剪；内层 .home-panels 负责
+   * overscroll-behavior: contain，滚到底不会带着整块抽屉一起弹。
+   */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   transition: top 0.32s var(--ease-out);
 }
 
@@ -1178,22 +1286,33 @@ button, input, textarea { font-family: inherit; color: inherit; }
  *
  * 现在只留一个手柄：
  *   · 44px 高整条可点可拖，视觉只有中间 36×4 那道杠
- *   · position: sticky + 与抽屉同色 —— 滚多远手柄都在顶上，且挡住下面的内容
- *   · 右侧一枚 16px 小箭头指示「下一步是展开还是收起」，替掉原来的文字
+ *   · 与抽屉同色、作为 flex 头一项固定不动 —— 滚动只发生在下面的 .home-panels
+ *
+ * 2026-11-23：右侧那枚 16px 小箭头已撤掉（用户要求）。抽屉只剩两档，
+ * 箭头原本只用来提示「下一步展开还是收起」，去掉后居中横条更干净。
+ * 同时去掉 position: sticky：滚动容器已经换成 .home-panels，抓手条不再
+ * 被内容卷走，sticky 在这里反而是个多余的层。
  */
 .sheet-grab {
-  position: sticky;
-  top: 0;
+  position: relative;
+  flex: 0 0 auto;
   z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
   width: calc(100% + 32px);
-  /* 整条 44px 都是命中区，视觉元素靠 padding 压到上方 ~16px 处 */
-  height: 44px;
+  /*
+   * 整条都是命中区，视觉元素靠 padding 压到上方 ~16px 处。
+   *
+   * 2026-11-23：高度 44 → 34、下内边距 16 → 6。上下内边距之和仍是 28，
+   * 内容盒恒为 24px，横条在盒内居中，所以那道 36×4 的杠**位置一点没动**
+   * （距抽屉顶仍是 14~18px）；只是把它下方的空白收掉 10px，让下面的
+   * 模块标签（智巡 / 智眸 / 智控）整体贴上来。触摸命中区仍有 34px 高、
+   * 通栏宽，拖拽与点按都不受影响。
+   */
+  height: 34px;
   margin: 0 -16px 4px;
-  padding: 4px 0 16px;
+  padding: 4px 0 6px;
   border: 0;
   border-radius: 24px 24px 0 0;
   /* 抽屉在首页是深色（#page-home .home-sheet 改成 --bg-2），这里必须跟着走：
@@ -1213,35 +1332,15 @@ button, input, textarea { font-family: inherit; color: inherit; }
   background: rgba(110, 168, 255, 0.4);
 }
 
-.grab-chev {
-  width: 16px;
-  height: 16px;
-  opacity: 0.6;
-  transition: transform 0.24s var(--ease-out);
-}
-
-/* 收起态箭头朝上（提示上拉），其余朝下 */
-.grab-chev.up { transform: rotate(180deg); }
-
-@media (prefers-reduced-motion: reduce) {
-  .grab-chev { transition: none; }
-}
-
-#page-home.is-sheet-up {
-  --sheet-up-top: 118px;
-}
-
 /*
- * 展开态的抽屉位置。
+ * 展开态（全开）的抽屉位置就是 .home-sheet 的默认 top —— 2026-11-23 去掉
+ * 「收起」档后不再需要 `#page-home.is-sheet-up .home-sheet` 这条覆盖。
  *
  * var() 的第二个参数只在 --sheet-up-top 完全未定义时兜底；若它被写成了
  * 无效值（如 NaNpx），整条 top 声明会变成 unset，抽屉反而不受控。所以真正
  * 的防线是 HomePage.vue 的 applySheetTop 里那道范围校验 —— 不合理的测量结果
- * 一律不写入，让下面这条 CSS 默认值（118px）继续生效。
+ * 一律不写入，让 CSS 里的 118px 继续生效。
  */
-#page-home.is-sheet-up .home-sheet {
-  top: var(--sheet-up-top, 118px);
-}
 
 .home-mods {
   display: grid;
@@ -1251,12 +1350,31 @@ button, input, textarea { font-family: inherit; color: inherit; }
   margin-bottom: 16px;
   /* 选中指示条是绝对定位的子元素，需要这里作定位参照 */
   position: relative;
+  /* 顶栏第二行：永远占满自己的高度，不被下面的滚动内容压缩 */
+  flex: 0 0 auto;
 }
 
+/*
+ * 抽屉内容区（2026-11-23：唯一滚动容器）
+ *
+ * 抽屉改成纵向 flex 后，这块吃掉抓手条与标签栏之外的全部高度，自己滚。
+ * min-height: 0 是必须的 —— flex 子项默认 min-height: auto，内容多高它就
+ * 多高，会把 .home-sheet 撑开、导致「整块抽屉跟着滚」的老问题原样复现。
+ *
+ * overscroll-behavior: contain：滚到底不把滚动链交给页面（iOS 上会表现为
+ * 整块抽屉被手指带着弹一下）。不需要 -webkit-overflow-scrolling: touch，
+ * 现代 iOS 默认就有惯性，加了反而会切断滚动链（见 utils/scrollChain.ts）。
+ */
 #homePanels {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 最后一张卡不要贴死抽屉底边（外层已有 10px padding，这里补一点呼吸） */
+  padding-bottom: 2px;
 }
 
 #homePanels > .safe-block,
@@ -1275,7 +1393,13 @@ button, input, textarea { font-family: inherit; color: inherit; }
   align-items: center;
   justify-content: center;
   gap: 1px;
-  padding: 7px 2px 6px;
+  /*
+   * 顶部内边距 7 → 2：图标与文字整体上移 5px，靠近抓手条的横杠。
+   * 底部保持 6px —— 选中指示条（.home-mod-ind）贴在 .home-mods 下沿，
+   * 这段距离就是副标题到那条蓝短横的间隔，动了下划线会显得离文字更远。
+   * 代价只是这排按钮矮 5px、下面的「报警预警」跟着上提 5px，布局关系不变。
+   */
+  padding: 2px 2px 6px;
   position: relative;
   cursor: pointer;
 }
@@ -1296,7 +1420,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .home-mod-main span {
-  font-size: 17px;
+  font-size: var(--fs-17);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -1342,7 +1466,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .home-stat b {
   display: block;
-  font-size: 28px;
+  font-size: var(--num-hero);
   font-weight: 700;
   line-height: 1.1;
   color: var(--text);
@@ -1523,7 +1647,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .eq-status-leg span { flex: 1; }
 
 .eq-status-leg b {
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 700;
   color: var(--text);
 }
@@ -1535,7 +1659,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .home-chart-card h4 {
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 700;
   margin-bottom: 12px;
 }
@@ -1880,6 +2004,79 @@ button, input, textarea { font-family: inherit; color: inherit; }
   color: var(--danger);
 }
 
+/*
+ * 无人机卡上的「当前巡检」进度条（`components/ui/MissionBar.vue`）
+ *
+ * 条本身就是无人机页那一条 `.uav-bar`（4px 高 / 圆角 / `--blue-2` 填充 /
+ * 0.3s 缓动），这里只补版面两件事：
+ * ① 有进度时卡片变成**纵向两段**（与 `.eq-card.is-climb` 同一思路）。不加这条，
+ *    `.eq-card` 是 flex 行，进度块会被摆到箭头的右边、与图标并排；
+ * ② 把「当前巡检 · 任务名 + 百分比」压成一行、进度条单独一行 ——
+ *    无人机页那块「标题 / 条 / 说明」三段式的整版放不下两行空间。
+ *
+ * 净增高约 34px（15px 标题行 + 6px 间距 + 4px 条 + 8px 段间距）。
+ * 没有执行中任务时整块不渲染，卡片与改动前完全一致（`has-mission` 是跟着
+ * 进度条一起加的，不是常驻 class）。
+ */
+.eq-card.has-mission {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.eq-card .mission-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+/* 名称行：左边任务名（长了就省略号）、右边百分比顶到边（与无人机页同一个版面） */
+.eq-card .mission-hd {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/*
+ * `min-width: 0` + ellipsis 三件套：航线名可能很长（「向阳村-高空作业面全景拍照」），
+ * 不写这三条 ①`flex` 子项的最小尺寸取内容宽度，会把百分比顶出卡片；
+ * ②不会出现省略号，而是整行被卡片裁掉半截字。
+ */
+.eq-card .mission-hd strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  color: var(--text);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 首页是深色卡：任务名要跟卡片标题同色（基础段的 --text 在 #132033 上等于看不清） */
+#page-home .eq-card .mission-hd strong {
+  color: var(--ink-1-dark);
+}
+
+/* `.uav-bar` 在无人机页是 div；为了能塞进 <button> 这里写的是 span，显式 block 才有高度 */
+.eq-card .mission-bar .uav-bar {
+  display: block;
+  width: 100%;
+}
+
+.eq-card .mission-pct {
+  flex: none;
+  font-style: normal;
+  font-size: var(--fs-11);
+  font-weight: 650;
+  line-height: 1;
+  color: var(--blue-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .pg-list {
   display: flex;
   flex-direction: column;
@@ -2129,7 +2326,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   left: 50%;
   top: -12px;
   transform: translateX(-50%);
-  font-size: 9px;
+  font-size: var(--fs-9);
   font-style: normal;
   font-weight: 700;
   white-space: nowrap;
@@ -2326,7 +2523,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .safe-block > h4,
 .safe-hd h4 {
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 700;
   margin-bottom: 10px;
   color: var(--text);
@@ -2340,6 +2537,33 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .safe-hd h4 { margin-bottom: 0; }
+
+/*
+ * 报警预警的标题行（2026-11-23）：与「人员管理」同款 ——
+ * 标题 → 更新时间 → 一条渐隐细线 → 右侧「历史」按钮。
+ *
+ * h4 必须 flex:1，否则它只有内容宽，::after 的 flex:1 拿不到剩余空间、
+ * 线宽恒为 0；min-width:0 让标题在窄屏可以压缩，不会把「历史」顶出去。
+ * 线的渐变与 #homePanels > .safe-block > h4::after 完全一致。
+ */
+.safe-hd h4 {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* h4 已经是 flex + gap 8，更新时间不需要再叠一份左外边距（会变成 16px） */
+.safe-hd h4 .upd-time { margin-left: 0; }
+
+.safe-hd h4::after {
+  content: "";
+  flex: 1 1 auto;
+  min-width: 10px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(110, 168, 255, 0.22), rgba(110, 168, 255, 0));
+}
 
 .cam-cfg {
   margin-left: auto;
@@ -3176,62 +3400,63 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .people-dist { padding: 8px 12px 10px 10px; }
 
 /*
- * 人员分布（2026-11-18 对齐 V2 浮层）
+ * 人员分布（2026-11-23 改回参考稿的「方格卡 + 底部浮窗」）
  *
- * 原来是「3 列 × 2 行」的方格卡（区域名上下堆人数），现在改成 V2 那种
- * **纵向行列表**：一行一个区域，左边区域名、右边「N人」。三个场景（场布图 /
- * 2#住宅楼 / 地下室）行高一致，0 人也照样占一行 —— V2 浮层里「2#住宅楼 0人」
- * 就是明写的，藏起来反而看不出是真的没人还是没取到。
+ * 三个场景（场布图 / 2#住宅楼 / 地下室）各一张卡，一行三列；名字在上、
+ * 「N人」在下，能下钻的右上角带一枚小箭头。点卡片从底部弹浮窗看区域与名单
+ * （`SheetHost` 的 people-dist），**内联下钻**（同一块地方换成列表）已下线。
+ *
+ * 卡片底色是「比所在卡片再亮一层」的半透明白：首页抽屉里的卡片本身就是
+ * --bg-3，再用同色会糊成一片，所以叠加而不是换色。
  */
 .people-scenes {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .people-scene {
   position: relative;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 2px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px 9px;
   border: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: none;
+  border-radius: var(--r-10);
+  background: rgba(255, 255, 255, 0.045);
+  /* 描边用 inset 阴影：不占尺寸，卡片之间不会因为多 1px 而参差 */
+  box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.14);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: default;
 }
 
-/* 最后一行不留分隔线，卡片下沿已经有一条了 */
-.people-scene:last-child { border-bottom: 0; }
-
 .people-scene.drill { cursor: pointer; }
 
-/* 可下钻的行给一个指向右侧的暗示（与报警卡的箭头同一套语言） */
+.people-scene:active.drill { background: rgba(47, 124, 255, 0.16); }
+
+/* 可下钻的分类在右上角给一枚指向右下的箭头（与报警卡的箭头同一套语言） */
 .people-scene.drill::after {
   content: "";
-  width: 6px;
-  height: 6px;
-  margin-left: 2px;
+  position: absolute;
+  top: 11px;
+  right: 10px;
+  width: 5px;
+  height: 5px;
   border-right: 1.5px solid var(--ink-4-dark);
   border-bottom: 1.5px solid var(--ink-4-dark);
   transform: rotate(-45deg);
-  flex: none;
 }
 
-.people-scene:active.drill { background: rgba(47, 124, 255, 0.12); }
-
 .people-scene span {
-  flex: 1;
-  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fs-13);
+  font-size: var(--fs-12);
   font-weight: 600;
   color: var(--ink-2-dark);
 }
@@ -3240,146 +3465,137 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .people-scene.empty span { color: var(--ink-3-dark); }
 
 .people-scene b {
-  font-size: var(--fs-16);
+  font-size: var(--num-md);
   font-weight: 700;
   line-height: 1.2;
   color: var(--ink-1-dark);
   white-space: nowrap;
 }
 
+/* ---------- 人员分布浮窗（PeopleDistSheet） ---------- */
+
 /*
- * 下钻：管控区分组 + 人员姓名
+ * 内容区定高（2026-11-23）：切区域时名单条数会变（33 人 / 4 人 / 0 人），
+ * 面板高度若跟着内容走，每点一次按钮整块弹层就长一截、缩一截，遮罩与
+ * 按钮行都在跳 —— 手指还在按钮上时最明显。
  *
- * 一个场景能有三四十人（场布图 38 人），整块铺开会把首页抽屉拉成两屏，
- * 所以限高 320px 内部滚动 —— 和 V2 那个浮层一样，名单在框里翻。
+ * 这里把「按钮行 + 名单」这块固定成 52vh，按钮行取自然高度，剩下的全给
+ * 名单内部滚动。换区域只换名单内容，面板几何一点不动。
  *
- * 2026-11-18 滚动交互：
- *   · `overscroll-behavior-y: auto`（原来是 contain）—— 名单滚到顶/底后继续
- *     滑，滚动链交给外层 `.home-sheet`，抽屉跟着滚。原来写 contain 等于让这块
- *     把手势吃干净，滚到底怎么划都不动，像被粘住。抽屉自己仍是 contain，
- *     所以链条止于抽屉，不会再把整页拖起来。
- *   · 不加 `-webkit-overflow-scrolling: touch` —— 它把这块变成独立滚动层，
- *     老 iOS 上正是它导致内层滚到底不往父级传；现代内核本来就有惯性。
- *   · 触摸端不再用 JS 接管（`preventDefault` 会杀掉松手后的滑行惯性），
- *     滚轮端由 `utils/scrollChain.ts` 做余量接力。
+ * 52vh 是按「弹层自身 max-height: 72%」倒推的：52 + 抓手/标题/副标题/安全区
+ * 约 16vh，仍在 72% 以内，390×844 上名单能露 12~13 行；再大就会撞上 72% 上限、
+ * 改由面板自己滚，反而出现第二条滚动条。
  */
-.people-scroll {
-  position: relative;
-  margin: 0 -2px;
+.pd {
+  display: flex;
+  flex-direction: column;
+  height: 52vh;
 }
 
-.people-groups {
-  max-height: 320px;
-  overflow-y: auto;
-  overscroll-behavior-y: auto;
-  /* 纵向手势归滚动容器，别被任何祖先的 touch-action 抢走 */
-  touch-action: pan-y;
-  padding: 0 2px;
-  /* 内滚条在移动端只会盖住姓名，边缘渐隐已经能表达「还能滚」 */
+/*
+ * 区域按钮：横排可滑，一格「楼层名 + 人数」。
+ *
+ * 楼层最多 5 个（2#住宅楼）加场布图的 3 个管控区，在 360 宽上放不下就横滑 ——
+ * 不让它换行，换行会让「一排区域」变成两排，下面名单的位置跟着跳。
+ */
+.pd-units {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 10px;
   scrollbar-width: none;
 }
 
-.people-groups::-webkit-scrollbar {
+.pd-units::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
 
-/*
- * 两侧渐隐 = 「这个方向还有内容」的唯一提示。
- * 层叠在名单之上（z-index 2）、不接收事件；`can-up / can-down` 由组件按
- * scrollTop 切换 —— 到边就淡出，用户能立刻意识到「再滑就是外层在动了」。
- */
-.people-scroll::before,
-.people-scroll::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  z-index: 2;
-  height: 18px;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.16s linear;
-}
-
-.people-scroll::before {
-  top: 0;
-  background: linear-gradient(180deg, rgba(4, 10, 20, 0.62), rgba(4, 10, 20, 0));
-}
-
-.people-scroll::after {
-  bottom: 0;
-  background: linear-gradient(0deg, rgba(4, 10, 20, 0.62), rgba(4, 10, 20, 0));
-}
-
-.people-scroll.can-up::before,
-.people-scroll.can-down::after {
-  opacity: 1;
-}
-
-.people-group + .people-group { border-top: 1px solid rgba(255, 255, 255, 0.07); }
-
-.people-group-hd {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+.pd-unit {
+  flex: 0 0 auto;
+  min-width: 64px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 7px 2px 5px;
-  background: var(--bg-2);
+  gap: 1px;
+  padding: 6px 12px 7px;
+  border: 0;
+  border-radius: var(--r-10);
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(110, 168, 255, 0.14);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pd-unit span {
   font-size: var(--fs-11);
+  color: var(--ink-3-dark);
+  white-space: nowrap;
+}
+
+.pd-unit b {
+  font-size: var(--fs-16);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink-1-dark);
+}
+
+/* 选中：蓝底 + 亮描边，数字与楼层名一起提亮 —— 一眼看出下面名单属于哪一格 */
+.pd-unit.on {
+  background: rgba(47, 124, 255, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(76, 159, 255, 0.6);
+}
+
+.pd-unit.on span { color: #A8CCFF; }
+.pd-unit.on b { color: #EAF3FF; }
+
+/* 0 人的区域仍可点（看看是不是真没人），但整格压暗，别和有人抢注意力。
+   选中时让位给上面的 .on —— 0 人也能被选中看名单，那一刻它才是焦点。 */
+.pd-unit.empty:not(.on) span,
+.pd-unit.empty:not(.on) b { color: var(--ink-4-dark); }
+
+/*
+ * 名单：吃掉 .pd 的剩余高度、自己内部滚动。
+ *
+ * min-height: 0 是关键 —— flex 子项默认 min-height: auto，名单有几行就撑多高，
+ * 会把定高的 .pd 顶破（那样又回到「切区域整块弹层变高」）。
+ * overscroll-behavior: contain 让滚到底不带着弹层一起弹。
+ */
+.pd-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.pd-empty {
+  padding: 16px 2px;
+  font-size: var(--fs-12);
+  color: var(--ink-3-dark);
+  text-align: center;
+}
+
+/* 标题右侧的总人数（弹层 meta 位）：数字大、单位小 */
+.pd-count {
+  margin-left: auto;
+  font-size: var(--num-md);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.pd-count i {
+  margin-left: 1px;
+  font-size: var(--fs-11);
+  font-style: normal;
+  font-weight: 500;
   color: var(--ink-3-dark);
 }
 
-/*
- * 楼层行（2#住宅楼 / 地下室）：一行一条数据，不是「分组小标题」。
- *
- * V2 那个浮层里 1F 就是一条正常行 —— 14px 白字、右侧人数、行间分隔线。
- * 这里的字重/字号与 `.people-scene` 对齐，别再当小标题用 11px 灰字。
- * 也不能吸顶：五个 sticky 行会一层压一层堆在顶部。
- */
-.people-group.is-floor .people-group-hd {
-  position: static;
-  min-height: 40px;
-  padding: 8px 2px;
-  background: none;
-  font-size: var(--fs-14);
-  font-weight: 600;
-  color: var(--ink-1-dark);
-}
-
-.people-group.is-floor .people-group-hd b {
-  font-size: var(--fs-15);
-  color: var(--ink-1-dark);
-}
-
-.people-group.is-floor .people-group-hd b em { color: var(--ink-3-dark); }
-
-.people-group-hd span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.people-group-hd b {
-  font-size: var(--fs-13);
-  font-weight: 700;
-  color: var(--ink-2-dark);
-  white-space: nowrap;
-}
-
-.people-group-hd b em {
-  margin-left: 1px;
-  font-size: var(--fs-10);
-  font-style: normal;
-  font-weight: 600;
-  color: var(--ink-4-dark);
-}
-
+/* 名单列表（弹层与其它地方共用） */
 .people-members {
   margin: 0;
   padding: 0 0 4px;
@@ -3423,55 +3639,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
   padding: 6px 8px 10px;
   font-size: var(--fs-11);
   color: var(--ink-4-dark);
-}
-
-.people-back {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  height: 32px;
-  margin-bottom: 8px;
-  padding: 0 2px;
-  border: 0;
-  background: none;
-  color: var(--ink-2-dark);
-  cursor: pointer;
-}
-
-.people-back em {
-  width: 18px;
-  font-style: normal;
-  font-size: var(--fs-22);
-  font-weight: 400;
-  line-height: 1;
-  color: var(--blue-dark);
-}
-
-.people-back strong {
-  flex: 1;
-  text-align: left;
-  font-size: var(--fs-14);
-  font-weight: 700;
-}
-
-.people-back b {
-  font-size: var(--fs-16);
-  font-weight: 700;
-}
-
-.people-back b i {
-  margin-left: 1px;
-  font-size: var(--fs-11);
-  font-style: normal;
-  font-weight: 600;
-  color: var(--ink-3-dark);
-}
-
-.people-sub {
-  margin: -2px 2px 8px;
-  font-size: var(--fs-11);
-  color: var(--ink-3-dark);
 }
 
 .people-hour { padding: 8px 10px 8px; }
@@ -3665,7 +3832,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .crew-item b {
-  font-size: 26px;
+  font-size: 27px;
   font-weight: 700;
   color: var(--text);
   line-height: 1.1;
@@ -3814,7 +3981,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .cam-player {
   display: none;
   position: absolute;
-  inset: var(--status-h) 0 0;
+  inset: max(var(--status-h), env(safe-area-inset-top, 0px)) 0 0;
   z-index: 90;
   background: var(--page);
   flex-direction: column;
@@ -3857,7 +4024,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .cam-player-bar strong {
   flex: 1;
   min-width: 0;
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 650;
 }
 
@@ -4070,12 +4237,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   overflow: auto;
 }
 
-.cam-player-switch > p {
-  margin: 0 0 10px;
-  font-size: var(--fs-13);
-  color: var(--muted);
-}
-
+/*
+ * 2026-11-23：「切换点位」那行说明文字下线（现场要求），列表直接以分组标题开头，
+ * 原 `.cam-player-switch > p` 的样式规则随之删除 —— 容器顶部 12px 内边距不变，
+ * 分组之间仍是 14px。
+ */
 .cam-chip-group + .cam-chip-group { margin-top: 14px; }
 
 .cam-chip-group h5 {
@@ -4086,6 +4252,22 @@ button, input, textarea { font-family: inherit; color: inherit; }
   font-size: var(--fs-12);
   font-weight: 650;
   color: var(--muted);
+}
+
+/*
+ * 分组标题后的水平细线（2026-11-23）：把行尾空白收成一条 1px 线，
+ * 增强「设备设施 / 材料堆场 / 出入口管控」三段的分区层次。
+ *
+ * 用 `::after` 而不是加一个空 `<i>`：h5 本身是 flex、`align-items: center`，
+ * 伪元素直接成为最后一个 flex 项，`flex: 1` 自动吃掉剩余宽度、并天然与
+ * 标题文字**垂直居中对齐**（不需要写 top/偏移量）。计数 `<em>` 在它前面，
+ * 所以线是从数字之后才开始画的，不会压到文字。
+ */
+.cam-chip-group h5::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--line);
 }
 
 .cam-chip-group h5 em {
@@ -4779,16 +4961,17 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 /*
- * 横屏：画布 Teleport 到 body 后铺满视口。
+ * 全屏：画布 Teleport 到 body 后铺满视口（2026-11-23 从「只铺满视口」升级为
+ * 整页系统全屏，与智眸照片完全同一套）。
  *
- * 层级必须高于监控层本身（`.cam-player` 是 90）—— 智眸那边画布长在弹层（45）里，
- * 48 就够；这里若照抄 48，铺满的画布会被整层监控（90）压在下面，横屏后只剩黑屏。
- * 96 让它在监控层之上、又在系统全屏里，转屏回来照常落回弹层内部。
+ * 层级 205 要同时满足三件事：高于监控层本身（`.cam-player` 是 90，否则铺满的
+ * 画布被整层监控压住、全屏后只剩黑屏）；高于页面内模拟状态栏（`.status-bar`
+ * 是 200，整页全屏后它还在）；低于 Toast（210）与横屏提示（220）。
  */
 .cam-shot-stage.is-land {
   position: fixed;
   inset: 0;
-  z-index: 96;
+  z-index: 205;
   margin: 0;
   border-radius: 0;
   background: #000;
@@ -4822,7 +5005,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .air-player {
   display: none;
   position: absolute;
-  inset: var(--status-h) 0 0;
+  inset: max(var(--status-h), env(safe-area-inset-top, 0px)) 0 0;
   z-index: 90;
   background: var(--page);
   flex-direction: column;
@@ -5261,11 +5444,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 /*
- * 横屏必须压住航拍层本身（`.air-player` 是 90）。
- * 智眸那边画布长在弹层（45）里，照抄 48 会被整层遮住 → 横屏只剩黑屏。
+ * 与 `.cam-shot-stage.is-land` 同源：整页系统全屏后要压住 `.air-player`（90）
+ * 与 `.status-bar`（200），同时低于 Toast（210）与横屏提示（220）。
  */
 .cam-shot-pop.air-pop .pano-stage.is-land {
-  z-index: 96;
+  z-index: 205;
 }
 
 .photo-bar {
@@ -5285,7 +5468,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
   /* 设计稿 15px：介于 --fs-14 与 --fs-16 之间，字阶特例 */
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 650;
   color: var(--ink-1-dark);
 }
@@ -5366,7 +5549,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .hazard-page {
   display: none;
   position: absolute;
-  inset: var(--status-h) 0 0;
+  inset: max(var(--status-h), env(safe-area-inset-top, 0px)) 0 0;
   z-index: 90;
   background: var(--page-grad);
   flex-direction: column;
@@ -5510,7 +5693,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-radius: var(--r-12);
   background: var(--blue);
   color: #fff;
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 650;
   cursor: pointer;
 }
@@ -5636,23 +5819,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .work-short i.gray { background: #C9CDD4; }
 
 /*
- * 「功能待定」小标签（2026-11-19 隐患上报暂缓）
+ * 「功能待定」小标签已下线（2026-11-23，现场要求四列只留图标 + 名称）
  *
- * 放在文案下方而不是图标角上：四列等宽的格子只有 ~80px，四个字压在图标
- * 右侧会挤到邻居身上；单独一行最稳，也不会把图标挤小。
- * 颜色用 --muted + 浅底胶囊，比正文弱一档 —— 它是说明，不是可点的东西。
+ * `pending` 字段仍保留：点击时给一句说明、`aria-label` 带上状态、图标淡一档
+ * （`.work-short.is-pending i`）。二期接了上报接口把 `pending` 去掉即可。
  */
-.work-short-tag {
-  margin-top: -6px;
-  padding: 0 6px;
-  border-radius: var(--r-pill);
-  background: var(--page);
-  color: var(--muted);
-  font-size: var(--fs-10);
-  font-style: normal;
-  line-height: 16px;
-  white-space: nowrap;
-}
 
 /* 待定入口的图标淡一档：一眼看出「现在点不开东西」，但品牌色还在 */
 .work-short.is-pending i {
@@ -5869,7 +6040,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .msg-item h4 {
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 700;
   color: var(--text);
 }
@@ -5893,15 +6064,15 @@ button, input, textarea { font-family: inherit; color: inherit; }
 .msg-time { font-size: var(--fs-12); color: var(--ink-3); }
 
 .msg-badge {
-  min-width: 18px;
-  height: 18px;
+  min-width: 20px;
+  height: 20px;
   padding: 0 5px;
   border-radius: var(--r-pill);
   background: var(--danger);
   color: #fff;
   font-size: var(--fs-11);
   font-weight: 700;
-  line-height: 18px;
+  line-height: 20px;
   text-align: center;
 }
 
@@ -5969,11 +6140,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-radius: 3px 3px 3px 0;
   background: var(--danger-dark);
   color: #fff;
-  font-size: 9px;
+  font-size: var(--fs-9);
   font-style: normal;
   font-weight: 600;
   white-space: nowrap;
-  line-height: 14px;
+  line-height: 16px;
 }
 
 .ai-box.mid i { background: var(--warn-dark); color: #1D2129; }
@@ -6007,7 +6178,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 .ai-sec {
   margin: 14px 2px 10px;
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 700;
 }
 
@@ -6115,7 +6286,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   border-radius: var(--r-12);
   background: #fff;
   color: var(--danger);
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 500;
   cursor: pointer;
   box-shadow: var(--sh-1);
@@ -6417,6 +6588,35 @@ button, input, textarea { font-family: inherit; color: inherit; }
 
 /* 爬架异常卡在深色浮层上的红绿态与浅色同值（--danger-dark / --ok-dark） */
 
+/*
+ * 爬架超限说明行在深色浮层上的配色（2026-11-23，对齐参考稿）
+ *
+ * 基础段那条给的是 `--danger-wash`（#FDECEE 浅粉）+ `--danger`，在白卡上成立，
+ * 落到智控面板的深色卡上就是一块发光的白条。参考稿是暗红底 + 提亮红字，故在
+ * 这里换深色版底色（`--danger-wash-dark`）与 `--danger-dark`。
+ *
+ * 字色一并提亮不是顺手改的：底色压深之后 `--danger`（#F53F3F）与它只有
+ * 约 4:1，12px 的粗体达不到 AA；参考稿用的也是提亮后的红。
+ */
+#page-home .eq-card.is-climb .eq-climb-note.is-bad {
+  background: var(--danger-wash-dark);
+  color: var(--danger-dark);
+}
+
+/*
+ * 爬架三格里「有任意一个机位越限」的那一格，分子转红（2026-11-23 现场要求）
+ *
+ * 分子数的是**正常**机位数：`normal < total` 即该指标下有 ≥1 个机位越限
+ * （`normal = total - 超限台数`，见 `utils/scaffold.ts::worstOf`）。三格各自判，
+ * 不是「全场有一个越限就三格全红」—— 参考稿里「左右倾斜 35/36」是红的，
+ * 而「前后倾斜 / 载荷 36/36」仍是绿的。全部正常时回到基础段的 `--online` 绿。
+ *
+ * `is-bad` 由模板按 `cell.bad` 挂；没有读数（total=0，显示「—」）时不带这个类。
+ */
+#page-home .eq-card.is-climb .eq-val b em.is-bad {
+  color: var(--danger-dark);
+}
+
 #page-home .home-stat.alert b { color: var(--danger-dark); }
 #page-home .home-stat.fix b { color: var(--orange-dark); }
 #page-home .home-stat.done b { color: var(--ok-dark); }
@@ -6479,6 +6679,25 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 注意它选择器权重更高（两个类），不显式覆盖会被上面的 .phone 规则漏掉。
  */
 @media (max-width: 480px), (max-height: 480px) {
+  /*
+   * 真机顶部留白与页面根色（2026-11-23）
+   *
+   * 1. 顶部留白只认安全区，**不再有 32px 兜底**：
+   *    微信 / 手机浏览器 / 绝大多数 App 内 WebView 里，宿主已经让出了
+   *    系统状态栏，`env(safe-area-inset-top)` 回 0 —— 顶栏就只剩 44px，
+   *    与微信顶部栏（44pt）等高；独立窗口（添加到主屏）时才是 47~62px 的
+   *    刘海高度，顶栏从 y=0 铺底，状态栏区与顶栏同色。
+   *    旧写法 `max(32px, env(...))` 会在前者凭空多出一条 32px 白条，
+   *    比微信高一截，且与宿主状态栏底色对不上 —— 即「顶部突兀色块」。
+   *
+   * 2. html/body 底色跟随视图（`--chrome-bg`，由 themeColor.ts 写入）：
+   *    iOS 26 的顶栏玻璃会把页面根背景向上延伸取样，根色写死浅蓝灰时，
+   *    白顶栏页与首页深色地图顶端都会被糊成同一条灰蓝带。
+   */
+  :root { --status-h: env(safe-area-inset-top, 0px); }
+  html,
+  body { background: var(--chrome-bg); }
+
   .stage { padding: 0; background: var(--page); }
   .stage-title { display: none; }
   .phone,
@@ -6501,10 +6720,11 @@ button, input, textarea { font-family: inherit; color: inherit; }
  *
  * 统一写在此处：各选择器权重与上方原有规则相同，位置靠后即生效，
  * 免去在 7 处 overflow: auto 旁边各加一行。
- * （.cam-list-body 未列入 —— 它属于未实现的监控搜索列表，是死 CSS。）
+ * （.cam-list-body 未列入 —— 它属于未实现的监控搜索列表，是死 CSS。
+ *   首页抽屉的外层已改成不滚动的 flex 容器，滚动容器 #homePanels 在
+ *   .home-sheet 旁边单独声明，不再列在这里。）
  */
 .page,
-.home-sheet,
 .cam-player-switch,
 .cam-shots,
 .air-grid,
@@ -6539,6 +6759,9 @@ button, input, textarea { font-family: inherit; color: inherit; }
   touch-action: none;
   cursor: grab;
 }
+
+/* 锁定为静态背景（首页）：不给「可拖动」的光标暗示，指针交互只落在撒点上 */
+.map-viewer.is-locked { cursor: default; }
 
 .map-viewer:active { cursor: grabbing; }
 
@@ -6890,7 +7113,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .map-viewer.is-compact .pin-name {
-  font-size: 9px;
+  font-size: var(--fs-9);
   padding: 2px 5px;
   letter-spacing: 0;
 }
@@ -6912,6 +7135,10 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 .map-viewer.is-compact .map-ctrls .map-ctrl-reset { font-size: var(--fs-10); }
+
+/* 2026-11-23：首页小地图改为 locked 背景图，已不渲染 .map-ctrls；
+   上面两条 is-compact 规则保留给「日后若再给小容器开控件」，
+   当前无匹配元素，不影响全屏（全屏不带 is-compact）。 */
 
 /* ---------- G. 全屏地图沉浸化 ---------- */
 
@@ -6985,14 +7212,14 @@ button, input, textarea { font-family: inherit; color: inherit; }
   top: 0;
   right: calc(50% - 22px);
   width: auto;
-  min-width: 16px;
-  height: 16px;
+  min-width: 18px;
+  height: 18px;
   padding: 0 4px;
   border-radius: var(--r-pill);
   background: var(--danger);
   font-size: var(--fs-10);
   font-weight: 600;
-  line-height: 16px;
+  line-height: 18px;
   text-align: center;
   color: #fff;
   box-shadow: 0 1px 4px rgba(255, 77, 79, 0.4);
@@ -7466,7 +7693,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
   cursor: default;
 }
 
-/* —— 抽屉三档文案已撤（第五批改成抓手条 + 箭头），箭头方向见 .grab-chev —— */
+/* —— 抽屉档位文案已撤（第五批改成抓手条；2026-11-23 连箭头一并去掉） —— */
 
 /* —— 隐患提交按钮的 loading 态 —— */
 .hazard-submit {
@@ -7651,7 +7878,7 @@ button, input, textarea { font-family: inherit; color: inherit; }
 /* —— 「我的」占位页 —— */
 .sub-ph-title {
   margin-bottom: 8px;
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 650;
   color: var(--text);
 }
@@ -7987,7 +8214,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   letter-spacing: -0.015em;
 }
 
-.donut-label b { font-size: 17px; }
+.donut-label b { font-size: var(--fs-17); }
 
 /*
  * 人员条：四个数字此前全是 18px 等权，读者不知道哪个是总量。
@@ -8299,27 +8526,17 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 /* ---------- K-3. 区块标题 ---------- */
 
 /*
- * 仪表盘的分节感来自「编号 + 标题 + 一条把它们和右侧分开的细线」。
- * 之前只有字号差，四个区块读起来是四段没有编号的散文。
+ * 仪表盘的分节感来自「标题 + 一条把它和右侧分开的细线」。
  *
- * 计数加在 #homePanels 上：它是 flex 容器，四个 .safe-block 是直接子元素；
- * 上一批给它加了 :key，切面板时容器重挂载，编号自然从 01 重新开始。
+ * 2026-11-23：撤掉了标题前的「01 / 02」编号（用户要求）。
+ * 编号只有两个区块在用、且只有「人员管理」看得到（报警预警的标题在
+ * .safe-hd 里，本来就不吃这条规则），存在感大于信息量；去掉后
+ * 「人员管理」的左边缘与「报警预警」齐平。counter 相关声明一并删除。
  */
-#homePanels { counter-reset: block; }
-
 #homePanels > .safe-block > h4 {
   display: flex;
   align-items: center;
   gap: 8px;
-  counter-increment: block;
-}
-
-#homePanels > .safe-block > h4::before {
-  content: "0" counter(block);
-  font-size: var(--fs-10);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: rgba(110, 168, 255, 0.6);
 }
 
 #homePanels > .safe-block > h4::after {
@@ -8399,27 +8616,15 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   pointer-events: none;
 }
 
-/* ---------- M-3. 抽屉抬起时收起地图控件 ---------- */
+/* ---------- M-3. （已下线）抽屉抬起时收起地图控件 ---------- */
 
 /*
- * .map-ctrls 是 top:50% 居中定位（相对 42%+20px 的地图盒），抽屉升到
- * 42% 以上时正好压在它身上：上半截可见、下半截被抽屉裁掉，既难看也点不准。
- * 地图退成背景时这些控件本来也用不上 —— 抬起即淡出，想缩放先回到地图态
- * 或点「全屏」。
+ * 首页地图 2026-11-23 起是 `locked` 的静态背景图，MapViewer 不再渲染
+ * .map-ctrls，原先「抽屉压住控件 → 常驻淡出」的两条规则没有对象了，已删。
  */
-.home-map .map-ctrls {
-  transition: opacity 0.2s var(--ease-out), visibility 0.2s;
-}
-
-#page-home.is-sheet-up .home-map .map-ctrls {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
 
 @media (prefers-reduced-motion: reduce) {
-  .home-map .pin-body,
-  .home-map .map-ctrls { transition: none; }
+  .home-map .pin-body { transition: none; }
 }
 
 /* =====================================================================
@@ -8759,7 +8964,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .patrol-hd h4 {
-  font-size: 15px;
+  font-size: var(--fs-15);
   font-weight: 700;
   color: var(--text);
 }
@@ -8873,6 +9078,41 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   object-fit: cover;
 }
 
+/*
+ * 项目全景的缩略图：高度交给画面比例（2026-11-23，现场要求「垂直显示高度调高、
+ * 画面完整不裁切」）。
+ *
+ * 通用 `.patrol-thumb` 钉死 96px + `object-fit: cover`，对 16:9 的航拍 / 抓拍够用；
+ * 但全景是 3162×1581（≈2:1），塞进约 3.6:1 的窄条里，上下被裁掉将近一半，
+ * 看上去像一条「远景切片」。
+ *
+ * 这里只改高度：宽度仍是卡片满宽，**水平位置与缩放比例都不变** —— cover 在两种
+ * 高度下都按宽度铺满（3162×1581 铺到 343 宽是 343×171.6，96 高时也是这个尺寸，
+ * 只是被裁），所以 scale 完全一致，改的只是「露出多少」。高度取 `width / 2`
+ * 正好等于整张图的高度：一点不裁、也不留黑边，比例天然不变。
+ */
+.patrol-card.is-pano .patrol-thumb {
+  height: auto;
+  aspect-ratio: 3162 / 1581;
+}
+
+/*
+ * 高度改由 `aspect-ratio` 撑开之后，通用那条 `img { height: 100% }` 就不管用了：
+ * 百分比高度要相对**父级的计算高度**解析，而这里的父级高度是 `auto`（由比例在
+ * 布局期算出），浏览器对这种情况按 `auto` 处理 —— 图片退回自身高度、上下各留
+ * 一条卡片底色，正是截图里红框那两条空白。
+ *
+ * 所以全景这张图改成绝对定位铺满：`.patrol-thumb` 本来就是 `position: relative`，
+ * `inset: 0` 拿到的是确定的容器盒，不受百分比解析影响；`object-fit: cover` 仍在
+ * （容器与图片同为 2:1，实际一个像素都不裁），边缘自然贴合，不会留缝也不会拉伸。
+ */
+.patrol-card.is-pano .patrol-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 /* 左上角角标（航拍 / 全景）：与 .patrol-tag 同款胶囊，只是定位在图内 */
 .patrol-thumb-tag {
   position: absolute;
@@ -8948,7 +9188,9 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  /* 2026-11-23：标题下面的「分类 + 来源」胶囊整行删掉，剩下标题 + 时间两行，
+     行距收到 4px —— 两行文字之间不该还空着一个标签的高度 */
+  gap: 4px;
   padding: 8px 8px 10px;
 }
 
@@ -8970,10 +9212,24 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   text-overflow: ellipsis;
 }
 
-.patrol-card-name em {
-  margin-left: auto;
-  font-style: normal;
+/*
+ * 时间：单独一行（2026-11-23 现场要求）
+ *
+ * 原先它是 `.patrol-card-name` 里的 `<em>`，靠 `margin-left:auto` 顶到右边，
+ * 标题只能分到剩下的宽度，显示成「向…」。现在移到标题下面单独一行：
+ *   · `display: block` 吃掉整行宽度，左对齐与标题起点齐平（不再靠 auto 右顶）；
+ *   · 字号 / 颜色 / 粗细都沿用原来那档（`--fs-11` / `--ink-3-dark` / 常规），
+ *     只是把行高压到 1.3、让 13px 的文字盒贴着标题，不与上下元素抢空间；
+ *   · `white-space: nowrap` 保住「2026-11-23 08:26」不被折成两行。
+ * 卡片高度因此比原来少一行胶囊（16px 高 + 4px 间距），一屏还是两列两行。
+ */
+.patrol-card-time {
+  display: block;
+  margin: 0;
   font-size: var(--fs-11);
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.3;
   color: var(--ink-3-dark);
   white-space: nowrap;
 }
@@ -9086,14 +9342,19 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /*
- * 单张照片横屏（2026-11-18）：与 `.pano-stage.is-land` 同一套 —— 铺满视口、
- * 黑底、整张 contain 装进去。层级 48 压住弹层（45），让 Toast（50）还能露出来。
+ * 单张照片全屏（2026-11-18 首版，2026-11-23 改成整页全屏）：与
+ * `.pano-stage.is-land` 同一套 —— 铺满视口、黑底、整张 contain 装进去。
+ *
+ * 层级 205：智眸的全屏是**整页**进系统全屏（`documentElement`，与首页背景图
+ * 那颗「全屏」一致），页面上还有 `z-index: 200` 的 `.status-bar`。48 时代这是
+ * 弹层里的层叠（压住 45 的 `.pop-layer` 就够），整页全屏后必须抬到状态栏之上，
+ * 又得低于 Toast（210）与横屏提示（220）—— 205 是两个约束的交集。
  * 画布本身由弹层 Teleport 到 body，否则面板的 transform 会把 fixed 变成本地定位。
  */
 .patrol-view.is-land {
   position: fixed;
   inset: 0;
-  z-index: 48;
+  z-index: 205;
   margin: 0;
   border-radius: 0;
   background: #000;
@@ -9105,6 +9366,22 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   max-height: none;
   border-radius: 0;
   object-fit: contain;
+}
+
+/*
+ * 全屏态的工具条退进安全区（2026-11-23，iOS 上「关不掉」的修法）
+ *
+ * 全屏时工具条原本 `top:8 right:8` 紧贴屏幕边缘：横屏右侧是刘海 / 屏幕圆角，
+ * iOS 的边缘手势区还会吞掉靠近边缘的触摸 —— 手指看着点上了、click 不触发，
+ * 表现就是「进全屏以后怎么都退不出来」。退进 `env(safe-area-inset-*)` 之后
+ * 那颗「退出」才真正可点。底部那颗大按钮曾作为第二出口，已按现场要求下线；
+ * 退出仍有两条路：右上「退出」与点画面四周黑边（`@click.self`）。
+ */
+.patrol-view.is-land .pano-tools,
+.pano-stage.is-land .pano-tools,
+.cam-shot-stage.is-land .pano-tools {
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  right: calc(env(safe-area-inset-right, 0px) + 10px);
 }
 
 /* =====================================================================
@@ -9218,13 +9495,16 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /*
- * 横屏查看：整块画布 Teleport 到 body 后铺满视口。
- * 层级 48 —— 压住弹层（45），但让 Toast（50）还能露在上面。
+ * 全屏查看：整块画布 Teleport 到 body 后铺满视口。
+ * 层级 205 —— 与 `.patrol-view.is-land` 同源：整页全屏后要压住 `.status-bar`
+ * （200），同时低于 Toast（210）与横屏提示（220）。
+ * air-pop（AirPlayer 的全景）另有更具体的选择器钉在 96，那条走的是画布元素
+ * 全屏，不受这里影响。
  */
 .pano-stage.is-land {
   position: fixed;
   inset: 0;
-  z-index: 48;
+  z-index: 205;
   margin: 0;
   border-radius: 0;
   background: #000;
@@ -9815,8 +10095,8 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 /* 复用图表的 .alarm-grid / .alarm-x 分组名，但深色底要换成低亮描边 */
 .dev-chart .alarm-grid line { stroke: rgba(255, 255, 255, 0.05); }
 .dev-chart .alarm-grid text,
-.dev-chart .alarm-x text { fill: var(--ink-4-dark); font-size: 9px; }
-.dev-chart-val { font-size: 9px; font-weight: 650; }
+.dev-chart .alarm-x text { fill: var(--ink-4-dark); font-size: var(--fs-9); }
+.dev-chart-val { font-size: var(--fs-9); font-weight: 650; }
 
 /* ---------- 无人机 ---------- */
 
@@ -9906,7 +10186,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .uav-tools button svg { width: 16px; height: 16px; }
-.uav-tools button span { font-size: 9px; line-height: 1; }
+.uav-tools button span { font-size: var(--fs-9); line-height: 1; }
 .uav-tools button.is-on { border-color: rgba(255, 91, 91, 0.8); color: #FF7B7B; }
 
 .uav-fly {
@@ -10229,8 +10509,14 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .uav-log em.is-ok { color: var(--ok-dark); }
+/* 失败架次：`result === 3`（不是 `status`，见 DroneTaskRecord.result）。
+   不给颜色的话「已失败」和「已完成」一样是灰字，扫读分不出来 */
+.uav-log em.is-bad { color: var(--danger-dark); }
+/* 未执行：当天还排着、还没起飞（`unfinishedTaskList`）。比「已完成」再淡一档，
+   既不抢已执行项的注意力，也不会和它混成同一个灰 */
+.uav-log em.is-plan { color: var(--ink-4-dark); }
 
-/* 口径小注：今日任务按账号统计，含同账号其它项目（有才出现，见 UavTodaySheet） */
+/* 口径小注：清单只列已执行的项，与三格「今日任务」（计划数）不同口径 */
 .uav-log-note {
   margin: 0;
   padding: 0 2px;
@@ -10389,38 +10675,15 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 /*
  * 智能爬架详情页（2026-11 设计稿 gx2 版同步，原 app.css:6277-6470）
  *
- * 深色子页：climb-sum 两格 → dev-tabs 三页签（左右倾斜/前后倾斜/载荷）
- * → climb-board 机位列表。列表行的分隔线、时间右对齐与异常整行标红
- * 都按设计稿逐条搬；颜色走令牌（#132033→--bg-3、#FF5C6C→--danger-dark、
- * #3DDC97→--ok-dark、#F2F6FB→--ink-1-dark、#8A9BB0→--ink-3-dark）。
+ * 深色子页：dev-tabs 三页签（左右倾斜/前后倾斜/载荷）→ climb-board 机位列表。
+ * 列表行的分隔线、时间右对齐与异常整行标红都按设计稿逐条搬；颜色走令牌
+ * （#132033→--bg-3、#FF5C6C→--danger-dark、#3DDC97→--ok-dark、
+ * #F2F6FB→--ink-1-dark、#8A9BB0→--ink-3-dark）。
+ *
+ * 2026-11-23：顶部「设备数量 / 设备状态 / 设备名称 / 爬升高度」四行删除，
+ * `.climb-sum` 四条规则随之下线（`.dev-info` 仍被 DeviceInfoSheet 复用，保留）。
  */
 .climb-page { padding-bottom: calc(12px + var(--safe-bot)); }
-
-.climb-sum {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.climb-sum span {
-  display: block;
-  margin-bottom: 4px;
-  font-size: var(--fs-12);
-  color: var(--ink-3-dark);
-}
-
-.climb-sum b {
-  font-size: var(--fs-22);
-  font-weight: 700;
-  line-height: 1.1;
-  color: var(--blue-dark);
-}
-
-.climb-sum b.is-time {
-  font-size: var(--fs-13);
-  font-weight: 650;
-}
 
 /* 页签与无人机页共用 .dev-tabs，这里只放宽间距 */
 .dev-tabs.climb-view {
@@ -10456,8 +10719,17 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 .climb-board header b i { color: var(--ink-1-dark); }
-/* 分子（正常台数）恒绿：b 自身就是 --ok-dark，不再有「超限就整组变红」这一支 ——
-   具体哪台越限由下方 .climb-issue 与行内红字报，主数字只回答「多少台是好的」。 */
+/*
+ * 表头数字的异常态（2026-11-23 现场要求）
+ *
+ * 与外层智控面板的卡片三格对齐：该指标下有**任意一个机位**越限时，分子转红
+ * （`--danger-dark`，与卡片同值）；分母仍是白色 —— `i` 自带 `--ink-1-dark`，
+ * 不跟着 `b` 走，所以「37/38」里红的只有 37。
+ *
+ * 全部在阈值内时保持 `b` 本身的 `--ok-dark` 绿，也就是说只有越限那一个页签
+ * 会变红（三个页签各判各的，与卡片三格同一个口径）。
+ */
+.climb-board header b.is-bad { color: var(--danger-dark); }
 
 /* 表头右侧说明（「正常机位 · 14:02 更新」），与左侧大号数字基线对齐 */
 .climb-board header span {
@@ -10531,6 +10803,39 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+/*
+ * 两类预警合并后的说明行（2026-11-23）
+ *
+ * 这一页的列表现在由监控预警 + 无人机预警合并而成（见 `utils/alarmMerge.ts`），
+ * 两种情况必须写清楚，不能让人误读成「全部就这些」：
+ *   ① 某一路接口失败 —— 列表只有另一路，标注「可能不完整」；
+ *   ② 无人机预警只能从新往旧翻页 —— 选的日期比已加载范围更早时，
+ *      写明「只加载到 X 日」并给一个继续加载的入口。
+ * 两行都只占一行字，不铺卡片：它们是注脚，不是内容。
+ */
+.alarm-hist-page .insp-note {
+  margin: 8px 2px 0;
+  font-size: var(--fs-11);
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.alarm-hist-page .insp-note-btn {
+  margin-left: 2px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--blue);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.alarm-hist-page .insp-note-btn:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 
 /* 安全面板头部的「历史」入口（原 app.css:2337-2358） */
@@ -10786,4 +11091,108 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 .alarm-src-done {
   background: rgba(16, 24, 40, 0.06);
   color: var(--ink-3);
+}
+
+/*
+ * 极窄屏（≤359px）字号回退 —— 2026-11-23 全局字阶 +2px 的配套
+ *
+ * 385 / 390 / 414 这些主流宽度按新字阶排是宽松的；只有 320~359px 的老设备
+ * （iPhone SE 一代、早期安卓）上，三列 KPI 的长标签和底栏四字 tab 会贴边。
+ * 这一档退回「基准 +1」（即第一轮的观感），保证不换行、不截断；
+ * 360px 及以上仍用完整的 +2 字阶。
+ *
+ * 注意令牌名与值的约定：名字是「基准像素」，主区块里是基准 +2，
+ * 这里取基准 +1。
+ */
+@media (max-width: 359px) {
+  :root {
+    --fs-9: 10px;
+    --fs-10: 11px;
+    --fs-11: 12px;
+    --fs-12: 13px;
+    --fs-13: 14px;
+    --fs-14: 15px;
+    --fs-15: 16px;
+    --fs-16: 17px;
+    --fs-17: 18px;
+    --fs-18: 19px;
+    --fs-20: 21px;
+    --fs-22: 23px;
+    --num-lg: 25px;
+    --num-md: 19px;
+    --num-unit: 12px;
+  }
+}
+
+/* =====================================================================
+ * 横屏提示（2026-11-23）
+ *
+ * 触发：点「全屏」后没能自动转成横屏（iOS 全系 / 微信内置 / 系统旋转锁定）。
+ * 最简形态：一条深色胶囊 + 两行字，**无遮罩、无按钮**，4.2s 自动淡出，
+ * 点一下也能立刻关。外层 pointer-events: none —— 弹着的时候地图照样能拖。
+ * 层级 220：要压在全屏地图层（80）、监控层（90）与 toast（210）之上。
+ * ===================================================================== */
+.land-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .2s ease, visibility .2s ease;
+}
+
+.land-hint.show { opacity: 1; visibility: visible; }
+
+.land-hint-card {
+  max-width: 300px;
+  padding: 12px 16px;
+  border-radius: var(--r-12);
+  background: rgba(29, 33, 41, 0.9);
+  color: #fff;
+  text-align: center;
+  box-shadow: var(--sh-2);
+  pointer-events: auto;
+}
+
+.land-hint-title {
+  margin: 0;
+  font-size: var(--fs-15);
+  font-weight: 600;
+}
+
+.land-hint-sub {
+  margin: 4px 0 0;
+  font-size: var(--fs-13);
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* =====================================================================
+ * 视频画面缩放（2026-11-23）
+ *
+ * 复用 `utils/zoom.ts` 的 useImageZoom（捏合 / 双击 / 滚轮 / 拖动平移），
+ * 这里只补两件它管不到的事：
+ *   1. 触摸语义 —— `pan-y`：单指竖滑仍归页面滚动，只有捏合才缩放；
+ *   2. 容器裁剪 —— transform 不改变布局，放大后的溢出会盖到说明条、
+ *      切换点位列表上；裁剪只发生在画面框内，DOM 与布局一个字节没动。
+ *
+ * 画面上不摆缩放按钮（2026-11-23 下线）：直播画面本身信息密度高，叠一排
+ * 控件会挡住塔吊臂这类关键部位；手势 + 双击 + 滚轮已经够用。
+ *
+ * 等比 scale 天然保持画面宽高比，不需要额外的 aspect-ratio。
+ * ===================================================================== */
+.v-zoomable { touch-action: pan-y; }
+
+.v-zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
+
+.cam-player-stage { overflow: hidden; }
+.live-player { overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+  .v-zoomable.is-anim { transition: none; }
 }

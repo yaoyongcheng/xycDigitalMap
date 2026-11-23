@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
-import Skel from '@/components/ui/Skel.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useScaffoldStore } from '@/stores/scaffold'
 import { useSubpageStore } from '@/stores/subpage'
 import { SCAFFOLD_LABEL, SCAFFOLD_LIMIT, SCAFFOLD_METRICS, scaffoldLabel, timeHm } from '@/utils/scaffold'
-import { useSlowLoading } from '@/utils/slowLoading'
 import type { ScaffoldMetric } from '@/types'
 
 /**
  * 智能爬架详情页（设计稿 gx2 版同步）
  *
- * 结构：① climb-sum 两格（设备数量 / 设备状态）→ ② 台账字段 →
- * ③ 三个读数页签（左右倾斜 / 前后倾斜 / 载荷）→ ④ 机位读数列表。
+ * 结构：① 三个读数页签（左右倾斜 / 前后倾斜 / 载荷）→ ② 机位读数列表。
+ *
+ * **2026-11-23：顶部「设备数量 / 设备状态 / 设备名称 / 爬升高度」整块删除**，
+ * 连带台账取数（`useDeviceLedgerStore`）、骨架与 `Skel` 依赖一并下线 ——
+ * 这四行是台账属性，现场不看，且把真正的读数挤到了折线以下。删掉之后本页
+ * 只依赖 CDN 传感器数据，不再等登录态之外的第二个请求。
  *
  * **2026-11 第四轮：机位读数回来了，而且是真数据。**
  * 第二轮曾把 36 条手写机位数据整块删除（那是编的），四套后端也确实没有
@@ -26,30 +27,19 @@ import type { ScaffoldMetric } from '@/types'
  * （倾斜 60mm / 载荷 5.0 吨，按绝对值判），见 `utils/scaffold.ts`。
  *
  * 机位区（`.climb-board`）= 表头「正常台数 / 有读数的台数」（与首页卡片三格
- * 同口径，分子绿）+ 一句超限文案 + **按机位号升序**的逐台读数。
+ * 同口径；该指标有任意机位越限时分子转红，否则绿）+ 一句超限文案 +
+ * **按机位号升序**的逐台读数。
  *
  * 取不到数据时**不编机位**：列表整块换成空态，说明「数据未取到」。
  */
-const ledger = useDeviceLedgerStore()
 const scaf = useScaffoldStore()
 const auth = useAuthStore()
 const subpage = useSubpageStore()
 
 onMounted(() => {
-  if (auth.token) void ledger.load(auth.token)
-  // 传感器走 public CDN，与登录态无关
+  // 传感器走 public CDN，与登录态无关（台账那路已随顶部信息块一起删掉）
   void scaf.load()
 })
-
-/** 台账里的爬架（正常只有 1 台） */
-const units = computed(() => ledger.categoryUnits('climb'))
-const unit = computed(() => units.value[0])
-
-/** 爬升高度这类台账字段（已格式化，如 '21m'） */
-const fields = computed(() => unit.value?.cells ?? [])
-
-/** 慢请求才显示骨架（快请求直接出内容，不闪灰条） */
-const showSkel = useSlowLoading(() => !units.value.length && ledger.state === 'loading')
 
 /* ---------- 机位读数（CDN 真实数据） ---------- */
 
@@ -107,6 +97,18 @@ const cellNow = computed(() => scaf.summary.cells.find((c) => c.key === tab.valu
 const normalCount = computed(() => cellNow.value?.normal ?? 0)
 const totalCount = computed(() => cellNow.value?.total ?? 0)
 
+/**
+ * 当前页签这个指标是否有**任意一个机位**越限 —— 表头数字的颜色靠它（2026-11-23）。
+ *
+ * 与首页智控面板的卡片三格同一条判据：`utils/scaffold.ts::worstOf` 里
+ * `normal = total - 超限台数`，所以「正常数少于总数」就等于「这个指标下
+ * 有 ≥1 个机位越限」；`total = 0`（表头显示「—」）不算异常。
+ *
+ * 加这一支是因为两处不一致：面板里那一格已经按「有越限就转红」显示，
+ * 点进来同一个 37 却还是绿的 —— 同一份数据两个结论，现场只会互相打听哪个是真的。
+ */
+const cellBad = computed(() => totalCount.value > 0 && normalCount.value < totalCount.value)
+
 /** 最不利机位的那条超限文案（没有超限为空串） */
 const issue = computed(() => {
   const cell = cellNow.value
@@ -124,7 +126,7 @@ const updatedHm = computed(() => timeHm(scaf.summary.updatedAt))
 const sourceNote = computed(() => (updatedHm.value ? `${updatedHm.value} 更新` : ''))
 
 function retry(): void {
-  if (auth.token) void ledger.load(auth.token, true)
+  // 台账那路已随顶部信息块删除，重试只针对传感器
   void scaf.load(true)
 }
 
@@ -141,95 +143,54 @@ function goLogin(): void {
     </div>
 
     <template v-else>
-      <!--
-        同步中：灰条铺在汇总两格与台账字段行的位置，结构同真实内容
-        （同样的 .climb-sum / .dev-info-row），台账到手后原位回填。
-      -->
-      <template v-if="ledger.state === 'loading'">
-        <span class="sr-only" role="status">正在加载设备台账</span>
-        <div class="climb-sum skel-fade" :class="{ 'is-on': showSkel }" aria-hidden="true">
-          <div>
-            <Skel w="52px" h="12px" />
-            <Skel class="skel-mt-sm" w="34px" h="24px" r="var(--r-6)" />
-          </div>
-          <div>
-            <Skel w="52px" h="12px" />
-            <Skel class="skel-mt-sm" w="42px" h="24px" r="var(--r-6)" />
-          </div>
-        </div>
-        <div class="dev-info skel-fade" :class="{ 'is-on': showSkel }" aria-hidden="true">
-          <div v-for="i in 4" :key="i" class="dev-info-row">
-            <Skel w="54px" h="12px" /><Skel w="72px" h="13px" />
-          </div>
-        </div>
-      </template>
+      <!-- 三个读数页签 -->
+      <div class="dev-tabs climb-view" role="tablist">
+        <button
+          v-for="t in tabs"
+          :key="t.key"
+          type="button"
+          role="tab"
+          :aria-selected="tab === t.key"
+          :class="{ on: tab === t.key }"
+          @click="tab = t.key"
+        >
+          {{ t.label }}
+        </button>
+      </div>
 
-      <template v-else>
-        <div class="climb-sum">
-          <div>
-            <span>设备数量</span>
-            <b>{{ units.length }}</b>
-          </div>
-          <div>
-            <span>设备状态</span>
-            <b class="is-time">{{ unit?.status ?? '—' }}</b>
-          </div>
-        </div>
-
-        <!-- 台账字段（爬升高度等） -->
-        <div v-if="fields.length" class="dev-info">
-          <div class="dev-info-row"><span>设备名称</span><b>{{ unit?.name }}</b></div>
-          <div v-for="[label, value] in fields" :key="label" class="dev-info-row">
-            <span>{{ label }}</span><b>{{ value }}</b>
-          </div>
-        </div>
-
-        <!-- 三个读数页签 -->
-        <div class="dev-tabs climb-view" role="tablist">
-          <button
-            v-for="t in tabs"
-            :key="t.key"
-            type="button"
-            role="tab"
-            :aria-selected="tab === t.key"
-            :class="{ on: tab === t.key }"
-            @click="tab = t.key"
-          >
-            {{ t.label }}
-          </button>
-        </div>
-
-        <!-- 机位读数：真实 CDN 数据 -->
-        <div v-if="scaf.hasData" class="climb-board">
-          <header>
-            <!-- 正常台数（绿） / 有读数的台数；一个读数都没有时给「—」，不写 0/0 -->
-            <b>
-              <template v-if="totalCount > 0">
-                <em>{{ normalCount }}</em><i>/{{ totalCount }}</i>
-              </template>
-              <template v-else>—</template>
-            </b>
-            <span>正常机位<span v-if="sourceNote"> · {{ sourceNote }}</span></span>
-          </header>
-          <p v-if="issue" class="climb-issue">{{ issue }}</p>
-          <div class="climb-lines">
-            <div v-for="r in lines" :key="r.item" class="climb-line" :class="{ 'is-bad': r.over }">
-              <b>{{ r.item }}</b>
-              <span>{{ r.value }}</span>
-              <time>{{ r.hm }}</time>
-            </div>
+      <!-- 机位读数：真实 CDN 数据 -->
+      <div v-if="scaf.hasData" class="climb-board">
+        <header>
+          <!--
+            正常台数 / 有读数的台数；一个读数都没有时给「—」，不写 0/0。
+            `is-bad`：该指标下有任意机位越限时分子转红（与首页卡片三格同色）。
+          -->
+          <b :class="{ 'is-bad': cellBad }">
+            <template v-if="totalCount > 0">
+              <em>{{ normalCount }}</em><i>/{{ totalCount }}</i>
+            </template>
+            <template v-else>—</template>
+          </b>
+          <span>正常机位<span v-if="sourceNote"> · {{ sourceNote }}</span></span>
+        </header>
+        <p v-if="issue" class="climb-issue">{{ issue }}</p>
+        <div class="climb-lines">
+          <div v-for="r in lines" :key="r.item" class="climb-line" :class="{ 'is-bad': r.over }">
+            <b>{{ r.item }}</b>
+            <span>{{ r.value }}</span>
+            <time>{{ r.hm }}</time>
           </div>
         </div>
+      </div>
 
-        <div v-else-if="scaf.state === 'loading'" class="data-empty" data-empty="climb">
-          <p>正在读取爬架传感器…</p>
-        </div>
-        <div v-else class="data-empty" data-empty="climb">
-          <p>暂无爬架机位读数</p>
-          <p class="data-empty-sub">{{ scaf.error || '爬架传感器数据未取到' }}，当前只展示台账中的设备属性。</p>
-          <button class="data-empty-btn" type="button" @click="retry">重试</button>
-        </div>
-      </template>
+      <div v-else-if="scaf.state === 'loading'" class="data-empty" data-empty="climb">
+        <p>正在读取爬架传感器…</p>
+      </div>
+      <div v-else class="data-empty" data-empty="climb">
+        <p>暂无爬架机位读数</p>
+        <p class="data-empty-sub">{{ scaf.error || '爬架传感器数据未取到' }}</p>
+        <button class="data-empty-btn" type="button" @click="retry">重试</button>
+      </div>
     </template>
   </div>
 </template>

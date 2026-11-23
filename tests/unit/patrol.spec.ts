@@ -299,7 +299,7 @@ describe('智眸大图弹层（真实航拍照片）', () => {
     const src = w.find('.patrol-view img').attributes('src') ?? ''
     expect(src).toContain('oss.keehang.com')
     expect(src).toContain('/thumbnail/')
-    // 2026-11-18：那颗按钮挪到画布右上角，与「横屏」并排（与 VR 360 同一套胶囊）
+    // 2026-11-18：那颗按钮挪到画布右上角，与「全屏」并排（与 VR 360 同一套胶囊）
     const hdBtn = w.findAll('.patrol-view .pano-tool').find((b) => b.text().includes('原图'))
     expect(hdBtn?.text()).toBe('查看原图')
     w.unmount()
@@ -968,11 +968,11 @@ describe('智眸面板 · VR 360环视卡片', () => {
  *
  * 「看高清 / 下载」原本在图片下方那一行按钮里，用户要求：看高清挪到画布上、
  * 与「复位」并排且同样式，下载那颗改成「横屏」。所以这里钉住三件事：
- *   1. 工具条在画布上，只剩 复位 / 看高清 / 横屏，**下载下线**；
+ *   1. 工具条在画布上，只剩 复位 / 看高清 / 全屏，**下载下线**；
  *   2. 点看高清是「先带进度拉流、下完再换源」，不是把 13MB 直接塞给 img；
- *   3. 点横屏能把画布搬到 body 铺满视口，再点回得去。
+ *   3. 点全屏能把画布搬到 body 铺满视口，再点回得去（2026-11-23 文案从「横屏」改「全屏」）。
  */
-describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 横屏）', () => {
+describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 全屏）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     offline()
@@ -1011,7 +1011,7 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 横屏）
     return w
   }
 
-  it('工具条在画布上：看高清与复位并排，下载改成横屏', async () => {
+  it('工具条在画布上：看高清与复位并排，下载改成全屏', async () => {
     withPano()
     const w = await openPano()
 
@@ -1019,7 +1019,7 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 横屏）
     expect(tools.exists()).toBe(true)
     const labels = tools.findAll('.pano-tool').map((b) => b.text())
     expect(labels).toContain('看高清')
-    expect(labels).toContain('横屏')
+    expect(labels).toContain('全屏')
     // 原来的「下载」整颗下线（全景要存相册走长按图片 / 系统菜单）
     expect(w.text()).not.toContain('下载')
     expect(tools.text()).not.toContain('下载')
@@ -1075,14 +1075,14 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 横屏）
     w.unmount()
   })
 
-  it('点「横屏」把画布搬到 body 铺满视口，再点「竖屏」回弹层', async () => {
+  it('点「全屏」把画布搬到 body 铺满视口，再点「退出」回弹层', async () => {
     withPano()
     const w = await openPano()
 
     const stage = (): Element | null => document.body.querySelector('.pano-stage')
     const landBtn = (): HTMLButtonElement =>
       [...document.body.querySelectorAll('.pano-tool')].find((b) =>
-        /横屏|竖屏/.test(b.textContent ?? ''),
+        /全屏|退出/.test(b.textContent ?? ''),
       ) as HTMLButtonElement
 
     expect(stage()?.classList.contains('is-land')).toBe(false)
@@ -1093,7 +1093,7 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 横屏）
     // 弹层面板带 transform（popRise 收尾态），position:fixed 会被它当包含块 ——
     // 所以必须 Teleport 到 body 才能真正铺满视口
     expect(document.querySelector('.pop-panel .pano-stage')).toBeNull()
-    expect(landBtn().textContent).toContain('竖屏')
+    expect(landBtn().textContent).toContain('退出')
 
     landBtn().click()
     await nextTick()
@@ -1107,10 +1107,10 @@ describe('智眸大图弹层 · 全景工具条（复位 / 看高清 / 横屏）
  * 单张照片（全景航拍 / 照片墙）的工具条（2026-11-18 用户要求）
  *
  * 用户拿的是 VR 360 环视那张「看高清 + 横屏」的截图：要求照片那颗
- * 「查看原图」照它的位置、样式与状态改过来，另加一颗「横屏」，并把
+ * 「查看原图」照它的位置、样式与状态改过来，另加一颗「全屏」（原名「横屏」），并把
  * 「下载」连同入口整块拿掉（要存图走长按 / 系统菜单，与全景一致）。
  */
-describe('智眸大图弹层 · 单张照片工具条（查看原图 / 横屏）', () => {
+describe('智眸大图弹层 · 单张照片工具条（查看原图 / 全屏）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     offline()
@@ -1134,12 +1134,12 @@ describe('智眸大图弹层 · 单张照片工具条（查看原图 / 横屏）
     return w
   }
 
-  it('工具条在画布上：查看原图与横屏并排，「下载」整颗下线', async () => {
+  it('工具条在画布上：查看原图与全屏并排，「下载」整颗下线', async () => {
     const w = await openFlat()
 
     const tools = w.find('.patrol-view .pano-tools')
     expect(tools.exists()).toBe(true)
-    expect(tools.findAll('.pano-tool').map((b) => b.text())).toEqual(['查看原图', '横屏'])
+    expect(tools.findAll('.pano-tool').map((b) => b.text())).toEqual(['查看原图', '全屏'])
     // 下方那行「原图 / 下载」整块不存在了
     expect(w.find('.photo-actions').exists()).toBe(false)
     expect(w.text()).not.toContain('下载')
@@ -1149,13 +1149,13 @@ describe('智眸大图弹层 · 单张照片工具条（查看原图 / 横屏）
     w.unmount()
   })
 
-  it('点「横屏」把画布搬到 body 铺满视口，再点「竖屏」回弹层', async () => {
+  it('点「全屏」把画布搬到 body 铺满视口，再点「退出」回弹层', async () => {
     const w = await openFlat()
 
     const stage = (): Element | null => document.body.querySelector('.patrol-view')
     const landBtn = (): HTMLButtonElement =>
       [...document.body.querySelectorAll('.pano-tool')].find((b) =>
-        /横屏|竖屏/.test(b.textContent ?? ''),
+        /全屏|退出/.test(b.textContent ?? ''),
       ) as HTMLButtonElement
 
     expect(stage()?.classList.contains('is-land')).toBe(false)
@@ -1165,7 +1165,7 @@ describe('智眸大图弹层 · 单张照片工具条（查看原图 / 横屏）
     expect(stage()?.classList.contains('is-land')).toBe(true)
     // 与全景同一条理由：弹层面板带 transform，不 Teleport 就铺不满
     expect(document.querySelector('.pop-panel .patrol-view')).toBeNull()
-    expect(landBtn().textContent).toContain('竖屏')
+    expect(landBtn().textContent).toContain('退出')
 
     landBtn().click()
     await nextTick()

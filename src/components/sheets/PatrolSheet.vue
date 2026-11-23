@@ -197,34 +197,53 @@ const panoHdLabel = computed(() => {
   return panoHdWait.value ? '高清加载中' : '已是高清'
 })
 
-/* ---------- 横屏 ---------- */
+/* ---------- 全屏 ---------- */
 
 /**
- * 两块画布各一套横屏开关（逻辑在 `utils/landscape.ts`）：
+ * 两块画布各一套全屏开关（逻辑在 `utils/landscape.ts`，`page` 模式）：
  *
  *   · `panoLand`  —— VR 360 环视 / 项目全景那块球面画布；
  *   · `photoLand` —— 单张航拍照片（全景航拍 / 照片墙）的平面大图。
  *
- * 两套必须**互相独立**：在照片里横屏着再换一张全景，不该把全景也顶进全屏。
- * 但交互与状态完全一致（按钮写「横屏 / 竖屏」、`aria-pressed`、退出全屏时
+ * 两套必须**互相独立**：在照片里全屏着再换一张全景，不该把全景也顶进全屏。
+ * 但交互与状态完全一致（按钮写「全屏 / 退出」、`aria-pressed`、退出全屏时
  * 自动收回），因为走的是同一段代码。
+ *
+ * `page: true` —— 与首页背景图那颗「全屏」同一套：对 `documentElement`
+ * 申请系统全屏 + 锁横屏，整页一起进全屏（画布 Teleport 到 body 后铺满，
+ * 横屏提示卡在 `.phone-screen` 里也就跟着进得去）。
+ * `hint: true` —— 转不过去时摆出「把手机横过来看」，与首页一句不差。
  */
 const {
   land: panoLand,
   setStage: setPanoStage,
   toggle: togglePanoLand,
   exit: exitPanoLand,
-} = useLandscape()
+} = useLandscape({ page: true, hint: true })
 
 const {
   land: photoLand,
   setStage: setPhotoStage,
   toggle: togglePhotoLand,
   exit: exitPhotoLand,
-} = useLandscape()
+} = useLandscape({ page: true, hint: true })
 
-/** 签名过期后重取一次（store 会换一组新直链，弹层里的图跟着换） */
-async function onPanoRetry(): Promise<void> {
+/**
+ * 全屏时点画布空白处（contain 留出的黑边）＝ 退出全屏。
+ *
+ * 全屏只有「右上角一颗 26px 胶囊」一个出口太险 —— 手指点不中、或者那颗按钮
+ * 落在横屏刘海 / 圆角的边缘手势区里，就变成「怎么都关不掉」。黑边是整块画布，
+ * 闭着眼睛也点得到。
+ */
+function onPhotoBackdrop(): void {
+  if (photoLand.value) void togglePhotoLand()
+}
+
+function onPanoBackdrop(): void {
+  if (panoLand.value) void togglePanoLand()
+}
+
+/** 签名过期后重取一次（store 会换一组新直链，弹层里的图跟着换） */async function onPanoRetry(): Promise<void> {
   panoBroken.value = false
   releasePanoHd()
   await patrol.loadPano(true)
@@ -316,7 +335,7 @@ function dropHd(): void {
   hdPct.value = 0
 }
 
-/** 换照片时全部复位（否则会带着上一张的原图、进度与横屏态） */
+/** 换照片时全部复位（否则会带着上一张的原图、进度与全屏态） */
 function resetForNext(): void {
   dropHd()
   if (photoLand.value) void exitPhotoLand()
@@ -441,7 +460,7 @@ const timeText = computed(() => {
 
 /*
  * 「下载 = 存进手机相册」那颗按钮 2026-11-18 下线（用户要求）：
- * 全景航拍的大图操作区只留画布上的「查看原图 / 横屏」，要存图走长按图片 /
+ * 全景航拍的大图操作区只留画布上的「查看原图 / 全屏」，要存图走长按图片 /
  * 系统菜单 —— 与 VR 360 环视的做法一致，别在这里再长出一颗按钮。
  * `utils/photoHd.ts` 的 savePhoto 仍被 AirPlayer（环境抓拍）使用，没删。
  */
@@ -457,13 +476,18 @@ onBeforeUnmount(() => {
     <!-- 项目全景：平台拼好的等距圆柱成果，贴到球面内壁环视（手机 / 电脑同一套手势） -->
     <template v-if="isPanoView">
       <!--
-        横屏时整块画布 Teleport 到 body：弹层面板带 transform（popRise 的
+        全屏时整块画布 Teleport 到 body：弹层面板带 transform（popRise 的
         translateY 收尾态会留下 matrix），position:fixed 会被它当成包含块，
         铺不满视口。Teleport 只挪 DOM，PanoViewer 的实例 / 贴图 / 视角都保留，
-        所以进出横屏不会重新下载 13MB、也不会把看到一半的角度丢掉。
+        所以进出全屏不会重新下载 13MB、也不会把看到一半的角度丢掉。
       -->
       <Teleport to="body" :disabled="!panoLand">
-        <figure :ref="setPanoStage" class="pano-stage" :class="{ 'is-land': panoLand }">
+        <figure
+          :ref="setPanoStage"
+          class="pano-stage"
+          :class="{ 'is-land': panoLand }"
+          @click.self="onPanoBackdrop"
+        >
           <PanoViewer
             ref="panoRef"
             :src="panoSrc"
@@ -474,7 +498,7 @@ onBeforeUnmount(() => {
           />
           <span class="patrol-view-tag is-pano">{{ panoHd ? '全景 · 高清' : '全景 · 可环视' }}</span>
 
-          <!-- 画布右上角工具条：复位 / 看高清 / 横屏（同一套胶囊样式） -->
+          <!-- 画布右上角工具条：复位 / 看高清 / 全屏（同一套胶囊样式） -->
           <div class="pano-tools">
             <button
               v-if="!panoUnsupported"
@@ -498,17 +522,17 @@ onBeforeUnmount(() => {
               class="pano-tool"
               type="button"
               :aria-pressed="panoLand"
-              :aria-label="panoLand ? '退出横屏' : '横屏查看'"
+              :aria-label="panoLand ? '退出全屏，回到竖屏' : '全屏查看'"
               @click="togglePanoLand"
             >
-              {{ panoLand ? '竖屏' : '横屏' }}
+              {{ panoLand ? '退出' : '全屏' }}
             </button>
           </div>
 
           <!--
             高清的字节进度：与照片弹层「查看原图」同一条 .hd-progress（宽度是
             已收字节 / Content-Length，不是估算）。压在画布底边而不是画布下方：
-            不占版面高度，横屏全屏时也还在视野里。
+            不占版面高度，全屏时也还在视野里。
           -->
           <div
             v-if="panoHdBusy"
@@ -527,7 +551,7 @@ onBeforeUnmount(() => {
               panoUnsupported
                 ? '当前环境不支持全景渲染，已切换为平面查看'
                 : panoLand
-                  ? '拖动环视 · 双指缩放 · 点「竖屏」退出'
+                  ? '拖动环视 · 双指缩放 · 点「退出」回竖屏'
                   : '拖动环视 · 双指或滚轮缩放'
             }}
           </p>
@@ -579,11 +603,16 @@ onBeforeUnmount(() => {
     <!--
       平面照片：低清缩略图起步，点「查看原图」才换高清。
 
-      横屏时与上方全景一样 Teleport 到 body —— 弹层面板带 transform，会让
+      全屏时与上方全景一样 Teleport 到 body —— 弹层面板带 transform，会让
       position:fixed 以面板为包含块，DOM 不挪就永远铺不满视口。
     -->
     <Teleport v-else to="body" :disabled="!photoLand">
-      <figure :ref="setPhotoStage" class="patrol-view" :class="{ 'is-land': photoLand }">
+      <figure
+        :ref="setPhotoStage"
+        class="patrol-view"
+        :class="{ 'is-land': photoLand }"
+        @click.self="onPhotoBackdrop"
+      >
         <img
           class="zoomable"
           :class="{ 'is-zoomed': imgZoomed, 'is-anim': zoomAnim }"
@@ -596,7 +625,7 @@ onBeforeUnmount(() => {
         <span class="patrol-view-tag">{{ hd ? '原图' : '压缩预览' }}</span>
 
         <!--
-          画布右上角工具条：查看原图 / 横屏。
+          画布右上角工具条：查看原图 / 全屏。
           与 VR 360 环视那颗「看高清」是同一套胶囊、同一套状态机（拉流中带真实
           百分比、已是原图则禁用、体积写在下方 meta 里），2026-11-18 用户要求
           照它改过来；原来的「下载」整颗下线。
@@ -615,14 +644,14 @@ onBeforeUnmount(() => {
             class="pano-tool"
             type="button"
             :aria-pressed="photoLand"
-            :aria-label="photoLand ? '退出横屏' : '横屏查看'"
+            :aria-label="photoLand ? '退出全屏，回到竖屏' : '全屏查看'"
             @click="togglePhotoLand"
           >
-            {{ photoLand ? '竖屏' : '横屏' }}
+            {{ photoLand ? '退出' : '全屏' }}
           </button>
         </div>
 
-        <!-- 拉原图的真实进度：压在画布底边，不占版面（横屏全屏时也还在视野里） -->
+        <!-- 拉原图的真实进度：压在画布底边，不占版面（全屏时也还在视野里） -->
         <div
           v-if="hdBusy"
           class="hd-progress is-in-stage"

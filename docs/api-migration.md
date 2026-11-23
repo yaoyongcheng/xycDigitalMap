@@ -5022,3 +5022,867 @@ const props = withDefaults(
 - **首页智眸**：抓拍格改成「历史最新一条 → 本机缓存最新一张 → 不出现」。上面那五路
   （含塔吊 2 张、2#门 2 张）只会在本机留有缓存时出现，所以首页「设备设施」后两张
   与「出入口管控」通常只剩 3 张（监控A / 4#门监控 / 4#门外监控）。
+
+## 六点三十七、点「全屏」自动横屏：能力边界与实现（2026-11-23）
+
+需求：点全屏后设备自动转成横屏。**结论是分平台、尽力而为** —— 能不能转不由页面决定，
+取决于宿主浏览器是否实现 `Element.requestFullscreen` 与 `screen.orientation.lock`，
+以及系统有没有开「旋转锁定」。页面能做的只有三件：申请全屏、申请锁方向、失败时引导。
+
+### 各平台口径
+
+| 平台 / 浏览器 | `requestFullscreen` | `orientation.lock('landscape')` | 点全屏后能否自动横屏 |
+| --- | --- | --- | --- |
+| iOS 全系（Safari / Chrome / 微信 / 各家 App 内嵌 WebView） | 无 | 无（`screen.orientation` 有，`lock` 未实现） | **不能**，只能提示用户手动横转 |
+| Android Chrome / Edge | 有 | 有，须先进全屏 | 能（系统开了旋转锁定时可能被忽略） |
+| 华为（HarmonyOS 4 及以下，Chromium 内核）/ 小米 / vivo / OPPO 自带浏览器 | 有 | 多数有 | 多数能，厂商裁剪版可能无效 |
+| HarmonyOS NEXT（ArkWeb） | 有 | 支持不完整 | 大概率不能 |
+| Android 微信内置浏览器（XWeb / X5） | 版本差异大，多不可用 | 基本无效 | 多半不能 |
+| 桌面 Chrome / Edge / Safari | 有 | 抛 `NotSupportedError` | 不适用（桌面无方向），故**不申请** |
+
+### 实现（`src/utils/orientation.ts`）
+
+全部 try/catch，失败静默，不抛错、不留痕：
+
+- `enterNativeLandscape()`：`documentElement.requestFullscreen({ navigationUI: 'hide' })`
+  → `screen.orientation.lock('landscape')` → 等 320ms 转屏动画 →
+  用「`innerWidth > innerHeight`」这一**观感事实**回报结果。
+- `exitNativeLandscape()`：**先 `unlock()` 再 `exitFullscreen()`**（顺序反了会留一段被钉住的方向）。
+- `onFullscreenExit(cb)`：只在「有全屏 → 没全屏」时回调，供外壳把横屏态收回来。
+
+接入点三处：
+
+| 位置 | 做什么 |
+| --- | --- |
+| `shell.openMapLand()` / `closeMapLand()` | 进/出全屏地图时申请与释放；落定后仍是竖屏 → 摆出横屏引导卡 |
+| `cam.setCamLand(true/false)` | 监控播放器横屏，同一套 |
+| `App.vue` 的 `onFullscreenExit` | Android 返回键 / 桌面 Esc 退全屏时，全屏地图走**收层**、监控只收横屏态 |
+
+### 失败时的提示（`utils/landscapeHint.ts` + `components/shell/LandscapeHint.vue`）
+
+一句 toast 在 iPhone 上等于没说：「请横转手机」在开了竖屏锁定、或在微信里打开时都办不到。
+所以换成一条**最简**提示 —— 深色胶囊两行字，无遮罩、无按钮：
+
+```
+把手机横过来看
+转不动就关掉系统的「竖屏锁定」
+```
+
+4.2s 自动淡出，点一下也能立刻关；用户自己转过来（`resize` 里宽 > 高）也收掉。
+外层 `pointer-events: none`、层级 `z-index: 220`（压在地图层 80 / 监控层 90 / toast 210 之上），
+弹着的时候地图照样能拖。**不做「一次会话只提示一次」** —— 没有按钮就没有「已确认」，
+错过的人下次进全屏还能再看到。
+
+### 为什么游戏 App 能直接横屏，网页不能
+
+不是技术差异，是**权限层级**差异：
+
+- **原生游戏**（Unity / Unreal / Cocos 打成 APK / IPA）直接调系统窗口 API：
+  Android 是 `Activity.setRequestedOrientation(SCREEN_ORIENTATION_LANDSCAPE)`
+  或 manifest 的 `android:screenOrientation="landscape"`；iOS 是
+  `supportedInterfaceOrientations` 只声明横屏 + `attemptRotationToDeviceOrientation()`。
+  由**系统窗口管理器**转屏，不需要用户手势，也不受浏览器策略约束。
+- **微信小游戏**走原生渲染（不是 DOM），`game.json` 里 `deviceOrientation: "landscape"`
+  由客户端保证横屏。
+- **H5 网页**跑在浏览器沙箱里，浏览器**故意**不给 JS 无条件转屏能力：否则广告页可以把你
+  手机锁死在横屏、还退不出去。规范因此把 `orientation.lock()` 限死在「全屏 + 用户手势」，
+  Safari 干脆不实现。
+- **App 内嵌 WebView** 里的网页之所以能横屏，是**宿主 App 在原生层锁的方向**，网页只是跟着
+  转 —— 能力来自壳，不来自网页。iOS 上所有浏览器都必须用 WebKit，所以 Chrome / 微信在
+  iOS 上跟 Safari 一样没有这个能力。
+- PWA 的 `manifest.orientation` 只在**启动时**决定方向（Android Chrome 生效），运行中切不了。
+
+### 风险与边界
+
+1. **对 `documentElement` 全屏，不对画布元素全屏** —— 本项目弹层都 Teleport 到 body，
+   只对子元素全屏会把弹层一起藏掉。
+2. **桌面不申请**（`isTouchDevice()`：`any-pointer: coarse` 或 `maxTouchPoints > 0`）——
+   桌面没有横屏概念，全屏只会藏掉浏览器 UI，还要 Esc 退出、连带收层，纯干扰。
+3. **成功判据是视口宽高，不是 `lock()` 的 Promise** —— 桌面 / 平板全屏后天然宽 > 高，
+   不该被当成失败去提示用户转屏。
+
+### 风险与边界
+
+- **锁成功但没解锁 = 用户整台手机被钉在横屏**，这是本方案唯一的硬风险。所有退出路径
+  （关层、关播放器、组件卸载、系统退全屏）都调 `exitNativeLandscape()`；浏览器在退出
+  全屏时也会自动重置方向，是第二重保险。
+- 系统「旋转锁定」开着时 `lock()` 多半失败，页面仍是竖屏 → 提示用户手动横转
+  （iOS 恒走这条路）。
+- iOS 没有任何 JS 手段；`manifest.orientation` 只影响 PWA **启动**方向，做不到「点击后
+  转屏」，故不采用。
+- `utils/landscape.ts` 有两种模式（2026-11-23 起）：智眸的照片 / 全景传
+  `{ page: true, hint: true }`，并入上面这套「整页全屏 + 失败提示」；CamPlayer 的历史
+  抓拍大图、AirPlayer 的全景仍走**对画布元素全屏**的老路（它们全屏的就是那块画布本身，
+  且提示卡在画布外面、弹了也看不见）。细节见六点三十九。
+
+## 六点三十八、视频画面缩放：复用同一套手势内核（2026-11-23）
+
+现场要求：所有视频展示组件支持画面缩放（移动端捏合 + 明确的放大/缩小/复位控件，
+桌面端也能用控件），保持宽高比、限制范围、不影响播放控制与布局。
+
+**后续调整（同日晚）**：画面上的三颗按钮（－ / 复位 / ＋）已整体下线 ——
+它们压在直播画面右下角，正好挡住塔吊臂、基坑边这类最需要看清的部位，而画面本身
+只有 16:9 的一块，叠一条胶囊控件太占地方。现在**手势是唯一入口**：双指捏合、
+双击 1×↔2.4×、桌面滚轮、放大后单指拖动。`components/ui/ZoomCtrls.vue` 与
+`.zoom-ctrls` 样式一起删除；`useImageZoom` 的 `zoomTo/zoomIn/zoomOut` 保留为
+能力储备（无调用方，要恢复按钮只需再写一份十几行的控件组件）。
+
+### 先摸清有几处视频
+
+全项目只有两处真正渲染 `<video>`，且都没有独立播放器组件（各自直接写 `<video>`）：
+
+| 组件 | 用途 | 视频元素 |
+| --- | --- | --- |
+| `components/overlays/CamPlayer.vue` | 现场监控直播（FLV 走 `utils/flvStream.ts` 喂 MSE，直连走原生 src） | `.cam-frame`（16:9 画面框内 absolute 铺满） |
+| `components/ui/LivePlayer.vue` | 无人机 / 设备实时画面（mpegts.js） | `.live-video`（100%×100%，cover） |
+
+历史抓拍大图、智眸照片、全景都是**图片**，早已用 `utils/zoom.ts` 的 `useImageZoom`
+（捏合 / 双击 / 滚轮 / 放大后单指拖动），不在此次范围内。
+
+### 复用而不是再造一套
+
+`useImageZoom` 原本只有四种入口（捏合 / 双击 / 滚轮 / 拖动），**没有可点的控件**。
+曾补过两处（现第 2 条已下线）：
+
+1. `utils/zoom.ts` 新增 `zoomTo/zoomIn/zoomOut`（`BTN_STEP = 1.4`，以元素中心为锚，
+   位移按 `k` 同比缩放，越界交给已有的 `clampPan`）—— 方法保留，暂无调用方；
+2. ~~新增 `components/ui/ZoomCtrls.vue`：三颗按钮（－ / 复位 / ＋），只 emit 不发状态，
+   两个视频组件共用同一份 UI~~ —— **2026-11-23 已删除**（挡画面，见开头说明）。
+
+`imgStyle` 另给一个别名 `contentStyle`，视频读这个名字 —— 同一个 computed，
+不为「名字合不合适」再拼一次 transform。
+
+### 关键行为
+
+- **范围**：1× ~ 3×。下限 1 是「铺满容器」；再小会在画面里露出底色，等于缩成小窗口。
+  上限 3 是因为源是 1080p，再放大只剩马赛克。
+- **保持宽高比**：只用等比 `scale`，没有非等比变换；`object-fit: contain/cover` 不变。
+- **不影响布局**：`transform` 不参与布局；`DOM` 结构一个字节没动（没有新增包裹层，
+  避免动 `.cam-frame` 的 absolute 定位与 `LivePlayer` 的 absolute 铺满）。
+- **溢出裁剪**：`.cam-player-stage`、`.live-player` 各加 `overflow: hidden` ——
+  放大后的画面只在自己的框里被裁，不会压到说明条、切换点位列表。
+- **不抢页面滚动**：视频元素写 `touch-action: pan-y`（`.v-zoomable`），单指竖滑仍归页面，
+  只有捏合才缩放；`useImageZoom` 本来就在「未放大时单指不接管」。
+- **不影响播放控制**：两个播放器本来就没有原生 `controls`；点画面只触发播放
+  （`#camPlayerStage` 的 `onPlay`），缩放手势不拦 click。断流蒙屏时 `.is-veiled`
+  有 `pointer-events: none`，手势自然失效。
+- **复位时机**：监控换点位 / 关层 / `mediaNonce` 重挂（重连换 `:key`）都 `reset()`；
+  无人机换 `src` 也 `reset()` —— 否则新画面会带着上一次的倍数进来。
+- **画面上不放任何缩放控件**：手势唯一入口，右下角不再有任何胶囊按钮。
+
+### 为什么不做成一个「视频播放器组件」
+
+`CamPlayer` 的 `<video>` 承担了 FLV 引擎绑定、`:key` 重挂、播放态事件回写 store
+（`onMediaPlay/onMediaPause/onMediaBuffering/onMediaError`），`LivePlayer` 的则绑定
+mpegts 生命周期。把这层包进通用组件等于把两条播放链一起重构，风险远大于收益；
+缩放只是「在手势与样式上叠加一层」，用 composable 叠加是侵入最小的做法。
+
+## 六点三十九、智眸照片查看：「横屏」改「全屏」，并进整页全屏 + 失败提示（2026-11-23）
+
+现场要求：智眸照片查看里那颗「横屏」改成「全屏」，点下去直接进全屏横屏；转不过去时
+给提示，**文案与交互跟首页背景图那颗「全屏」完全一致**。
+
+### 为什么不是简单改个文案
+
+原来的 `utils/landscape.ts` 对**画布元素**申请 `requestFullscreen`：画布独占屏幕，
+`.phone-screen` 里的提示卡在全屏元素**外面**，弹了也看不见。而首页那套是对
+`documentElement` 全屏（整页进全屏），提示卡才能一起进去。所以给 composable 加了两个开关：
+
+| 选项 | 作用 | 谁用 |
+| --- | --- | --- |
+| `page: true` | 对 `documentElement` 申请系统全屏（`utils/orientation.ts` 的 `enterNativeLandscape`），不再对画布元素全屏 | 智眸照片 / 全景 |
+| `hint: true` | 落定后仍是竖屏且是触屏设备 → `openLandscapeHint()`（与首页同一份实现、同一句文案） | 智眸照片 / 全景 |
+
+默认（都不传）= 旧行为，`CamPlayer` 的抓拍大图与 `AirPlayer` 的全景一个字节没变。
+
+### 交互链路
+
+1. 点「全屏」→ `land = true`（同步，画布立刻 Teleport 到 body 铺满视口）；
+2. 同一手势栈里 `documentElement.requestFullscreen()` → `orientation.lock('landscape')`；
+3. 等 320ms 转屏动画，用「视口宽 > 高」判成败：
+   - Android Chromium（Chrome / 华为 / 小米 / vivo / OPPO）→ 真横屏，**不提示**；
+   - iOS 全系 / 微信内置 / 系统开了旋转锁定 → 仍是竖屏 → 摆出
+     「把手机横过来看 / 转不动就关掉系统的「竖屏锁定」」，4.2s 淡出，点一下即关；
+   - 桌面 → `isTouchDevice()` 为假，不申请全屏、不提示（与首页一致）。
+4. 再点「退出」/ 系统返回键 → 解锁方向 + 退全屏，画布回弹层内。
+
+### 改动清单
+
+| 位置 | 改动 |
+| --- | --- |
+| `utils/landscape.ts` | 新增 `LandscapeOptions { page?, hint? }`；`enter/exit/onBeforeUnmount` 按模式分叉；page 模式走 `enterNativeLandscape/exitNativeLandscape` |
+| `components/sheets/PatrolSheet.vue` | 两处按钮文案 `横屏/竖屏` → `全屏/退出`（4 字「退出全屏」会把 26px 胶囊撑宽，挤掉「看高清」）；`aria-label`、全景底部提示语同步；两个 `useLandscape` 传 `{ page: true, hint: true }` |
+| `styles/app.css` | `.patrol-view.is-land` / `.pano-stage.is-land` 的 `z-index` 48 → **205**：整页全屏后要压住 `.status-bar`(200)，同时低于 Toast(210) 与提示卡(220) |
+| `tests/unit/patrol.spec.ts` | 文案断言改「全屏 / 退出」（未运行，按项目红线由用户验） |
+
+### 边界
+
+- 智眸全屏时 `land` 与首页 `mapLandOpen` 互不干扰：`App.vue` 的 `onFullscreenExit`
+  只看 `mapLandOpen` / `cam.isLand`，智眸这边由 `useLandscape` 自己的
+  `fullscreenchange` 监听把 `land` 收回。
+- 方向锁释放：退出按钮走 `exitNativeLandscape`（先 unlock 再 exit）；系统退全屏由浏览器
+  自动重置方向，双保险。
+
+## 六点四十、iOS 上全屏「关不掉」的排查与修法（2026-11-23）
+
+现象：iOS 27 上打开智眸照片的全屏后无法关闭。Android 与桌面正常，故不是布局或逻辑走错，
+而是 **iOS 这条路径上「退出」这件事本身没有可靠的落点**。逐条列证据与修法。
+
+### 根因排序（按可能性）
+
+| 可能性 | 原因 | 证据 | 修法 |
+| --- | --- | --- | --- |
+| **P0** | 唯一出口是右上角 26px 胶囊，全屏时 `top:8 right:8` 紧贴屏幕边缘。iOS 横屏右侧是**圆角 + 安全区 + 系统边缘手势区**，边缘 20px 内的触摸会被系统收回，按钮大半面积落在这一带 | `.pano-tools{top:8;right:8}` 与 `.pano-tool{height:26}`；全屏态此前**没有**任何其它出口 | 工具条退进 `env(safe-area-inset-*)`；点画布黑边也退出（底部 40px 大按钮曾作第二出口，当日按现场要求下线，见下节） |
+| **P1** | `exitNativeLandscape()` 以 `if (!fullscreenElement()) return` 为前置条件。iOS / 微信里这个属性常读到 null（即使已在全屏），于是**根本不发 `exitFullscreen`** | `orientation.ts` 原实现；iOS 上 `document.fullscreenElement` 不可靠是长期已知行为 | 无条件调 `exitFullscreen`（没全屏时只会 reject，catch 掉）；300ms 后复查再退一次 |
+| **P2** | 只监听 `fullscreenchange`，没听 `webkitfullscreenchange`；判断也只看 `document.fullscreenElement` | `landscape.ts` 原实现 | 两个事件都监听，判定用 `fullscreenElement ?? webkitFullscreenElement` |
+| **P3** | 图片手势 `setPointerCapture` 在异常路径残留（`pointercancel` 没释放、也没有 `lostpointercapture` 清理）。残留的 pointerId 会让下一次点击被当成「第二根手指」，click 不产生 | `zoom.ts` 的 `onPointerup` 有释放、`onPointercancel` 没有；无 `lostpointercapture` | `pointercancel` 补释放；新增 `lostpointercapture` 清理指针表 |
+| **P4** | 返回逻辑没有「先退全屏」这一级：iOS 侧滑由 Safari 认领，走 `historyBack` 的层数（直接关整个弹层） | `utils/historyBack.ts` 的 `depth` 只看 store 的层 | **未改**：关弹层等于退出全屏，可接受；若要求「滑一次只退全屏」，把 `land` 并入 depth |
+| **P5** | iOS 27 是否已开放非 `<video>` 元素的 Fullscreen API —— 决定 P0 与 P1 谁是主因 | 需真机 | 两条都修，不依赖结论 |
+
+判断分叉：点全屏后**屏幕真的转成横向** → 说明进了系统全屏，主因在 P1/P2；
+**画面只是铺满、手机没转** → 系统全屏没进去，主因在 P0/P3。
+
+### 改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `utils/orientation.ts` | `exitNativeLandscape` 去掉 `fullscreenElement()` 前置判断，无条件退全屏 |
+| `utils/landscape.ts` | 加 `webkitfullscreenchange` 监听；`systemFullscreen()` 含 webkit 前缀；退出后 300ms 复查（带 `!land` 守卫，防止把 300ms 内重新打开的全屏又退掉） |
+| `components/sheets/PatrolSheet.vue` | 照片 / 全景全屏时画布 `@click.self` 点黑边退出（底部「退出全屏」按钮已下线，见下节） |
+| `styles/app.css` | 全屏态 `.pano-tools` 退进安全区（`.land-exit` 已随按钮一并删除） |
+| `utils/zoom.ts` | `pointercancel` 释放捕获；新增 `lostpointercapture` 清理 |
+
+### 后续：底部「退出全屏」按钮下线（同日）
+
+现场看过实际效果后要求：全屏画面里不要那颗按钮。于是删掉 `PatrolSheet.vue` 两处
+`<button class="land-exit">`（含 `@click` 绑定）、`app.css` 的 `.land-exit` /
+`.land-exit:active` 整段、以及那段注释里关于第二出口的描述。
+
+**退出全屏能力没有减弱**，仍有三条路：
+
+1. 右上角工具条那颗「退出」（`togglePanoLand` / `togglePhotoLand`）—— 现在它在
+   `env(safe-area-inset-*)` 之内，不再压在圆角与边缘手势区上；
+2. 点画面四周黑边（画布 `@click.self` → `onPanoBackdrop` / `onPhotoBackdrop`）；
+3. 系统返回键 / Esc —— `fullscreenchange` + `webkitfullscreenchange` 把 `land` 收回，
+   `exitNativeLandscape` 的 300ms 复查仍在。
+
+删掉的只是「可见的第二颗按钮」，`P1`/`P2`/`P3` 三项修复（无条件退全屏、webkit 事件、
+pointer capture 清理）全部保留，它们才是真正让 iOS 退得出去的东西。
+
+## 六点四十一、退出全屏回竖屏后「整页向上偏移」：视口落定与安全区兜底（2026-11-23）
+
+现象：iOS 27 iPhone，首页点「全屏」进横屏，再退出回竖屏，整页上移（底部露背景 / 顶栏变矮）。
+
+### 尺寸链路先理清
+
+`.stage`（`100dvh`）→ `.phone`（真机 `100dvh`）→ `.phone-screen`（`100%`）→
+`.page`（`absolute inset:0`，首页 `overflow:hidden`）。顶部留白单独走 `--status-h`
+（真机 = `env(safe-area-inset-top)`），被 6 处复用：`.status-bar` 高度、`.navbar` 的
+`height` 与 `padding-top`、`.map-land` / `.cam-player` / `.air-player` / `.hazard-page`
+的 `inset-top`、`.home-top` 的 `top`。
+
+`.page` 是 `inset:0` 的绝对定位，**高度不跟着 navbar 变**，所以「整页上移」不可能来自
+导航栏内容塌陷，只能来自下面三条：
+
+| 可能性 | 机制 | 修法 |
+| --- | --- | --- |
+| **P0** | 自定义属性里的 `env()` 会缓存：横屏时 `safe-area-inset-top` 为 0，退出后 `--status-h` 仍是 0 → `.status-bar` 高 0、`.navbar` 矮 47px、4 个覆盖层 `top` 少 47px | 6 处使用点改 `max(var(--status-h), env(safe-area-inset-top, 0px))`，把 `env()` 放回普通属性值里参与每次布局计算 |
+| **P1** | `documentElement` 全屏进出会改写 `scrollY`，`html,body{overflow:hidden}` 只禁手势滚动、拦不住系统写值；残留几十 px → 整页永久上移且滑不回来 | `settleViewport()` 里 `window.scrollTo(0,0)` + 根/body 的 `scrollTop = 0` |
+| **P2** | `.stage` / `.phone` 用 `100dvh`，iOS 旋转 / 全屏切换后可能滞后若干帧 | `settleViewport()` 先「写自定义属性 → 读 `offsetHeight`」强制同步重排，催 `dvh` 重新求值 |
+| **P3** | 首页抽屉半开位是 inline px（`sheetAnchors()` 按 `#page-home` 实测高度算）；`resize` 在转屏动画**期间**触发，读到的是旧高度 → 抽屉定在偏上位置 | `onResize` 立即算一次 + 360ms 后再校准；另加 `orientationchange` 监听 |
+
+### 新增 `utils/orientation.ts::settleViewport()`
+
+进 / 退全屏落定后统一的收尾，三件事按顺序做：强制重排 → 归零文档滚动位 →
+340ms 后 `dispatchEvent(new Event('resize'))`（让依赖视口的组件重算）。
+
+调用点四处：
+
+| 位置 | 时机 |
+| --- | --- |
+| `enterNativeLandscape()` 末尾（`afterRotate` 之后） | 进系统全屏、方向锁落定 |
+| `shell.closeMapLand()` | 首页全屏地图点「退出」 |
+| `cam.setCamLand(false)` | 监控播放器退横屏 |
+| `App.vue` 的 `onFullscreenExit` | 系统方式退出（Android 返回键 / Esc / 智眸照片的全屏）—— 覆盖不经过上面两个 store 开关的路径 |
+
+### 为什么 `--status-h` 不能只靠变量
+
+`:root { --status-h: env(safe-area-inset-top, 0px) }` 在真机分支里，值本身是一次求值后缓存的；
+旋转 / 全屏切换后变量可能仍给旧值。把 `env()` 写进 `height` / `padding` / `inset` / `top`
+这些**普通属性**里，每次布局都会重新求值，且桌面（`env()`=0）时 `max(32px, 0)` 仍是 32px，
+与改动前逐像素一致。
+
+### 验证要点
+
+1. iPhone 首页：全屏 → 手动/自动横屏 → 退出，顶部状态栏留白与顶栏高度应恢复原样；
+2. 退出后不要出现「内容整体上移、底部露背景」；页面也不该能被上下拖动；
+3. 抽屉半开档退出全屏后应回到与之前相同的位置，不偏高；
+4. Android：进出全屏后 `--status-h` 与覆盖层位置一致；桌面预览壳仍是 32px 留白。
+
+## 六点四十二、历史抓拍 / 航拍全景的「横屏」统一改为「全屏」（2026-11-23）
+
+现场要求：历史抓拍里照片右上角那颗「横屏」换成「全屏」，样式、图标、点击交互、
+进出全屏后的观感都要与**首页-智眸**里的照片全屏按钮一致，且覆盖所有照片展示场景。
+
+### 还剩哪两处
+
+全项目四份 `.pano-tools` 里，智眸的两份（VR 360 / 单张照片）在六点三十九已改完。
+这次清掉最后两处，都是 `useLandscape()` 的**默认（画布全屏）**模式：
+
+| 位置 | 场景 | 原按钮 |
+| --- | --- | --- |
+| `overlays/CamPlayer.vue` | 历史抓拍详情大图（截图里的「地磅全景」） | `横屏 / 竖屏` |
+| `overlays/AirPlayer.vue` | 航拍照片弹层里的全景 | `横屏 / 竖屏` |
+
+### 做法：只换两个开关，其余完全复用
+
+两处 `useLandscape()` → `useLandscape({ page: true, hint: true })`：
+
+- `page`：对 `documentElement` 申请系统全屏（整页全屏），不再只把画布塞进全屏 ——
+  提示卡挂在 `.phone-screen` 里，只有整页全屏才跟着进去；
+- `hint`：落定后仍是竖屏且是触屏 → 摆出与首页一字不差的
+  「把手机横过来看 / 转不动就关掉系统的「竖屏锁定」」。
+
+按钮文案与智眸同形：未全屏 `全屏` / 已全屏 `退出`（不用「退出全屏」——四字会把
+26px 胶囊撑宽，把并排的「查看原图」「复位」「看高清」挤走）；`aria-label` 与
+`aria-pressed` 同智眸。
+
+### 层级与安全区
+
+整页全屏后页面上还有 `z-index: 200` 的 `.status-bar`，画布必须抬到它之上：
+
+| 选择器 | 原 | 现 |
+| --- | --- | --- |
+| `.cam-shot-stage.is-land` | 96（只为压过 `.cam-player` 的 90） | **205**（同时压过 90 与 200，低于 Toast 210 / 提示 220） |
+| `.cam-shot-pop.air-pop .pano-stage.is-land` | 96 | **205**（同上） |
+
+全屏态工具条一并退进 `env(safe-area-inset-*)`：安全区那条规则的第三个选择器补
+`.cam-shot-stage.is-land .pano-tools`（航拍全景命中已有的 `.pano-stage.is-land`）。
+
+### 顺带补齐的视口落定
+
+`useLandscape` 的 `page` 模式此前只有**进入**侧落定（`enterNativeLandscape` 内部调
+`settleViewport`）。这次补上退出侧三处：`exit()` 退完全屏后、系统方式退出
+（`onFullscreenChange` 收到「有→无」）、`onBeforeUnmount` 退全屏后 —— 否则同样会
+出现六点四十一说的「退回竖屏后整页上移」。
+
+### 验证要点
+
+1. 历史抓拍点开一张 → 右上角是「全屏」，点下去画面铺满并尽力横过来；Android 不弹提示、iOS 弹那句两行提示；
+2. 再点「退出」→ 回弹层原位，顶部状态栏不露白、页面不上移；
+3. 航拍照片弹层里的全景同形；
+4. 桌面点「全屏」= 铺满可视区，不弹提示（`isTouchDevice()` 为假）。
+
+## 六点四十三、监控「切换点位」列表：去掉标题行 + 分组标题加分隔线（2026-11-23）
+
+现场要求：删掉「切换点位」四个字，并在「设备设施 / 材料堆场 / 出入口管控」三个分组
+标题后面各加一条与标题对齐的水平细线，增强分区层次，其余不变。
+
+| 位置 | 改动 |
+| --- | --- |
+| `overlays/CamPlayer.vue` | 删掉 `.cam-player-switch` 里的 `<p>切换点位</p>` |
+| `styles/app.css` | 删除已无用的 `.cam-player-switch > p`（margin / 字号 / 颜色三条）；新增 `.cam-chip-group h5::after` 1px 线 |
+
+细节：
+
+- 线用 `::after` 而不是插一个空 `<i>`：`h5` 本来就是 `display:flex; align-items:center`，
+  伪元素作为最后一个 flex 项 `flex: 1` 自动吃满行尾，并且天然与标题文字**垂直居中**，
+  不需要写任何 top / 偏移量；计数 `<em>` 在它前面，所以线从数字之后才开始画。
+- 线的颜色用 `--line`（与 `.cam-chip` 的 1px 描边同一支），高度 1px。
+- 删掉标题行后，列表整体上移约 28px（那一行 18px 行高 + 10px 下边距），
+  这是删文字的必然结果；容器顶部 12px 内边距与分组间 14px 间距都没动。
+
+## 六点四十四、智眸「VR 360 环视」卡片：缩略图按画面比例放开高度（2026-11-23）
+
+现场要求：红框那张「向阳村-全景」的缩略图垂直高度调高，水平位置、缩放比例、
+画面比例都不变，且画面完整、不裁切不拉伸。
+
+### 为什么原来是一条窄带
+
+`.patrol-thumb` 钉死 `height: 96px` + `object-fit: cover`，全站航拍 / 抓拍（16:9）
+用着合适。但项目全景的预览是重建成果的 `thumbnail`，**3162×1581 ≈ 2:1**；塞进
+约 3.6:1 的窄条后，cover 按宽度铺满（343 宽 → 渲染 343×171.6）再上下裁掉近一半。
+
+### 改法：只把高度还给比例
+
+```css
+.patrol-card.is-pano .patrol-thumb {
+  height: auto;
+  aspect-ratio: 3162 / 1581;
+}
+```
+
+- **缩放比例不变**：cover 在 96px 与 171px 两种高度下都按宽度铺满，scale 完全相同
+  （都是 343/3162），改的只是「露出多少」；
+- **水平位置不变**：宽度仍是卡片满宽，图左边缘贴着卡片内边缘；
+- **画面完整不裁切**：`width / 2` 正好是整张图的高度，没有可裁的部分，也不会像
+  `contain` 那样在左右留黑边（那会把水平缩放改小）；
+- **不塌陷**：用 `aspect-ratio` 而不是 `img { height:auto }` —— 图是 `loading="lazy"`，
+  高度若由图片撑开，加载前整卡会先塌成一条（`.patrol-thumb` 注释里那条老坑）。
+
+### 补一步：图片必须绝对定位铺满
+
+第一版只写了 `height: auto; aspect-ratio`，结果截图里出现上下两条卡片底色 ——
+**图片没被撑满**。原因是通用那条 `img { height: 100% }` 的百分比要相对父级的
+**计算高度**解析，而这里的父级高度是 `auto`（由 `aspect-ratio` 在布局期算出），
+浏览器按 `auto` 处理 → 图片退回自身高度并在 flex 里居中，于是上下各留一条。
+
+修法：给全景这张图单独加 `position: absolute; inset: 0; width/height: 100%` ——
+`.patrol-thumb` 本来就是 `position: relative`，`inset: 0` 拿到的是确定的容器盒，
+不受百分比解析影响。`object-fit: cover` 保留；容器与图片同为 2:1，实际零裁切。
+
+### 范围
+
+只命中 `.patrol-card.is-pano`（`v-if="activeCat === 'pano' && patrol.pano"` 那一张，
+即「VR 360 环视」里的项目全景）。「全景航拍」列表里的全景照片仍是 96px 窄条 ——
+如果要一并放开，把同一段规则的选择器从 `.patrol-card.is-pano` 换成一个按
+`img[src*=…]` 或给 v-for 卡片加 `is-pano` 类即可，其余不动。
+
+## 六点四十五、智眸照片卡片：删掉「分类 + 来源」胶囊行，时间单独一行（2026-11-23）
+
+现场要求：删掉红框那一行「全景航拍 · 无人机」，并把时间从标题同一行移到下一行
+单独显示，行距 / 上下间距 / 对齐方式一起理顺；其余元素（缩略图、角标、体积、
+标题、筛选、页签）不动。
+
+### 位置
+
+`src/views/home/PatrolPanel.vue` 的 `.patrol-card-ft`（两种卡片：`pano` 全景卡与
+`v-for="p in shown"` 的普通卡），样式在 `src/styles/app.css` 的 `.patrol-card-ft` 一段。
+
+### 改动
+
+```html
+<!-- 普通卡：整行 patrol-tags 删除 -->
+<div class="patrol-card-ft">
+  <div class="patrol-card-name"><strong>{{ p.taskName }}</strong></div>
+  <p class="patrol-card-time">{{ p.time.slice(0, 16).replace('T', ' ') }}</p>
+</div>
+```
+
+- 时间由 `.patrol-card-name` 里的 `<em>`（`margin-left:auto` 顶到右边）换成
+  `.patrol-card-ft` 的第二个 flex 子项 `<p class="patrol-card-time">` —— 竖向
+  flex 里就是「下一行」，`display:block` + `margin:0` 让它左对齐贴齐标题起点。
+- 字号仍 `--fs-11`、颜色仍 `--ink-3-dark`、粗细 400，只把 `line-height` 收到 1.3；
+  `.patrol-card-ft` 的 `gap` 由 6px 收到 4px（少了一行 16px 胶囊，两行文字之间
+  不该再空一个标签的高度）。
+- **标题因此拿满整行宽度**：原来时间挤在右边，标题被 ellipsis 截成「向…」。
+- 骨架卡（`syncing` 与 `catLoading` 两处 `is-skel`）补一条 `Skel w="45%" h="11px"`
+  对应时间行，数据回来不跳高。
+- 「VR 360 环视」的全景卡**保留**「可环视 / 无人机」那行（`可环视` 是功能提示，
+  不在红框里），但时间同样改到独立一行，顺序为 标题 / 时间 / 标签。
+
+## 六点四十六、智控面板三处（09:0x，2026-11-23）
+
+现场给了三张标注图，要求只改三处：①智能爬架卡的图标换成参考稿那张；②爬架三格里
+「有任意机位越限」的数字转红；③超限说明行的背景换成参考稿的暗红。其余布局、数据、
+功能都不动。
+
+### ① 图标：换资源，不改代码
+
+- 新图取自设计稿仓库 `img/eq-climb.jpg`（1024×1024），按既有立绘规格缩到
+  **256×256、q86** 转 webp，覆盖 `public/img/eq-climb.webp`（6.8 KB → 8.8 KB）。
+- 老图是同一台设备的**特写**：石墙几乎占满画面、三层平台被右边缘切掉；参考稿是
+  **全身像**（细长墙板 + 三层完整平台 + 四周留白）。所以这不是裁切参数问题，
+  是资源本身换了 —— CSS 一行都没动。
+- `.eq-ico` 是 64×64 方框 + `img { width/height:100%; object-fit:cover }`，源图同为
+  方形，cover 实际不裁；尺寸、居中、点击区域全不变。
+- 文件名不变，`tests/unit/guards.spec.ts` 的图片清单无需改。
+
+### ② 数字转红：按指标判，不是全场判
+
+- `EquipPanel` 的 `ClimbCell` 加 `bad`：`cell.total > 0 && cell.normal < cell.total`。
+  依据是 `utils/scaffold.ts::worstOf` 里 `normal = total - 超限台数`，所以
+  「正常数少于总数」等价于「该指标下有 ≥1 个机位越限」；`total = 0`（格子显示「—」）
+  不算异常。
+- 模板：`<em class="eq-ok" :class="{ 'is-bad': cell.bad }">`。
+- CSS：`#page-home .eq-card.is-climb .eq-val b em.is-bad { color: var(--danger-dark) }`，
+  特异性（1 id + 4 class + 2 元素）压过基础段的 `--online` 绿；全部正常时自动回落绿色。
+- **三格各判各的**：参考稿里「左右倾斜 35/36」红、「前后倾斜 / 载荷 36/36」绿 ——
+  不是「全场有一台越限就三格全红」，否则三格会同时变红，与参考稿不符。
+
+### ③ 超限说明行：深色 wash
+
+- 基础段 `.eq-climb-note.is-bad` 用的是 `--danger-wash`（#FDECEE 浅粉），那是白卡
+  配色；落在智控深色卡上是一块发光白条。
+- 参考稿实测：条底 `(49,39,57)` 叠在卡片底 `(21,31,50)` 上，反解即
+  `rgba(255,107,107,.12)`（= `--danger-dark` 的 12%）。新增令牌
+  **`--danger-wash-dark`**，在 `#page-home` 作用域覆盖该行底色。
+- 字色同时换成 `--danger-dark`：底色压深后 `--danger`（#F53F3F）与该底只约 4:1，
+  12px 粗体不达 AA；参考稿用的也是提亮后的红。
+
+### 范围
+
+只动 `public/img/eq-climb.webp`、`EquipPanel.vue`（`climbCells` + 一处模板）、
+`app.css`（一个令牌 + 两条 `#page-home` 规则）。爬架详情页（`views/sub/ClimbPage.vue`）
+的分项卡片没有改 —— 那边不是「红框 2」所在的位置。
+
+### 补充（10:2x）：爬架详情页表头数字跟着卡片变红
+
+现场反馈：智控面板里那一格已经按「有越限就转红」显示，但点进「智能爬架」详情页，
+同一个 `37/38` 的 37 还是绿的 —— 同一份数据两处两个结论。
+
+- `views/sub/ClimbPage.vue` 新增 `cellBad`：`total > 0 && normal < total`，
+  与 `EquipPanel` 的 `ClimbCell.bad` **同一条判据**（都从 `normal = total - 超限台数` 推）。
+- 模板 `<b :class="{ 'is-bad': cellBad }">`，只作用于表头那组数字。
+- `app.css`：`.climb-board header b.is-bad { color: var(--danger-dark) }`。
+  分母 `i` 自带 `--ink-1-dark`，不随 `b` 走，所以「37/38」里红的只有 37；
+  字号 / 字重 / 行高 / 布局一行没动。
+- 三个页签各判各的（`cellNow` 是当前页签的 cell）：只有越限的那个指标会红，
+  切到「前后倾斜 / 载荷」时若全在阈值内仍是原来的绿。
+
+## 六点四十七、无人机页三处 + 今日任务剔除「光谷元著」（2026-11-23）
+
+现场给了两张图三处标注：①「今日任务」等任务数剔除光谷元著；②飞行参数七格整块
+删掉；③「机库」页签删掉；随后追加一条：「今日任务」弹层里的光谷元著也要剔除。
+
+### ① 任务数与明细：改回「只本项目」，两条链一起改
+
+服务端本来就支持过滤（`fetchTaskStat` 早有 `{ pid }`，实测 `?pid=193640872670213`
+回 15、不带回 23 = 15 + 光谷元著 8）。所以不动解析，只改调用口径：
+
+| 位置 | 原先 | 现在 |
+|---|---|---|
+| `stores/uav.ts::load` | `fetchTaskStat()` / `fetchTodayRecords({start,end})` | `fetchTaskStat({ pid: KH_IDS.pid })` / `fetchTodayRecords({..., pids: [KH_IDS.pid] })` |
+| `stores/uav.ts::refreshSlow` | 同上（30s 那一轮） | 同上 |
+| `stores/uav.ts::loadStat`（首页卡） | `fetchTaskStat()` | `fetchTaskStat({ pid: KH_IDS.pid })` |
+
+- **三格一起过滤**，不是只改「今日任务」那一格：否则「已完成 16 / 今日任务 12」
+  会自相矛盾（已完成不可能多于总数）。
+- **明细一起过滤**：`fetchTodayRecords` 本来先取账号下所有 pid 再逐个拉；传
+  `pids: [本项目]` 后只发 1 个请求（少 3 个），弹层里也就只剩向阳村的航线。
+  `todayHasOthers`（「含同账号其它项目的任务」）随之恒为 false，**代码保留**作兜底。
+- 连带影响：首页「无人机 · 今日作业次数」读的就是同一个 `finishedCount`，
+  现在也只算本项目 —— 与无人机页那格同值同源，两处不会再打架。
+
+### ② 飞行参数七格整块下线
+
+`views/sub/UavPage.vue` 删掉 `.uav-fly` 那段（状态 / 海拔 / 飞行距离 / 水平速度 /
+垂直速度 / 翻滚角 / 偏航角）。连带清理只为它服务的 `speed()` / `deg()` 两个格式化
+函数（`noUnusedLocals` 会报）。遥测本身仍每 2s 刷新 —— 设备参数那几格（状态 /
+电量 / 距机库 / 续航 / 风速 / 网络质量 / 网络速率 / 电池温度）和起飞校验都在用。
+
+### ③ 「机库」页签删除
+
+删掉 `dev-tabs` 里的机库按钮，`tab` 恒为 `'fly'`（状态与 `streamNow`、播放器
+`:key` 的写法保留，将来加回来只需补一个按钮）。机库那套读数（在库 / 充电 /
+舱温 / 湿度 / 网速）随之不再可达，整块删除；`dockIn` / `chargeText` 两个
+computed 一并删除。机库直播流仍由 store 取（结构没拆），只是没入口展示。
+
+### 提示
+
+- 机上「今日任务」从 20（账号）会变成只算向阳村的值，属预期。
+- `todayRecords` / `own` / `todayHasOthers` 的口径注释已同步改写，回退时把
+  `pid` / `pids` 参数去掉即可。
+
+## 六点四十八、任务「失败」在 `result`，不在 `status`（2026-11-23 实测）
+
+现场问「为什么列表里看不到失败任务、15 与明细条数为何对不上」，用项目凭据直连复核：
+
+### 实测数据（16:4x）
+
+| 来源 | 结果 |
+|---|---|
+| `GET /dashboard/task/list/record?pid=…` | `taskCount 15 / finishedCount 12 / failedCount 1 / planCount 2` |
+| `POST /api/open/v1/task-record/page`（今天→明天，本项目） | `total 13`，**全部 `status:2`**，唯一 `result:3` 的是 15:00「向阳村-安全巡检」 |
+| 近 14 天（204 行） | `status` 全 2；`result` 只有 `0`×202、`3`×2 |
+| 旧 `/task/exec/list/record?start=今天&end=明天` | 30 行 = 12 完成 + 1 失败 + 17 未执行，**并混进次日 15 条排班** |
+
+### 结论
+
+1. **`status` 只表示「有没有这条执行记录」**：已执行恒为 2；`-1` 是「未执行」的计划项。
+2. **飞行结果在 `result`**：`0` 成功、`3` 失败、`4` 未执行。`failedCount` 就是当日 `result===3` 的条数（今天恰为 1），`finishedCount` 只数 `result===0`（12）。
+3. 因此 15 = 12 成功 + 1 失败 + 2 未执行计划；明细 13 = 12 + 1＝已产生记录的项。**两个数字口径不同，不是漏取**。
+4. 旧接口把次日排班也返回（`end` 语义宽松），所以「今日」必须在本地按 `start.slice(0,10)` 再滤一次 —— 现由 `stores/uav.ts::todayRecords` 负责。
+
+### 已改（2026-11-23 下午）
+
+| 位置 | 改动 |
+|---|---|
+| `api/drone.ts::DroneTaskRecord` | 新增 `result: number | null`（枚举与依据写在字段注释里） |
+| `toOpenTaskRecords` / `toTaskRecords` | 读 `o.result` —— 以前声明了不读，失败信息在解析这步就丢了 |
+| `stores/uav.ts::stateText/stateClass` | 先看 `result` 再看 `status`：`result===3` → 已失败 / `is-bad`；`result===4` 或 `status===-1` → 未执行 |
+| `api/drone.ts::DroneTaskStat` | 新增可选 `pending: DronePlanTask[]`，`toTaskStat` 解析 `unfinishedTaskList[].tasksDetail` |
+| `stores/uav.ts::todayPending` | 把「当天还没飞」的计划项并进 `todayTasks`，按 `taskId + start` 与记录去重；合并后按开始时间倒序（接下来要飞的在最上面） |
+| `components/sheets/UavTodaySheet.vue` | 清单直接渲染 `todayTasks`，未执行的行走 `is-plan`（`--ink-4-dark`，比已完成再淡一档） |
+| `app.css` | 新增 `.uav-log em.is-bad`（`--danger-dark`）与 `.uav-log em.is-plan` |
+
+结果：清单 = 12 完成 + 1 失败 + 2 未执行 = 15，与三格 `taskCount` 一致。
+
+### 仍未动的取舍
+
+- 首页「今日作业次数」仍取 `finishedCount`（=12，只算成功，与 V2 卡片一致）。若要「出勤架次」应改 `finished + failed`，指标名也要跟着改成「出勤次数」，需用户点头。
+- `status===-1` 的记录只在旧接口出现；若哪天把明细切回 `/task/exec/list/record`，必须**本地按日期过滤**（实测会把次日 15 条排班一起返回）。
+
+## 六点四十九、智控面板无人机卡：复用「当前巡检」进度条（2026-11-23）
+
+现场要求：把无人机页那条进度条**复用**到首页智控面板的无人机卡上（红框位在
+「12次 / 今日作业次数」下方），默认隐藏、有任务执行时自动出现并按状态实时更新、
+任务完成后消失；无人机页已有那条**一行不改**。
+
+### 复用的是什么
+
+| 层 | 来源 | 首页是否重写 |
+|---|---|---|
+| 条的样式 | `.uav-bar` / `.uav-bar i`（4px、圆角、`--blue-2`、0.3s 缓动） | 否，同一个 class |
+| 百分比算法 | `utils/uavProgress.ts::missionProgress()` | 否，同一个函数 |
+| 数据 | `uav.running`（起飞时刻）+ `uav.runningEstimate`（同任务历史中位数） | 否，同一个 store |
+| 版面 | 无人机页是「标题 / 条 / 说明」三段 | **是** —— 首页只有两行位置，见下 |
+
+新增组件 `src/components/ui/MissionBar.vue`：根节点是 `span`（卡片是 `<button>`，
+只能放 phrasing content），内部「当前巡检 · 任务名 + 百分比」一行、`.uav-bar` 一行。
+完整说明（起飞时刻 / 已飞 / 预计）走 `title`，同时并进卡片的 `aria-label`
+（读屏拿不到内层文本，卡片自身的 aria-label 会盖掉子树）。
+
+### 什么时候出现（默认隐藏）
+
+`EquipPanel.vue::droneMission` —— **任务在跑 + 百分比算得出来**，两者都满足才渲染：
+
+- 没有执行中的任务 → `v-if` 为假，整块不渲染，卡片与改动前完全一致；
+- 任务在跑但该航线一次都没完整跑过（没有历史分母）→ `pct === null`，
+  同样不渲染。这与无人机页一致：不拿 0% 或排班间隔凑一条「看起来在动」的条。
+
+`has-mission` 这个 class 跟进度块一起加，卡片才会从「横向一行」切成「纵向两段」
+（与 `.eq-card.is-climb` 同一思路）—— 否则 `.eq-card` 是 flex 行，进度块会被摆到
+右侧箭头旁边。
+
+### 数据从哪来（首页原先拿不到）
+
+首页只打 `loadStat()`（统计接口），没有今日明细 → `uav.running` 永远为空。
+新增 `stores/uav.ts::loadMission()`：
+
+- 取本项目今日明细（`fetchTodayRecords({ pids: [KH_IDS.pid] })`）；
+- 真有执行中任务时才 `loadEstimates()`（7 天记录算中位数，内部 6h 缓存）；
+- **失败静默**、不改 `state`（卡片少一条进度条，比把整页判成失败好）；
+- **60s 冷却**：首页 30s 一拍地调（`settle` 用的同一个 ticker），实际约两拍一个请求；
+  没任务时也照调，否则任务 09:45 起飞后一直停在首页的人永远等不到进度条。
+
+### 版面细节
+
+- `.eq-card .mission-hd strong` 用了 `flex: 1 1 auto` + `min-width: 0` + ellipsis
+  三件套：航线名可能很长（「向阳村-高空作业面全景拍照」），少写一条就会把百分比
+  顶出卡片、或者整行被裁掉半截字。
+- 字号 `--fs-12`（与卡片标题同级）、颜色走 `#page-home .eq-card .mission-hd strong
+  → --ink-1-dark`（基础段的 `--text` 在 `#132033` 上等于看不清）；百分比 `--fs-11`
+  + `--blue-2`，与无人机页 `.uav-mission-hd em` 同色。
+- 净增高约 34px（15px 标题行 + 6px + 4px 条 + 8px 段间距），只在有任务时发生。
+
+### 范围
+
+新增 `components/ui/MissionBar.vue`；改 `stores/uav.ts`（`loadMission` + 导出）、
+`views/home/EquipPanel.vue`（import / `now` + ticker / `droneMission` / 卡片一处模板 /
+`ariaOf` 补一句）、`styles/app.css`（一段 `.eq-card.has-mission` + `.mission-*`）。
+`views/sub/UavPage.vue` 一行未动。
+
+### 补充（17:2x）：两处进度条百分比不一致 —— 时间源有两套
+
+现场截图：同一条「当前巡检 · 向阳村-土方1」，首页卡片写 50%、无人机页写 61%。
+
+**根因不是算法，是时钟。** 两处各持一份时间：
+
+```ts
+const now = ref(Date.now())                            // 初值 = 各自 setup 的时刻
+setInterval(() => { now.value = Date.now() }, 30_000)  // 相位 = 各自挂载的时刻
+```
+
+`setInterval` 的相位只由「什么时候 start」决定。首页先挂、无人机页后进，两条
+定时器对不齐；6 分钟分母下 30 秒就是 8 个百分点，加上「刚进页面那一拍还是旧值」
+与点进/截图的间隔，就是现场的 11 个百分点。`missionProgress()` 本身没问题 ——
+同参数必然同结果，差异全在 `now`。
+
+**修法**：新增 `src/utils/missionClock.ts`，两处共用一个 `now`。
+
+| 要点 | 做法 | 为什么 |
+|---|---|---|
+| 唯一时间源 | 模块级 `ref`，`useMissionClock()` 返回 `readonly` | 两个 `ref` 就会有两个数，包一层 `readonly` 断掉「手动拨表」的后路 |
+| 网格对齐 | `setTimeout` 链，每次按 `TICK - Date.now() % TICK`（TICK = 5000）预约 | `setInterval` 的相位由启动时刻决定；对齐到整 5 秒后，谁先启动都落在同一批时刻 |
+| 进页对表 | `start()` 先 `nowRef.value = Date.now()` | 从别的页面进来时第一眼就是当前值，不用等下一拍 |
+| 引用计数 | 订阅 +1 / 退订 -1，归零才 `clearTimeout` | 切走 tab、关子页都不留定时器；再进来重新对表 |
+
+调用方改动：`EquipPanel` 删掉 `now` 的 30s 写入（那条 interval 保留，只做
+`loadMission()` 的「有没有新任务」检查）；`UavPage` 整条 ticker 删除。
+
+粒度 5 秒：6 分钟分母下每跳 1.4%，条几乎看不出在动，而两处差值的上限从
+「近 30 秒」收到「tick 边界内的一瞬」。
+
+### 补充（17:2x）：验收用的模拟任务已下线
+
+`stores/uav.ts` 里那段 `?simMission=1`（`SimMission` 结构 + URL 解析 +
+`running` / `runningEstimate` 的模拟分支）已整体删除。验收目的已经达成
+（进度条能出现、两处一致），留着它就是一条「能造出不存在任务」的暗门 ——
+尽管有 `import.meta.env.DEV` 守卫，但它会把「当前巡检」这个字段的来源变成
+两种可能，排查问题时反而要多问一句「这条是真的吗」。
+
+现在 `running` / `runningEstimate` 只有一个来源：今日记录里 `own && is-ok`
+的那一条 + 同航线的历史实测中位数。`dist` 里搜 `simMission` 命中 0。
+
+## 六点五十、爬架详情页：删掉顶部「设备信息」四行（2026-11-23）
+
+红框圈的是页签上方那块表格式信息：**设备数量 / 设备状态 / 设备名称 / 爬升高度**。
+四行全删，连带它依赖的那条取数链。
+
+### 删了什么
+
+| 层 | 位置 | 内容 |
+|---|---|---|
+| 模板 | `views/sub/ClimbPage.vue` | `.climb-sum`（设备数量 / 设备状态）与 `.dev-info`（设备名称 + 台账字段 `v-for`）两块 |
+| 骨架 | 同上 | `.climb-sum.skel-fade` + `.dev-info.skel-fade` 那段 `v-if="ledger.state === 'loading'"`；它与下面的 `v-else` 是同一对，删后把内容提上一层（少一层 `<template>`） |
+| 脚本 | 同上 | `useDeviceLedgerStore` / `units` / `unit` / `fields` / `showSkel` / `Skel` / `useSlowLoading` 六个依赖；`onMounted` 与 `retry()` 里的 `ledger.load()` |
+| 样式 | `styles/app.css` | `.climb-sum`、`.climb-sum span`、`.climb-sum b`、`.climb-sum b.is-time` 四条 |
+
+### 特意没删的
+
+- **`.dev-info` / `.dev-info-row` 样式保留**：`components/sheets/DeviceInfoSheet.vue`
+  还在用（塔机/电梯的「基本信息 / 实时工况」），删了会连带坏掉那个弹层。
+- **`deviceLedger` store 本身不动**：首页智控、DevicePage、DeviceInfoSheet 都在用。
+  只是爬架详情页不再是它的消费者。
+- **空态文案去掉半句**：原「…，当前只展示台账中的设备属性。」—— 台账属性已经不展示了，
+  留着就是假话，改为只报错误原因。
+
+### 影响
+
+- 进爬架详情页少一次台账请求（原先 `ledger.load(token)`），只剩 CDN 传感器那一路；
+  首屏不再有「等台账」的骨架阶段，页面结构变成 **页签 → 机位列表/空态**。
+- 未登录时仍是原来的登录引导（`auth.isLoggedIn` 门控没动）。
+- `tests/unit/device-page.spec.ts` 那条用例同步改写：从「断言展示 1 / 在线 / 爬升高度 / 21m」
+  变成「断言 `.climb-sum` 与 `.dev-info` 都不存在」，防止这块悄悄回来。
+
+## 六点五十一、报警预警历史页：监控预警 + 无人机预警合并成一条时间线（2026-11-23）
+
+首页「报警预警 → 历史 >」打开的 `views/sub/AlarmHist.vue` 原先只查 `:8085` 的视频报警；
+现场要求这一页和消息页的两个入口对齐：**同一份列表里既有监控预警，也有无人机预警**。
+
+### 数据来源（两套后端，各走原有接口，没有新增任何请求类型）
+
+| 一侧 | 接口 | 进 store 的位置 |
+|---|---|---|
+| 监控预警 | `GET :8085/api/video/alarms?page&page_size&sceneCode` | `stores/alarm.ts`（`liveAlarms`，一次 2×200 条 ≈ 一个月，`ensureDate` 按需回补到 8 页） |
+| 无人机预警 | `POST iot.keehang.com:12666/audit_center/get_by_device_id?pidList=193640872670213`（`pageNum/pageSize`） | `stores/droneAlarm.ts`（`items`，首屏扫 100 条 ≈ 7 天，`loadMore` 往后翻） |
+
+`AlarmHist.vue` 的 `onMounted` 现在会补一次 `alarm.syncFromVideo(token)`（仅在没有任何监控数据时）
+和 `drone.load()`（store 自带 2 分钟保鲜期），所以从首页直接进来也有两类数据。
+
+### 合并规则（`src/utils/alarmMerge.ts`）
+
+- **时间线信封** `AlarmEntry { key, kind, at, alarm?, work? }`：只做排序与去重，
+  不重写任何一方的字段映射 —— 渲染仍交给原来的行组件，两边各看各的字段
+  （监控：报警名 + 点位 + 「视频监控」徽标；无人机：识别类别 + 任务名 + 「无人机」徽标 + 状态徽标）。
+- **去重**：按 `key`（监控 = 报警 id `va-*`，无人机 = `wo-` + 工单 uuid）。两边 id 各自成命名空间，
+  真正的重复来自同一数据源翻页重叠（服务端无稳定游标），与两侧 store 的去重口径一致。
+- **排序**：`at` 倒序（两边都是 `YYYY-MM-DD HH:mm:ss`，可直接字符串比较），同刻按 key 兜底稳定排序。
+- **按日切分**：今日 = `alarm.latest` + `drone.todayItems`；历史 = `alarm.dayRecords(histDate)` + `worksOn(drone.items, histDate)`。
+- **计数与趋势同口径**：卡片「今日预警数」= 合并后今日行数；近 7 日折线 = 两份 `trend/weekTrend`
+  按 `M/D` 标签相加（`mergeTrend`）—— 不会出现「写 35 条、列表 41 行」。
+
+### 组件
+
+| 文件 | 变化 |
+|---|---|
+| `components/ui/WorkOrderItem.vue` | **新增**：从 `WorkOrderList.vue` 抽出的无人机行（缩略图 / 灰底占位 + `ThumbRing` 进度环 / 红点 / 状态徽标 / 键盘可达），DOM 与类名逐字节不变 |
+| `components/ui/AlarmRow.vue` | **新增**：按 `kind` 分派到 `InspectItem`（`use-title`）或 `WorkOrderItem` |
+| `views/sub/WorkOrderList.vue` | 两处行模板换成 `<WorkOrderItem>`（`dot` = `isUnread`，历史不传）；`armThumb` / `statusClass` / `onKey` 一并移走 |
+| `views/sub/AlarmHist.vue` | 列表改吃合并结果；`syncing` / `histSyncing` 增加「无人机首屏是否已扫完」这一路；新增两行注脚（某一路失败 → 「列表可能不完整」；无人机只加载到某日 → 「继续加载」） |
+| `stores/droneAlarm.ts` | 新增 `earliestDay` 与 `ensureDay(d)`（选到更早的日期时最多再翻 3×20 条，不抛错） |
+| `stores/subpage.ts` | `openWorkOrderDetail(id, from = { kind: 'work-orders' })` —— 从历史页点进去要显式传 `{ kind: 'alarm-hist' }`，否则返回会跳到从未打开过的页面 |
+| `styles/app.css` | `.alarm-hist-page .insp-note` / `.insp-note-btn`（两行注脚，全是 `:root` 令牌） |
+
+### 特意没动的
+
+- 页签（今日预警 / 历史预警）、日期芯片、月历、`#subBody` 滚动位置记忆（`SubPage.scrollMemo` 的
+  `alarm-hist` key）、`openAlarmHist(tab)` 全部原样。
+- 消息页的两张分类卡与底部角标口径不变（仍是「监控今日未读 + 无人机今日待处理」）。
+- 首页智巡面板的「今日预警数」（35）**仍是监控一路**：它是智巡面板的报警块，本次只改历史页；
+  若要与历史页对齐（把无人机今日条数加进去）需另开一次口径确认。
+- 无人机预警列表页（`work-orders`）版式与交互不变 —— 只是行被抽成了组件。
+
+### 已知边界
+
+- 无人机历史受接口能力限制（无时间筛选、只能从新往旧翻页）：首屏约覆盖 7 天，
+  选更早的日期时 `ensureDay` 自动补几页，仍不够就显示「无人机预警仅加载到 X 日」+ 继续加载，
+  不假装那天没有预警。
+- 合并是「当天两类各自完整」的前提下的完整；某一路接口失败时列表只含另一路，页面会写明「可能不完整」。
+
+## 六点五十二、首页「报警预警」块纳入无人机预警（2026-11-23）
+
+现场要求：首页报警预警卡片的两处（**今日预警数 + 近 7 日趋势**、**下方预警轮播**）
+都要把无人机预警算进来，展示样式与其他统计规则不变。
+
+### 数据来源（与历史页完全同一份）
+
+| 一侧 | 接口 | store |
+|---|---|---|
+| 监控预警 | `GET :8085/api/video/alarms?page&page_size` | `stores/alarm.ts` |
+| 无人机预警 | `POST keehang /audit_center/get_by_device_id?pidList=…` | `stores/droneAlarm.ts` |
+
+合并逻辑仍只用 `utils/alarmMerge.ts`（`mergeAlarmEntries` / `mergeTrend`），
+没有新增任何请求类型：首页只是**多读了一份已经在内存里的数据**。
+
+### 三处口径
+
+| 位置 | 改之前 | 现在 |
+|---|---|---|
+| 今日预警数 | `alarm.latest.length`（监控） | `mergeAlarmEntries(alarm.latest, drone.todayItems).length` |
+| 近 7 日趋势 | `alarm.trend` | `mergeTrend(alarm.trend, drone.weekTrend)`（按 `M/D` 相加） |
+| 轮播列表 | `alarm.feed` | 今日两类合并；今日都为空才退到两侧各 6 条（`FEED_FALLBACK_N`，已导出） |
+
+轮播行由 `views/home/parts/AlarmFeed.vue` 内的 `FeedCard` 收敛：监控取
+`title / desc / alarmSrcOf(src).tag / rel`，无人机取 `title / jobName||projectName / '无人机' / relOf`。
+DOM 类名、每页 3 条、双向循环、圆点跳页、跟手滑动全部未改；无人机行用同一颗
+`.alarm-tile` 占位（首页被覆盖成 `--bg-3`，视觉上仍是「图还没到」）+ `ThumbRing`
+（进度取 `drone.thumbBusyOf/PctOf`，监控侧不传 props，仍回落报警 store）。
+
+### 交互
+
+- 点无人机行 → `openWorkOrderDetail(id, null)`（`from` 现在允许 `null`，语义同
+  `openAlarmDetail(id, false)`：返回落回首页）；id 失效退到无人机预警列表。
+- 点监控行不变（`openAlarmDetail(id, false)`）。
+- 未登录不请求无人机（`auth.token` 存在时才 `drone.load()`，store 自带 2 分钟保鲜）。
+
+### 统计与空态
+
+- 「有没有结论」按两路分别判：`alarmReady`（`hasLive || ok || error`）与
+  `droneReady`（`scanned || error`），任一路还在首屏时铺骨架 —— 否则会先写一个
+  偏小的数字再跳。
+- 两路都为空才算「今日暂无报警」；一路失败时另一路照常展示，块底加一行
+  `.data-note`「…统计可能不完整」；两路都失败给失败原因 + 重试。
+- 仍是**未合并**的地方：巡检列表（`InspectList`）的「今日预警数」只算监控；
+  消息页两张分类卡本就分两类，角标口径未动。
+
+## 六点五十三、抓拍详情照片清晰度：新增 1280 详情预览档（2026-11-23）
+
+现场口径：**列表 / 图标的清晰度暂不处理，点进详情后的照片要更清楚**，
+但仍不接受「为了预览去拉原图」。
+
+### 现状与问题
+
+`utils/shotArchive.ts` 只生成一档缩略图（长边 480 的 WebP，质量 0.72，约 20KB），
+列表与详情首屏共用它。480 铺满手机（≈1170 物理像素）明显发虚，而原图
+200~340KB 又违背「预览别拉原图」。
+
+### 改法：多一档「详情预览」，按需生成
+
+| 档 | 长边 | 质量 | 何时生成 | 体积 | 用在哪 |
+|---|---|---|---|---|---|
+| `thumb`（不变） | 480 | 0.72 | 取回首图时 | ~20KB | 三列网格 |
+| `preview`（新增） | 1280 | 0.80 | **第一次打开这张详情** | ~90~130KB | 详情首屏 |
+| `full`（不变） | 原尺寸 | — | 取回首图时 | 200~340KB | 「查看原图」 |
+
+- 生成入口：`ensureShotPreview(rec)`（`utils/shotArchive.ts`）。原图本来就在本机
+  缓存里，所以**不产生任何网络请求**，只是 canvas 缩一次；
+- 结果写回 IndexedDB（`ShotRecord.preview`，objectStore schemaless，**不需要升版本**），
+  同一张第二次打开直接用；
+- 失败（无 canvas / 编码失败 / 结果不比 thumb 大）返回 `null`，调用方继续用 `thumb`；
+- `saveShot` 遇到「字节数相同」的旧记录时**保留已有 preview**，不重复生成。
+
+### 接线
+
+- `stores/cam.ts`：`CamShot.preview`（objectURL）+ `loadShotPreview()`，在 `openShot`
+  里触发（`previewBusy` 去重）；`toCamShot` 会把缓存里已有的 preview 一并挂上；
+  `releaseShotUrls` / `revokeShotUrl` 统一回收，与前两档一致；
+- `components/overlays/CamPlayer.vue`：`shotSrc = shotShowFull ? url : (preview || thumb)` ——
+  预览先生成时先显示 thumb，生成完同一条记录内换 URL，不重开弹层；角标仍写「压缩预览」。
+
+### 没动的
+
+- 列表缩略图 480/0.72 与报警/工单图标 96/0.62 全部不动（现场明确「图标暂不处理」）；
+- 智眸 / 航拍 / 巡检大图的预览用的是**服务端下发的 `thumbnail`**（370~520KB），
+  前端无法在不拉原图的前提下再提清晰度，保持原样。

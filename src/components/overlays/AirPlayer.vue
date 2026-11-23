@@ -32,7 +32,7 @@ import { useImageZoom } from '@/utils/zoom'
  * 就查「站点 + 日期」那一天（同一天飞了两班取后一班）。全景仍排第一格，
  * 点开是球面环视（`ui/PanoViewer.vue`，与智眸同一套）。
  *
- * 大图弹层只保留「原图」（照片）与「复位 / 看高清 / 横屏」（全景）——
+ * 大图弹层只保留「原图」（照片）与「复位 / 看高清 / 全屏」（全景）——
  * 2026-11-19 按现场要求去掉下载：OSS 直链在移动端存相册依赖分享面板，
  * 现场这条链不可靠，按钮留着反而误导。
  */
@@ -248,7 +248,7 @@ const shownSrc = computed(() => {
   return s.img
 })
 
-/* ---------- 全景：球面环视 + 看高清 + 横屏（与智眸同一套） ---------- */
+/* ---------- 全景：球面环视 + 看高清 + 全屏（与智眸同一套） ---------- */
 
 const panoRef = ref<InstanceType<typeof PanoViewer> | null>(null)
 
@@ -376,9 +376,9 @@ const {
   setStage: setPanoStage,
   toggle: togglePanoLand,
   exit: exitPanoLand,
-} = useLandscape()
+} = useLandscape({ page: true, hint: true })
 
-/** 关弹层 / 换站点时把横屏收回来 */
+/** 关弹层 / 换站点时把全屏收回来 */
 watch(
   () => [air.airPopOpen, air.station] as const,
   ([open]) => {
@@ -600,10 +600,10 @@ watch(
               class="pano-tool"
               type="button"
               :aria-pressed="panoLand"
-              :aria-label="panoLand ? '退出横屏' : '横屏查看'"
+              :aria-label="panoLand ? '退出全屏，回到竖屏' : '全屏查看'"
               @click="togglePanoLand"
             >
-              {{ panoLand ? '竖屏' : '横屏' }}
+              {{ panoLand ? '退出' : '全屏' }}
             </button>
           </div>
 

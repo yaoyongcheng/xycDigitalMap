@@ -533,6 +533,7 @@ describe('智控面板（真实台账）', () => {
         start: `${past}T09:00:00`,
         end: `${past}T09:20:00`,
         status: 2,
+        result: 0,
         scheduled: true,
         pid: 193640872670213,
       },
@@ -1310,17 +1311,17 @@ describe('智能爬架（真实台账 + 空态）', () => {
     w.unmount()
   })
 
-  it('已登录但传感器没取到：展示台账爬升高度，机位区给空态 + 重试', async () => {
+  it('已登录但传感器没取到：机位区给空态 + 重试', async () => {
     signIn()
     const sub = useSubpageStore()
     sub.openClimb()
     const w = mount(Host)
     await flushPromises()
 
-    expect(w.find('.climb-sum').text()).toContain('1')
-    expect(w.find('.climb-sum').text()).toContain('在线')
-    expect(w.text()).toContain('爬升高度')
-    expect(w.text()).toContain('21m')
+    // 2026-11-23 起顶部「设备数量/状态 + 设备名称/爬升高度」四行已删除，
+    // 页面只等 CDN 传感器；台账有没有到手都不该再出现这两块
+    expect(w.find('.climb-sum').exists()).toBe(false)
+    expect(w.find('.dev-info').exists()).toBe(false)
     expect(w.findAll('.climb-line')).toHaveLength(0)
     expect(w.text()).toContain('暂无爬架机位读数')
     w.unmount()
@@ -1434,6 +1435,7 @@ describe('无人机页', () => {
       start,
       end: start,
       status: 1,
+      result: 0,
       scheduled: true,
       pid: 193640872670213,
       ...over,
@@ -1488,6 +1490,7 @@ describe('无人机页', () => {
       start: isoOf(s),
       end: isoOf(new Date(s.getTime() + minutes * 60_000)),
       status: 2,
+      result: 0,
       scheduled: true,
       pid: 193640872670213,
     }

@@ -6,11 +6,16 @@ import type { MapAlarm, MapPoint } from '@/types'
 /**
  * 交互地图层（新增组件，非原版内容）
  *
- * 把原本静态的 site-map 底图升级为可交互地图：
- *   - 单指拖拽平移、双指捏合缩放、滚轮缩放、双击在 1x/2.4x 间切换
- *   - 点位撒点（摄像头/塔吊/楼栋），点击经 select 事件上抛
- *   - 点位为恒定屏幕尺寸（px），坐标以底图百分比标定；小容器可传
- *     compact 走更小的一套针标样式
+ * 两种用法（2026-11-23 起明确分开）：
+ *   · 全屏地图（`MapLand`）：默认交互 —— 单指拖拽平移、双指捏合缩放、
+ *     滚轮缩放、双击在 1x/2.4x 间切换。屏幕上的缩放按钮已撤掉（见模板），
+ *     缩放只走手势与双击。
+ *   · 首页背景（`HomePage`）：传 `locked` —— 底图钉死在容器里，不响应任何
+ *     手势 / 滚轮 / 双击，也不渲染控制按钮。它只是首页的背景图，跟着容器
+ *     尺寸走 cover，用户怎么划都不会缩放或移动。
+ *
+ * 其余能力：点位撒点（摄像头/塔吊/楼栋）点击经 select 上抛；点位为恒定
+ * 屏幕尺寸（px），坐标以底图百分比标定；小容器可传 compact 走更小的针标。
  *
  * 几何模型：
  *   底图按 fit 模式（cover/contain）算出基准缩放 fitScale，用户缩放 scale
@@ -71,6 +76,12 @@ const props = withDefaults(
      * cover 裁切的偏移。
      */
     alarms?: MapAlarm[]
+    /**
+     * 锁定为静态背景图：不响应拖拽 / 捏合 / 滚轮 / 双击，也不渲染右侧
+     * 控制按钮（总览 / 复位）。首页顶部的地图用它把底图钉成背景 ——
+     * 尺寸与位置只跟容器走，用户怎么操作都不变。全屏地图保持默认 false。
+     */
+    locked?: boolean
   }>(),
   {
     points: () => [],
@@ -80,6 +91,7 @@ const props = withDefaults(
     allowZoomOut: false,
     suspended: false,
     alarms: () => [],
+    locked: false,
   },
 )
 
@@ -183,10 +195,6 @@ function zoomAt(px: number, py: number, next: number): void {
   clampPan()
 }
 
-function zoomBy(factor: number): void {
-  zoomAt(0, 0, scale.value * factor)
-}
-
 function reset(): void {
   scale.value = 1
   tx.value = 0
@@ -267,7 +275,9 @@ function cancelMove(): void {
 }
 
 function onPointerDown(e: PointerEvent): void {
-  if (props.suspended) return
+  // locked：底图是静态背景，连指针都不登记 —— 既不平移，也不会在拖拽后
+  // 误伤撒点点击
+  if (props.locked || props.suspended) return
   if (e.pointerType === 'mouse' && e.button !== 0) return
   // 手势起点：锁定矩形，后续 move 全部复用它
   gestureRect = boxEl.value?.getBoundingClientRect() ?? null
@@ -355,14 +365,15 @@ function onPointerUp(e: PointerEvent): void {
 }
 
 function onWheel(e: WheelEvent): void {
-  if (props.suspended) return
+  // locked 时不拦截滚轮：页面没有缩放需求，别把滚动手势吃掉
+  if (props.locked || props.suspended) return
   e.preventDefault()
   const p = relPos(e.clientX, e.clientY)
   zoomAt(p.x, p.y, scale.value * (e.deltaY < 0 ? 1.16 : 1 / 1.16))
 }
 
 function onDblClick(e: MouseEvent): void {
-  if (props.suspended) return
+  if (props.locked || props.suspended) return
   const p = relPos(e.clientX, e.clientY)
   if (scale.value > 1.01) reset()
   // 总览态（<1x）下双击先回到 1x 铺满，避免 0.6x → 2.4x 的跳变
@@ -599,7 +610,7 @@ const PIN_PATHS: Record<MapPoint['kind'], string[]> = {
   <div
     ref="boxEl"
     class="map-viewer"
-    :class="{ 'is-compact': props.compact }"
+    :class="{ 'is-compact': props.compact, 'is-locked': props.locked }"
     @pointerdown="onPointerDown"
     @dblclick="onDblClick"
   >
@@ -664,9 +675,13 @@ const PIN_PATHS: Record<MapPoint['kind'], string[]> = {
       </button>
     </div>
 
-    <div class="map-ctrls">
-      <button type="button" aria-label="放大" @click="zoomBy(1.4)">+</button>
-      <button type="button" aria-label="缩小" @click="zoomBy(1 / 1.4)">−</button>
+    <!--
+      控制按钮（2026-11-23 改）：
+        · 首页是 locked 的静态背景图，整块不渲染；
+        · 全屏地图撤掉了 + / − 两颗缩放键 —— 缩放交给捏合、双击与滚轮，
+          屏幕上只保留「总览」「复位」两个有明确终点的操作。
+    -->
+    <div v-if="!props.locked" class="map-ctrls">
       <!-- 总览：一键缩到整图完整可见（allowZoomOut 场景才有意义） -->
       <button
         v-if="props.allowZoomOut && scale > minZoom + 0.01"

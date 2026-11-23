@@ -30,12 +30,19 @@ import { useSubpageStore } from './subpage'
  * 弹层内容类型
  *
  *   patrol          巡检大图（首页智巡）
+ *   people-dist     人员分布（首页「人员管理 → 人员分布」点分类卡片）
  *   device-info     设备信息（塔机/电梯详情页）
  *   device-history  历史数据（同上）
  *   uav-today       今日任务（无人机页）
  *   uav-route       选择航线（无人机页）
  */
-export type SheetKind = 'patrol' | 'device-info' | 'device-history' | 'uav-today' | 'uav-route'
+export type SheetKind =
+  | 'patrol'
+  | 'people-dist'
+  | 'device-info'
+  | 'device-history'
+  | 'uav-today'
+  | 'uav-route'
 
 export interface SheetView {
   kind: SheetKind
@@ -63,6 +70,17 @@ export const useBottomSheetStore = defineStore('bottomSheet', () => {
   /** 打开「巡检大图」（原 openPatrolPhoto，app.js:623-641） */
   function openPatrol(photoId: string): void {
     view.value = { kind: 'patrol', id: photoId }
+  }
+
+  /**
+   * 打开「人员分布」（原 #peoplePop 的人员下钻）
+   *
+   * `scene` 是场景名（场布图 / 2#住宅楼 / 地下室），与 `overview.scenes` 的
+   * `name` 一一对应。弹层内容自己按名字回查 units —— 状态里只放一个字符串，
+   * 数据刷新后弹层跟着变，不会停在打开那一刻的旧快照上。
+   */
+  function openPeopleDist(scene: string): void {
+    view.value = { kind: 'people-dist', id: scene }
   }
 
   /**
@@ -121,6 +139,7 @@ export const useBottomSheetStore = defineStore('bottomSheet', () => {
     kind,
     id,
     openPatrol,
+    openPeopleDist,
     openDeviceInfo,
     openDeviceHistory,
     openUavToday,

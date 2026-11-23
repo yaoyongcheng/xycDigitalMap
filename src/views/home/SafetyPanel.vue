@@ -6,8 +6,10 @@ import Skel from '@/components/ui/Skel.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
+import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { useOverviewStore } from '@/stores/overview'
 import { useSubpageStore } from '@/stores/subpage'
+import { mergeAlarmEntries, mergeTrend } from '@/utils/alarmMerge'
 import { alarmTrendLive, peopleHourModel } from '@/utils/chart'
 import { useSlowLoading } from '@/utils/slowLoading'
 import AlarmFeed from './parts/AlarmFeed.vue'
@@ -29,15 +31,60 @@ import PeopleDist from './parts/PeopleDist.vue'
  * 空态文案与「去登录 / 重试」入口。
  */
 const alarm = useAlarmStore()
+const drone = useDroneAlarmStore()
 const auth = useAuthStore()
 const subpage = useSubpageStore()
 const overview = useOverviewStore()
 
-/** 近 7 日预警趋势（真实按日聚合，无数据时是 7 个 0，不画演示曲线） */
-const trendModel = computed(() => alarmTrendLive(alarm.trend, 'alarmFill'))
+/**
+ * 今日预警 = 监控预警 + 无人机预警，按时间倒序合并去重（2026-11-23 现场要求）。
+ *
+ * 合并口径见 `utils/alarmMerge.ts`：两边各带自己的 id 前缀，翻页重叠不会多一行；
+ * 字段映射一个字都不改 —— 数字只数行数，行仍由各自的组件渲染。
+ */
+const todayEntries = computed(() => mergeAlarmEntries(alarm.latest, drone.todayItems))
+
+/** 今日预警数（统计卡大数字）：合并后行数，与下方轮播同一份口径 */
+const todayCount = computed(() => todayEntries.value.length)
+
+/** 两路都为空时才算真「今日暂无报警」 */
+const hasAny = computed(() => todayEntries.value.length > 0)
+
+/** 监控侧是否已有结论：有数据 / 成功（可能是 0 条）/ 失败都算，只有加载中不算 */
+const alarmReady = computed(
+  () => alarm.hasLive || alarm.liveState === 'ok' || alarm.liveState === 'error',
+)
+
+/** 无人机侧是否已有结论：首屏扫完或已经失败；还在扫时列表为空不等于「没有」 */
+const droneReady = computed(() => drone.scanned || drone.state === 'error')
+
+/** 两路都还没结论：不能提前写「今日暂无报警」，先铺骨架 */
+const syncing = computed(() => !hasAny.value && (!alarmReady.value || !droneReady.value))
+
+/** 近 7 日预警趋势：两份按日相加（同一 7 天、同一 `M/D` 标签），fillId 不变 */
+const mergedTrend = computed(() => mergeTrend(alarm.trend, drone.weekTrend))
+const trendModel = computed(() => alarmTrendLive(mergedTrend.value, 'alarmFill'))
 
 /** 趋势图是否有真实数据可看 —— 全 0 时不画一条贴底的直线，直接给空态 */
-const hasTrend = computed(() => alarm.trend.some((p) => p.value > 0))
+const hasTrend = computed(() => mergedTrend.value.some((p) => p.value > 0))
+
+/** 空态文案：优先用监控侧的原话（与改之前一致），无人机单独失败时用它的原因 */
+const emptyError = computed(() => {
+  if (alarm.liveState === 'error') return alarm.liveError || '报警同步失败'
+  if (drone.state === 'error') return drone.error || '无人机预警加载失败'
+  return ''
+})
+
+/**
+ * 有一路失败时列表照常显示另一路，但要写清「不完整」——
+ * 否则用户会以为今天只有这几条（与报警预警历史页同一条规则）。
+ */
+const sourceNote = computed(() => {
+  const bad: string[] = []
+  if (alarm.liveState === 'error') bad.push('监控预警同步失败')
+  if (drone.state === 'error') bad.push('无人机预警加载失败')
+  return bad.length ? `${bad.join('；')}，统计可能不完整` : ''
+})
 
 /** 数值滚动用的解析结果：null 显示「—」，不再回落演示值 */
 const crewNums = computed(() =>
@@ -62,7 +109,7 @@ const updTime = computed(() => overview.updatedAt)
  * 现场的读接口通常一两百毫秒就回来了，那种情况骨架连一帧都不该出现。分开判
  * 是因为四块各自独立成败 —— 人员总览回来了不代表班组出勤也回来了。
  */
-const showAlarmSkel = useSlowLoading(() => !alarm.hasLive && alarm.liveState === 'loading')
+const showAlarmSkel = useSlowLoading(() => syncing.value)
 const showCrewSkel = useSlowLoading(() => !overview.hasLive && overview.loading)
 const showHourSkel = useSlowLoading(() => !overview.hourLive && overview.loading)
 const showTeamSkel = useSlowLoading(() => !overview.teamRows.length && overview.loading)
@@ -94,8 +141,12 @@ function tradePct(n: number): string {
  */
 onMounted(() => {
   void overview.refresh()
-  // 视频报警接口要 Bearer，未登录必定 401 —— 未登录时不打这趟请求
-  if (auth.token) void alarm.refresh(auth.token)
+  // 视频报警接口要 Bearer，未登录必定 401 —— 未登录时不打这趟请求；
+  // 无人机预警与这段统计同口径，也就等登录后再拉（store 自带 2 分钟保鲜）
+  if (auth.token) {
+    void alarm.refresh(auth.token)
+    void drone.load()
+  }
 })
 
 /**
@@ -110,15 +161,20 @@ watch(
   (t) => {
     if (!t) return
     void alarm.syncFromVideo(t)
+    // 无人机侧是另一套后端：登录时补一次首屏扫描，否则数字里永远少这一类
+    void drone.load()
     // 登录前 open 接口可能因网络抖动失败过，登录成功后强制补一次
     void overview.load(true)
   },
 )
 
-/** 重试：报警与人员总览一起重来（两个源互相独立，谁失败重谁没必要细分） */
+/** 重试：报警（两路）与人员总览一起重来（数据源互相独立，谁失败重谁没必要细分） */
 function retry(): void {
   void overview.load(true)
-  if (auth.token) void alarm.syncFromVideo(auth.token, true)
+  if (auth.token) {
+    void alarm.syncFromVideo(auth.token, true)
+    void drone.load(true)
+  }
 }
 
 /**
@@ -151,10 +207,16 @@ function onHistOpen(): void {
 /**
  * 原 homePanels 委托的 [data-alarm] 分支。
  *
- * 从轮播点进详情时直接按 id 打开（不再多走一层列表），返回目标是首页；
- * id 失效（数据已被清空 / 换会话）时退回列表，不让用户卡在空详情页。
+ * 从轮播点进去：监控预警直接按 id 打开报警详情、返回首页；无人机预警
+ * 打开工单详情（`from = null` 同样表示返回首页，见 `stores/subpage.ts`）。
+ * id 失效（数据已被清空 / 换会话）时退回各自的列表，不让用户卡在空详情页。
  */
-function onAlarmOpen(id: string): void {
+function onAlarmOpen(kind: 'monitor' | 'drone', id: string): void {
+  if (kind === 'drone') {
+    if (drone.byId(id)) subpage.openWorkOrderDetail(id, null)
+    else subpage.openWorkOrders()
+    return
+  }
   if (alarm.byId(id)) subpage.openAlarmDetail(id, false)
   else subpage.openInspectList('today')
 }
@@ -177,12 +239,13 @@ function onAlarmOpen(id: string): void {
     </div>
 
     <!-- 已登录但一条都没拉到：区分「同步中 / 失败 / 今日无报警」 -->
-    <template v-else-if="!alarm.hasLive">
+    <template v-else-if="!hasAny">
       <!--
-        同步中：灰条铺在计数卡、趋势图、轮播条将要出现的位置，报警到手后原位回填。
-        慢请求才可见（showAlarmSkel 之外整层 opacity: 0，但仍占位，版式不跳）。
+        同步中（监控或无人机任一路还没结论）：灰条铺在计数卡、趋势图、轮播条将要
+        出现的位置，数据到手后原位回填。慢请求才可见（showAlarmSkel 之外整层
+        opacity: 0，但仍占位，版式不跳）。
       -->
-      <template v-if="alarm.liveState === 'loading'">
+      <template v-if="syncing">
         <span class="sr-only" role="status">正在同步现场报警</span>
         <div class="home-stats alarm-row skel-fade" :class="{ 'is-on': showAlarmSkel }" aria-hidden="true">
           <div class="home-stat alert">
@@ -202,8 +265,8 @@ function onAlarmOpen(id: string): void {
           </div>
         </div>
       </template>
-      <div v-else-if="alarm.liveState === 'error'" class="data-empty" data-empty="alarm">
-        <p>{{ alarm.liveError || '报警同步失败' }}</p>
+      <div v-else-if="emptyError" class="data-empty" data-empty="alarm">
+        <p>{{ emptyError }}</p>
         <button class="data-empty-btn" type="button" @click="retry">重试</button>
       </div>
       <div v-else class="data-empty" data-empty="alarm">
@@ -213,7 +276,7 @@ function onAlarmOpen(id: string): void {
 
     <template v-else>
       <div class="home-stats alarm-row">
-        <div class="home-stat alert"><b><CountUp :value="alarm.latest.length" sticky /></b><span>今日预警数</span></div>
+        <div class="home-stat alert"><b><CountUp :value="todayCount" sticky /></b><span>今日预警数</span></div>
         <div class="home-chart-card alarm-mini">
           <span class="home-card-lab">近7日预警趋势</span>
           <TouchChart v-if="hasTrend" :model="trendModel" />
@@ -221,11 +284,13 @@ function onAlarmOpen(id: string): void {
         </div>
       </div>
       <AlarmFeed @open="onAlarmOpen" />
+      <!-- 有一路没取到：另一路照常展示，但要说清数字不完整 -->
+      <div v-if="sourceNote" class="data-note">{{ sourceNote }}</div>
     </template>
   </div>
 
   <div class="safe-block">
-    <h4>人员管理</h4>
+    <h4>人员管理<span v-if="updTime" class="upd-time">更新于 {{ updTime }}</span></h4>
     <div class="safe-stack">
       <div class="home-chart-card crew-card">
         <span class="home-card-lab">人员总览</span>

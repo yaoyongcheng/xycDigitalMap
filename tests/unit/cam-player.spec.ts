@@ -379,7 +379,7 @@ describe('components/overlays/CamPlayer', () => {
     expect(urls.created).toHaveLength(2)
   })
 
-  it('点开抓拍进详情：默认压缩预览，右上角有「查看原图」「横屏」', async () => {
+  it('点开抓拍进详情：默认压缩预览，右上角有「查看原图」「全屏」', async () => {
     await mountPlayer()
     await open()
     await wrapper.find('#btnCamShots').trigger('click')
@@ -396,9 +396,9 @@ describe('components/overlays/CamPlayer', () => {
     expect(pop.find('.cam-shot-stage img').attributes('src')).toMatch(/^blob:cam\//)
     expect(pop.find('.patrol-view-tag').text()).toBe('压缩预览')
 
-    // 工具条在图片右上角，两颗胶囊：查看原图 / 横屏
+    // 工具条在图片右上角，两颗胶囊：查看原图 / 全屏（2026-11-23 由「横屏」改名）
     const tools = pop.findAll('.pano-tools .pano-tool')
-    expect(tools.map((t) => t.text())).toEqual(['查看原图', '横屏'])
+    expect(tools.map((t) => t.text())).toEqual(['查看原图', '全屏'])
     expect(tools[1].attributes('aria-pressed')).toBe('false')
 
     await tools[0].trigger('click')

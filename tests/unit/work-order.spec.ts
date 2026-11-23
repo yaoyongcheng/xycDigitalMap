@@ -428,7 +428,9 @@ describe('无人机预警列表', () => {
     // 这批工单行里本来就没有现场图（image 为空）→ 一个请求都不发，继续铺灰底占位图标
     // （「有图就铺图」那条链路由 work-order-thumb.spec 单独钉）
     expect(w.find('.insp-pic img').exists()).toBe(false)
-    expect(w.findAll('.insp-pic.alarm-tile')).toHaveLength(2)
+    // 只数今日窗格：历史窗格也一直挂在 DOM 里（`.hide` 只是 CSS 隐藏），
+    // 它那一条占位图标不属于本用例
+    expect(w.findAll('.insp-pane:not(.insp-hist) .insp-pic.alarm-tile')).toHaveLength(2)
     w.unmount()
   })
 

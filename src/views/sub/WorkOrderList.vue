@@ -2,16 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import Skel from '@/components/ui/Skel.vue'
-import SmartImg from '@/components/ui/SmartImg.vue'
-import SvgIcon from '@/components/ui/SvgIcon.vue'
-import ThumbRing from '@/components/ui/ThumbRing.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
-import type { WorkOrderStatus } from '@/api/drone'
+import WorkOrderItem from '@/components/ui/WorkOrderItem.vue'
 import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendLive } from '@/utils/chart'
 import { useSlowLoading } from '@/utils/slowLoading'
-import { revealThumb } from '@/utils/thumbReveal'
 
 /**
  * 无人机预警列表（子页内容）
@@ -95,28 +91,10 @@ function onOpen(id: string): void {
 }
 
 /**
- * 图标位：滚到视口附近才去取这一条的缩略图（与 `InspectItem` 共用同一个观察器）。
- *
- * 列表是 v-for 出来的，没有子组件可以挂 `onMounted`，所以用行元素的**函数 ref**
- * 登记。重复登记无害（`revealThumb` 对同一元素以最后一次为准）；已经有图时直接
- * 跳过，不再占一个观察位。
- *
- * `decorative`（右滑时垫在后面那一层）不取图 —— 同一批 id 主层已经在取了，
- * 垫底层再去登记只会让观察器多一份无用回调。
+ * 行（图标位 / 徽标 / 键盘可达）的渲染都在 `components/ui/WorkOrderItem.vue`
+ * （2026-11-23 抽出：报警预警历史页要把两类预警合成一条时间线，同一行要在两处出现）。
+ * 这里只负责导航与分页 —— 取图时机、占位图标、进度环、状态徽标都不变。
  */
-function armThumb(el: unknown, id: string): void {
-  if (props.decorative) return
-  if (!el || typeof (el as Element).nodeType !== 'number') return
-  if (drone.thumbOf(id)) return
-  revealThumb(el as Element, () => drone.ensureThumb(id))
-}
-
-function onKey(e: KeyboardEvent, id: string): void {
-  if (e.key === 'Enter' || e.key === ' ') {
-    e.preventDefault()
-    onOpen(id)
-  }
-}
 
 /** 触底阈值：离底 160px 就提前拉（与消息页同一口径） */
 const BOTTOM_AHEAD = 160
@@ -143,11 +121,6 @@ onMounted(() => {
 onUnmounted(() => {
   bodyEl.value?.removeEventListener('scroll', onScroll)
 })
-
-/** 状态徽标的修饰类（与 `.alarm-src` 基类配套） */
-function statusClass(status: WorkOrderStatus | ''): string {
-  return status === 'UNAUDITED' ? 'alarm-src-todo' : 'alarm-src-done'
-}
 
 /** 空态文案：接口失败写原因，其余按页签给各自的「暂无」 */
 const emptyText = computed(() => {
@@ -198,51 +171,14 @@ const emptyText = computed(() => {
       </div>
 
       <div v-if="drone.todayItems.length" class="insp-list">
-        <div
+        <WorkOrderItem
           v-for="w in drone.todayItems"
           :key="w.id"
-          :ref="(el) => armThumb(el, w.id)"
-          class="insp-item"
-          :data-wo="w.id"
-          :data-status="w.status"
-          role="button"
-          tabindex="0"
-          @click="onOpen(w.id)"
-          @keydown="onKey($event, w.id)"
-        >
-          <!-- 图标位：与监控列表同一套 —— 有缩略图铺图，没有就铺灰底占位图标；
-               取图过程中在图标外圈叠一圈真实进度，图到了自动消失；
-               未处理在右上角压一颗红点（与图无关，状态单独决定） -->
-          <span class="insp-pic-box">
-            <SmartImg
-              v-if="drone.thumbOf(w.id)"
-              class="insp-pic"
-              :src="drone.thumbOf(w.id)"
-              :alt="w.title || '无人机预警'"
-            />
-            <span v-else class="insp-pic alarm-tile" aria-hidden="true">
-              <SvgIcon name="drone" />
-              <ThumbRing
-                :id="w.id"
-                :busy="drone.thumbBusyOf(w.id)"
-                :pct="drone.thumbPctOf(w.id)"
-              />
-            </span>
-            <i v-if="drone.isUnread(w)" class="insp-dot" role="img" aria-label="未处理" />
-          </span>
-          <div class="insp-meta">
-            <div class="insp-hd">
-              <strong>{{ w.title || '识别预警' }}</strong>
-              <!-- 来源徽标：与监控列表的「视频监控」同一套尺寸与配色 -->
-              <span class="alarm-src alarm-src-drone">无人机</span>
-            </div>
-            <p>{{ w.jobName || w.projectName || '—' }}</p>
-          </div>
-          <div class="wo-side">
-            <span class="insp-time">{{ drone.relOf(w) }}</span>
-            <span class="alarm-src" :class="statusClass(w.status)">{{ drone.statusText(w) }}</span>
-          </div>
-        </div>
+          :wo="w"
+          :dot="drone.isUnread(w)"
+          :decorative="decorative"
+          @open="onOpen(w.id)"
+        />
       </div>
 
       <!-- 首屏加载：与 .insp-item 同构的灰条 -->
@@ -274,47 +210,13 @@ const emptyText = computed(() => {
       </div>
 
       <div v-if="drone.histItems.length" class="insp-list">
-        <div
+        <WorkOrderItem
           v-for="w in drone.histItems"
           :key="w.id"
-          :ref="(el) => armThumb(el, w.id)"
-          class="insp-item"
-          :data-wo="w.id"
-          :data-status="w.status"
-          role="button"
-          tabindex="0"
-          @click="onOpen(w.id)"
-          @keydown="onKey($event, w.id)"
-        >
-          <!-- 历史同样铺缩略图（与监控历史一致）；只是不带红点 -->
-          <span class="insp-pic-box">
-            <SmartImg
-              v-if="drone.thumbOf(w.id)"
-              class="insp-pic"
-              :src="drone.thumbOf(w.id)"
-              :alt="w.title || '无人机预警'"
-            />
-            <span v-else class="insp-pic alarm-tile" aria-hidden="true">
-              <SvgIcon name="drone" />
-              <ThumbRing
-                :id="w.id"
-                :busy="drone.thumbBusyOf(w.id)"
-                :pct="drone.thumbPctOf(w.id)"
-              />
-            </span>
-          </span>
-          <div class="insp-meta">
-            <div class="insp-hd">
-              <strong>{{ w.title || '识别预警' }}</strong>
-              <span class="alarm-src alarm-src-drone">无人机</span>
-            </div>
-            <p>{{ w.jobName || w.projectName || '—' }}</p>
-          </div>
-          <div class="wo-side">
-            <span class="insp-time">{{ drone.relOf(w) }}</span>
-            <span class="alarm-src" :class="statusClass(w.status)">{{ drone.statusText(w) }}</span>
-          </div>
-        </div>
+          :wo="w"
+          :decorative="decorative"
+          @open="onOpen(w.id)"
+        />
       </div>
 
       <div v-else-if="syncing" class="insp-list skel-fade" :class="{ 'is-on': showSkel }" aria-hidden="true">

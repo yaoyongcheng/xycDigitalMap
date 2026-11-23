@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import CountUp from '@/components/ui/CountUp.vue'
 import DonutTouch from '@/components/ui/DonutTouch.vue'
+import MissionBar from '@/components/ui/MissionBar.vue'
 import Skel from '@/components/ui/Skel.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import type { IconName } from '@/data/icons'
@@ -20,6 +21,8 @@ import { firstOverLabel, timeHm } from '@/utils/scaffold'
 import { ROBOT_CARDS, unitNo } from '@/utils/deviceLedger'
 import { DASH, formatRuntime } from '@/utils/lift'
 import { useSlowLoading } from '@/utils/slowLoading'
+import { useMissionClock } from '@/utils/missionClock'
+import { missionProgress } from '@/utils/uavProgress'
 import type { Equip } from '@/types'
 
 /**
@@ -102,6 +105,37 @@ const lift = useLiftStore()
 /** 无人机统计的延后取数句柄（卸载时清掉，别让定时器在别的页面里跑） */
 let statTimer: number | null = null
 
+/**
+ * 无人机卡上的「当前巡检」进度条（2026-11-23 现场要求）。
+ *
+ * **默认不显示**：只有 keehang 真的报了一条执行中的任务、且能算出百分比时才出现。
+ * 百分比来自 `missionProgress()` —— 与无人机页是同一个函数、同一份数据
+ * （`uav.running` 的起飞时刻 + `uav.runningEstimate` 的历史实测中位数），
+ * 没有分母就整条不渲染，不拿 0% 或排班间隔凑一个「看起来在动」的条。
+ *
+ * 数据由 `uav.loadMission()` 补：首页原先只打统计请求，拿不到今日明细，
+ * `running` 永远为空，进度条也就无从显示。
+ *
+ * **时间源必须是共享的那一个**（`utils/missionClock.ts`）：这里和无人机页原先
+ * 各持一份 `ref(Date.now())` + 各自的 30s `setInterval`，两条定时器的相位由
+ * 各自的挂载时刻决定，同一条任务在两处能差近一拍（现场 50% vs 61%）。
+ * 现在两边读同一个 `now`，跳动也落在同一批整 5 秒上。
+ */
+const now = useMissionClock()
+/** 每 30s 问一次 store「有没有新任务开始 / 结束」（时间推进由共享时钟负责） */
+let missionTimer: number | null = null
+
+const mission = computed(() =>
+  missionProgress(uav.running?.startAt ?? null, uav.runningEstimate, now.value),
+)
+
+/** 三件套齐了才交给模板（任务在跑 + 有百分比） */
+const droneMission = computed(() => {
+  const r = uav.running
+  if (!r || mission.value.pct === null) return null
+  return { name: r.name, time: r.time, progress: mission.value }
+})
+
 onMounted(() => {
   if (auth.token) void ledger.refresh(auth.token)
   void scaf.refresh()
@@ -116,7 +150,23 @@ onMounted(() => {
    * 失败静默 + 60s 冷却由 `loadStat` 内部管；取不到时卡片就是「—」，
    * 不写 0（那会替它宣布「今天一架次都没飞」）。
    */
-  statTimer = window.setTimeout(() => void uav.loadStat(), 800)
+  statTimer = window.setTimeout(() => {
+    void uav.loadStat()
+    // 进度条与统计各打各的：一个失败不影响另一个（两条都静默）
+    void uav.loadMission()
+  }, 800)
+
+  /**
+   * 30s 一拍：只做「有没有新任务开始 / 结束」的检查（`loadMission` 内部有 60s
+   * 冷却，实际约两拍一个请求）。**没任务时也要调** —— 否则任务 09:45 起飞了，
+   * 一直停在这一页的用户永远等不到进度条出现。
+   *
+   * 进度条自己的走动**不在这里**：那是 `useMissionClock()` 的事，两处共用一个
+   * 时钟才能在切换页面时保持同一个百分比（见 `utils/missionClock.ts`）。
+   */
+  missionTimer = window.setInterval(() => {
+    void uav.loadMission()
+  }, 30_000)
 })
 
 /** 登录成功后补拉（登录页盖在首页上，面板不卸载，onMounted 不会重跑） */
@@ -158,6 +208,7 @@ watch(
 onUnmounted(() => {
   // 放最前面：下面那条 `if (!subscribed) return` 会提前返回，清理不能它带走
   if (statTimer !== null) window.clearTimeout(statTimer)
+  if (missionTimer !== null) window.clearInterval(missionTimer)
   lift.stopLive('equip')
   if (!subscribed) return
   subscribed = false
@@ -387,14 +438,28 @@ function cellsOf(d: Equip): CardCell[] {
  */
 interface ClimbCell {
   metric: string
-  /** 阈值内的机位数（绿色） */
+  /** 阈值内的机位数（绿色；该指标有机位超限时转红） */
   normal: number
   /** 有该指标读数的机位数（分母） */
   total: number
+  /** 该指标是否有 ≥1 个机位越限 —— 决定分子颜色 */
+  bad: boolean
 }
 
+/**
+ * `bad` 直接从 `normal / total` 推，不另取字段：
+ * `normal = total - 超限台数`（见 `utils/scaffold.ts::worstOf`），所以
+ * 「正常数少于总数」就等于「这个指标下有任意一个机位越限」。
+ * 三格各判各的 —— 参考稿里「左右倾斜 35/36」红了，另外两格 36/36 仍是绿的。
+ * 没有读数（`total = 0`，格子显示「—」）不算异常，不带红。
+ */
 const climbCells = computed<ClimbCell[]>(() =>
-  scaf.summary.cells.map((c) => ({ metric: c.label, normal: c.normal, total: c.total })),
+  scaf.summary.cells.map((c) => ({
+    metric: c.label,
+    normal: c.normal,
+    total: c.total,
+    bad: c.total > 0 && c.normal < c.total,
+  })),
 )
 
 /** 爬架在线数（在线信息仍然是真的，放进说明行而不是挤第四格） */
@@ -473,6 +538,17 @@ function ariaOf(d: Equip): string {
   if (d.id === 'drone') {
     const n = uav.taskDone
     parts.push(n === null ? '今日作业次数未取到' : `今日作业次数${n}次`)
+    // 卡片上还有一条进度条（有执行中任务才出现）：读屏拿不到可见文本，
+    // 只念「今日作业次数」等于漏报了一整行信息
+    const m = droneMission.value
+    if (m) {
+      const p = m.progress
+      const bits = [`当前巡检${m.name}`]
+      if (p.elapsedMin !== null) bits.push(`已飞${p.elapsedMin.toFixed(1)}分钟`)
+      if (p.estimateMin !== null) bits.push(`预计${p.estimateMin}分钟`)
+      bits.push(`进度${p.pct}%`)
+      parts.push(bits.join('，'))
+    }
     return `${parts.join('，')}，点击进入控制`
   }
 
@@ -712,7 +788,12 @@ function goRetry(): void {
         v-for="d in home.siteEquip"
         :key="d.id"
         class="eq-card"
-        :class="{ drill: !!d.page, 'is-crane': d.id === 'crane', 'is-climb': isClimb(d) }"
+        :class="{
+          drill: !!d.page,
+          'is-crane': d.id === 'crane',
+          'is-climb': isClimb(d),
+          'has-mission': d.id === 'drone' && !!droneMission,
+        }"
         :type="d.page ? 'button' : undefined"
         :role="d.page ? undefined : 'group'"
         :data-page="pageOf(d)"
@@ -743,7 +824,8 @@ function goRetry(): void {
               <span v-for="cell in climbCells" :key="cell.metric" class="eq-val">
                 <b>
                   <template v-if="cell.total > 0">
-                    <em class="eq-ok">{{ cell.normal }}</em><i class="eq-total">/{{ cell.total }}</i>
+                    <em class="eq-ok" :class="{ 'is-bad': cell.bad }">{{ cell.normal }}</em
+                    ><i class="eq-total">/{{ cell.total }}</i>
                   </template>
                   <template v-else>—</template>
                 </b>
@@ -772,6 +854,18 @@ function goRetry(): void {
           <!-- 箭头只属于可下钻的卡片：静态卡给箭头就是在暗示「能进去」 -->
           <span v-if="d.page" class="eq-more" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6l6 6-6 6"/></svg></span>
         </span>
+        <!--
+          无人机卡的「当前巡检」进度条：**默认不渲染**，只有真的在执行任务、
+          且有历史时长当分母时才出现（`droneMission` 见脚本）。
+          就是无人机页那一条（同一个 `.uav-bar` + `missionProgress()`），
+          首页只把「标题 / 条 / 说明」压成一行，不让卡片长高太多。
+        -->
+        <MissionBar
+          v-if="d.id === 'drone' && droneMission"
+          :name="droneMission.name"
+          :time="droneMission.time"
+          :progress="droneMission.progress"
+        />
         <!--
           爬架说明行：有机位超限时是设计稿的「30#机位 左右倾斜 179.5mm，超过 60mm」
           （.eq-climb-note.is-bad），没有超限就是一句可核验的汇总（机位数 / 更新时间 /

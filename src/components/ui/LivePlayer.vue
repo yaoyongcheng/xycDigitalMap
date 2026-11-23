@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import { useImageZoom } from '@/utils/zoom'
+
 /**
  * 实时画面播放器（HTTP-FLV）
  *
@@ -214,6 +216,30 @@ function retry(): void {
   void start()
 }
 
+/**
+ * 画面缩放（2026-11-23）
+ *
+ * 与 `CamPlayer` 的直播画面同一套（`useImageZoom`）：双指捏合、双击、
+ * 桌面滚轮、放大后拖动，等比 transform 缩放 —— 画面宽高比不会变。
+ * **画面上不摆按钮**，手势是唯一入口。
+ *
+ * 上限 3 倍：源是 1080p，再放大只剩马赛克；下限 1 倍（铺满容器），
+ * 比它小会在画面里露出底色，等于「缩成一个小窗口」，没有意义。
+ * 单指竖滑仍归页面滚动（`.live-video` 上写的是 `touch-action: pan-y`）。
+ */
+const {
+  contentStyle: zoomStyle,
+  animating: zoomAnim,
+  handlers: zoomHandlers,
+  reset: resetZoom,
+} = useImageZoom({ max: 3 })
+
+/** 换源（切设备 / 切航线 / 关掉直播）时复位 —— 新画面不该带着上一次的倍数 */
+watch(
+  () => props.src,
+  () => resetZoom(),
+)
+
 onMounted(() => {
   video.value?.addEventListener('playing', onPlaying)
   void start()
@@ -236,7 +262,22 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="live-player" :class="`is-${state}`">
-    <video ref="video" class="live-video" muted playsinline webkit-playsinline />
+    <!--
+      2026-11-23：画面可缩放。`v-zoomable` 只写 `touch-action: pan-y`
+      （单指竖滑交给页面），倍率与位移都是等比 transform，宽高比不变。
+    -->
+    <video
+      ref="video"
+      class="live-video v-zoomable"
+      :class="{ 'is-anim': zoomAnim }"
+      :style="zoomStyle"
+      muted
+      playsinline
+      webkit-playsinline
+      v-on="zoomHandlers"
+    />
+
+    <!-- 缩放控件已下线（2026-11-23）：手势是唯一入口，画面上不留按钮 -->
 
     <div v-if="state === 'loading'" class="live-mask">
       <span class="uav-spin" aria-hidden="true" />

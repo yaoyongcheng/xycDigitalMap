@@ -460,16 +460,11 @@ describe('components/ui/MapViewer', () => {
   /* ---------------- 缩放控件 ---------------- */
 
   describe('控件与双击', () => {
-    it('放大按钮按 1.4 倍递进，复位按钮随之出现', async () => {
+    it('不再渲染 + / − 缩放按钮，初始也没有复位键', async () => {
       await setupMounted()
+      expect(wrapper.find('[aria-label="放大"]').exists()).toBe(false)
+      expect(wrapper.find('[aria-label="缩小"]').exists()).toBe(false)
       expect(wrapper.find('.map-ctrl-reset').exists()).toBe(false)
-
-      await wrapper.find('[aria-label="放大"]').trigger('click')
-      expect(canvasWidth()).toBeCloseTo(CANVAS_W_AT_1X * 1.4, 3)
-
-      await wrapper.find('[aria-label="放大"]').trigger('click')
-      expect(canvasWidth()).toBeCloseTo(CANVAS_W_AT_1X * 1.96, 3)
-      expect(wrapper.find('.map-ctrl-reset').text()).toBe('复位')
     })
 
     it('滚轮缩放同样以指针为锚', async () => {
@@ -479,24 +474,24 @@ describe('components/ui/MapViewer', () => {
       expect(canvasWidth()).toBeCloseTo(CANVAS_W_AT_1X * 1.16, 3)
     })
 
-    it('复位回到 1x 并清空平移', async () => {
+    it('双击放大后出现复位键，点击回到 1x 并清空平移', async () => {
       await setupMounted()
-      await wrapper.find('[aria-label="放大"]').trigger('click')
+
+      // 缩放键已撤，用双击进 2.4x（复位键这时才出现）
+      dblclick(400, 300)
+      await nextTick()
+      expect(canvasWidth()).toBeCloseTo(CANVAS_W_AT_1X * 2.4, 3)
+      expect(wrapper.find('.map-ctrl-reset').text()).toBe('复位')
+
       gesture([{ clientX: 160, clientY: 300 }])
       await flushFrame()
+      pointerUp(window, 1)
       expect(canvasLeft()).not.toBeCloseTo(BASE_LEFT, 3)
 
       await wrapper.find('.map-ctrl-reset').trigger('click')
       expect(canvasWidth()).toBeCloseTo(CANVAS_W_AT_1X, 3)
       expect(canvasLeft()).toBeCloseTo(BASE_LEFT, 6)
       expect(wrapper.find('.map-ctrl-reset').exists()).toBe(false)
-    })
-
-    it('缩小按钮同样生效', async () => {
-      await setupMounted()
-      await wrapper.find('[aria-label="放大"]').trigger('click')
-      await wrapper.find('[aria-label="缩小"]').trigger('click')
-      expect(canvasWidth()).toBeCloseTo(CANVAS_W_AT_1X, 3)
     })
 
     it('双击在 1x / 2.4x 间切换', async () => {
@@ -529,6 +524,48 @@ describe('components/ui/MapViewer', () => {
       const after = wrapper.findAll('.map-ctrl-reset')
       expect(after).toHaveLength(1)
       expect(after[0].text()).toBe('复位')
+    })
+  })
+
+  /* ---------------- 锁定为静态背景 ---------------- */
+
+  /**
+   * 首页把底图当背景图用：`locked` 之后尺寸与位置只能由容器决定。
+   * 下面的断言就是「用户怎么操作都不动」的可执行版本 —— 滚轮、拖拽、
+   * 双击三条入口各走一遍，画布几何必须一像素不变。
+   */
+  describe('locked 静态背景', () => {
+    it('不渲染任何控制按钮（连 allowZoomOut 的总览也不出）', async () => {
+      await setupMounted({ locked: true, allowZoomOut: true })
+      expect(wrapper.find('.map-ctrls').exists()).toBe(false)
+    })
+
+    it('滚轮 / 拖拽 / 双击都不改变画布尺寸与位置', async () => {
+      await setupMounted({ locked: true })
+      const w0 = canvasWidth()
+      const l0 = canvasLeft()
+
+      wheel(400, 300, -100)
+      await nextTick()
+      expect(canvasWidth()).toBeCloseTo(w0, 6)
+
+      gesture([{ clientX: 560, clientY: 300 }])
+      await flushFrame()
+      expect(canvasLeft()).toBeCloseTo(l0, 6)
+      pointerUp(window, 1)
+
+      dblclick(400, 300)
+      await nextTick()
+      expect(canvasWidth()).toBeCloseTo(w0, 6)
+      expect(canvasLeft()).toBeCloseTo(l0, 6)
+    })
+
+    it('锁定的只是手势层，报警撒点仍可点击', async () => {
+      wrapper = mount(MapViewer, {
+        props: { locked: true, alarms: [{ id: 'a-1', title: '防护报警', x: 20, y: 30 }] },
+      })
+      await wrapper.find('.alarm-pin').trigger('click')
+      expect(wrapper.emitted('alarm')).toEqual([['a-1']])
     })
   })
 

@@ -355,6 +355,8 @@ function retryGate(): void {
         <Skel w="100%" h="96px" r="var(--r-8)" />
         <div class="patrol-card-ft">
           <Skel w="70%" h="13px" />
+          <!-- 日期那行（2026-11-23）：卡片改成「标题 + 时间」两行，骨架跟着补一条，数据回来不跳高 -->
+          <Skel w="45%" h="11px" />
         </div>
       </div>
     </div>
@@ -380,6 +382,7 @@ function retryGate(): void {
           <Skel w="100%" h="96px" r="var(--r-8)" />
           <div class="patrol-card-ft">
             <Skel w="70%" h="13px" />
+            <Skel w="45%" h="11px" />
           </div>
         </div>
       </div>
@@ -486,8 +489,8 @@ function retryGate(): void {
           <div class="patrol-card-name">
             <!-- 名字前段就是「站点-全景」，一眼能看出是哪片工地（全景不按项目筛，见 api/drone.ts） -->
             <strong>{{ panoLabel(patrol.pano.taskName) }}</strong>
-            <em>{{ panoTime || '—' }}</em>
           </div>
+          <p class="patrol-card-time">{{ panoTime || '—' }}</p>
           <div class="patrol-tags">
             <span class="patrol-tag">可环视</span>
             <span class="alarm-src alarm-src-drone">无人机</span>
@@ -524,17 +527,17 @@ function retryGate(): void {
         </div>
         <div class="patrol-card-ft">
           <div class="patrol-card-name">
-            <!-- 标题是真实航线名（抓拍则是点位名：2#塔吊 / 2#门监控1），徽标是归类 -->
+            <!-- 标题是真实航线名（抓拍则是点位名：2#塔吊 / 2#门监控1） -->
             <strong>{{ p.taskName }}</strong>
-            <em>{{ p.time.slice(0, 16).replace('T', ' ') }}</em>
           </div>
-          <div class="patrol-tags">
-            <span class="patrol-tag">{{ activeName }}</span>
-            <!-- 来源按照片本身写：设备设施 / 出入口管控的抓拍是视频监控拍的，不能标成无人机 -->
-            <span class="alarm-src" :class="p.snap ? 'alarm-src-cam' : 'alarm-src-drone'">
-              {{ p.snap ? '视频监控' : '无人机' }}
-            </span>
-          </div>
+          <!--
+            时间单独一行（2026-11-23 现场要求）。原先它和标题挤在同一行、靠
+            `margin-left:auto` 顶到右边，把标题压成「向…」；换行后标题拿满宽度，
+            时间左对齐与标题起点齐平。
+            原来标题下面那行「分类 + 来源」胶囊（全景航拍 / 无人机）已按要求整行删除
+            —— 分类在上面那排筛选里已经选着了，来源看角标就够。
+          -->
+          <p class="patrol-card-time">{{ p.time.slice(0, 16).replace('T', ' ') }}</p>
         </div>
       </button>
 

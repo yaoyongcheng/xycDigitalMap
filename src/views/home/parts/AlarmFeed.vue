@@ -5,10 +5,13 @@ import SmartImg from '@/components/ui/SmartImg.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import ThumbRing from '@/components/ui/ThumbRing.vue'
 import { ALARM_FEED_SHOW, alarmSrcOf } from '@/data/config'
-import { useAlarmStore } from '@/stores/alarm'
+import { FEED_FALLBACK_N, useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
+import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { alarmTone } from '@/utils/alarmTone'
+import { mergeAlarmEntries, type AlarmEntry } from '@/utils/alarmMerge'
 import { revealThumb } from '@/utils/thumbReveal'
+import { relTime } from '@/utils/videoAlarm'
 
 /**
  * 预警横滑分页轮播（2026-11 设计稿 gx2 版同步）
@@ -33,31 +36,105 @@ import { revealThumb } from '@/utils/thumbReveal'
  *   停稳后必须 `normalize()` 归位到等价的真实页。
  */
 const alarm = useAlarmStore()
+const drone = useDroneAlarmStore()
 const auth = useAuthStore()
 
-const emit = defineEmits<{ open: [id: string] }>()
+/** 点一条：带上来源，由面板决定进哪个详情（监控 → 报警详情 / 无人机 → 工单详情） */
+const emit = defineEmits<{ open: [kind: 'monitor' | 'drone', id: string] }>()
+
+/** 轮播卡片：两类预警收敛成同一套渲染字段，版式与各自的字段映射都不变 */
+interface FeedCard {
+  key: string
+  kind: 'monitor' | 'drone'
+  id: string
+  title: string
+  /** 来源徽标文案与配色（监控「视频监控」/ 无人机「无人机」） */
+  badge: string
+  badgeCls: string
+  desc: string
+  rel: string
+  /** 风险分档（只有监控侧有；无人机不设，保持原有属性语义） */
+  tone: string
+}
 
 /**
- * 卡片左图：优先用「该条报警详情页里的同一张抓拍图」缩略图。
+ * 卡片列表 = 今日两类预警合并（按时间倒序）。
+ *
+ * 与统计卡（`SafetyPanel` 的「今日预警数」）走同一个 `mergeAlarmEntries`，
+ * 所以「数字写 N、列表 N 行」永远成立。今日一条都没有时才退到两侧最近几条
+ * （原 `alarm.feed` 的兜底语义）—— 判断放在合并**之后**：只有两类今日都为空
+ * 才退，否则会出现「今日无人机 + 昨日视频」混在一条时间线上。
+ */
+const cards = computed<FeedCard[]>(() => {
+  const today = mergeAlarmEntries(alarm.latest, drone.todayItems)
+  const list = today.length
+    ? today
+    : mergeAlarmEntries(
+        alarm.liveAlarms.slice(0, FEED_FALLBACK_N),
+        drone.items.slice(0, FEED_FALLBACK_N),
+      ).slice(0, FEED_FALLBACK_N)
+  return list.map(toCard)
+})
+
+/** 一行时间线信封 → 轮播卡片（字段来源见 `utils/alarmMerge.ts` 与两侧 store） */
+function toCard(e: AlarmEntry): FeedCard {
+  if (e.work) {
+    const w = e.work
+    return {
+      key: e.key,
+      kind: 'drone',
+      id: w.id,
+      title: w.title || '识别预警',
+      badge: alarmSrcOf('drone').tag,
+      badgeCls: 'alarm-src-drone',
+      desc: w.jobName || w.projectName || '—',
+      rel: drone.relOf(w),
+      tone: '',
+    }
+  }
+  const a = e.alarm!
+  return {
+    key: e.key,
+    kind: 'monitor',
+    id: a.id,
+    title: a.title,
+    badge: alarmSrcOf(a.src).tag,
+    badgeCls: `alarm-src-${a.src}`,
+    desc: a.desc,
+    // 与 `stores/alarm.ts::withRel` 同一口径：兜底那批（最近 6 条）不是今日集合，
+    // 存着的 `rel` 是映射时算的，这里重算一次才不会停在一小时前
+    rel: relTime(a.at) || a.rel,
+    tone: alarmTone(a.type),
+  }
+}
+
+/** 这一格该铺哪张图：两侧各看各的 store（id 命名空间本来就不同） */
+function thumbOf(c: FeedCard): string {
+  return c.kind === 'drone' ? drone.thumbOf(c.id) : alarm.thumbOf(c.id)
+}
+
+/**
+ * 卡片左图：优先用「该条详情页里的同一张抓拍图」缩略图。
  *
  * 轮播每页 3 条 × 多页，一次全量请求太重；`revealThumb` 只给滑到眼前
  * （±240px）的那几张发请求。取不到时铺**统一占位图标**（`.alarm-tile`：
- * 灰底 + 深灰摄像机），不再用 `img/alarm-*.webp` 分类示意图 —— 那张图
+ * 灰底 + 深灰摄像机 / 无人机），不再用 `img/alarm-*.webp` 分类示意图 —— 那张图
  * 长得像真实现场，会被误读成当次抓拍（2026-11-19 现场反馈）。
  * 取图过程中图标外圈有一圈真实下载进度（`ThumbRing`）。
  */
-function bindThumb(el: unknown, id: string): void {
+function bindThumb(el: unknown, c: FeedCard): void {
   if (!(el instanceof Element)) return
   // 已经有图（内存命中 / 预取先到）：不必再登记观察器
-  if (alarm.thumbOf(id)) return
+  if (thumbOf(c)) return
   revealThumb(el, () => {
-    if (auth.token) alarm.ensureThumb(auth.token, id)
+    if (c.kind === 'drone') drone.ensureThumb(c.id)
+    else if (auth.token) alarm.ensureThumb(auth.token, c.id)
   })
 }
 
-/** 原 alarmFeedPages()（app.js:342-347）：feed 按 ALARM_FEED_SHOW 切页 */
+/** 原 alarmFeedPages()（app.js:342-347）：合并后的列表按 ALARM_FEED_SHOW 切页 */
 const pages = computed(() => {
-  const list = alarm.feed
+  const list = cards.value
   const n = Math.max(1, Math.ceil(list.length / ALARM_FEED_SHOW))
   return Array.from({ length: n }, (_, p) => list.slice(p * ALARM_FEED_SHOW, (p + 1) * ALARM_FEED_SHOW))
 })
@@ -349,20 +426,20 @@ function onUp(e: PointerEvent): void {
   restart()
 }
 
-/** 原 homePanels 委托的 [data-alarm] 分支 —— 现直达详情 */
-function onItemClick(id: string): void {
+/** 原 homePanels 委托的 [data-alarm] 分支 —— 现直达详情（无人机走工单详情） */
+function onItemClick(c: FeedCard): void {
   if (suppressClick) {
     suppressClick = false
     return
   }
-  emit('open', id)
+  emit('open', c.kind, c.id)
 }
 
 /** 键盘可达 */
-function onKey(e: KeyboardEvent, id: string): void {
+function onKey(e: KeyboardEvent, c: FeedCard): void {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
-    onItemClick(id)
+    onItemClick(c)
   }
 }
 
@@ -390,7 +467,7 @@ onUnmounted(() => {
 
 <template>
   <div class="home-chart-card alarm-feed">
-    <div v-if="!alarm.feed.length" class="chart-empty">暂无报警记录</div>
+    <div v-if="!cards.length" class="chart-empty">暂无报警记录</div>
     <div
       v-else
       class="alarm-feed-win"
@@ -408,35 +485,43 @@ onUnmounted(() => {
           :aria-hidden="s.clone ? 'true' : undefined"
         >
           <div
-            v-for="a in s.items"
-            :key="a.id"
-            :ref="(el) => bindThumb(el, a.id)"
+            v-for="c in s.items"
+            :key="c.key"
+            :ref="(el) => bindThumb(el, c)"
             class="alarm-feed-item"
-            :data-alarm="a.id"
-            :data-tone="alarmTone(a.type)"
+            :data-alarm="c.kind === 'monitor' ? c.id : undefined"
+            :data-wo="c.kind === 'drone' ? c.id : undefined"
+            :data-tone="c.tone || undefined"
             role="button"
             :tabindex="s.clone ? -1 : 0"
-            @click="onItemClick(a.id)"
-            @keydown="onKey($event, a.id)"
+            @click="onItemClick(c)"
+            @keydown="onKey($event, c)"
           >
             <SmartImg
-              v-if="alarm.thumbOf(a.id)"
+              v-if="thumbOf(c)"
               class="alarm-feed-pic"
-              :src="alarm.thumbOf(a.id)"
-              :alt="a.type"
+              :src="thumbOf(c)"
+              :alt="c.title"
             />
             <span v-else class="alarm-feed-pic alarm-tile" aria-hidden="true">
-              <SvgIcon name="work-cam" />
-              <ThumbRing :id="a.id" />
+              <SvgIcon :name="c.kind === 'drone' ? 'drone' : 'work-cam'" />
+              <!-- 无人机侧的进度由它自己的 store 提供；监控侧不传，仍回落到报警 store -->
+              <ThumbRing
+                v-if="c.kind === 'drone'"
+                :id="c.id"
+                :busy="drone.thumbBusyOf(c.id)"
+                :pct="drone.thumbPctOf(c.id)"
+              />
+              <ThumbRing v-else :id="c.id" />
             </span>
             <div class="alarm-feed-meta">
               <div class="alarm-feed-hd">
-                <strong>{{ a.title }}</strong>
-                <span class="alarm-src" :class="`alarm-src-${a.src}`">{{ alarmSrcOf(a.src).tag }}</span>
+                <strong>{{ c.title }}</strong>
+                <span class="alarm-src" :class="c.badgeCls">{{ c.badge }}</span>
               </div>
-              <p>{{ a.desc }}</p>
+              <p>{{ c.desc }}</p>
             </div>
-            <span class="alarm-feed-time">{{ a.rel }}</span>
+            <span class="alarm-feed-time">{{ c.rel }}</span>
           </div>
         </div>
       </div>

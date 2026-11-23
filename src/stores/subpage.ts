@@ -181,9 +181,16 @@ export const useSubpageStore = defineStore('subpage', () => {
     view.value = { kind: 'work-orders' }
   }
 
-  /** 无人机预警详情：返回键回到列表（与 openAlarmDetail 的 fromList 一致） */
-  function openWorkOrderDetail(id: string): void {
-    back.value = { kind: 'work-orders' }
+  /**
+   * 无人机预警详情：返回键回到列表（与 openAlarmDetail 的 `from` 一致）。
+   *
+   * `from` 默认回到「无人机预警」列表；从报警预警历史页（两类预警合并的
+   * 那条时间线）点进来时要显式传 `{ kind: 'alarm-hist' }`，否则返回会跳到
+   * 另一个从未打开过的页面。首页轮播里点无人机预警传 `null` —— 与
+   * `openAlarmDetail(id, false)` 同义：这是一个从首页直达的详情，返回就回首屏。
+   */
+  function openWorkOrderDetail(id: string, from: SubView | null = { kind: 'work-orders' }): void {
+    back.value = from
     view.value = { kind: 'work-order-detail', id }
   }
 

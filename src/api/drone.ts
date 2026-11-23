@@ -113,8 +113,25 @@ export interface DroneTaskRecord {
   start: string
   /** 结束时间 */
   end: string
-  /** 执行状态：服务端枚举，未知值统一按「未知」处理 */
+  /**
+   * 记录状态：**只说明这条执行记录处在什么阶段，不表示飞行成败**。
+   *
+   * 实测（2026-11-23，近 14 天 204 行）已执行的记录 `status` **恒为 2**，
+   * 失败的架次同样是 2；`-1` 是「还没执行」的计划项（只在旧接口里出现）。
+   */
   status: number
+  /**
+   * 飞行结果：**「失败」写在这里，不在 `status` 里**（2026-11-23 实测）。
+   *
+   * | 值 | 含义 | 依据 |
+   * |---|---|---|
+   * | `0` | 成功 | 204 行里 202 行；`finishedCount` 只数它 |
+   * | `3` | 失败 | 当日唯一一条 `result:3` 与三格 `failedCount:1` 一一对应 |
+   * | `4` | 未执行 | 计划项（`status:-1`）清一色 4 |
+   *
+   * `1` / `2` 未实测到，按「未知」处理，不猜语义。
+   */
+  result: number | null
   /** 是否排班任务 */
   scheduled: boolean
   /**
@@ -156,6 +173,26 @@ export interface DroneTaskStat {
   planCount: number
   /** 已暂停 */
   suspendedCount: number
+  /**
+   * 当天还没飞的任务（响应里的 `unfinishedTaskList`）。
+   *
+   * 「今日任务 15 / 已完成 12 / 失败 1」与执行记录 13 条的差，就是这两条排班：
+   * 执行记录接口只返回「已产生记录」的项，未起飞的计划项不在里面。
+   * 清单要跟三格对齐，就得把它们补上（`stores/uav.ts::todayPending`）。
+   *
+   * 可选：老调用方 / 测试桩只关心几个计数，不补这个字段也能过。
+   */
+  pending?: DronePlanTask[]
+}
+
+/** 当天还没执行的计划项（`unfinishedTaskList[].tasksDetail` 的瘦身版） */
+export interface DronePlanTask {
+  /** 航线名，如「向阳村-土方1」 */
+  taskName: string
+  /** 计划开始时间，`YYYY-MM-DDTHH:mm:ss`（与执行记录同一口径） */
+  start: string
+  /** 任务（排班项）id —— 与执行记录去重时用它 */
+  taskId: number | null
 }
 
 
@@ -508,6 +545,7 @@ export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
       start: str(o.start),
       end: str(o.end),
       status: num(o.status) ?? 0,
+      result: num(o.result),
       scheduled: o.scheduled === true,
       pid: num(o.pid),
     })
@@ -581,7 +619,30 @@ export function toTaskStat(raw: unknown): DroneTaskStat {
     runningCount: num(o.runningCount) ?? 0,
     planCount: num(o.planCount) ?? 0,
     suspendedCount: num(o.suspendedCount) ?? 0,
+    pending: toPlanTasks(o.unfinishedTaskList),
   }
+}
+
+/**
+ * `unfinishedTaskList` → 计划项。
+ *
+ * 每行是 `{ tasksDetail: { taskName, taskId, start, status:-1, result:4 }, device }`，
+ * 航线信息在内层 `tasksDetail` 上（与 `fetchRoutes` 的 `task.list` 同一套结构）。
+ * 缺名字或时间的行直接跳过 —— 没有这两样本就没法在清单里成行。
+ */
+function toPlanTasks(raw: unknown): DronePlanTask[] {
+  const list = Array.isArray(raw) ? raw : []
+  const out: DronePlanTask[] = []
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue
+    const o = row as Record<string, unknown>
+    const t = (o.tasksDetail ?? o) as Record<string, unknown>
+    const name = str(t.taskName)
+    const start = str(t.start).replace(' ', 'T')
+    if (!name || !start) continue
+    out.push({ taskName: name, start, taskId: num(t.taskId) })
+  }
+  return out
 }
 
 
@@ -661,6 +722,9 @@ export function toOpenTaskRecords(raw: unknown): DroneTaskRecord[] {
       start: str(o.startTime ?? o.start).replace(' ', 'T'),
       end: str(o.endTime ?? o.end).replace(' ', 'T'),
       status: num(o.status) ?? 0,
+      // 失败信息只在这个字段里（见 `DroneTaskRecord.result`）：漏读它，
+      // 失败的架次会被当成「已完成」显示 —— 2026-11-23 就是这么错的
+      result: num(o.result),
       scheduled: o.scheduled === true,
       pid: num(o.projectId ?? o.pid),
     })
@@ -864,12 +928,18 @@ export async function fetchProjectIds(): Promise<number[]> {
 }
 
 /**
- * 「今日任务」明细 —— **账号口径，与三格同源**。
+ * 「今日任务」明细 —— 口径由调用方决定（`pids`）。
+ *
+ * ⚠️ **2026-11-23 起调用方传 `pids: [KH_IDS.pid]`，只取本项目**：用户要求
+ * 无人机页与「今日任务」弹层都剔除「光谷元著」。三格统计同样改成
+ * `fetchTaskStat({ pid })`，所以 23 = 15 + 8 那条旧口径不再成立 ——
+ * 现在两边都只算向阳村，条数依然逐条对得上。`pids` 留空时仍是账号口径
+ * （见下面的历史记录），随时可以回退。
  *
  * ## 为什么不是一次请求
  *
  * `/task/exec/list/record` 不带 `pid` 实测返回 **0 条**（2026-11-16 09:57），
- * 所以账号口径只能「先取项目清单，再逐个取，最后合并」。
+ * 所以跨项目只能「先取项目清单，再逐个取，最后合并」。
  *
  * ## 与三格的关系（2026-11-16 逐条核对）
  *
@@ -928,7 +998,7 @@ export async function fetchTodayRecords(
  * 这个接口**只算今天**（传 start/end 也被忽略），历史统计没有对应端点 ——
  * 设计稿那三格本来也是「今日」。
  *
- * ## 口径：**默认不传 `pid`，与 V2 完全一致**（2026-11-16 用户要求）
+ * ## 口径：默认不传 `pid`（V2 口径）；**本项目调用方一律传 `pid`**（2026-11-23）
  *
  * 实测同一时刻对同一端点取两次（2026-11-16 09:45）：
  *
@@ -937,14 +1007,13 @@ export async function fetchTodayRecords(
  * | `?pid=193640872670213` | **15** | 只有向阳村 |
  * | 不传 `pid` | **23** | 向阳村 ×7 + **光谷元著 ×3** |
  *
- * 也就是说 23 = 15（向阳村）+ 8（同账号下的光谷元著项目）。V2 取这一格时没带
- * 项目过滤，拿到的是**该账号下所有项目**的今日任务数；向阳村现场那台 V2 的无人机
- * 同样连 keehang（进程实测只连 `110.41.50.115:23443` 与本项目同一个网关），
- * 所以它显示的 23 正是这个未过滤的值。
+ * 也就是说 23 = 15（向阳村）+ 8（同账号下的光谷元著项目）。2026-11-16 曾按
+ * V2 的无 pid 口径取（用户当时要求「V2 咋获取的我就咋获取」）。
  *
- * 用户 2026-11-16 明确要求「V2 咋获取的我就咋获取，先不管是不是向阳村」，
- * 因此这里**默认复刻 V2 的无 pid 口径**。要回到只算本项目，传 `{ pid }` 即可
- * （`KH_PROJECT_ID`），不必改这里。
+ * **2026-11-23 用户改口：剔除「光谷元著」**。因此 `stores/uav.ts` 的三处调用
+ * （`load` / `refreshSlow` / `loadStat`）现在都传 `{ pid: KH_IDS.pid }`，
+ * 数字与「查看今日任务」弹层（同样只取本项目）对得上。函数本身保留
+ * 「不传就不过滤」的行为，回退时把参数去掉即可。
  *
  * 注意 `fetchTaskRecords`（今日明细列表）**必须带 `pid`**：不带会返回 0 条
  * （实测 2026-11-16）。账号口径的明细走 `fetchTodayRecords` —— 它先取项目清单

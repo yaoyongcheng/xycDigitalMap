@@ -60,6 +60,9 @@ const SCAN_MAX_PAGES = 3
 /** 趋势窗口天数（与监控预警一致：近 7 日） */
 export const WO_TREND_DAYS = 7
 
+/** 按需回补一次最多再翻几页（20 条/页） */
+const BACKFILL_MAX_PAGES = 3
+
 /**
  * 首屏扫描结果的有效期。
  *
@@ -197,6 +200,12 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
   const hiddenCount = computed(() => Math.max(0, total.value - items.value.length))
 
   const hasMore = computed(() => !exhausted.value && items.value.length < total.value)
+
+  /** 已加载工单里最早的一天（`YYYY-MM-DD`），空数据时为 '' */
+  const earliestDay = computed(() => {
+    const last = items.value[items.value.length - 1]
+    return last ? dayOf(last) : ''
+  })
 
   /** 按 id 找一条（详情页只拿到 id，与报警详情同一套做法） */
   function byId(id: string): DroneWorkOrder | undefined {
@@ -453,6 +462,28 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
   }
 
   /**
+   * 按需回补到某一天（报警预警历史页翻月历 / 选日期时用）。
+   *
+   * 审核中心没有时间筛选，只能**从新往旧一页页往后翻**，所以这里给一个很小的
+   * 预算（{@link BACKFILL_MAX_PAGES} 页 ≈ 60 条 ≈ 几天）：选一个很久以前的日期
+   * 时，页面会显示「无人机预警只加载到 X 日」而不是假装那天没有无人机预警；
+   * 想看更早的由用户自己点「继续加载」，不为了一次点击翻完 1000 多条。
+   *
+   * 失败不抛：`loadMore` 自己把原因写进 `loadError`，调用方照旧渲染已有数据。
+   */
+  async function ensureDay(d: Date): Promise<void> {
+    if (state.value !== 'ok') return
+    const need = dateKey(d)
+    for (let i = 0; i < BACKFILL_MAX_PAGES; i++) {
+      if (!hasMore.value || loadingMore.value) return
+      const last = items.value[items.value.length - 1]
+      if (!last || dayOf(last) <= need) return
+      await loadMore()
+      if (loadError.value) return
+    }
+  }
+
+  /**
    * 测试接线点：直接灌一批工单（等价于「刚刚扫完首屏」），不会触发请求。
    *
    * 与 `stores/patrol.ts::apply` 同一约定 —— 单测不该为了渲染一个列表
@@ -512,6 +543,7 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
     weekComplete,
     hiddenCount,
     hasMore,
+    earliestDay,
     byId,
     statusText,
     relOf,
@@ -523,6 +555,7 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
     clearThumbs,
     load,
     loadMore,
+    ensureDay,
     apply,
     reset,
   }

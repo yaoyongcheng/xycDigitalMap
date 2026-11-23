@@ -35,8 +35,27 @@ export const SHOT_KEEP_DAYS = 30
 /** 缓存总字节上限（超出按最旧淘汰） */
 export const SHOT_MAX_BYTES = 64 * 1024 * 1024
 
-/** 缩略图长边（像素） */
+/**
+ * 列表缩略图长边（像素）。
+ *
+ * 480 是「三列网格刚好够」的尺寸（一张约 110px，2x 屏 ≈ 220px），列表保持不动 ——
+ * 2026-11-23 现场口径：图标 / 列表的清晰度暂不处理，清晰度预算全部给详情。
+ */
 const THUMB_MAX_W = 480
+
+/** 列表缩略图 WebP 质量 */
+const THUMB_QUALITY = 0.72
+
+/**
+ * 详情预览的长边（像素）与质量（2026-11-23 新增）。
+ *
+ * 场景：抓拍详情铺满手机（390pt × 3x ≈ 1170px）。列表那张 480 的 thumb 在这个
+ * 尺寸上明显发虚，而原图 200~340KB 又违背「预览别拉原图」。折中成一档长边
+ * 1280 的 WebP（约 90~130KB）：只在**真正打开这一张详情**时生成一次，
+ * 生成后写回缓存 —— 列表一次都不为它付代价。
+ */
+const PREVIEW_MAX_W = 1280
+const PREVIEW_QUALITY = 0.8
 
 /** 一条抓拍缓存 */
 export interface ShotRecord {
@@ -51,8 +70,13 @@ export interface ShotRecord {
   at: number
   /** 原图字节数 */
   size: number
-  /** 压缩预览 */
+  /** 压缩预览（列表用；也是详情首屏的兜底） */
   thumb: Blob
+  /**
+   * 详情预览（长边 {@link PREVIEW_MAX_W}）。**懒生成**：第一次打开这张的详情时
+   * 才做，老记录没有这个字段 —— 读到 undefined 就现做一份并写回。
+   */
+  preview?: Blob
   /** 原图 */
   full: Blob
 }
@@ -162,15 +186,21 @@ function txDone(tx: IDBTransaction): Promise<void> {
 }
 
 /**
- * 生成压缩预览。
+ * 生成压缩预览（列表缩略图与详情预览共用同一套路径）。
  *
- * 用 canvas 缩到长边 480 的 WebP（质量 0.72），实测一张 300KB 的 JPEG 出来
- * 约 20KB —— 三列网格里 3~7 张也只有 100KB 上下。
+ * 列表档缩到长边 {@link THUMB_MAX_W}（480）、质量 {@link THUMB_QUALITY}（0.72），
+ * 实测一张 300KB 的 JPEG 出来约 20KB —— 三列网格里 3~7 张也只有 100KB 上下。
+ * 详情档（{@link PREVIEW_MAX_W} = 1280 / 0.80）走同一个函数、只是参数不同，
+ * 两档的解码 / 缩放 / 编码与失败兜底行为因此完全一致。
  *
  * 任何一步拿不到（单测环境没有 canvas / 解码失败 / toBlob 不支持 webp）都
  * **退回原始字节**：预览大一点不影响正确性，卡住列表才是问题。
  */
-export async function makeThumb(blob: Blob, maxW = THUMB_MAX_W): Promise<Blob> {
+export async function makeThumb(
+  blob: Blob,
+  maxW = THUMB_MAX_W,
+  quality = THUMB_QUALITY,
+): Promise<Blob> {
   try {
     if (typeof document === 'undefined') return blob
     // 先探一下 canvas 能不能用（单测环境 / 老 WebView 会直接没有 2d 上下文）：
@@ -191,7 +221,7 @@ export async function makeThumb(blob: Blob, maxW = THUMB_MAX_W): Promise<Blob> {
       canvas.width = tw
       canvas.height = th
       ctx.drawImage(img, 0, 0, tw, th)
-      const out = await toBlob(canvas)
+      const out = await toBlob(canvas, quality)
       // 编不出来 / 反而更大（本来就是小图）→ 用原图
       return out && out.size > 0 && out.size < blob.size ? out : blob
     } finally {
@@ -218,14 +248,36 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   })
 }
 
-function toBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+function toBlob(canvas: HTMLCanvasElement, quality = THUMB_QUALITY): Promise<Blob | null> {
   return new Promise((resolve) => {
     try {
-      canvas.toBlob((b) => resolve(b), 'image/webp', 0.72)
+      canvas.toBlob((b) => resolve(b), 'image/webp', quality)
     } catch {
       resolve(null)
     }
   })
+}
+
+/**
+ * 详情预览（长边 1280）—— **按需生成，一次生成后写回缓存**。
+ *
+ * 为什么不放进 {@link saveShot}：列表一天 3~7 张，每张都多缩一遍 1280 会让
+ * 首屏多出几百毫秒的 CPU；而事实上大部分人只看其中一张。所以推迟到
+ * 「真的点开这一张」时再做。
+ *
+ * 返回 `null` 表示**没有独立的预览可给**（环境不支持 canvas / 生成失败 /
+ * 生成结果不比缩略图更大）——调用方退回 `thumb`，不要因此报错。
+ */
+export async function ensureShotPreview(rec: ShotRecord): Promise<Blob | null> {
+  if (rec.preview instanceof Blob) return rec.preview
+  if (!rec.full) return null
+
+  const preview = await makeThumb(rec.full, PREVIEW_MAX_W, PREVIEW_QUALITY)
+  // 退回的是原图本身 / 没缩下来 / 比 thumb 还小 → 没有意义，不落盘也不返回
+  if (!preview || preview === rec.full || preview.size <= rec.thumb.size) return null
+
+  await putShot({ ...rec, preview })
+  return preview
 }
 
 /** 读一条缓存 */
@@ -268,7 +320,7 @@ async function putShot(rec: ShotRecord): Promise<void> {
  * 存一张抓拍。
  *
  * 同一 `mark` 再取到**同样大小**的字节时直接复用原来那条（缩略图也不必重做）——
- * 服务端同一张图不会变，重做只是白烧 CPU。
+ * 服务端同一张图不会变，重做只是白烧 CPU；已经生成过的详情预览一并留着。
  */
 export async function saveShot(
   channelId: string,
@@ -290,6 +342,8 @@ export async function saveShot(
     at,
     size: blob.size,
     thumb,
+    // 同一份原图（字节数相同）→ 之前做过详情预览就留着，不重复生成
+    preview: prev && prev.size === blob.size ? prev.preview : undefined,
     full: blob,
   }
   await putShot(rec)

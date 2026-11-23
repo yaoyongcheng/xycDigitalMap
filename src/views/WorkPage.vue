@@ -109,7 +109,6 @@ function onToolClick(title: string): void {
           <SvgIcon :name="s.icon" />
         </i>
         <span>{{ s.label }}</span>
-        <em v-if="s.pending" class="work-short-tag">{{ s.pending }}</em>
       </button>
     </div>
 

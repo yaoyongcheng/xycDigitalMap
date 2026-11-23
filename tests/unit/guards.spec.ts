@@ -344,12 +344,13 @@ describe('结构性守卫', () => {
       expect(useShellStore().toast).toContain('功能待定')
     })
 
-    it('工作台：隐患上报标为待定，文案与 aria 都说清楚', () => {
+    it('工作台：隐患上报标为待定，只靠图标淡一档 + aria 说明', () => {
       const w = mount(WorkPage)
       const btn = w.find('[data-work="hazard"]')
       expect(btn.classes()).toContain('is-pending')
-      expect(btn.text()).toContain('隐患上报')
-      expect(btn.find('.work-short-tag').text()).toBe('功能待定')
+      expect(btn.text()).toBe('隐患上报')
+      // 2026-11-23：格子下方那颗「功能待定」标签按现场要求下线
+      expect(btn.find('.work-short-tag').exists()).toBe(false)
       expect(btn.attributes('aria-label')).toBe('隐患上报（功能待定）')
     })
 

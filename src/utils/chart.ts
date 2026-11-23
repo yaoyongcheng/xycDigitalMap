@@ -265,10 +265,22 @@ interface HourChartSpec {
 function hourChart(spec: HourChartSpec): LineModel {
   const { hourNums, workersAll, managersAll, maxY, pickLabel, tailToZero } = spec
   const hours = hourNums.map((h) => h + ':00')
-  const w = 320
+  /*
+   * 画布尺寸（viewBox 单位）。
+   *
+   * 2026-11-23：宽 320 → 378、右内边距 16 → 10。SVG 在卡片里是
+   * `width: 100%; height: 132px`，320×148 的 viewBox 在 338px 宽的内容区里
+   * 受高度约束缩放（132/148 ≈ 0.89），画出来只有约 286px，左右各空出 26px ——
+   * 观感是「图缩在卡片中间」。把 viewBox 加宽到与容器同比例后，缩略完全由
+   * 高度决定，图形横向铺满，左右只剩 1px 级余量。
+   *
+   * 高度（148）与 pt/pb 一等不动，所以纵轴刻度、线宽、字号在屏幕上都不变，
+   * 变的只是横向的格距（更舒展）与右端的留白（更贴近卡片边框）。
+   */
+  const w = 378
   const h = 148
   const pl = 28
-  const pr = 16
+  const pr = 10
   const pt = 10
   const pb = 22
   const ticksN = hours.length
@@ -475,14 +487,15 @@ export function peopleHourModel(nowHour: number, live?: HourLiveData): LineModel
       /* 未到时段画在 0 线上（V2 的画法），见 HourChartSpec.tailToZero */
       tailToZero: true,
       /*
-       * 刻度标签与 V2 同一套点位。V2 在 1080 宽的大屏上标 1:00/3:00/…/21:00（12 个，
-       * 23:00 那格被屏宽挤到画外），手机卡片只有约 320 个 viewBox 单位、字号 11px
-       * （「21:00」本身约 28px 宽），12 个必然互相压字。这里取同一集合里隔一个的
-       * 1/5/9/13/17/**21**：间距 50px，窗口也正好落在 V2 可见的 1:00→21:00 区间。
-       * 不再标 23:00 —— 21:00 与它只隔 25px，两个四位数会直接压在一起；轴右端仍有
-       * 曲线贴底走过，只是不再挂一个叠字标签。
+       * 刻度标签：1/5/9/13/17/**23** —— 每 4 格一个，末端挂 23:00。
+       *
+       * 画布加宽到 378 后每格 15.5 单位、两个标签的最小安全间距约 33 单位
+       * （「21:00」在 --fs-11 下约 32 单位宽）。21:00 与 23:00 只隔两格（31 单位），
+       * 硬塞两个四位数会直接压字，所以这里把 21:00 让位给 23:00：轴末端是
+       * 「今天收尾」的锚点，比中间多一个 21:00 更有信息量，标签数量仍是 6 个。
+       * 17:00 与 23:00 之间隔 6 格（93 单位），空白足够。
        */
-      pickLabel: (i) => i % 4 === 0 && i <= 20,
+      pickLabel: (i, n) => i === n - 1 || (i % 4 === 0 && i <= n - 7),
     })
   }
 
