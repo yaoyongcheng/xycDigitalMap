@@ -65,11 +65,11 @@ export interface CraneRealtime {
   /** 吊重 t */
   weight: number
   /**
-   * 重量利用率（负荷率）—— V2 报文里的 `weightRate`，卡片「当前负荷 36%」就是它。
+   * 重量利用率（负荷率）—— 报文里的 `weightRate`，平台侧自己算的一个数。
    *
-   * 单位有歧义：协议上是比值（0~1，与 Unity `Image.fillAmount` 同口径），
-   * 但现场设备也可能直接给百分数。这里**原样保留**，归一放在
-   * `utils/craneLoad.ts: loadPct`，解析层不猜。
+   * **卡片不用它**（2026-11-24 起）：现场要求「当前负荷 = 当前吊重 ÷ 额定 5t」，
+   * 见 `utils/craneLoad.ts: craneLoadPct`。这里仍原样保留，是因为它是协议字段、
+   * 将来可能用于别的判断；解析层不猜单位，也不在别处二次换算。
    */
   weightRate: number
   /** 是否带载（报文 `hasLoadInfo`）—— V2 `CraneData.HasLoad` 就是它，判「正在吊装」用 */

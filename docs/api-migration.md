@@ -7174,3 +7174,192 @@ input, textarea, select,
 7. 回归：各页纵向滚动正常、轮播横滑正常、按钮与链接点击正常、表格/列表 `:active` 反馈不变。
 
 > 本轮未跑用例、未截图、未真机，只过了 `npm run build`（含 `vue-tsc --noEmit`）。
+## 六点七十四、横向手势收口：只有轮播能横滑（2026-11-24 二次加固）
+
+现场反馈：上一轮「只让首页轮播响应左右滑」之后，**部分页面仍能被左滑**。本轮逐条
+排查所有触摸 / 指针事件与页面切换触发点，找到三条真正的漏网路径并补上。
+
+### ① 上一轮漏在哪（逐条对照代码）
+
+| # | 漏网路径 | 为什么上一轮没兜住 |
+|---|---|---|
+| 1 | **`overflow` 单轴声明把另一轴算成 `auto`** | `.page` 写的是 `overflow: auto`，等于**横向也可滚**；`#homePanels` / `.pd-list` 写的是 `overflow-y: auto` —— 按 CSS 规则，一个方向非 `visible` 时另一个 `visible` 会被计算成 `auto`，横向照样能滚。于是只要页面里有一个略宽的表格、不换行的长串或超宽的横排，整块内容就能被横着拖走。这一条是「部分页面仍可左滑」的主因：**能滑的页面 = 恰好有横向溢出的页面** |
+| 2 | **没有任何「统一」的守卫** | 上一轮只做了两件事：轮播自己 `touch-action: pan-y`、`historyBack` 前进零导航。前者是**逐元素**声明，散在各组件里，漏一个就有一个洞；后者只能管「已经发生的浏览器导航」，管不住内容先被拖走 |
+| 3 | **轮播左边缘与返回手势共用起手区** | `.page` 左右 padding 16px < `swipeBack` 的 24px 边缘起手区。有覆盖层时从轮播最左侧起手，两层会同时认领这一指 |
+
+顺带确认**不是**问题的几处（免得以后再查）：`AlarmFeed` 的方向锁与首尾副本页、
+`swipeBack` 的左滑 `giveUp()`、`historyBack` 的 `target >= depth` 分支（前进零
+`go`）、`HomePage` 的抽屉拖拽（只读 `clientY`）、`TouchChart` / `DonutTouch`
+（`pointerdown.prevent` + move，不换页）、`MapViewer` / `PanoViewer` / `useImageZoom`
+（动画面，不换页）。`.page` 非激活时是 `display: none`，隐藏页收不到任何事件。
+
+### ② 改法一：统一守卫 `utils/horizontalGuard.ts`（新增）
+
+document 层一处判定，只有三条规则：
+
+| 情形 | 处置 |
+|---|---|
+| 多指（≥2） | 完全不管 —— 那是捏合缩放 |
+| 位移 < 10px | 不表态（可能只是点击） |
+| `|dy| > |dx|` | **整指撒手**，交给浏览器滚动，本次手势后面不再干预 |
+| 起手在 `.alarm-feed-win` 内 | 放行 —— 轮播自己用 pointer 跟手，`touch-action: pan-y` 已让浏览器不处理横向 |
+| 起手元素往上存在**真的能横滚**的祖先（`overflow-x: auto/scroll` 且 `scrollWidth > clientWidth`） | 放行 —— 设备详情 `.pd-units` 那类刻意横滑条 |
+| 其余横向移动 | `preventDefault()`，并锁到 `touchend` |
+
+三个关键点：
+
+* **为什么用 touch 而不是 pointer**：要的是「阻止默认行为」（取消滚动与浏览器手势
+  判码），只有 `touchmove` 能 `preventDefault`，且必须 `{ passive: false }`；
+  pointer 事件不可取消，用它拦不住内容被拖走。
+* **为什么不给全站写 `touch-action: pan-y`**：`touch-action` 沿祖先链取交集，写到
+  `.pages` 会把 `TouchChart` 的横向选点、`DonutTouch` 的分段拖动一起废掉。守卫按
+  「起手元素」判断，粒度才是对的。
+* **锁到 `touchend` 而不是每帧重判**：否则「斜着划一半再改横」会让页面先滚半屏
+  再横移，比不放行还乱。
+
+### ③ 改法二：把所有纵向滚动容器的横向锁死（`app.css`）
+
+| 选择器 | 改动 |
+|---|---|
+| `.page`、`.cam-player-switch`、`.cam-shots`、`.air-grid`、`.hazard-body`、`.subpage-body` | 在统一那组里加 `overflow-x: hidden`（原本只有 `overscroll-behavior: contain`） |
+| `#homePanels`（首页抽屉） | 补 `overflow-x: hidden` —— 它只写了 `overflow-y: auto`，横向被算成 auto。首页抽屉里塞着轮播、KPI 横排、统计格，**这是「首页非轮播区域也能左滑」的直接来源** |
+| `.pd-list`（设备详情名单） | 同上补 `overflow-x: hidden`（它另有 `touch-action: pan-y` 兜底） |
+
+刻意横滑的子元素不受影响：`.pd-units` 自己 `overflow-x: auto`、宽度受父级约束，
+照旧能滑 —— 守卫那边也会识别它并放行。
+
+### ④ 改法三：轮播与返回手势隔离（`AlarmFeed.vue`）
+
+模板 `@pointerdown` → `@pointerdown.stop`：把 pointerdown 挡在轮播窗口内，不再冒泡
+到 `window` 上的右滑返回手势。`pointermove` / `pointerup` 仍照常冒泡 —— 返回手势
+没有 pointerdown 就不会进入 tracking，本来就互不干扰。
+
+### ⑤ 平台边界（拦不住的部分，必须说清）
+
+| 手势 | 能否拦 | 说明 |
+|---|---|---|
+| Android Chrome 横向 overscroll 导航 | ✅ 基本拦住 | `html, body{overscroll-behavior: none}` + 守卫 `preventDefault` |
+| iOS / Android 内容横向滚动 | ✅ 拦住 | `overflow-x: hidden` + 守卫 |
+| iOS Safari / 微信 **边缘侧滑导航** | ❌ | 系统级手势，`preventDefault` 无效。应用内保证「内容不动、不发任何 history 遍历」；**手指按住期间的系统快照预览拦不住**。装 PWA（standalone）后该手势消失 |
+| 桌面触控板双指横滑 | ❌ | 属浏览器 / 系统级历史导航，网页收不到可取消事件 |
+
+### ⑥ 重点回归页面与场景
+
+**A. 必须「有反应」的（唯一白名单）**
+
+1. 首页预警轮播：左滑翻下一页、右滑翻上一页；首页右滑绕过末页、末页左滑绕回首页；
+2. 轮播上斜着往下划：页面正常纵向滚动，轮播**不翻页也不抖**；
+3. 轮播上按下后不移动就松手：当点击处理，进对应详情。
+
+**B. 必须「完全无反应」的（左滑与右滑都不动内容）**
+
+4. 首页轮播以外的全部区域：地图背景、KPI 卡、统计卡、图表卡、抽屉空白处；
+5. 首页抽屉展开 / 半开两种档位，横滑内容不动、只有纵向能滚；
+6. 工作台：全部卡片、图表（`TouchChart` 的点选仍要正常）、列表；
+7. 消息：两张预警卡、列表；
+8. 我的：全部行项；
+9. 全部子页（`.subpage-body`）：报警历史、巡检列表、设备详情（含 `.pd-units`
+   横滑条 —— **这里是唯一应放行的子页横滑**）、日报 / 周报 / 月报、无人机、登录页；
+10. 视频监控层：点位切换列表、历史抓拍网格；画面内未放大时横滑不动、放大后可平移；
+11. 航拍照片层：站点下拉、日期芯片、照片网格；照片详情内未放大时横滑不动、放大后可平移；
+12. 隐患填报层：表单区横滑不动，`textarea` 内文字选择与光标不受影响；
+13. 全屏地图：拖拽可平移地图（这是唯一应该响应横向拖的覆盖层），松手不换页、不返回；
+14. 全景 / VR 环视：拖拽转视角正常。
+
+**C. 交互不能坏的**
+
+15. 纵向滚动：上述每一页滚到底 / 滚到顶都不出现横向位移与整屏回弹；
+16. 点击与按压反馈：按钮、卡片、底栏四个 tab、列表行项的 `:active` 与点击；
+17. 表单：登录页输入框、隐患填报 `textarea` 的聚焦、输入、光标定位、长按粘贴；
+18. 右滑返回（保留）：子页 / 监控 / 航拍 / 隐患从**左边缘**起手右滑，仍能跟手返回；
+19. 浏览器返回键 / 安卓物理返回：仍按层数逐级退，不多退也不少退；
+20. 图片缩放：双指捏合仍能缩放，单指在放大态仍能平移（不被守卫拦）。
+
+### 落地文件
+
+`src/utils/horizontalGuard.ts`（新增）、`src/App.vue`（`useHorizontalGuard()`）、
+`src/styles/app.css`（`.page` 等 6 个容器 + `#homePanels` + `.pd-list` 补
+`overflow-x: hidden`）、`src/views/home/parts/AlarmFeed.vue`（`@pointerdown.stop`
+与注释）。未新增令牌、未改字号、未动 `historyBack` 与 `swipeBack` 的行为。
+
+> 本轮未跑用例、未截图、未真机，只过了 `npm run build`（含 `vue-tsc --noEmit`）。
+## 六点七十五、塔机「当前负荷」改口径：当前吊重 ÷ 额定 5t（2026-11-24）
+
+现场要求：5G 塔机页（`DevicePage`，`kind='crane'`）里智能塔机 2 / 3 / 4 的
+「当前负荷」统一按 **当前吊重 ÷ 5t** 算，数值来源与「当前吊重」格一致，
+卡下进度条与显示值同源。
+
+### ① 改前是什么口径，为什么必须改
+
+| 格 | 改前来源 |
+|---|---|
+| 当前吊重 | MQTT 报文 `weight` |
+| 当前负荷 | MQTT 报文 **`weightRate`**（`utils/craneLoad.ts: loadPct` 归一，启发式猜 0~1 还是 0~100） |
+
+两个数是**两个来源**：`weightRate` 是平台侧自己算的利用率，与报文 `weight`
+没有强制关系。现场看到「当前吊重 0.07t / 当前负荷 2%」这种配对（0.07 ÷ 5 只有
+1%），第一反应就是哪个数错了。而且 `weightRate` 单位在协议里没写，旧实现靠
+「≤1 当比值」的猜测 —— 猜错就整格错一倍。
+
+### ② 改成什么
+
+```ts
+// utils/craneLoad.ts
+export const CRANE_RATED_T = 5                       // 现场三台智能塔机铭牌额定
+export function craneLoadPct(weight, rated = CRANE_RATED_T): number | null
+// pct = min(100, round(weight / rated * 100))
+```
+
+| 输入 | 输出 | 说明 |
+|---|---|---|
+| `0.07` | `1` | 0.07 ÷ 5 = 1.4% → 四舍五入 1% |
+| `0.25` | `5` | 5.0% |
+| `1.00` | `20` | 20% |
+| `0` | `0` | 空钩是结论，不是没数据 |
+| `5.4` | `100` | 超额定截到 100，进度条不溢出（超载另有告警） |
+| `null` / 无帧 | `null` | 格子写「—」且**不画条**，「没数据」不能画成「负荷 0%」 |
+
+`weightRate` 仍原样留在报文类型与解析层（协议字段，解析不猜），只是不再参与
+卡片计算；`loadPct` 这个旧函数已删除，全项目只剩一个负荷口径。
+
+### ③ 显示值与进度条怎么保证一致
+
+`cards` computed 里**只算一次**：
+
+```ts
+const pct = frame ? craneLoadPct(frame.weight) : null
+...
+cells: craneCells(sn, frame, pct),   // 「当前负荷」格写 `${pct}%`
+load: pct,                            // 模板 `:style="{ width: `${c.load}%` }"`
+```
+
+模板拿的就是 `c.load`，没有第二处计算、没有硬编码百分比。进度条的填充色是
+固定渐变（`.dev-bar i`），**没有按值变色**，所以「状态」就体现在宽度上 ——
+同一个数不可能出现「写 2% 画 3%」。
+
+### ④ 影响面
+
+* 只动塔机卡：`cards` 里 `if (!isCrane.value) return liftCards.value`，电梯卡
+  `load: null`（从不画条），四格也不经过 `craneLoadPct`；
+* 传统塔机5 没有平台编号（`craneSnOf` 为 null）→ 无帧 → 两格仍是「—」，行为不变；
+* 报表页（`DeviceReport`）本来就不用实时负荷（它的「负荷」一栏早已换成
+  「峰值吊重」），不受影响；
+* 设备信息弹层不显示负荷，不受影响。
+
+### ⑤ 落地文件
+
+`src/utils/craneLoad.ts`（重写：`CRANE_RATED_T` + `craneLoadPct`，删 `loadPct`）、
+`src/views/sub/DevicePage.vue`（import、顶部注释、`craneCells` 注释、`cards` 里
+`pct` 一行）、`src/api/craneRealtime.ts`（`weightRate` 注释改为「卡片不用它」）。
+未改样式、未改测试期望（`device-page.spec.ts` 只断言四格标签文字）。
+
+### ⑥ 验证点
+
+1. 塔机 2/3/4 卡片：「当前负荷」≈ `当前吊重 ÷ 5` 四舍五入（0.07t → 1%，0.00t → 0%）；
+2. 同一张卡的进度条宽度 === 该百分比，切换帧时两者同步变化；
+3. 无实时帧（通道不通 / 25s 过期）：两格「—」、无进度条；
+4. 传统塔机5：四格仍全「—」；
+5. 电梯页：四格与行为完全不变（无「当前负荷」、无进度条）；
+6. 报表页：数据与之前一致。
+
+> 本轮未跑用例、未截图、未真机，只过了 `npm run build`（含 `vue-tsc --noEmit`）。

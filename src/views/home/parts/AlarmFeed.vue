@@ -621,10 +621,22 @@ onUnmounted(() => {
 <template>
   <div class="home-chart-card alarm-feed" ref="rootEl">
     <div v-if="!cards.length" class="chart-empty">暂无报警记录</div>
+    <!--
+      轮播窗口：**全站唯一响应横向拖动的地方**。
+
+      `.stop` 把 pointerdown 挡在这一层，不让它冒泡到 window 上的右滑返回
+      手势（`utils/swipeBack`）—— 轮播左边距只有 16px，小于它的 24px 边缘
+      起手区，不挡的话从轮播左边缘起手会被两边同时认领。其它两个方向的事件
+      照常冒泡：返回手势要靠 pointermove/up 收尾，而它没有 pointerdown 就
+      不会进入 tracking，本来就互不干扰。
+
+      横向范围之外的横滑（首页别处、其它页面）由 `utils/horizontalGuard`
+      统一取消，与本组件无关。
+    -->
     <div
       v-else
       class="alarm-feed-win"
-      @pointerdown="onDown"
+      @pointerdown.stop="onDown"
       @pointermove="onMove"
       @pointerup="onUp"
       @pointercancel="onCancel"

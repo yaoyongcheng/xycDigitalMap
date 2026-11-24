@@ -1412,6 +1412,14 @@ select,
   gap: 14px;
   flex: 1 1 auto;
   min-height: 0;
+  /*
+   * overflow-x 必须显式写 hidden（2026-11-24）。
+   * CSS 的规则是：一个方向写 auto、另一个留 visible 时，visible 会被**计算成
+   * auto** —— 所以只写 overflow-y: auto 的容器，横向照样能滚。首页抽屉里塞着
+   * 轮播、KPI 横排、统计格，只要有一块比容器宽，整块抽屉就能被横着拖走，
+   * 现场表现为「轮播以外的首页区域也能左滑」。锁死之后横滑一像素不动。
+   */
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   /* 最后一张卡不要贴死抽屉底边（外层已有 10px padding，这里补一点呼吸） */
@@ -3630,6 +3638,9 @@ select,
 .pd-list {
   flex: 1 1 auto;
   min-height: 0;
+  /* 只写 overflow-y 时横向会被算成 auto（见 #homePanels 的说明），名单里人名
+     一长就能把整块横着拖走；显式锁死横向，触摸方向仍由下面的 pan-y 兜一道 */
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   touch-action: pan-y;
@@ -6820,11 +6831,20 @@ select,
 }
 
 /*
- * 内层滚动容器：滚动到底后不向外传递
+ * 内层滚动容器：滚动到底后不向外传递，且**纵向可滚、横向锁死**
  *
  * 根元素已设 overflow: hidden + overscroll-behavior: none，整页本就不可滚动；
  * 这里逐个兜住，是为了避免 iOS 在内层滚到底时把回弹传递给外层 ——
  * 那种情况下整屏内容会跟着手指上下晃动，观感上就是「页面被拖动了」。
+ *
+ * overflow-x: hidden 是 2026-11-24 补的，配合 utils/horizontalGuard.ts 的
+ * 「只有轮播能横滑」：这六个容器原本写的是 `overflow: auto`，等于**横向也
+ * 可滚**。只要某个页面里有一个略宽的表格 / 不换行的长串，整块内容就能被
+ * 横着拖走 —— 现场看到的就是「这一页还能左滑」。声明成 hidden 之后横向没有
+ * 可滚空间，横滑连一像素都不动，也不需要靠 JS 去猜哪里能滚。
+ *
+ * 刻意横滑的子元素（设备详情的 `.pd-units` 楼层按钮这类）不受影响：它们自己
+ * 声明 overflow-x: auto，宽度又受本容器约束，照旧能滑。
  *
  * 统一写在此处：各选择器权重与上方原有规则相同，位置靠后即生效，
  * 免去在 7 处 overflow: auto 旁边各加一行。
@@ -6839,6 +6859,7 @@ select,
 .hazard-body,
 .subpage-body {
   overscroll-behavior: contain;
+  overflow-x: hidden;
 }
 
 

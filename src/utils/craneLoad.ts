@@ -1,29 +1,55 @@
 /**
- * 塔机负荷率归一（报文 `weightRate` → 卡片上的百分比）
+ * 塔机当前负荷率（`当前吊重 ÷ 额定起重量`）
  *
- * ## 为什么需要一层归一
+ * ## 口径（2026-11-24 现场改定）
  *
- * `weightRate` 在塔机平台协议里没有公开的单位说明。两种写法都见过：
- *   · **比值** 0~1（与 Unity `Image.fillAmount` 同口径）→ 0.36 表示 36%；
- *   · **百分数** 0~100 → 36 表示 36%。
+ * 卡片上的「当前负荷」**不再取报文 `weightRate`**，改用同一张卡片上
+ * 「当前吊重」那一格的读数除以额定起重量：
  *
- * 现场报文当前一直是 `0.0`（空钩），没法用真实数据反推。所以这里按
- * 「≤ 1 当比值、> 1 当百分数」的启发式处理 —— 它只在 0~1% 这一小段有歧义
- * （0.5 到底算 50% 还是 0.5%），实际吊装负荷不会停在那里。
+ * ```
+ * 当前负荷 = round(当前吊重 / CRANE_RATED_T * 100)%
+ * ```
  *
- * 宁可显示一个可能偏高的数，也不显示「—」：负荷是现场最需要盯的数，
- * 一直拿不到比偶尔差一倍更糟。**但超出 100% 一律截到 100**，
- * 进度条不允许溢出（超载会另有告警，不靠这条粉色条表达）。
+ * 改这个口径的原因很直接：`weightRate` 是平台侧算的另一个数，现场看到的
+ * 是「当前吊重 0.07t / 当前负荷 2%」这种配对 —— 0.07 ÷ 5 明明只有 1%，
+ * 两个数摆在一起就像哪个错了。现在分子与「当前吊重」格是同一个 `weight`，
+ * 卡片上的两个数永远自洽，进度条也用同一个返回值，不会出现「写 2% 却画 3%」。
+ *
+ * ## 常量
+ *
+ * `CRANE_RATED_T` = 5t：现场三台智能塔机的铭牌额定起重量。将来若有不同吨位
+ * 的塔机混在同一屏，把额定值挪进台账/`data/craneSn.ts` 按 sn 取，改这一处即可
+ * —— 调用点已经留了 `rated` 形参。
  *
  * ## 约定
  *
- * 入参 `null` / `undefined` / 非有限数 → 返回 `null`，调用方显示「—」。
- * 返回 0~100 的整数（取整与卡片文案 `36%` 一致）。
+ * · 无实时帧（`null` / `undefined` / 非有限数）→ 返回 `null`，调用方写「—」
+ *   且**不画进度条**（「没有数据」不该画成「负荷为零」）；
+ * · 吊重 ≤ 0 → 0（空钩是结论，不是没数据）；
+ * · 四舍五入到整数，0.07t → 1%；
+ * · 超 100% 截到 100：进度条不允许溢出，超载另有告警，不靠这条条表达。
+ *
+ * 报文里的 `weightRate` 仍原样保留在类型与解析层（协议字段，解析不猜），
+ * 只是不再参与卡片计算 —— 它单位有歧义（比值 0~1 还是百分数 0~100），
+ * 而「吊重 ÷ 额定」没有歧义。
  */
-export function loadPct(weightRate: number | null | undefined): number | null {
-  if (weightRate === null || weightRate === undefined) return null
-  if (!Number.isFinite(weightRate)) return null
-  if (weightRate <= 0) return 0
-  const pct = weightRate <= 1 ? weightRate * 100 : weightRate
-  return Math.min(100, Math.round(pct))
+
+/** 额定起重量（t）。现场三台智能塔机铭牌值，改吨位只需改这里 */
+export const CRANE_RATED_T = 5
+
+/**
+ * 当前吊重 → 负荷百分比（0~100 的整数）。
+ *
+ * @param weight 实时报文里的当前吊重（t），也就是卡片「当前吊重」格那个数
+ * @param rated  额定起重量（t），默认 `CRANE_RATED_T`
+ */
+export function craneLoadPct(
+  weight: number | null | undefined,
+  rated: number = CRANE_RATED_T,
+): number | null {
+  if (weight === null || weight === undefined) return null
+  if (!Number.isFinite(weight)) return null
+  if (!Number.isFinite(rated) || rated <= 0) return null
+  if (weight <= 0) return 0
+  return Math.min(100, Math.round((weight / rated) * 100))
 }

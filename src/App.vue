@@ -10,6 +10,7 @@ import { useSubpageStore } from '@/stores/subpage'
 import { setThemeColor, THEME_COLORS } from '@/utils/themeColor'
 import { onFullscreenExit, settleViewport } from '@/utils/orientation'
 import { useHistoryBack } from '@/utils/historyBack'
+import { useHorizontalGuard } from '@/utils/horizontalGuard'
 import { useSwipeBack } from '@/utils/swipeBack'
 import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
@@ -64,6 +65,15 @@ useSwipeBack()
  * 地址，用户以为「应用内返回没生效」。这里让返回落到同一套返回动作上。
  */
 useHistoryBack()
+
+/**
+ * 横向手势守卫：全站只有首页轮播能横滑（2026-11-24）。
+ *
+ * 前面两个手势层分别管「应用内右滑返回」与「浏览器返回」，都不处理横滑内容被
+ * 拖走的问题。这一层在 document 上统一拦：纵向永远不管，横向除首页轮播与
+ * 局部横滑条外一律取消。规则与平台边界见 utils/horizontalGuard.ts 文件头。
+ */
+useHorizontalGuard()
 
 /**
  * 启动时检查登录态（2026-11 新增）。

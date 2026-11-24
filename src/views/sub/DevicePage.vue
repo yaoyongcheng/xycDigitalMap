@@ -13,7 +13,7 @@ import { useCraneRealtimeStore } from '@/stores/craneRealtime'
 import { useDeviceLedgerStore } from '@/stores/deviceLedger'
 import { useLiftStore } from '@/stores/lift'
 import { useSubpageStore } from '@/stores/subpage'
-import { loadPct } from '@/utils/craneLoad'
+import { craneLoadPct } from '@/utils/craneLoad'
 import { unitNo } from '@/utils/deviceLedger'
 import { formatFloor, formatHeight, formatLoad, formatPeople } from '@/utils/lift'
 import { useSlowLoading } from '@/utils/slowLoading'
@@ -33,7 +33,8 @@ import type { DeviceKind, DeviceUnit } from '@/types'
  * 塔机卡同源（`UIBottomCardCraneLv2`）：
  *   · 今日吊次、今日吊重 ← 塔机平台 `getWorkCycleInfoHis`（`api/towerCrane.ts`，
  *     逐台按 sn 汇总，见 `stores/deviceLedger.ts: craneDayBySn`）；
- *   · 当前吊重、当前负荷 ← MQTT 实时报文 `weight` / `weightRate`（`stores/craneRealtime.ts`）。
+ *   · 当前吊重、当前负荷 ← MQTT 实时报文：吊重取 `weight`，负荷 = `weight` ÷ 额定 5t
+ *     （`utils/craneLoad.ts: craneLoadPct`，不再用平台的 `weightRate`）。
  *
  * 台账字段（高度、安检有效期…）不在卡面上，它们在「设备信息」弹层里 ——
  * 卡片是看今天干了多少活，弹层才是看设备档案。
@@ -150,7 +151,12 @@ const DASH = '—'
  * | 今日吊次 | 工作循环条数（`getWorkCycleInfoHis`，按这台车的 sn） |
  * | 今日吊重 | 当天循环 `weight` 累加（t） |
  * | 当前吊重 | 实时报文 `weight` |
- * | 当前负荷 | 实时报文 `weightRate`（归一见 `utils/craneLoad.ts`） |
+ * | 当前负荷 | **同一帧 `weight` ÷ 额定 5t**（`utils/craneLoad.ts: craneLoadPct`） |
+ *
+ * 「当前负荷」刻意不再用报文的 `weightRate`（平台另算的一个数）：它和
+ * 「当前吊重」摆在一起会互相矛盾（0.07t 配 2%），现场会当成算错了。现在
+ * 分子就是上一格那个 `weight`，两格与卡下进度条取的是**同一个返回值**，
+ * 显示值与进度条不可能不一致。
  *
  * 后两格是**实时**的，25s 没有帧就过期成「—」—— 不留着最后一帧假装还在动。
  * 传统塔机5 没有 sn，四格全是「—」。
@@ -263,7 +269,12 @@ const cards = computed<Card[]>(() => {
     const sn = craneSnOf(unitNo(u.name))
     const status = statusOf(u, sn)
     const frame = crane.of(sn)
-    const pct = frame ? loadPct(frame.weightRate) : null
+    /*
+     * 负荷只算一次：`pct` 同时喂给「当前负荷」格与卡下的进度条，
+     * 模板里不再各自算 —— 之前两处若有一处改口径就会「写 2% 画 3%」。
+     * 分子是 `frame.weight`，正是上一格「当前吊重」显示的那个数。
+     */
+    const pct = frame ? craneLoadPct(frame.weight) : null
     return {
       key: u.id,
       name: u.name,
