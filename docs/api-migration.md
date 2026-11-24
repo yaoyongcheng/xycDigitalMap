@@ -6989,3 +6989,188 @@ iOS 27 又没把折行后的第二行算进容器高度，溢出的那行就画�
 > `npm run build`（含 `vue-tsc --noEmit`）通过。**体积本身降不下来**：服务端只接受
 > `pid/type` 两个参数（多余参数 400），图片是 Unity 侧导出的 3.19/3.66MB PNG，
 > 想真正变小只能在上传侧转 WebP / 降分辨率，属服务端改造，不在本次前端范围。
+## 六点七十二、横向手势归属与首页轮播边界（2026-11-24）
+
+现场要求：**只允许首页的预警轮播响应左右滑动**，其它页面严格禁用左滑（不误触返回、
+不切换页面）；同时处理横滑与纵滚冲突、轮播首尾边界、进出页面后的状态恢复。
+
+### ① 先盘点：全站到底有几处横向手势
+
+| 位置 | 是否换页 | 处理 |
+|---|---|---|
+| `views/home/parts/AlarmFeed.vue` 首页预警轮播 | **是**（唯一） | 本轮强化，见 ② |
+| `utils/zoom.ts` / `useImageZoom` 图片放大平移 | 否（动画面） | 保留 |
+| `PanoViewer` 全景拖拽、`MapViewer` 地图拖拽 | 否（动画面） | 保留 |
+| `utils/swipeBack.ts` 右滑返回 | 是（只关层，只认右滑） | 行为不变，补文档 |
+| 其余所有页面 | — | **没有任何横向手势实现** |
+
+结论：一级页面（首页 / 工作台 / 消息 / 我的）在应用层**本来就没有左滑逻辑** —— 
+`swipeBack` 的 `topLayer()` 只认覆盖层，一级页面返回 null，左右两向都不接管。
+所以「左滑切换页面」在应用内是不存在的；现场能看到的左滑只可能来自浏览器/系统。
+
+浏览器级左滑（前向遍历）由 `utils/historyBack.ts` 的「前进分支」兜住：落到旧条目
+就地 `replaceState` 改写层数，**不关层、不发起任何遍历**，松手后画面不动。
+
+> 仍需说清的平台边界：iOS Safari / 微信内置浏览器在手指还按着时会画出前向条目的
+> 系统快照（网页拿不到事件、也拦不住）。我们能保证的是「松手不跳、不弹回、不重播
+> 动画」。装了 PWA（全屏 `display: standalone`）时这条系统手势不再生效。
+
+### ② 轮播：三处硬改（`AlarmFeed.vue`）
+
+**A. 方向锁 —— 横滑与纵滚不再打架**
+
+`.alarm-feed-win` 早已是 `touch-action: pan-y`（纵向归浏览器、横向归 JS），但
+`onMove` 之前**任何方向都写 `translateX`**：手指斜着划时，浏览器在滚页面、
+轨道又在横移，观感是「滚列表时轮播在抖」。
+
+现在按 8px 抖动区分方向，先定向再动：
+
+| 判定 | 处置 |
+|---|---|
+| `|dx| ≤ 8 && |dy| ≤ 8` | 还没定向，一像素都不写（可能只是点击） |
+| `|dy| > |dx|` | 认定纵滚：**就地撒手**（`releaseDrag` 还掉指针捕获，否则页面根本滚不动）+ 轨道吸附回原页 + 抑制随后的 click |
+| 其余 | 认定横滑：进入跟手，只在这一支里写 `transform` |
+
+**B. `pointercancel` 不再当 `pointerup`**
+
+旧模板是 `@pointercancel="onUp"` —— 浏览器接管纵向滚动时会 cancel 指针，而
+`onUp` 会拿「滚到一半的 `lastX`」算位移，于是**竖着滚一下偶尔把轮播翻一页**。
+现在 `onCancel` 一律 `go(startIdx, true)` 吸附回原页，不判翻页。
+
+**C. 首尾边界双保险**
+
+双向副本页（轨道 = [末页副本] + 真实页 + [首页副本]）保持不变，另加：
+* `onUp` 的目标下标再夹一道 `[0, slides.length - 1]` —— 兜「页数刚好在这一帧变了」
+  的极窄窗口（越界下标会 translate 到轨道外，露白比回弹难看得多）；
+* 单页（`pageN ≤ 1`）时 `onDown` 直接返回：不装指针捕获、不响应拖动（只有一颗圆点，
+  没有可切换的目标）。
+
+### ③ 状态恢复：轮播只在「真的看得见」时转
+
+四个 tab 页是常驻挂载的（`.page.active` 只切显隐），本组件不会因为切 tab 而卸载 ——
+旧实现里 4s 定时器一直在后台跑。现在由 `running` 一个 computed 收口：
+
+```
+running = 轮播在视口内 && activeTab === 'home'
+          && !sub.isOpen && !cam.isOpen && !air.isOpen && !air.hazardOpen && !sheet.isOpen
+```
+
+* **视口**：`IntersectionObserver`（threshold 0.25）盯根元素，首页往下滚把轮播滚出
+  屏幕就停表；没有这个 API 的老内核退化为恒真（行为等同旧版）。
+* **覆盖层**：进子页 / 打开监控、航拍、弹层时暂停，返回首页时恢复。
+* **恢复语义**：`normalize()` + `restart()` —— **停在哪一页就从哪一页继续**，
+  不重置到第一页（真正需要回第一页的只有「页数变了」那条 watch）。
+* 页数变化时 `start()` 重铺轨道；若此刻不可见，紧接着 `pause()`，等回来再起表。
+
+### ④ 落地文件
+
+`src/views/home/parts/AlarmFeed.vue`（`axis` 方向锁、`releaseDrag`、`onCancel`、
+目标夹紧、`rootEl` + `IntersectionObserver`、`running` + watch、`onMounted/onUnmounted`、
+模板 `@pointercancel="onCancel"` 与 `ref="rootEl"`）、
+`src/utils/swipeBack.ts`（仅补「横向手势归属」注释，行为未改）。
+
+`app.css` 无需改动：`html, body` 已有 `overscroll-behavior: none`，`.page` 是
+`overscroll-behavior: contain`，`.alarm-feed-win` 早已 `touch-action: pan-y`。
+
+### ⑤ 验证点
+
+1. 首页轮播：左右滑各翻一页；第 1 页右滑绕到最后一页、末页左滑绕回第 1 页，不露白；
+2. 手指斜着划（往下居多）：页面正常纵向滚动，轮播**不翻页也不抖**；
+3. 滚到轮播上突然放开（触发 `pointercancel`）：轮播吸附回原页；
+4. 进详情再返回：轮播停在离开那一页，4s 后继续自动播；
+5. 切到工作台 / 消息 / 我的各页横滑：**页面无任何变化**（无返回、无换页）；
+6. 首页进子页后左滑、其它一级页面左滑：松手后画面不动（系统手势预览属平台边界）。
+
+> 本轮未跑用例、未截图、未真机，只过了 `npm run build`（含 `vue-tsc --noEmit`）。
+## 六点七十三、全站禁选与可编辑区豁免（2026-11-24）
+
+现场要求：移动端与桌面端长按 / 拖动时**不得框选页面内容**（不出现文字选中高亮、
+不弹选择手柄、不弹「拷贝 / 查询 / 存储图像」菜单），同时滚动、点击、表单输入、
+文本域与可编辑区域的选择编辑**必须照旧**。
+
+### ① 定位结论
+
+全站选择行为只有一处来源，且是**样式层**：
+
+| 位置 | 原状 | 问题 |
+|---|---|---|
+| `app.css` `body{}` | 只有无前缀 `user-select: none` | ① 缺 `-webkit-user-select`，iOS 15 及更早的 WebKit 视其为无效声明 → 长按照样选中；② **完全没有 `-webkit-touch-callout`** → iOS 长按图片 / 链接仍弹系统菜单（「存储图像」「拷贝」），这一条与 `user-select` 无关，加多少条 `user-select` 都挡不住 |
+| `index.html` `#boot` | 有前缀的 `user-select: none` | 同样缺 `-webkit-touch-callout`，启动骨架里长按 logo 会弹菜单 |
+| 交互代码 | **无** | `src/` 里没有任何 `selectstart` / `contextmenu` / `getSelection` 监听，不存在第二套拦截逻辑 |
+
+由此定调：**不需要加 JS**。用 `contextmenu` 全局拦截是错的——它会连带吃掉输入框
+右键「粘贴」和桌面端正常右键菜单，直接违反「表单输入不受影响」；而 `selectstart`
+的 `preventDefault` 与 CSS 是同一件事，多一层只多一个失效点。
+
+### ② 改法（三处，共 8 行有效声明）
+
+**A. `body` 补齐两条**（`src/styles/app.css`）
+
+```css
+-webkit-user-select: none;
+user-select: none;
+-webkit-touch-callout: none;
+```
+
+三条分工不同，少一条就漏一类现象：前两条管「不产生选区」→ 手柄无从出现；
+第三条管 iOS 的系统长按菜单（图片 / 链接），**只对 Safari 系有效**。
+
+**B. 可输入 / 可编辑区域写回**（`src/styles/app.css`，紧跟 `button, input, textarea` 那条）
+
+```css
+input, textarea, select,
+[contenteditable]:not([contenteditable="false"]) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+```
+
+为什么不靠浏览器默认：Chrome 对表单控件确实有特殊照顾，但 iOS Safari 上父级的
+`touch-callout: none` 会把长按菜单一起吃掉（全选 / 粘贴都弹不出来），必须显式还原。
+`select` 一并列入是为了「原生下拉不受影响」；`[contenteditable]` 排除
+`contenteditable="false"`（可编辑容器里的只读片段不该变可选）。
+
+**C. 两处刻意可选的地方补 `-webkit-touch-callout: default`**
+
+* `.cam-url`（监控层里那行 FLV 地址，注释写明「让人能复制去 VLC / 运维侧排查」）——
+  它已经写了 `user-select: text`，但刚加的 `body{touch-callout:none}` 会让它在 iOS 上
+  长按弹不出「拷贝」，必须配对写回；
+* `index.html` 的 `#boot` 补 `-webkit-touch-callout: none`（外链 CSS 未到时它也生效）。
+
+### ③ 为什么不动 `touch-action`
+
+| 要求 | 依赖的属性 | 有没有碰 |
+|---|---|---|
+| 页面纵向滚动 | `touch-action`（`.page` 容器自身滚动）+ `overscroll-behavior` | 未改 |
+| 首页轮播横滑 | `.alarm-feed-win{touch-action:pan-y}` | 未改 |
+| 图片缩放平移 | `img.zoomable{touch-action}` | 未改 |
+| 按钮 / 链接点击 | 与上述属性无关 | 未改 |
+
+`user-select` 与 `-webkit-touch-callout` 都不参与 `touch-action` 的判码，也不影响
+`click` 的派发 —— 禁用选择不会让任何点击变迟钝或失效。
+
+### ④ 已知平台边界
+
+* `-webkit-touch-callout` 是 Safari 私有属性，**Android Chrome 不认**。安卓长按图片
+  仍可能弹「下载图片」—— 那是浏览器级菜单，抑制它只能全局拦 `contextmenu`，代价是
+  废掉输入框长按/右键粘贴，故不做；
+* iOS 有个老 bug：页面里存在 `<input>` 时，长按输入框**附近**的文字偶尔会把光标
+  抢过去。属 WebKit 缺陷，CSS 无解，且本项目输入框只出现在登录页与隐患上报层。
+
+### ⑤ 落地文件
+
+`src/styles/app.css`（`body` 补两条、新增可编辑区豁免块、`.cam-url` 补 callout）、
+`index.html`（`#boot` 补 callout）。未新增令牌、未改字号、未动任何 JS。
+
+### ⑥ 验证点
+
+1. 首页 / 工作台 / 消息 / 我的：**鼠标按住拖动**不出现蓝色选区、不出现「I」形光标拖影；
+2. iOS 长按任意卡片 / 图片 / 站点名：不出现选择手柄、不弹「拷贝 / 查询 / 存储图像」；
+3. 安卓长按文本：不出现手柄（长按图片仍可能弹浏览器菜单，见 ④）；
+4. 登录页输入框：点得进光标、能框选一段文字、iOS 长按弹出「全选 / 粘贴」；
+5. 隐患上报 `textarea`：能正常输入、换行、长按粘贴；
+6. 监控层那行 FLV 地址：iOS 长按能弹出「拷贝」；
+7. 回归：各页纵向滚动正常、轮播横滑正常、按钮与链接点击正常、表格/列表 `:active` 反馈不变。
+
+> 本轮未跑用例、未截图、未真机，只过了 `npm run build`（含 `vue-tsc --noEmit`）。

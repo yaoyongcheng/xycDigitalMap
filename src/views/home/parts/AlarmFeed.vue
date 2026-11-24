@@ -5,9 +5,14 @@ import SmartImg from '@/components/ui/SmartImg.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
 import ThumbRing from '@/components/ui/ThumbRing.vue'
 import { ALARM_FEED_SHOW, alarmSrcOf } from '@/data/config'
+import { useAirHazardStore } from '@/stores/airHazard'
 import { FEED_FALLBACK_N, useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
+import { useBottomSheetStore } from '@/stores/bottomSheet'
+import { useCamStore } from '@/stores/cam'
 import { useDroneAlarmStore } from '@/stores/droneAlarm'
+import { useShellStore } from '@/stores/shell'
+import { useSubpageStore } from '@/stores/subpage'
 import { alarmTone } from '@/utils/alarmTone'
 import { mergeAlarmEntries, type AlarmEntry } from '@/utils/alarmMerge'
 import { revealThumb } from '@/utils/thumbReveal'
@@ -38,6 +43,11 @@ import { relTime } from '@/utils/videoAlarm'
 const alarm = useAlarmStore()
 const drone = useDroneAlarmStore()
 const auth = useAuthStore()
+const shell = useShellStore()
+const sub = useSubpageStore()
+const cam = useCamStore()
+const air = useAirHazardStore()
+const sheet = useBottomSheetStore()
 
 /** 点一条：带上来源，由面板决定进哪个详情（监控 → 报警详情 / 无人机 → 工单详情） */
 const emit = defineEmits<{ open: [kind: 'monitor' | 'drone', id: string] }>()
@@ -289,6 +299,47 @@ function restart(): void {
   timer = window.setInterval(() => goNext(), 4000)
 }
 
+/* ---------------------------------------------------------------------
+ * 该不该转：只在「首页 tab + 轮播在视口内 + 没有覆盖层盖着」时跑自动轮播
+ *
+ * 为什么需要它（2026-11-24）：
+ *   · 四个 tab 页常驻挂载（`.page.active` 只是切显隐），本组件不会因为切到
+ *     工作台 / 消息 / 我的而卸载 —— 旧实现里 4s 定时器一直跑在后台，切回
+ *     首页时内容已经自己翻过好几页，看着像「刚进来就跳」。
+ *   · 进子页 / 打开监控、航拍、弹层时同理：覆盖层盖在上面，底下的轮播没有
+ *     继续走的理由，还白耗一次「翻页 + 重排」。
+ *   · 首页往下滚、轮播被滚出视口后也不该空转（这也是它唯一会占 CPU 的地方）。
+ *
+ * 恢复时**不重置到第一页**：停在哪一页，回到首页就从哪一页继续
+ * （`normalize()` 只把「副本页」换成等价的真实页）—— 这就是「进入与返回后
+ * 的状态恢复」。真正要回到第一页的只有「页数变了」那条 watch。
+ * ------------------------------------------------------------------- */
+const rootEl = ref<HTMLElement | null>(null)
+/** 轮播容器是否在视口内（IntersectionObserver 驱动；老内核没有就恒真） */
+const onScreen = ref(true)
+
+const running = computed(
+  () =>
+    onScreen.value &&
+    shell.activeTab === 'home' &&
+    !sub.isOpen &&
+    !cam.isOpen &&
+    !air.isOpen &&
+    !air.hazardOpen &&
+    !sheet.isOpen,
+)
+
+watch(running, (on) => {
+  if (!trackEl.value) return
+  if (!on) {
+    pause()
+    return
+  }
+  // 停在副本页上时先归位，否则下一次翻页会从副本再走一格、滑进空白
+  normalize()
+  restart()
+})
+
 /**
  * 圆点跳页的目标下标。
  *
@@ -331,6 +382,7 @@ const dragging = ref(false)
 let suppressClick = false
 
 let startX = 0
+let startY = 0
 let startIdx = 0
 /** 本帧采样点与上一帧采样点：松手速度取这两点之差，不能用总位移除以总时长 */
 let lastX = 0
@@ -338,15 +390,37 @@ let lastT = 0
 let prevX = 0
 let prevT = 0
 
+/**
+ * 这一指的主导方向。
+ *
+ * `none` = 还在 8px 抖动区里（可能只是点击）；`x` = 轮播接管，轨道跟手；
+ * `y` = 交给页面纵向滚动，本次拖动彻底撒手（见 onMove）。
+ *
+ * 为什么必须先定向：`.alarm-feed-win` 的 `touch-action` 是 `pan-y`，纵向滚动
+ * 由浏览器处理，但**斜着划**时浏览器从第一帧起就认为自己在滚，我们却还在把
+ * 轨道往横里推 —— 观感就是「滚列表时轮播在抖」。定向之后只有一个方向能写
+ * transform，另一种连一像素都不动。
+ */
+let axis: 'none' | 'x' | 'y' = 'none'
+
+/** 结束这次拖动：复位标记并尽快还掉 pointer capture（不还，页面就滚不动） */
+function releaseDrag(e: PointerEvent): void {
+  dragging.value = false
+  const win = e.currentTarget as HTMLElement | null
+  if (win?.hasPointerCapture?.(e.pointerId)) win.releasePointerCapture(e.pointerId)
+}
+
 function onDown(e: PointerEvent): void {
   if (pageN.value <= 1) return
   const win = e.currentTarget as HTMLElement
   win.setPointerCapture(e.pointerId)
   dragging.value = true
+  axis = 'none'
   suppressClick = false
   // 停在副本页时先归位：否则从首页副本继续往前滑会滑到不存在的下标
   normalize()
   startX = lastX = prevX = e.clientX
+  startY = e.clientY
   lastT = prevT = e.timeStamp
   startIdx = idx.value
   // 关 transition + 停在自动轮播，交给手指接管
@@ -361,8 +435,32 @@ function onDown(e: PointerEvent): void {
 function onMove(e: PointerEvent): void {
   if (!dragging.value) return
   const dx = e.clientX - startX
+  const dy = e.clientY - startY
+
+  if (axis === 'none') {
+    const adx = Math.abs(dx)
+    const ady = Math.abs(dy)
+    // 还在点击抖动区里：等手指给出方向，此时一个像素都不写
+    if (adx <= CLICK_SLOP && ady <= CLICK_SLOP) return
+    if (ady > adx) {
+      /*
+       * 纵向为主 → 用户要滚页面。就地撒手：轨道吸附回原页、还掉指针捕获
+       * （不还的话浏览器根本接管不了滚动），这一指剩下的移动与随后的 click
+       * 也不再归轮播管。**不对纵向做任何接管** 是「横滑 / 纵滚不打架」的关键。
+       */
+      axis = 'y'
+      suppressClick = true
+      releaseDrag(e)
+      go(startIdx, true)
+      restart()
+      return
+    }
+    axis = 'x'
+  }
+  if (axis !== 'x') return
+
   // 位移超过点击阈值即进入滑动态，之后不把松手当点击
-  if (Math.abs(dx) > CLICK_SLOP) suppressClick = true
+  suppressClick = true
   // 采样滚动：上一帧变成 prev，本帧记为 last（顺序不能反，vx 全靠它）
   prevX = lastX
   prevT = lastT
@@ -377,9 +475,17 @@ function onMove(e: PointerEvent): void {
 
 function onUp(e: PointerEvent): void {
   if (!dragging.value) return
-  dragging.value = false
-  const win = e.currentTarget as HTMLElement
-  if (win.hasPointerCapture(e.pointerId)) win.releasePointerCapture(e.pointerId)
+
+  // 纵向手势 / 只是点了一下：不翻页，位置保持原样
+  if (axis !== 'x') {
+    axis = 'none'
+    releaseDrag(e)
+    restart()
+    return
+  }
+  axis = 'none'
+  releaseDrag(e)
+
   const track = trackEl.value
   if (!track) {
     restart()
@@ -417,12 +523,32 @@ function onUp(e: PointerEvent): void {
    * pageN+1（首页副本），再由 go() 里的回卷把它换成等价的真实页。
    * 旧版在这一步把越界目标夹成 0 / pageN，回卷计时器又被 restart() 清掉，
    * 于是往前顶死、往后滑进空白 —— 正是「卡在某一页滑不动」的来源。
+   *
+   * 这里再夹一道 [0, 最后一格] 只是兜「页数刚好在这一帧变了」的极窄窗口：
+   * 越界下标会 translate 到轨道外面，露出来的是一片空白（比回弹难看得多）。
    */
-  go(target, true)
+  const last = slides.value.length - 1
+  go(Math.min(last, Math.max(0, target)), true)
 
   // 拖动结束后短暂抑制一次 click，防止滑动停在条目上误触发
   // （click 会在 pointerup 之后紧随派发；此处不主动清除，留给 onItemClick
   //   消费一次后复位，避免 setTimeout 与 click 的派发顺序竞争）
+  restart()
+}
+
+/**
+ * 指针被浏览器收走（纵向滚动接管、系统手势、来电…）。
+ *
+ * **一律吸附回原页，不判翻页**：`lastX` 这一刻只是「滚到一半」的横向分量，
+ * 拿它当位移会把「竖着滚了一下」翻成「换了一页」。旧实现把 pointercancel
+ * 直接接到 onUp，现场偶发的「滚列表时轮播自己跳一页」就是它。
+ */
+function onCancel(e: PointerEvent): void {
+  if (!dragging.value) return
+  axis = 'none'
+  suppressClick = true
+  releaseDrag(e)
+  go(startIdx, true)
   restart()
 }
 
@@ -443,8 +569,29 @@ function onKey(e: KeyboardEvent, c: FeedCard): void {
   }
 }
 
+/** 视口观察器：轮播滚出首页可视区就停表（见 `running`） */
+let observer: IntersectionObserver | null = null
+
 onMounted(() => {
   start()
+  // 挂载时可能本来就不在首页（深链 / 单测直接挂载本组件）：先按真实状态校正一次
+  if (!running.value) pause()
+
+  const el = rootEl.value
+  if (el && typeof IntersectionObserver !== 'undefined') {
+    /*
+     * threshold 0.25：整块轮播约三条高（3 × 54px）+ 圆点，露出四分之一就
+     * 算「看得见」。回调只认最后一条记录 —— 它描述的才是元素此刻的状态。
+     */
+    observer = new IntersectionObserver(
+      (entries) => {
+        const last = entries[entries.length - 1]
+        if (last) onScreen.value = last.isIntersecting
+      },
+      { threshold: 0.25 },
+    )
+    observer.observe(el)
+  }
 })
 
 /**
@@ -456,17 +603,23 @@ onMounted(() => {
  */
 watch(
   () => slides.value.length,
-  () => start(),
+  () => {
+    start()
+    // 数据在后台刷新（不在首页 / 轮播滚出视口）时不重新起表，等回来再走
+    if (!running.value) pause()
+  },
   { flush: 'post' },
 )
 
 onUnmounted(() => {
+  observer?.disconnect()
+  observer = null
   stop()
 })
 </script>
 
 <template>
-  <div class="home-chart-card alarm-feed">
+  <div class="home-chart-card alarm-feed" ref="rootEl">
     <div v-if="!cards.length" class="chart-empty">暂无报警记录</div>
     <div
       v-else
@@ -474,7 +627,7 @@ onUnmounted(() => {
       @pointerdown="onDown"
       @pointermove="onMove"
       @pointerup="onUp"
-      @pointercancel="onUp"
+      @pointercancel="onCancel"
     >
       <div class="alarm-feed-track" ref="trackEl">
         <div

@@ -327,7 +327,25 @@ body {
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   background: #d7e2ee;
   color: var(--text);
+  /*
+   * 全站禁选（2026-11-24 补前缀与长按菜单）
+   *
+   * 这是移动端 App 形态：长按 / 拖动时冒出的蓝色选区、两端那两团选择手柄、
+   * 以及选中后弹的「拷贝 / 查询 / 存储图像」菜单都只是干扰。三条分工不同，
+   * 必须一起写，少一条都会漏：
+   *   · user-select（含 -webkit- 前缀）—— 不产生选区，手柄也就无从出现；
+   *   · -webkit-touch-callout —— iOS 长按图片 / 链接不再弹系统菜单（仅 Safari 系）。
+   * 前缀版不能省：iOS 15 及更早的 WebKit 只认 -webkit-user-select，无前缀的
+   * 那条在它们眼里是无效声明，于是长按照样选中。
+   *
+   * 只禁「选择」，不动滚动与点击：user-select / touch-callout 都不参与
+   * touch-action 的判码，纵向滚动、按钮与链接的 click 一律照旧。
+   * 可输入 / 可编辑区域在下面单独写回 text，见 input/textarea 那条 ——
+   * 否则光标定位、框选一段文字、长按粘贴会被一起禁掉。
+   */
+  -webkit-user-select: none;
   user-select: none;
+  -webkit-touch-callout: none;
   /*
    * 等宽数字：整站数字都取同一字宽。
    *
@@ -343,6 +361,29 @@ body {
 }
 
 button, input, textarea { font-family: inherit; color: inherit; }
+
+/*
+ * 可输入 / 可编辑区域：把「选择」这项能力原样写回来
+ *
+ * body 上的 user-select: none 会一路继承下来，而输入框、文本域是整站唯一
+ * 需要「能选中文字、能点出光标、能长按粘贴」的地方。浏览器对表单控件本身
+ * 有一层特殊照顾，但 iOS Safari 上父级的 touch-callout: none 会连带吃掉
+ * 长按菜单（全选 / 粘贴 / 查询），所以这里显式还原，不吃默认行为。
+ *
+ * [contenteditable] 一并写回：富文本块将来接进来时不用再回来改这一处。
+ * 排除 contenteditable="false" —— 那类元素是「可编辑容器里的只读片段」，
+ * 不该跟着变得可选。
+ *
+ * 注意别把这条扩成 `*`：一旦大面积写回 text，长按页面任意位置又能框选了。
+ */
+input,
+textarea,
+select,
+[contenteditable]:not([contenteditable="false"]) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
 
 .stage {
   /* 由 min-height 改为固定等于视口高度：min-height 只保证「至少」，
@@ -4275,6 +4316,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
   text-overflow: ellipsis;
   user-select: text;
   -webkit-user-select: text;
+  /* 配套：body 关掉了长按菜单，这条地址要能长按「拷贝」就不能一起关 */
+  -webkit-touch-callout: default;
 }
 
 .cam-live-view {
