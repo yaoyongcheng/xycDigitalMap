@@ -83,7 +83,8 @@ const under = computed<SubView | null>(() => (sub.isOpen ? sub.back : null))
 
 const underTitle = computed(() => (under.value ? titleOf(under.value) : ''))
 
-/** 视图标识：kind / 具体预警 id / 设备类型变化都算「换页」，要播进入动画 */
+/**
+ * 视图标识：kind / 具体预警 id / 设备类型变化都算「换页」，要播进入动画 */
 function keyOf(v: SubView | null): string {
   if (!v || v.kind === 'none') return ''
   if (v.kind === 'alarm-detail') return `detail:${v.id}`
@@ -93,6 +94,44 @@ function keyOf(v: SubView | null): string {
 }
 
 const viewKey = computed(() => keyOf(sub.view))
+
+/**
+ * 列表视图当前的页签（2026-11-24）。
+ *
+ * 三个列表都是「一个容器、两套内容」：今日 / 历史用 `.hide` 切显隐，页签状态
+ * 分别存在 `alarm.inspTab` / `alarm.histTab` / `drone.listTab` 里（都在 store，
+ * 所以从详情返回时不会掉回默认页签）。
+ */
+function tabOf(v: SubView | null): string {
+  if (!v) return ''
+  if (v.kind === 'inspect-list') return alarm.inspTab
+  if (v.kind === 'alarm-hist') return alarm.histTab
+  if (v.kind === 'work-orders') return droneAlarm.listTab
+  return ''
+}
+
+/** 滚动记忆的 key：视图 + 页签 */
+function scrollKeyOf(v: SubView | null): string {
+  const k = keyOf(v)
+  if (!k) return ''
+  const t = tabOf(v)
+  return t ? `${k}:${t}` : k
+}
+
+/**
+ * 滚动记忆用 scrollKey，**进入动画仍用 viewKey**。
+ *
+ * 两者必须分开：切页签（今日 ↔ 历史）时容器没换、不该重播滑入动画，
+ * 但滚动位置必须分开记 —— 否则「在历史里滚到中段 → 点进详情 → 返回」
+ * 会把历史那一页的 scrollTop 落到今日页签上（今日列表没那么长，直接贴底），
+ * 现场观感就是「返回后列表跑到别的地方去了」。
+ */
+const scrollKey = computed(() => scrollKeyOf(sub.view))
+
+/** 这个 key 是不是列表视图（带页签后缀，判基名） */
+function isListKey(k: string): boolean {
+  return LIST_KEYS.has(k.split(':')[0])
+}
 
 /**
  * 子页内的滚动位置记忆（2026-11-20）
@@ -109,7 +148,8 @@ const viewKey = computed(() => keyOf(sub.view))
  * 切换后 nextTick 写回。
  *
  *   · 只记列表（{@link LIST_KEYS}）：详情页自己的位置没有意义，而且它的 key
- *     带报警 id，记下去会让这张表随浏览条数无界增长；
+ *     带报警 id，记下去会让这张表随浏览条数无界增长；记的键是「视图 + 页签」
+ *     （见 {@link scrollKeyOf}），今日 / 历史各记各的；
  *   · 关闭子页（viewKey → ''）时清空：从首页重新点进来该从头看，而不是回到
  *     上次离开时的中段；
  *   · 垫底层（右滑 / 返回时露出的那一层）同步写回同一位置，否则退出动画的
@@ -119,11 +159,11 @@ const scrollMemo = new Map<string, number>()
 const LIST_KEYS = new Set(['inspect-list', 'alarm-hist', 'work-orders'])
 
 watch(
-  viewKey,
+  scrollKey,
   (next, prev) => {
     // pre：DOM 还是旧视图，读到的就是离场那一刻的真实位置
     const body = document.getElementById('subBody')
-    if (prev && LIST_KEYS.has(prev)) scrollMemo.set(prev, body?.scrollTop ?? 0)
+    if (prev && isListKey(prev)) scrollMemo.set(prev, body?.scrollTop ?? 0)
     if (!next) scrollMemo.clear()
   },
   { flush: 'pre' },
@@ -139,7 +179,7 @@ watch(
  * 数据都在 store 里，列表是同步渲染的，post 这一刻新内容的高度已经到位。
  */
 watch(
-  viewKey,
+  scrollKey,
   (next) => {
     if (!next) return
     const y = scrollMemo.get(next) ?? 0
@@ -148,7 +188,7 @@ watch(
     // 垫底层是这次返回的目标页（见 under 的注释），它得和落地后的位置一致，
     // 否则退出动画的 0.22s 里露出的是列表顶部，落位后再「啪」地跳一下
     const underBody = document.querySelector<HTMLElement>('.subpage-under .subpage-body')
-    if (underBody) underBody.scrollTop = scrollMemo.get(keyOf(under.value)) ?? 0
+    if (underBody) underBody.scrollTop = scrollMemo.get(scrollKeyOf(under.value)) ?? 0
   },
   { flush: 'post' },
 )

@@ -42,6 +42,16 @@ export interface SceneCacheEntry {
   hash: string
   /** 落盘时间（ms），仅供排查/将来做过期策略 */
   savedAt: number
+  /**
+   * 这张图对应的服务端 `ETag`（2026-11-24 加）。
+   *
+   * 存它是为了让下次冷启动能带 `If-None-Match`：图没变时服务端回 304，
+   * 3.3~3.8MB 一个字节都不用传，本地这张直接上屏。旧记录没有这个字段，
+   * 读出来是空串 —— 那时按「没有校验器」处理，走一次普通 GET，不报错。
+   */
+  etag?: string
+  /** `Last-Modified`（ETag 缺失时的退路） */
+  lastModified?: string
 }
 
 const DB_NAME = 'xyc-scene'
@@ -143,7 +153,14 @@ function normalize(raw: unknown): SceneCacheEntry | null {
   const e = raw as Partial<SceneCacheEntry> | null | undefined
   if (!e || !(e.blob instanceof Blob) || !e.blob.size) return null
   if (typeof e.hash !== 'string' || !e.hash) return null
-  return { blob: e.blob, hash: e.hash, savedAt: Number(e.savedAt) || 0 }
+  return {
+    blob: e.blob,
+    hash: e.hash,
+    savedAt: Number(e.savedAt) || 0,
+    // 旧记录没有这两个字段：空串 = 「没有校验器」，下次普通 GET
+    etag: typeof e.etag === 'string' ? e.etag : '',
+    lastModified: typeof e.lastModified === 'string' ? e.lastModified : '',
+  }
 }
 
 /**
@@ -170,6 +187,9 @@ export async function readSceneCache(type: SceneType): Promise<SceneCacheEntry |
 /**
  * 把某张图存成新的兜底图（覆盖同一 type 的旧记录，不会越攒越多）。
  *
+ * `meta` 里的 ETag / Last-Modified 一起存 —— 下次冷启动带上去做条件请求，
+ * 图没变就是一次 304，不用再下 3MB。
+ *
  * 返回是否真的落盘成功；失败时内存副本仍然更新 —— 本次会话的「比较基准」
  * 已经是最新那张，只是下次刷新会退回上一次成功落盘的那张，画面不会坏。
  */
@@ -177,8 +197,15 @@ export async function writeSceneCache(
   type: SceneType,
   blob: Blob,
   hash: string,
+  meta?: { etag?: string; lastModified?: string },
 ): Promise<boolean> {
-  const entry: SceneCacheEntry = { blob, hash, savedAt: Date.now() }
+  const entry: SceneCacheEntry = {
+    blob,
+    hash,
+    savedAt: Date.now(),
+    etag: meta?.etag ?? '',
+    lastModified: meta?.lastModified ?? '',
+  }
   mem.set(type, entry)
 
   const db = await openDb()

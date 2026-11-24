@@ -13,6 +13,7 @@ import { LIFT_CAGES } from '@/data/liftSn'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useOverviewStore } from '@/stores/overview'
 import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
+import { useUavStore } from '@/stores/uav'
 import { panoLabel } from '@/utils/pano'
 
 /**
@@ -28,6 +29,7 @@ import { panoLabel } from '@/utils/pano'
 const sheet = useBottomSheetStore()
 const patrol = usePatrolStore()
 const overview = useOverviewStore()
+const uav = useUavStore()
 
 /**
  * 人员分布弹层对应的场景（kind 为 people-dist 时有效）。
@@ -89,6 +91,9 @@ const title = computed(() => {
 const subtitle = computed(() => {
   // 人员分布：有人几层 / 共几层，与 V2 那个浮层同一句
   if (sheet.kind === 'people-dist') return peopleSub.value
+  // 今日任务：把清单条数写出来。它必须等于「任务管理」卡上的「今日任务」
+  // （2026-11-24 用户要求「永远一致」），写在标题下就是为了对不上时一眼能看见
+  if (sheet.kind === 'uav-today') return `共 ${uav.todayTasks.length} 条`
   // 巡检大图不设副标题：分类 / 来源 / 时间都在下面的 meta 三行里，
   // 标题行再来一遍就是同一句话写两次
   if (sheet.kind === 'patrol') return ''

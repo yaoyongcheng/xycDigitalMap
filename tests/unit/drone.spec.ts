@@ -193,6 +193,181 @@ describe('业务请求头', () => {
   })
 })
 
+describe('执行记录翻页（末页 / 空页 / 动态增删 / 去重）', () => {
+  /** 本项目 pid（`projectId` 字段要能被 `toOpenTaskRecords` 认出来） */
+  const RID = 193640872670213
+
+  /** 一行开放接口记录（够 `toOpenTaskRecords` 认：taskRecordId + taskName + startTime） */
+  function openRow(n: number): Record<string, unknown> {
+    return {
+      taskRecordId: String(1000 + n),
+      taskName: `向阳村-任务${n}`,
+      startTime: `2026-11-24T08:${String(n % 60).padStart(2, '0')}:00`,
+      endTime: `2026-11-24T08:${String(n % 60).padStart(2, '0')}:30`,
+      status: 2,
+      result: 0,
+      projectId: RID,
+    }
+  }
+
+  /**
+   * 按 page 回不同数据的桩。
+   *
+   * `handler(page, size)` 每次现算 `{total, rows}`，方便模拟
+   * 「翻页中 total 变化 / 空页 / 越界重复最后一页」。
+   */
+  function paged(handler: (page: number, size: number) => { total: number; rows: unknown[] }) {
+    const cas = casResponses()
+    return vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/cas/auth/login')) return khResponse(cas.login)
+      if (u.includes('/cas/auth/validate')) return khResponse(cas.validate)
+      if (u.includes('/api/open/v1/task-record/page')) {
+        const body = JSON.parse(String((init as { body?: string } | undefined)?.body ?? '{}'))
+        const r = handler(Number(body.page), Number(body.size))
+        return khResponse({
+          code: 200,
+          data: { total: r.total, page: body.page, size: body.size, list: r.rows },
+        })
+      }
+      return khResponse({ code: 404, msg: 'not found' }, 404)
+    })
+  }
+
+  const pageCalls = (f: ReturnType<typeof vi.fn>) =>
+    f.mock.calls.filter((c) => String(c[0]).includes('/api/open/v1/task-record/page'))
+
+  it('末页不满：取满 total，末页不丢', async () => {
+    const f = paged((p) => ({
+      total: 130,
+      rows:
+        p <= 2
+          ? Array.from({ length: 50 }, (_, i) => openRow((p - 1) * 50 + i))
+          : p === 3
+            ? Array.from({ length: 30 }, (_, i) => openRow(100 + i))
+            : [],
+    }))
+    vi.stubGlobal('fetch', f)
+
+    const page = await fetchTaskRecords({ size: 50 })
+    expect(page.rows).toHaveLength(130)
+    expect(page.total).toBe(130)
+    expect(page.truncated).toBe(false)
+    expect(pageCalls(f)).toHaveLength(3)
+  })
+
+  it('末页正好整除：不多翻一页', async () => {
+    const f = paged((p) => ({
+      total: 100,
+      rows: p <= 2 ? Array.from({ length: 50 }, (_, i) => openRow((p - 1) * 50 + i)) : [],
+    }))
+    vi.stubGlobal('fetch', f)
+
+    const page = await fetchTaskRecords({ size: 50 })
+    expect(page.rows).toHaveLength(100)
+    expect(pageCalls(f)).toHaveLength(2)
+  })
+
+  it('服务端越界页重复最后一页：不重复计数、不死循环', async () => {
+    const last = Array.from({ length: 30 }, (_, i) => openRow(100 + i))
+    // 实测行为：total 虚高时，page 3 之后会重复返回同一批（不是空页）
+    const f = paged((p) => ({
+      total: 200,
+      rows:
+        p === 1 || p === 2
+          ? Array.from({ length: 50 }, (_, i) => openRow((p - 1) * 50 + i))
+          : last,
+    }))
+    vi.stubGlobal('fetch', f)
+
+    const page = await fetchTaskRecords({ size: 50 })
+    expect(page.rows).toHaveLength(130)
+    expect(new Set(page.rows.map((r) => r.rid)).size).toBe(130)
+    // 整页重复即收手，不空转到上限
+    expect(pageCalls(f)).toHaveLength(4)
+    expect(page.truncated).toBe(true)
+  })
+
+  it('翻页中新增记录：total 变大后继续取，不提前退出', async () => {
+    const f = paged((p) => {
+      if (p === 1) return { total: 100, rows: Array.from({ length: 50 }, (_, i) => openRow(i)) }
+      if (p === 2) return { total: 150, rows: Array.from({ length: 50 }, (_, i) => openRow(50 + i)) }
+      return { total: 150, rows: Array.from({ length: 50 }, (_, i) => openRow(100 + i)) }
+    })
+    vi.stubGlobal('fetch', f)
+
+    const page = await fetchTaskRecords({ size: 50 })
+    expect(page.rows).toHaveLength(150)
+    expect(page.total).toBe(150)
+    expect(pageCalls(f)).toHaveLength(3)
+  })
+
+  it('翻页中先遇到空页：重试同一页，不把这一页跳过去', async () => {
+    let hit2 = 0
+    const f = paged((p) => {
+      if (p === 1) return { total: 150, rows: Array.from({ length: 50 }, (_, i) => openRow(i)) }
+      if (p === 2) {
+        hit2 += 1
+        // 第一次空（瞬时限流），第二次才给数据
+        return {
+          total: 150,
+          rows: hit2 === 1 ? [] : Array.from({ length: 50 }, (_, i) => openRow(50 + i)),
+        }
+      }
+      return { total: 150, rows: Array.from({ length: 50 }, (_, i) => openRow(100 + i)) }
+    })
+    vi.stubGlobal('fetch', f)
+
+    const page = await fetchTaskRecords({ size: 50 })
+    expect(page.rows).toHaveLength(150)
+    expect(hit2).toBe(2)
+  })
+
+  it('连续空页：重试后收手，不无限翻', async () => {
+    const f = paged((p) => ({
+      total: 150,
+      rows: p === 1 ? Array.from({ length: 50 }, (_, i) => openRow(i)) : [],
+    }))
+    vi.stubGlobal('fetch', f)
+
+    const page = await fetchTaskRecords({ size: 50 })
+    expect(page.rows).toHaveLength(50)
+    expect(pageCalls(f).length).toBeLessThanOrEqual(5)
+    expect(page.truncated).toBe(true)
+  })
+
+  it('雪花号 id 精度丢失不误合并（按原始 rid 去重）', async () => {
+    // 两个相邻雪花号转 number 后相等 —— 拿 id 当键会把它们合成一条
+    expect(Number('5968386048883676116')).toBe(Number('5968386048883676117'))
+
+    const f = paged(() => ({
+      total: 2,
+      rows: [
+        { taskRecordId: '5968386048883676116', taskName: '向阳村-A', startTime: '2026-11-24T08:00:00', status: 2, projectId: RID },
+        { taskRecordId: '5968386048883676117', taskName: '向阳村-B', startTime: '2026-11-24T09:00:00', status: 2, projectId: RID },
+      ],
+    }))
+    vi.stubGlobal('fetch', f)
+
+    const page = await fetchTaskRecords()
+    expect(page.rows).toHaveLength(2)
+  })
+
+  it('分页参数边界：size 0/负数按 1、超过 100 压到 100，page 0 纠正为 1', async () => {
+    const f = paged(() => ({ total: 1, rows: [openRow(1)] }))
+    vi.stubGlobal('fetch', f)
+
+    await fetchTaskRecords({ size: 0, page: 0 })
+    await fetchTaskRecords({ size: 500, page: -3 })
+
+    const bodies = pageCalls(f).map((c) =>
+      JSON.parse(String((c[1] as { body?: string } | undefined)?.body)),
+    )
+    expect(bodies[0]).toMatchObject({ page: 1, size: 1 })
+    expect(bodies[1]).toMatchObject({ page: 1, size: 100 })
+  })
+})
+
 describe('toTaskRecords 收敛', () => {
   it('映射 id / 任务名 / 时间 / 状态', () => {
     const rows = toTaskRecords([
@@ -530,6 +705,195 @@ describe('uav store', () => {
     expect(s.running?.name).toBe('午班巡检')
   })
 
+  /**
+   * 今日清单 = 三格「今日任务」（2026-11-24）
+   *
+   * 现场实测：统计响应里的 `unfinishedTaskList` 只回一部分（15 条里只给 7 条），
+   * 加上 `completedTaskList` 才 10 条 —— 弹层永远比卡上少 5 行。
+   * 清单主源换成 `/dashboard/task/list/execRecord/today` 后逐条对齐。
+   */
+  it('今日清单走全量端点：条数与三格一致，别的项目不混进来', async () => {
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    vi.stubGlobal(
+      'fetch',
+      khRoute({
+        // 全量端点：行结构是 `{executeInfo, taskInfo}`，名单在 `executeInfo` 上
+        '/dashboard/task/list/execRecord/today': [
+          {
+            executeInfo: {
+              id: 1,
+              uuid: 'a',
+              taskId: 11,
+              taskName: '向阳村-正射',
+              start: `${today}T08:00:00`,
+              status: 2,
+              result: 0,
+              pid: 193640872670213,
+            },
+          },
+          {
+            executeInfo: {
+              id: 2,
+              uuid: 'b',
+              taskId: 12,
+              taskName: '向阳村-安全巡检',
+              start: `${today}T09:45:00`,
+              status: 2,
+              result: 3,
+              pid: 193640872670213,
+            },
+          },
+          {
+            executeInfo: {
+              id: 3,
+              uuid: 'c',
+              taskId: 13,
+              taskName: '向阳村-土方1',
+              start: `${today}T17:00:00`,
+              status: -1,
+              result: 4,
+              pid: 193640872670213,
+            },
+          },
+          {
+            // 同账号的另一个项目：`pidList` 服务端不认，必须靠这个字段本地滤掉
+            executeInfo: {
+              id: 4,
+              uuid: 'd',
+              taskId: 14,
+              taskName: '光谷元著-全景',
+              start: `${today}T13:00:00`,
+              status: -1,
+              result: 4,
+              pid: 231070463906821,
+            },
+          },
+        ],
+        '/dashboard/task/list/record': {
+          taskCount: 3,
+          finishedCount: 1,
+          failedCount: 1,
+          runningCount: 0,
+          planCount: 1,
+          suspendedCount: 0,
+        },
+      }),
+    )
+
+    const s = useUavStore()
+    await s.load(true)
+
+    expect(s.todayTasks.map((t) => t.name)).toEqual(['向阳村-土方1', '向阳村-安全巡检', '向阳村-正射'])
+    // 最关键的一条：清单条数 = 卡上的「今日任务」
+    expect(s.todayTasks).toHaveLength(s.taskTotal as number)
+    expect(s.todayTasks.map((t) => t.state)).toEqual(['未执行', '已失败', '已完成'])
+    expect(s.todayTasks.some((t) => t.name.includes('光谷'))).toBe(false)
+  })
+
+  it('暂停的排班计入「今日任务」，清单里显示「未执行」', async () => {
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    vi.stubGlobal(
+      'fetch',
+      khRoute({
+        '/dashboard/task/list/execRecord/today': [
+          {
+            executeInfo: {
+              id: 1, uuid: 'a', taskId: 11, taskName: '向阳村-正射',
+              start: `${today}T08:00:00`, status: 2, result: 0, pid: 193640872670213,
+            },
+          },
+          {
+            executeInfo: {
+              id: 2, uuid: 'b', taskId: 12, taskName: '向阳村-安全巡检',
+              start: `${today}T09:00:00`, status: 1, result: -1, pid: 193640872670213,
+            },
+          },
+          // 平台侧的「已暂停」：status -1、result 4、suspended true
+          {
+            executeInfo: {
+              id: 3, uuid: 'c', taskId: 13, taskName: '向阳村-全景',
+              start: `${today}T11:30:00`, status: -1, result: 4, suspended: true, pid: 193640872670213,
+            },
+          },
+          {
+            executeInfo: {
+              id: 4, uuid: 'd', taskId: 14, taskName: '向阳村-土方1',
+              start: `${today}T17:00:00`, status: -1, result: 4, suspended: true, pid: 193640872670213,
+            },
+          },
+        ],
+        '/dashboard/task/list/record': {
+          // 服务端 taskCount 不含暂停，暂停单独数在 suspendedCount
+          taskCount: 2, finishedCount: 1, failedCount: 0, runningCount: 1, planCount: 0, suspendedCount: 2,
+        },
+      }),
+    )
+
+    const s = useUavStore()
+    await s.load(true)
+
+    // 2026-11-24 用户定：三格「今日任务」= taskCount + suspendedCount，与清单逐条相等
+    expect(s.taskTotal).toBe(4)
+    expect(s.todayTasks).toHaveLength(4)
+    // 暂停不再单列一种状态：与「未执行」同文案（配色同为 is-plan）
+    expect(s.todayTasks.map((t) => t.state)).toEqual(['未执行', '未执行', '执行中', '已完成'])
+    expect(s.todayTasks.filter((t) => t.stateClass === 'is-plan')).toHaveLength(2)
+  })
+
+  it('统计请求带分页参数（不带时 unfinishedTaskList 会被默认页长截断）', async () => {
+    const f = khRoute({
+      '/dashboard/task/list/record': {
+        taskCount: 0, finishedCount: 0, failedCount: 0, suspendedCount: 0,
+      },
+    })
+    vi.stubGlobal('fetch', f)
+
+    const s = useUavStore()
+    await s.load(true)
+
+    const call = f.mock.calls.find((c) => String(c[0]).includes('/dashboard/task/list/record'))
+    const u = String(call?.[0])
+    expect(u).toContain('pageNum=1')
+    expect(u).toContain('pageSize=1000')
+    expect(u).toContain('pid=193640872670213')
+  })
+
+  it('全量端点挂了退回「执行记录 + 未完成排班」，整页不报错', async () => {
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    vi.stubGlobal(
+      'fetch',
+      // 不注册 execRecord/today → khRoute 回 404，逼出兜底路径
+      khRoute({
+        '/dashboard/task/list/record': {
+          taskCount: 2,
+          finishedCount: 1,
+          failedCount: 0,
+          runningCount: 0,
+          planCount: 1,
+          suspendedCount: 0,
+          unfinishedTaskList: [
+            { tasksDetail: { taskId: 22, taskName: '向阳村-土方1', start: `${today}T17:00:00` } },
+          ],
+        },
+        '/api/open/v1/task-record/page': [
+          { id: 1, taskName: '向阳村-正射', start: `${today}T08:00:00`, status: 2, result: 0 },
+        ],
+      }),
+    )
+
+    const s = useUavStore()
+    await s.load(true)
+
+    expect(s.state).toBe('ok')
+    expect(s.todayTasks.map((t) => t.name)).toEqual(['向阳村-土方1', '向阳村-正射'])
+  })
+
   it('查今日明细必须带 start/end（不带拿到的是 7 月那几条最旧记录）', async () => {
     const f = khRoute({ '/api/open/v1/task-record/page': [] })
     vi.stubGlobal('fetch', f)
@@ -590,6 +954,47 @@ describe('uav store', () => {
     expect(s.records).toEqual([])
     // 统计接口也挂了 → 「—」，不拿 0 冒充「今天没任务」
     expect(s.taskTotal).toBeNull()
+  })
+
+  /**
+   * 2026-11-24：强制刷新（页面 mount / 点「重试」）失败**不清空记录**。
+   *
+   * 原先 `load()` 失败会 `records = []`，一次网络抖动就让「当前巡检」消失、
+   * `running` 变 null，实时画面跟着卸载 —— 而飞机其实还在飞。
+   * 现在与 30s 那轮 `refreshSlow` 同口径：只改状态，手上有什么留什么。
+   */
+  it('强制刷新失败：保留上一轮记录，不把当前巡检抹掉', async () => {
+    const d = new Date()
+    const p = (n: number): string => String(n).padStart(2, '0')
+    const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    let fail = false
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, _init?: RequestInit) => {
+        const u = String(url)
+        if (u.includes('/cas/auth/login')) return khResponse(casResponses().login)
+        if (u.includes('/cas/auth/validate')) return khResponse(casResponses().validate)
+        if (fail) return khResponse({ code: 500, msg: '服务端故障' }, 500)
+        if (u.includes('/api/open/v1/task-record/page')) {
+          // 执行中的架次（status 1）：running 靠它
+          return khResponse({ code: 200, data: [{ id: 1, taskName: '巡检', start: `${day}T09:00:00`, status: 1 }] })
+        }
+        return khResponse({ code: 200, data: {} })
+      }),
+    )
+
+    const s = useUavStore()
+    await s.load()
+    expect(s.records).toHaveLength(1)
+    expect(s.running).not.toBeNull()
+
+    fail = true
+    await s.load(true)
+    expect(s.state).toBe('error')
+    expect(s.records).toHaveLength(1)
+    // 页面门禁是 `running`：它还在，实时画面就不会被卸掉
+    expect(s.running).not.toBeNull()
   })
 
   it('起飞条件三态：没有遥测时不给放行，也不写成「已满足」', () => {
@@ -848,13 +1253,8 @@ describe('patrol store 巡检照片', () => {
     expect(s.photos).toEqual([])
   })
 
-  it('体积摘要按量级切换单位', () => {
-    const s = usePatrolStore()
-    expect(s.sizeText(512)).toBe('512B')
-    expect(s.sizeText(2048)).toBe('2KB')
-    expect(s.sizeText(5_378_048)).toBe('5.1MB')
-    expect(s.sizeText(0)).toBe('')
-  })
+  // 2026-11-24：详情与列表都不再显示照片大小，store 里的 sizeText 也随之删除
+  // （对应断言一起摘掉，避免留一个测已删接口的用例）。
 })
 
 describe('账号口径的今日任务（2026-11-16 起：23 条都放开）', () => {

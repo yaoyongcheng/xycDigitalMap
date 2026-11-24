@@ -22,6 +22,7 @@ import { ROBOT_CARDS, unitNo } from '@/utils/deviceLedger'
 import { DASH, formatRuntime } from '@/utils/lift'
 import { useSlowLoading } from '@/utils/slowLoading'
 import { useMissionClock } from '@/utils/missionClock'
+import { useTabRefresh } from '@/utils/tabRefresh'
 import { missionProgress } from '@/utils/uavProgress'
 import type { Equip } from '@/types'
 
@@ -167,6 +168,24 @@ onMounted(() => {
   missionTimer = window.setInterval(() => {
     void uav.loadMission()
   }, 30_000)
+})
+
+/**
+ * 切回「首页」tab 时重取三路卡片数据（2026-11-24）。
+ *
+ * 四个 tab 页常驻挂载，`onMounted` 只跑一次 —— 切走再回来时台账、电梯时长、
+ * 无人机今日架次都还是上次的。这里补一次，与 onMounted 的差别只有「不等 800ms」：
+ * 那 800ms 是为了替首屏让带宽，切 tab 时首屏早就画完了。
+ *
+ * **不碰** `lift.startLive` / 30s 定时器：它们与 `onUnmounted` 成对管理，
+ * 在这里再注册一次会变成两路子轮询。
+ */
+useTabRefresh('home', () => {
+  if (auth.token) void ledger.refresh(auth.token)
+  void scaf.refresh()
+  void lift.refresh()
+  void uav.loadStat()
+  void uav.loadMission()
 })
 
 /** 登录成功后补拉（登录页盖在首页上，面板不卸载，onMounted 不会重跑） */
@@ -539,11 +558,13 @@ function ariaOf(d: Equip): string {
     const n = uav.taskDone
     parts.push(n === null ? '今日作业次数未取到' : `今日作业次数${n}次`)
     // 卡片上还有一条进度条（有执行中任务才出现）：读屏拿不到可见文本，
-    // 只念「今日作业次数」等于漏报了一整行信息
+    // 只念「今日作业次数」等于漏报了一整行信息。
+    // 2026-11-24 起卡片可见地多了「起飞时刻」这一行，`aria-label` 会盖住子节点文本，
+    // 所以这里也得把起飞时刻念出来 —— 视觉与读屏读到的是同一句话。
     const m = droneMission.value
     if (m) {
       const p = m.progress
-      const bits = [`当前巡检${m.name}`]
+      const bits = [`当前巡检${m.name}`, `${m.time}起飞`]
       if (p.elapsedMin !== null) bits.push(`已飞${p.elapsedMin.toFixed(1)}分钟`)
       if (p.estimateMin !== null) bits.push(`预计${p.estimateMin}分钟`)
       bits.push(`进度${p.pct}%`)

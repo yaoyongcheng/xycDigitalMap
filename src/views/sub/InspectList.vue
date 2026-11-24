@@ -1,18 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 
+import DayPickChips from '@/components/ui/DayPickChips.vue'
 import InspectItem from '@/components/ui/InspectItem.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import Skel from '@/components/ui/Skel.vue'
-import SvgIcon from '@/components/ui/SvgIcon.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
 import { useMsgStore } from '@/stores/msg'
 import { useSubpageStore } from '@/stores/subpage'
 import { alarmTrendLive } from '@/utils/chart'
-import type { Alarm } from '@/types'
-import { formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/utils/date'
+import { formatCamDate, inspCalMaxDay, startOfDay } from '@/utils/date'
 import { useSlowLoading } from '@/utils/slowLoading'
 
 /**
@@ -21,7 +20,7 @@ import { useSlowLoading } from '@/utils/slowLoading'
  * 对应原 js/app.js:730-778 renderInspectList() + subBody 上的事件委托（883-922）。
  *
  * 两个页签：
- *   今日预警  当日预警统计 + 近 7 日趋势图 + 列表（**未读条目带红点**）
+ *   今日预警  今日预警数（下一行补「待处理 N」）+ 近 7 日趋势图 + 列表
  *   历史预警  日期选择芯片 + 日历 + 当日列表（空态提示）
  *
  * 2026-11 数据收口：今日列表直接用 `alarm.latest`（真实今日报警），
@@ -29,9 +28,16 @@ import { useSlowLoading } from '@/utils/slowLoading'
  * 早先这里读的是 store 里的演示种子 `alarm.alarms`，接口接通后一直没改回来 ——
  * 表现是「首页已经是真数据，点进巡检列表还是那 4 条假报警」。
  *
- * 2026-11-20 已读改为**只在今日列表**判定：未读（`handleStatus !== 1`）的条目
- * 在图标位右上角点一颗红点；历史预警既不打点、点开也不改已读状态 ——
- * 「已读」表达的是「今天这条我看过了」，把上周的报警标成已读没有意义。
+ * ## 状态：与无人机预警列表一致，只读（2026-11-24 现场口径）
+ *
+ * 每一行右侧显示「相对时间 + 待处理/已完成」徽标，判据是服务端 `handleStatus`
+ * （1 = 已完成，其余 = 待处理），样式与 `WorkOrderItem` 完全同一套
+ * （`.wo-side` + `.alarm-src-todo` / `.alarm-src-done`）。
+ *
+ * 同时下线两样东西：
+ *   · **未读红点** —— 红点不会被「点开」清除（本 App 不再改状态），留着就是
+ *     一颗永远清不掉的装饰；
+ *   · **点开即已读** —— 详情页只读展示原状态，不发 PATCH。
  */
 const props = defineProps<{
   /** 垫底层（右滑返回时露出的只读副本）不参与登录守卫 */
@@ -57,23 +63,20 @@ onMounted(() => {
 const todayList = computed(() => alarm.latest)
 const histList = computed(() => alarm.alarmsOnDate(alarm.inspHistDate))
 
-/**
- * 未读判定：服务端 `handleStatus === 1` 才算已读；取不到（旧数据 / 夹具）按未读。
- *
- * 与 `stores/msg.ts::isRead` 同一口径 —— 消息页那张卡的数字就是按这个数出来的，
- * 两处不一致会直接表现为「卡片写 3 条未读、列表只有 1 颗红点」。
- */
-function isUnread(a: Alarm): boolean {
-  return a.handleStatus !== 1
-}
-
 const onHist = computed(() => alarm.inspTab === 'hist')
 
-/** 原最新一日为 protoToday()-1 时显示「昨天」，否则显示 MM/DD */
-const isLatestHist = computed(() => sameDay(alarm.inspHistDate, inspCalMaxDay()))
-const histLab = computed(() => formatCamDate(alarm.inspHistDate))
-const headLabel = computed(() => (isLatestHist.value ? '昨天' : histLab.value))
-const pickLabel = computed(() => (isLatestHist.value ? '昨天' : formatMD(alarm.inspHistDate)))
+/**
+ * 历史页的日期控件（2026-11-24 改造）。
+ *
+ * 统一成与「航拍照片 / 监控抓拍」同一个组件 `ui/DayPickChips` 的**单芯片模式**：
+ * 一颗「当天 / 日历图标」按钮 + 月历，不再摆「今天 / 昨天」（那两个入口在
+ * 预警历史里没有意义 —— 今日预警本身就是另一个页签）。选中时蓝底白字，
+ * 与截图里那颗一致；文案固定显示当前选的是哪天（今天 / 昨天 / MM/DD）。
+ *
+ * 默认值仍是**昨天**（`alarm.inspHistDate` 的初值，见 stores/alarm.ts），
+ * 筛选口径与改造前完全一致，改的只是控件外观与结构。
+ */
+const headLabel = computed(() => formatCamDate(alarm.inspHistDate))
 
 /**
  * 近 7 日趋势：与首页安全面板同款触控层（参考线 / 放大点 / 数值气泡）。
@@ -108,6 +111,14 @@ function onTab(tab: 'today' | 'hist'): void {
   subpage.openInspectList(tab)
 }
 
+function setHistDate(d: Date): void {
+  alarm.inspHistDate = startOfDay(d)
+  alarm.inspCalOpen = false
+  subpage.openInspectList('hist')
+  // 选中的日期早于已加载范围时按需回补（真实历史，最多到 8 页）
+  void alarm.ensureDate(auth.token, alarm.inspHistDate)
+}
+
 function onCalToggle(): void {
   if (alarm.inspCalOpen) {
     alarm.inspCalOpen = false
@@ -119,16 +130,16 @@ function onCalToggle(): void {
 }
 
 function onCalSelect(d: Date): void {
-  alarm.inspHistDate = startOfDay(d)
-  subpage.openInspectList('hist')
-  // 选中的日期早于已加载范围时按需回补（真实历史，最多到 8 页）
-  void alarm.ensureDate(auth.token, d)
+  setHistDate(d)
 }
 
-function onItemOpen(id: string, fromToday = true): void {
-  // 点开即已读 —— **仅今日预警**（2026-11-20）。历史预警只是回看，
-  // 把它标成已读没有意义，也会把「今日未读」这个口径搅乱。
-  if (fromToday) void msg.markRead(id)
+/**
+ * 点开某条 → 只看详情。
+ *
+ * 2026-11-24 起**不再顺手置已读**：移动端不提供任何状态变更操作，
+ * 详情页只读展示服务端的原状态（与无人机预警详情一致）。
+ */
+function onItemOpen(id: string): void {
   subpage.openAlarmDetail(id, true)
 }
 
@@ -167,6 +178,8 @@ function goLogin(): void {
           <!-- 同步中：数字位换成灰条，不回填 0（0 是个结论，这里还不知道） -->
           <Skel v-else w="54px" h="31px" r="var(--r-6)" />
           <span>今日预警数</span>
+          <!-- 待处理是今日预警的一部分，放第二行：大数字仍是「今天一共报了多少」 -->
+          <em v-if="!syncing" class="stat-sub">待处理 {{ msg.monitorPending }}</em>
         </div>
         <div class="home-chart-card alarm-mini">
           <span class="alarm-mini-lab">近7日预警趋势</span>
@@ -180,7 +193,6 @@ function goLogin(): void {
           v-for="a in todayList"
           :key="a.id"
           :alarm="a"
-          :dot="isUnread(a)"
           @open="onItemOpen(a.id)"
         />
       </div>
@@ -206,10 +218,13 @@ function goLogin(): void {
           <strong>{{ headLabel }}</strong>
           <span>{{ histSyncing ? '…' : `${histList.length}条` }}</span>
         </div>
-        <button class="cam-day cam-day-pick on" type="button" data-insp-cal-open="1" @click="onCalToggle">
-          {{ pickLabel }}
-          <span><SvgIcon name="cal" /></span>
-        </button>
+        <!-- 日期控件：与航拍 / 抓拍同一个组件（单芯片：当天 + 日历图标） -->
+        <DayPickChips
+          single
+          :selected="alarm.inspHistDate"
+          open-attr-name="data-insp-cal-open"
+          @open="onCalToggle"
+        />
       </div>
 
       <MonthCalendar
@@ -225,7 +240,7 @@ function goLogin(): void {
           v-for="a in histList"
           :key="a.id"
           :alarm="a"
-          @open="onItemOpen(a.id, false)"
+          @open="onItemOpen(a.id)"
         />
       </div>
       <!-- 按需回补中：结构同列表项，数据到了原位回填，不提前下「暂无」的结论 -->

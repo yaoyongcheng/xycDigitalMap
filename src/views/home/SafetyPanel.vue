@@ -12,6 +12,7 @@ import { useSubpageStore } from '@/stores/subpage'
 import { mergeAlarmEntries, mergeTrend } from '@/utils/alarmMerge'
 import { alarmTrendLive, peopleHourModel } from '@/utils/chart'
 import { useSlowLoading } from '@/utils/slowLoading'
+import { useTabRefresh } from '@/utils/tabRefresh'
 import AlarmFeed from './parts/AlarmFeed.vue'
 import PeopleDist from './parts/PeopleDist.vue'
 
@@ -130,24 +131,33 @@ function tradePct(n: number): string {
 }
 
 /**
- * 面板挂载即取一次。
+ * 面板取数（挂载 / 切回首页 tab 共用）。
  *
- * 首页三个模块标签切换时，`HomeSheet` 的 `.home-panels` 带 `:key="home.homeMod"`，
- * 面板是**真的卸载再挂载**的 —— 所以这里就是「切回智巡」的入口，必须走
- * `refresh()`（已有数据也重拉）而不是 `load()`（有缓存就跳过），否则切回来
- * 看到的还是上次进首页那一刻的报警与人员数。
- *
- * `refresh` 内部保留失败冷却：连点标签不会把注定失败的请求反复打出去。
+ * 走 `refresh()`（已有数据也重拉）而不是 `load()`（有缓存就跳过），否则切回来
+ * 看到的还是上次进首页那一刻的报警与人员数。`refresh` 内部保留失败冷却：
+ * 连点标签不会把注定失败的请求反复打出去；同步在途时由 `alarm` store 合并成
+ * 同一趟（2026-11-24），不会因为页面多了个入口就多打一遍 400 条。
  */
-onMounted(() => {
+function fetchPanel(): void {
   void overview.refresh()
-  // 视频报警接口要 Bearer，未登录必定 401 —— 未登录时不打这趟请求；
-  // 无人机预警与这段统计同口径，也就等登录后再拉（store 自带 2 分钟保鲜）
-  if (auth.token) {
-    void alarm.refresh(auth.token)
-    void drone.load()
-  }
-})
+  // 视频报警接口要 Bearer，未登录必定 401 —— 未登录时不打这趟请求
+  if (!auth.token) return
+  void alarm.refresh(auth.token)
+  // `load(true)` 绕过 2 分钟保鲜：切回首页时要看到此刻的「待处理」，
+  // 而不是五分钟前那一趟扫描的结果（与消息 tab 同一口径）
+  void drone.load(true)
+}
+
+onMounted(fetchPanel)
+
+/**
+ * 切回「首页」tab 时重新取数（2026-11-24）。
+ *
+ * 四个 tab 页常驻挂载，`onMounted` 只跑一次；别处处理了预警再切回首页时，
+ * 这里的「今日预警数」与「待处理」如果不动，就会被当成「没生效」。只有当前
+ * 显示的那个面板是挂载状态，所以三个面板各自声明自己的刷新，不会互相连坐。
+ */
+useTabRefresh('home', fetchPanel)
 
 /**
  * 登录态变化时补拉一次。

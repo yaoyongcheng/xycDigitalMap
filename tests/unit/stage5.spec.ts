@@ -141,44 +141,38 @@ describe('阶段 5 · 真实数据', () => {
       const cards = w.findAll('.msg-item')
       expect(cards).toHaveLength(2)
       expect(cards.map((c) => c.attributes('data-kind'))).toEqual(['monitor', 'drone'])
-      // 角标 = 监控今日未读 + 无人机今日待处理（这里是 3 + 0）
-      expect(useMsgStore().unreadTotal).toBe(3)
+      // 角标 = 两类今日待处理之和（无人机未加载时就是监控那份）
+      expect(useMsgStore().monitorPending).toBe(3)
+      expect(useMsgStore().pendingTotal).toBe(3)
       expect(cards[0].find('.msg-badge').text()).toBe('3')
       w.unmount()
     })
 
-    it('已读状态来自服务端 handleStatus，未读数与角标据此算', () => {
+    it('待处理数来自服务端 handleStatus，卡片与角标据此算', () => {
       const feed = camAlarmFixtures().slice(0, 3)
-      feed[1].handleStatus = 1 // 这条已读
+      feed[1].handleStatus = 1 // 这条已完成
       useAlarmStore().liveAlarms = feed
       const msg = useMsgStore()
 
-      expect(msg.monitorUnread).toBe(2) // 3 条里 1 条已读
-      expect(msg.categories[0].unread).toBe(2)
-      expect(msg.unreadTotal).toBe(2)
+      expect(msg.monitorPending).toBe(2) // 3 条里 1 条已完成
+      expect(msg.categories[0].count).toBe(2)
+      expect(msg.categories[0].hint).toBe('今日待处理')
+      expect(msg.pendingTotal).toBe(2)
     })
 
-    it('点开消息乐观置已读并发 PATCH /status，body 为 {status:1}', async () => {
+    it('点开消息不再置已读：状态只读，不发 PATCH', async () => {
       signIn()
       const feed = camAlarmFixtures().slice(0, 2)
       useAlarmStore().liveAlarms = feed
       const asMock = fetch as unknown as ReturnType<typeof vi.fn>
 
-      const msg = useMsgStore()
-      await msg.markRead(feed[1].id) // id = va-102 → 远程 102
+      useSubpageStore().openAlarmDetail(feed[1].id, true)
       await flushPromises()
 
-      // 乐观更新：本地这条已置 1
-      expect(feed[1].handleStatus).toBe(1)
-      expect(msg.unreadTotal).toBe(1)
-
-      // 发出了 PATCH 请求，路径 /api/video/alarms/102/status
-      const patchCall = asMock.mock.calls.find((c) => String(c[1]?.method) === 'PATCH')
-      expect(patchCall).toBeTruthy()
-      const [url, init] = patchCall as [string, RequestInit]
-      expect(String(url)).toContain('/api/video/alarms/102/status')
-      expect(JSON.parse(String(init.body))).toEqual({ status: 1 })
-      expect(init.method).toBe('PATCH')
+      // 状态保持服务端原值，也没有任何 PATCH 打出去
+      expect(feed[1].handleStatus).not.toBe(1)
+      expect(asMock.mock.calls.filter((c) => String(c[1]?.method) === 'PATCH')).toHaveLength(0)
+      expect(useMsgStore().monitorPending).toBe(2)
     })
   })
 

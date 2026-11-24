@@ -5984,3 +5984,1008 @@ DOM 类名、每页 3 条、双向循环、圆点跳页、跟手滑动全部未�
   它的原图本来就在本机 IndexedDB 档案里，切换零等待，与这两处的远端大图不同源。
 - 列表缩略图（智眸抓拍 480、报警/工单图标 96）与页面初次加载**一个请求都不发**。
 - 项目全景的球面渲染、`panoTexScale` 缩贴图、天底采样策略全部原样。
+
+## 六点五十六、照片详情加本机缓存：再看同一张不再重下（2026-11-24）
+
+### 问题
+
+六点五十五把详情改成了「打开即原图」，但取到的字节**只留在内存里 3 份**
+（`utils/photoOriginal.ts`）。现场实测：刷一次页面、或者退出 PWA 再进，
+同一张 4~8MB 的原图又要完整下一次；全景 13MB 更明显。OSS 是预签名直链，
+签名每次不同，服务端也没回 `Cache-Control`，浏览器缓存基本指望不上。
+
+### 现在的取数顺序
+
+```
+内存 LRU（3 份，秒开）
+  → 本机落盘（IndexedDB，跨刷新/重开）   ← 本次新增
+    → 网络（带真实字节进度），下完写回上面两层
+```
+
+只要**外层列表没刷新**，再打开同一张就是本地读盘，一个网络请求都不发。
+
+### 键与失效规则
+
+- **键 = URL 去掉签名参数**（`scheme://host/path`）：列表刷新会换一组签名，
+  但对象路径不变 —— 所以缓存能跨刷新命中；服务端真换了图（路径变了）自然是
+  另一个键，不会串图。
+- **过期**：写入超过 7 天不再使用；
+- **数据变更**：外层列表声明的 `size` / 拍摄时刻与缓存不一致 → 当场删掉重下；
+- **列表刷新**：`stores/patrol.ts::syncDetailCache()` 与
+  `stores/airHazard.ts::syncDetailScope()` 在列表定稿后对账 —— 这批里已经没有的
+  照片整条删除；作用域分别是 `patrol` 与 `air|站点|日期`，互不影响；
+- **登出 / 换账号**：`stores/auth.ts::clear()` 整库清空（现场照片不留给下一个人）。
+- `blob:` 地址（监控抓拍档案生成的 objectURL）**不入缓存**：它本来就是本机字节。
+
+### 容量
+
+最多 8 条、总量 64MB、单条 24MB（装得下 13MB 全景贴图），超出按**最近命中时间**
+LRU 淘汰；没有 IndexedDB（隐私模式 / 老 WebView / 单测）时退化成进程内 Map，
+行为一致，刷新即丢。所有读写吞异常：缓存只是优化，任何失败都不能让详情打不开。
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/utils/photoDetailCache.ts` | **新增**。`readDetail` / `writeDetail` / `patchDetailMeta` / `reconcileDetailScope` / `pruneDetail` / `clearDetailCache` / `detailKeyOf`；IndexedDB 双 store（`detail` 存字节、`meta` 存元信息，淘汰时不必把几十 MB 读出来） |
+| `src/utils/photoOriginal.ts` | `fetchDetailOriginal` 增加 `scope` / `meta` / `onLocal`；取数顺序变成「内存 → 落盘 → 网络」；下载完成写回落盘；读盘期间被 abort 就不再发请求 |
+| `src/components/sheets/PatrolSheet.vue` | 照片 `loadHd` 传 `scope: PATROL_DETAIL_SCOPE` 与 `{id,time,size}`；命中缓存且带宽高时直接 `setDims`，省掉缩略图解码；`probeDims` 探到的宽高回写缓存；项目全景 `loadPanoHd` 改走同一函数（原先是裸 `fetchBlobWithProgress`） |
+| `src/components/overlays/AirPlayer.vue` | 照片与全景都传 `scope: air.airScope`；全景同样改走 `fetchDetailOriginal` |
+| `src/stores/airHazard.ts` | `AirShot` 增 `size` / `at`；新增 `airScope`（`air|站点|日期`）与 `syncDetailScope()`，在列表定稿 / 空态后对账 |
+| `src/stores/patrol.ts` | 新增 `PATROL_DETAIL_SCOPE` 与 `syncDetailCache()`，`load()` 成功后对账六格照片 + 项目全景 |
+| `src/stores/auth.ts` | 清会话时 `clearOriginalCache()` + `clearDetailCache()` |
+
+### 没动的
+
+- 监控抓拍详情（`CamPlayer.vue`）：原图本来就在本机 IndexedDB 档案里，零网络。
+- 列表缩略图与页面初次加载：仍然一个请求都不发（缓存只在详情打开时读写）。
+- 进度条 / 角标 / 缩放 / 全屏 / 「打开即原图」的观感：一条没改。
+
+## 六点五十七、智眸子页懒加载：切回来只取当前这一格（2026-11-24）
+
+### 问题
+
+首页三个标签（智巡 / 智眸 / 智控）切换时，`HomeSheet` 的 `.home-panels` 带
+`:key="home.homeMod"`，面板是**真的卸载再挂载**。于是带出两个毛病：
+
+1. 每次切回智眸都跑一遍 `patrol.refresh()` → `load(true)`：照片墙 + 全景 +
+   全景航拍 + 材料堆场 + 设备设施 + 安全巡查**六条链一起打**。现场 15 条航线、
+   媒体接口还限流，一次刷新要十几秒；一分钟内重进才被 `REFRESH_GAP` 挡住。
+2. 选中的子页是组件里的 `ref('')`，组件一卸载就没了 —— 上次停在「全景航拍」，
+   切走再回来落回默认格。
+
+### 现在的两条路径
+
+```
+面板挂载（从智巡/智控切回来）→ patrol.enterPanel()
+    ├─ 有上次选中的子页 → 只取这一格（刷新它）
+    └─ 本会话还没选过   → 先看手里已有数据；没有才按 3×2 顺序逐格探，
+                          探到第一个有内容的就停（只发生在第一次进入）
+
+面板内部点分类按钮 → watch(activeCat) → patrol.loadCat(id)
+    └─ 只取新点中的这一格
+```
+
+- **选中状态放在 store**（`pickedCat`）：面板卸载不丢；登出 `reset()` 才清。
+- **一次只取一格**：`loadCat(id)` 按 id 派发到六条专用链之一，
+  别的格一个请求都不发。首次探测是唯一会碰到多格的路径，且探到即停。
+- 两道闸：同一格已在取（连点）不叠加；15 秒内刚成功过 / 60 秒内刚失败过不重发。
+  空态上的「重试」传 `force = true` 绕过它们。
+- 只有一格在取时，`beginRecordBatch` 那套跨链共享自然用不上；每条链内部
+  （`runInRecordBatch`）仍然共享自己那几条同窗口查询。
+
+### 详情缓存跟着改
+
+- 缓存元信息多了 `group`（这张属于哪一格）。**必须按格对账**：一次刷新只知道自己
+  这一格有哪些照片，整作用域对账会把「还没打开过的格子」的缓存一起删掉。
+- `reconcileDetailScope(scope, items, group?)`：传 group 只对账这一格；航拍那套
+  （`air|站点|日期`）一次取齐，不传，行为不变。
+- `IndexedDB` 版本升到 v2（加了 `group` 字段）。缓存而已，升级时整库重建，不做迁移。
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/stores/patrol.ts` | 新增 `pickedCat` / `entering` / `catAt` / `catFailAt`；新增 `catStateOf` / `catHasData` / `catOfPhoto` / `pickCat` / `loadCat` / `enterPanel`；`syncDetailCat` 按格对账；**删掉 `refresh()`**（`load()` 保留给整页刷新与单测） |
+| `src/views/home/PatrolPanel.vue` | `picked` 改成 store 的读写代理；`onMounted` → `enterPanel()`；新增 `watch(activeCat)` → `loadCat()`；分类条恒定显示（懒加载下它是唯一入口）；空态按「这一格自己的状态」写「暂时取不到 / 还没有照片」+ 一个 `retryCurrent()`；六条重试函数收成一个 |
+| `src/utils/photoDetailCache.ts` | `DetailMeta.group`；`DB_VER` 2；`reconcileDetailScope` 加第三个参数 `group` |
+| `src/components/sheets/PatrolSheet.vue` | 落盘时写 `group`（全景 `pano`，照片按 `patrol.catOfPhoto(id)`） |
+
+### 观感上的变化
+
+- 切回智眸不再「白等 + 六条链一起转」：只刷新当前那一格，别的格保持上次的样子。
+- 分类条在首屏（骨架期间）就出现，计数随「点开过哪一格」逐个补上 —— 没点过的
+  格子没有数字，不是 0 张。
+- 没选过子页时首次进入会按顺序探（通常第一格或第二格就停），探测期间铺首屏骨架，
+  不会先闪一句「这个分类下还没有照片」。
+
+## 六点五十八、「今日任务 15 / 清单 10」：清单改取当天全量记录（2026-11-24）
+
+### 现象
+
+「任务管理」三格写「今日任务 15」，点开「查看今日任务」只有 10 行 ——
+差 5 条，看起来像丢数据。
+
+### 根因（2026-11-24 09:55 抓的原始响应，非推测）
+
+`GET /dashboard/task/list/record?pid=193640872670213` 同一次响应里：
+
+| 字段 | 条数 | 内容 |
+|---|---|---|
+| `taskCount` | **15** | 三格那个数；`planCount 11` + 完成 2 + 失败 1 + 执行中 1 |
+| `completedTaskList` | 3 | 08:00 正射 / 08:20 全局定点 / 09:45 安全巡检（`result:3` 失败） |
+| `unfinishedTaskList` | **7** | 09:00 三维（`status:1` 执行中）+ 10:50 ~ 14:15 六条未执行 |
+| `taskStatusList` | 不返回 | 文档里有这个字段，实际响应没有 |
+
+3 + 7 = 10。**当天最后 5 条排班（15:00 安全巡检 / 15:30 全局定点拍照 / 16:15 环绕视频 /
+17:00 土方1 / 17:45 安全巡检）服务端不在 `unfinishedTaskList` 里回** ——
+`planCount` 是 11，而它只给了 6 条未执行。清单当时是「执行记录 + 未完成排班」拼的，
+拼到顶也就 10 条，与 `taskCount` 永远差这 5 条。
+
+### 修法
+
+清单主源换成**当天全量端点**：
+
+```
+GET /dashboard/task/list/execRecord/today
+→ data: [{ executeInfo: {id, uuid, taskId, taskName, start, end, scheduled, suspended, status, result, pid}, taskInfo }]
+```
+
+- 一次回当天全部记录（实测 20 行 = 向阳村 15 + 光谷元著 5），按 `executeInfo.pid`
+  过滤后 **正好 15 条**，与 `taskCount` 逐条一致；
+- `pidList` 查询参数服务端**不认**（传了仍回别的项目），只能本地过滤；
+- 行结构是 `{executeInfo, taskInfo}`，字段全在 `executeInfo` 上；
+- 主源挂了（老网关没这个端点 / 404 / 超时）退回原来的两段式：执行记录
+  （开放接口）+ `unfinishedTaskList`，少列几条也强过整页报错。
+
+`taskCount` 仍取统计接口，两个数字现在同源同量。
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/api/drone.ts` | 新增 `fetchTodayTaskList(pid)`（解析 `executeInfo`、按 pid 过滤）；`DroneTaskRecord` 增 `suspended`（`toTaskRecords` / `toOpenTaskRecords` 都读它）；`fetchTodayRecords` 标注为兜底 |
+| `src/stores/uav.ts` | 新增 `loadTodayList()`（全量端点 → 兜底）；`load` / `refreshSlow` / `loadMission` 三处改用它；`stateText/stateClass` 增「已暂停」；`todayPending` 降级为补漏（按 `taskId + start` 去重） |
+| `src/components/sheets/UavTodaySheet.vue` | 副标题写「共 N 条」；条数与 `taskTotal` 仍不一致时补一行「统计 N 条，本清单 M 条（其余排班未回传明细）」 |
+| `src/components/overlays/SheetHost.vue` | `uav-today` 的 subtitle = `共 N 条` |
+| `tests/unit/drone.spec.ts` | 新增 2 条：全量端点条数与三格一致 + 别的项目不混入；端点挂了走兜底 |
+
+### 核对（用真实接口跑的，同一天同一时刻）
+
+```
+三格 taskCount      : 15  {finished:2, failed:1, running:1, plan:11, suspended:0}
+旧口径(记录+未完成) : 10  (3 + 7)
+新口径(全量端点)    : 15  {已完成:2, 执行中:1, 已失败:1, 未执行:11}
+一致? true
+```
+
+## 六点五十九、分页排查：截断的不是数据源，是翻页算法（2026-11-24）
+
+用户要求把「分页导致任务数对不齐」从根上堵住，逐项查了参数、终止条件、累计方式、
+游标推进与去重。实测把三个疑点全部问清：
+
+### 实测结果（2026-11-24 10:2x）
+
+| 端点 | 行为 |
+|---|---|
+| `/dashboard/task/list/record` | `completedTaskList` / `unfinishedTaskList` 默认**只回 7 条**；带 `pageNum/pageSize` 回全（12 条）。20 / 200 / 1000 三档条数相同，`pageNum=2` 不做偏移 → 不是真分页，只是「带参数才解除默认截断」 |
+| `/dashboard/task/list/execRecord/today` | **不分页**：`pageSize=2`、`pageNum=2` 仍回全部 20 条 |
+| `/api/open/v1/task-record/page` | 真分页：`total` 恒为区间总数（429）；**越界页重复返回最后一页**（page=12/13/99 都是同一批 29 条）；`size=0/-5` 回落 20 条，`size>100` 压到 100，`page=0/-1` 等价 1 |
+| `/dashboard/device/list` | `page/size` **完全不生效**（`size=2` 仍回 5 条），裸数组、无 total → 不需要翻页 |
+
+### 翻页算法修的四处
+
+1. **终止条件**：`p * pageSize >= total` → `(p - 1) * pageSize + res.rows.length >= total`。
+   前者在 `page > 1` 时算的是「已翻页数 × 页长」，与 `total` 比较会提前退出；
+   后者按「已覆盖到的 offset」算，与真实进度一致。
+2. **总数累计**：`total = res.total` → `total = Math.max(total, res.total)`。
+   翻页期间有新增记录时 `total` 会变大，取最后一次会把先前进度作废；取最大值更接近真实总量。
+3. **游标推进（空页 / 短页）**：原实现 `if (!res.rows.length) break`，一个空页就收手。
+   现在空页**先重试同一页**（限流/瞬时空响应），仍空才往后翻；短页但 `total` 还有时
+   也重试同一页 —— 直接 `p += 1` 会让 offset 前移、整段跳过缺口。
+4. **去重**：原来 `rows.push(...res.rows)` 不去重，越界重复页会重复计数。
+   现在按 `recordKey` 去重，键顺序 `rid`（原始 `taskRecordId` 字符串）→ `uuid` → `id+taskId+start`。
+   **不能用 `id`**：19 位雪花号转 `number` 丢精度（`5968386048883676116` 与 `...117` 变成同一个数），
+   拿它当键会把不同记录合并成一条（少条）。为此 `DroneTaskRecord` 新增 `rid`。
+
+另外把 `OPEN_MAX_PAGES` 从 30（3000 条）抬到 500（5 万条），触顶时返回
+`truncated: true` 并 `console.warn`，不再静默截断；`fetchTodayRecords` 也会对
+单个项目未取全的情况留痕。
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/api/drone.ts` | `DroneTaskRecord.rid`；`recordKey()`；`DroneTaskPage.truncated`；`fetchTaskRecords` 翻页重写（终止/累计/空页重试/短页重试/去重/触顶告警）；`fetchTaskStat` 带 `pageNum=1&pageSize=1000`；`fetchTodayRecords` 改用 `recordKey` + 未取全告警 |
+| `tests/unit/drone.spec.ts` | 新增 `describe('执行记录翻页…')` 8 条：末页不满、末页整除、越界重复页、翻页中新增、空页重试、连续空页收手、雪花号精度不误合并、size/page 边界 |
+
+### 验证
+
+```
+npx vitest run tests/unit/drone.spec.ts   → 87 passed
+npx vue-tsc --noEmit                      → 通过
+npm run build                             → 通过（precache 897.46 KiB）
+
+真实接口复刻翻页（30 天窗口，total=429）：
+  size=100 → rows 429 / total 429 / 5 次请求 / 重复 0 / truncated false
+  size=50  → rows 429 / total 429 / 9 次请求 / 重复 0 / truncated false
+  size=7   → rows 429 / total 429 / 62 次请求 / 重复 0 / truncated false
+```
+
+今日任务口径未变：三格 = `taskCount + suspendedCount` = 4 + 11 = 15，清单全量 15 条，
+清单里暂停项显示「未执行」。
+
+## 六点六十、横屏引导语收窄：只在 VR 360 环视的全景全屏出现（2026-11-24）
+
+现场截图反馈：「把手机横过来看 / 转不动就关掉系统的「竖屏锁定」」这条卡片出现得
+太泛 —— 首页全屏地图、监控播放器全屏、抓拍大图全屏、航拍全景全屏、智眸平面照片
+全屏都会弹。要求**只保留**在智眸「VR 360 环视 → 项目全景 → 全屏」这一处。
+
+### 判断依据
+
+这句引导是给**球面全景**写的：竖屏里球面只剩中间一条窄缝，拖不动也看不全，
+只能请用户转屏；其它全屏画面不转过去照样能看清，弹卡片纯属打断视线。
+
+### 改动
+
+| 文件 | 变化 |
+|---|---|
+| `src/stores/shell.ts` | `openMapLand()` 只 `enterNativeLandscape()`，删 `openLandscapeHint` 调用与 import（首页全屏地图不再提示） |
+| `src/stores/cam.ts` | `setCamLand(true)` 同上（监控播放器全屏不再提示） |
+| `src/components/overlays/CamPlayer.vue` | `useLandscape({ page: true, hint: true })` → `{ page: true }`（抓拍大图不再提示） |
+| `src/components/overlays/AirPlayer.vue` | 同上（航拍全景全屏不再提示） |
+| `src/components/sheets/PatrolSheet.vue` | `panoLand` **保留** `hint: true`；`photoLand`（平面照片）去掉 |
+| `src/utils/landscape.ts` | `hint` 选项注释改为「只有 VR 360 环视项目全景用它」 |
+| `src/utils/landscapeHint.ts` / `LandscapeHint.vue` / `App.vue` / `app.css` / `orientation.ts` | 注释与适用范围说明同步；样式与状态**保留**（那唯一一处仍要用） |
+
+保留的链路（与原行为一字不差）：点「全屏」→ `enterNativeLandscape()` 申请
+`documentElement` 全屏 + `orientation.lock('landscape')` → 等 320ms → 视口仍
+宽 < 高 且是触摸设备 → `openLandscapeHint()` → 卡片 4.2s 淡出 / 点击关闭 /
+用户自己转过来（`resize`）立刻收掉。
+
+### 验证
+
+```
+npx vue-tsc --noEmit   → 通过
+npm run build          → 通过（precache 897.38 KiB）
+```
+
+手动确认点（真机竖屏 + 系统开旋转锁定）：①智眸 VR 360 环视 → 项目全景 → 全屏
+→ 应出现卡片；②首页地图全屏 / 监控全屏 / 抓拍大图全屏 / 航拍全景全屏 / 平面照片
+全屏 → 都不应出现。
+
+## 六点六十一、iOS 上「全屏 → 横屏 → 竖屏 → 退不出全屏」：状态机被旋转打散（2026-11-24）
+
+现象（iOS 27 iPhone，智眸 → VR 360 环视 → 项目全景 → 全屏）：进全屏正常，把手机
+横过来正常，再转回竖屏之后**点「退出」退不出来**，画面留在系统全屏里。
+
+### 根因
+
+`land`（App 认为「在全屏」）与系统是否真的在全屏是两套状态，原先**三个关键决定
+全都押在 `document.fullscreenElement` / `webkitFullscreenElement` 上**，而 iOS 上
+这两个属性在**旋转的瞬间会先报 null 再恢复**（进全屏那一刻是读得到的，所以旋转
+之前一切正常 —— 与现场现象完全吻合）。三个决定是：
+
+| # | 位置 | 做法 | 旋转时发生的后果 |
+|---|---|---|---|
+| R1 | `landscape.ts::onFullscreenChange` | 一读到「没有全屏元素」就 `land = false` | 旋转连发事件，一次误读就把铺满的画面收掉：「退出」按钮变回「全屏」，`.is-land` 摘掉、Teleport 复位 |
+| R2 | `landscape.ts::exit` | 先 `land = false` 再 `exitNativeLandscape()` | 出口比系统状态先消失，同 R1；而且 `exitFullscreen()` 一旦被转场吞掉就再没机会补 |
+| R3 | `orientation.ts::exitNativeLandscape` | 只发一次 `exitFullscreen`；退失败后的 300ms 复查也以同一属性为前提 | 属性读 null → 复查不执行；第一次调用被吞 → 永远停在全屏 |
+
+R1 是触发点：`land` 被误置 false 之后，**再没有任何代码会去发 `exitFullscreen`**
+（系统全屏没变，`fullscreenchange` 不会再发，旋转回竖屏也不产生新事件），于是
+「系统在全屏、App 认为不在全屏」这个错位一直留着，用户看到的就是「退不出全屏」。
+另有一个次要因素：全屏里唯一出口是右上角那颗 26px 胶囊（WebGL 画布铺满
+`.pano-host`，`@click.self` 的「点黑边」在全景全屏下根本不会触发），26px 本身低于
+44pt 触控下限。
+
+### 修法（三条规则 + 一处几何加固）
+
+| 文件 | 改动 |
+|---|---|
+| `utils/orientation.ts` | 新增 `isSystemFullscreen()`，并把「读到 false ≠ 已退出」写进注释；新增 `fireExitOnce()`（只认退出事件 / 被拒 / 超时复查，**不认 promise resolve**）；`exitNativeLandscape()` 改为**退三次**（0 / 260 / 700ms，只在「仍读得到全屏」时才继续），退出前解锁、退出后再解锁一次，返回 `boolean` 供调用方判断 |
+| `utils/landscape.ts` | `scheduleDropCheck()`：消失事件**不立刻**收 UI，转屏窗口内等 900ms、平常 280ms，期间只要又读到全屏就撤销；`exit()` 改为**先退系统全屏、确认后再收 UI**，退不掉就保留 `land` 与「退出」按钮并 900ms 后重试；新增 `onRotateEvent()` + `reconcile()`：转屏后对账，①系统还在全屏而 UI 已收 → 主动补一次退出，②UI 还在全屏而系统层没了 → 走二次确认；`enter()` 补一条「320ms 等待期间用户已点退出」的收尾 |
+| `styles/app.css` | 全屏工具条的定位改成 `calc(max(env(safe-area-inset-*), 12px) + 10px)`（旋转后 `env()` 可能仍给横屏那档 0）；新增 `.pano-tool::after` 把命中区上下各撑 9px → **44pt**，视觉不变 |
+| `components/sheets/PatrolSheet.vue` | 注释纠正：全景全屏下「点黑边退出」不可达，唯一出口是右上那颗按钮 |
+
+要点：`land` 只能由「用户意图」和「二次确认过的系统状态」改变，**不能由一次属性
+读取改变**；退出必须先作用在系统上，UI 跟着系统走，不能抢在前面。
+
+### 验证要点（真机竖屏 + 系统开/关旋转锁定各跑一遍）
+
+1. **进入全屏**：点「全屏」→ 画面铺满；能进系统全屏的机型应转成横屏，转不了的
+   机型弹「把手机横过来看」，4.2s 自动消失，不影响拖动环视。
+2. **横竖屏切换**：横过来 → 画面跟着铺满、不黑屏、不回到弹层；再竖回去 →
+   **按钮仍是「退出」**，画面仍是全屏态（这一条就是这次修的根因，回归必测）。
+3. **退出全屏**：竖屏态点「退出」→ 一帧内回到弹层原位、页面不偏移、方向锁解除
+   （手机能自由转）；若系统全屏倔着不退，按钮**仍在**且仍写「退出」，再点一次即可。
+4. **系统方式退出**：横屏态用系统手势 / 安卓返回 / Esc 退全屏 → 280ms 内 UI 收回，
+   不出现「黑屏卡住」。
+5. **旋转中退出**：横屏转竖屏的动画进行中就点「退出」→ 不出现「按钮消失但画面
+   还在全屏」。
+6. **关闭弹层**：任何方向下点「返回」关掉明细 → 系统全屏必定退出，不留全屏窗口。
+
+### 验证
+
+```
+npx vue-tsc --noEmit   → 通过
+npm run build          → 通过（precache 899.04 KiB）
+```
+
+## 六点六十二、实时监控：没任务就不连流（2026-11-24）
+
+### 现象与理由
+
+无人机页「实时监控」在没有执行中任务时，画面区仍是「画面未开播 / 无人机起飞推流后
+会自动出画面，不用手动刷新 / 重试」—— 而那时**根本没有推流**，播放器却已经连上去、
+18s 后判 `offair`、每 20s 再重连一次，一直循环到用户离开页面。白烧流量与电，
+还给了一个按不出结果的「重试」。
+
+### 门禁改了：从「有没有地址」改成「有没有执行中的起飞任务」
+
+| 状态 | 行为 |
+|---|---|
+| **没有**执行中任务（`uav.running === null`） | 不挂 `LivePlayer`（卸载即 `seq+1`、清超时/重连定时器、`teardown()`），画面区写「当前无正在执行的任务，无视频画面」+「起飞任务开始后会自动连上画面」，**不给重试按钮** |
+| **有**执行中任务 + 有地址 | 原逻辑一字未改：有地址就先连（ZLM 挂着等推流）、连不上 → `offair` → 每 20s 自动重连、`playing` 才挂 LIVE |
+| 有执行中任务 + 平台没给地址 | 原逻辑：`实时画面未开播` + `平台没有这台无人机的直播流` |
+
+判定用 `running`（只认本项目、`status === 1` 执行中），不是「今日有没有任务」：
+已排班未起飞、已完成的架次都不推流，挂上去就是空转。任务起止由 30s 那轮
+`refreshSlow` 感知，`watch([tab, missionOn])` 同时把 `liveState` 清回 `idle`，
+LIVE 角标不会带着上一路的状态闪一下。
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/views/sub/UavPage.vue` | 新增 `missionOn = computed(() => uav.running !== null)`；`LivePlayer` 与 LIVE 角标都加 `missionOn &&` 前置；`uav-stage.is-wait` 改为 `!missionOn \|\| !hasStream`；新增空态两块（无任务 / 有任务没地址）；新增 `idleHint` |
+| `src/components/ui/LivePlayer.vue` | 顶部注释补一节：门禁在调用方（不挂即不重连），组件内不再加第二套「有没有任务」的判定 |
+| `tests/unit/device-page.spec.ts` | 新增 2 条（无任务时即使有地址也不挂播放器、无重试按钮；任务结束后播放器卸载、角标摘掉）；原「完全没有直播流」那条补 `stubRecords`，改成「有任务但没地址」 |
+
+### 验证
+
+```
+npx vue-tsc --noEmit                                → 通过
+npx vitest run tests/unit/device-page.spec.ts -t 无人机页 → 21 passed / 3 failed
+npm run build                                       → 通过（precache 899.28 KiB）
+```
+
+那 3 条 failed 是**既有失效用例**，与本次改动无关：它们钉的是 2026-11-23 已下线的
+「飞行参数七格」（`.uav-fly`）与「机库页签」（`.dev-tabs button[1]`），选择器已不存在。
+
+## 六点六十三、实时监控的两个边界：结束宽限 + 刷新失败不断流（2026-11-24）
+
+六点六十二 的门禁（没任务不连流）上线后还剩两处会「切画面」，这次一并收掉。
+
+### ① 任务结束：留 2 分钟宽限再卸载
+
+服务端把架次标成「已完成」的那一刻，飞机往往还在推最后几秒（落地、云台回中、
+回库）。按 `running` 一变 false 就卸载播放器，现场看到的就是「画面活生生断在
+半空」，落地那一下正好没有。
+
+新增 `src/utils/streamHold.ts::useStreamHold(running, now, holdMs = 120_000)`：
+
+| 规则 | 说明 |
+|---|---|
+| 只在「跑过 → 结束」开窗 | 页面初开时 `running` 本来就是 false，那不是「刚结束」，不该白连两分钟 |
+| 到期判据是共享时钟 `now` | 读 `utils/missionClock.ts` 的 5s 网格，不另开 `setTimeout`（那会多一套时间源，卸载后还可能残留） |
+| 窗口内 | 播放器不卸载、`LIVE` 角标不摘、断流重连照旧；另加一句「任务已结束，画面保留 2 分钟 后自动关闭」 |
+| 到点 | 自动卸载，回到「当前无正在执行的任务，无视频画面」 |
+
+页面里 `streamOn = useStreamHold(missionOn, now).on`，模板一律读 `streamOn`；
+`liveState` 的清零也跟着 `streamOn` 而不是 `missionOn` —— 否则窗口内明明在播、
+`LIVE` 却被摘掉。
+
+### ② 强制刷新失败：不再清空执行记录
+
+`stores/uav.ts::load()` 失败分支原先是 `records.value = []`。而页面 mount 与点
+「重试」都走这条**强制刷新**，一次网络抖动就会让 `running` 变 null ——「当前巡检」
+卡片、进度条、实时画面（门禁是 `running`）一起下线，飞机却还在飞。
+
+现在与 30s 那轮 `refreshSlow` 同口径：**失败只改状态与原因，手上有什么留什么**。
+为避免「拿旧数据装实时」，`state === 'error'` 且仍有旧数据时，任务管理块底部补一句
+「刷新失败，以上为上一次的数据」。真正清空只发生在 `reset()`（退出登录）。
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/utils/streamHold.ts` | **新增**：`useStreamHold()`（`on` / `until` / `minutes`），默认 2 分钟 |
+| `src/views/sub/UavPage.vue` | 用 `useStreamHold(missionOn, now)` 取代内联的 `holdUntil`；模板改读 `streamOn`；新增「任务已结束…」提示；任务管理块底部新增「刷新失败，以上为上一次的数据」 |
+| `src/stores/uav.ts` | `load()` 失败不再 `records = []`，注释写清原因 |
+| `src/components/ui/LivePlayer.vue` | 注释同步「任务刚结束还留 2 分钟宽限」 |
+| `tests/unit/stream-hold.spec.ts` | **新增** 4 条：初开不宽限 / 结束后窗口内仍上屏、到点收 / 宽限里重新起飞立刻清窗 / 默认 2 分钟 |
+| `tests/unit/device-page.spec.ts` | 「任务结束」那条改断言：窗口内播放器与 LIVE 都还在、出现宽限提示 |
+| `tests/unit/drone.spec.ts` | 新增 1 条：强制刷新失败保留记录、`running` 不为 null |
+
+### 验证
+
+```
+npx vue-tsc --noEmit                                      → 通过
+npx vitest run tests/unit/stream-hold.spec.ts             → 4 passed
+npx vitest run tests/unit/drone.spec.ts -t 强制刷新失败     → 1 passed
+npx vitest run tests/unit/device-page.spec.ts -t 无人机页   → 21 passed / 3 failed（既有失效用例：`.uav-fly` 七格与机库页签 2026-11-23 已下线）
+npm run build                                             → 通过（precache 899.72 KiB）
+```
+
+## 六点六十四、无人机预警退出未读体系 + 详情返回一致 + 顶栏「一键已读」（2026-11-24）
+
+现场三条反馈，一起收掉。
+
+### ① 无人机预警详情「返回」与监控预警详情对齐
+
+返回的**动作**本来就共用一套（`SubPage.onBack` 的 0.22s 滑出 + 垫底层 + 右滑手势），
+不一致的是**返回后的状态**：
+
+| 现象 | 原因 | 现在 |
+|---|---|---|
+| 从「历史预警」点进详情，返回后落在「今日预警」 | 页签是 `WorkOrderList` 的局部 `ref`，组件被整棵卸载就归位 | 页签进 store（`droneAlarm.listTab`），与监控的 `alarm.inspTab` 同一条规则 |
+| 返回后滚动位置错位（贴着底部 / 跳到别处） | 滚动记忆只按视图 key 记，两个页签共用 `work-orders` 一个键 | `SubPage` 的记忆键改「视图 + 页签」，今日 / 历史各记各的 |
+| 返回后列表重算骨架、历史被截回首屏 | `onMounted` 无条件 `drone.load()`，它整批替换 `items`（监控那边 `syncFromVideo` 是合并） | 只在 `state === 'idle'`（从没扫过）时拉；保鲜由入口负责（App 启动 / 消息 tab 切换） |
+
+顺带：`SubPage` 里**进入动画仍用 `viewKey`**，只有滚动记忆用 `scrollKey` ——
+切页签不该重播滑入动画。
+
+### ② 无人机预警不再参与「未读 / 待处理」
+
+无人机侧没有「已读」这个动作（`auditStatusType` 只有 `UNAUDITED` / `AUDITED`，
+服务端也没有单条标记接口），早先按「今日 + 待处理」硬凑的未读数点开也清不掉：
+
+| 位置 | 改之前 | 现在 |
+|---|---|---|
+| 底栏角标 `msg.unreadTotal` | 监控今日未读 + 无人机今日待处理 | **只算监控今日未读** |
+| 消息页无人机卡 | 「今日待处理 N」（红色徽标） | 「今日 N 条」**中性数字**，且**不配标签**（现场要求去掉「今日预警」四个字） |
+| 无人机列表 | 今日 + 待处理点红点 | 不点红点（状态仍照实显示在右侧徽标：待处理 / 已完成） |
+
+`MsgCategory` 随之调整：`unread` → `count`，新增 `tone: 'alert' | 'plain'`
+（`alert` 才是红色未读徽标），`hint` 允许空串。
+`droneAlarm.todayPending` / `isUnread` 保留但**只作事实描述**，不要再接角标。
+
+### ③ 顶栏「一键已读」（消息页红框位置）
+
+`NavBar` 右侧那一格（原 `#navRight` 是空占位），出现条件三条同时满足：
+在**消息 tab**、**已登录**、**今日确实有监控未读**。
+
+点一下走 `stores/msg.ts::markAllRead()`：
+
+1. 从 `alarm.latest` 取今日未读，按 id 回 store 取**真身**置 `handleStatus = 1`
+   （`latest` 是派生出来的新对象，改它列表红点不会消失）；
+2. 按 4 个一批并发 `PATCH /api/video/alarms/{id}/status {status:1}`；
+3. 有失败才 `syncFromVideo(force)` 以服务端为准回正 —— 宁可让用户再点一次，
+   也不留一个假的「已全部已读」；
+4. **只动监控预警**：一个 keehang 请求都不发，无人机条数、今日预警数不受影响。
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/stores/droneAlarm.ts` | 新增 `listTab`（`reset()` 归零）；文件头补「无人机不参与未读体系」「页签为什么在 store」；`todayPending` / `isUnread` 注释改为「只作事实描述」 |
+| `src/stores/msg.ts` | `unreadTotal = monitorUnread`；`MsgCategory.unread → count` + `tone`；无人机卡 `hint: ''`、`count: todayCount`；新增 `markAllRead()` + `markingAll` |
+| `src/views/MsgPage.vue` | 徽标按 `tone` 分红色 / 中性；`hint` 为空时不渲染标签 |
+| `src/components/shell/NavBar.vue` | 右侧「一键已读」（`[data-read-all]`，处理中禁用并写「处理中…」）；`.has-action` 让第三列变 auto |
+| `src/components/overlays/SubPage.vue` | `tabOf` / `scrollKeyOf` / `scrollKey`；两个滚动 watcher 改用 `scrollKey`，列表判定按基名 |
+| `src/views/sub/WorkOrderList.vue` | 页签改读 store；去掉 `:dot`；`onMounted` 只在 `state==='idle'` 时拉 |
+| `src/components/shell/TabBar.vue` / `src/App.vue` | 角标与预热注释同步新口径 |
+| `src/styles/app.css` | `.navbar.has-action` / `.nav-action`（44px 命中区、`--fs-13`、禁用态不塌）；`.msg-badge.is-plain`（中性数字） |
+
+### 验证
+
+```
+npx vue-tsc --noEmit                                        → 通过
+npx vitest run tests/unit/work-order.spec.ts                → 29 passed
+npx vitest run tests/unit/msg-categories.spec.ts            → 14 passed（新增 5 条）
+npx vitest run tests/unit/subpage-scroll.spec.ts            → 5 passed（新增 1 条）
+npx vitest run tests/unit/stage5.spec.ts work-order-thumb.spec.ts monitor-alarm.spec.ts → 40 passed
+npx vitest run tests/unit/swipe-back.spec.ts history-back.spec.ts → 28 passed
+npm run build                                               → 通过（precache 901.54 KiB）
+```
+
+## 六点六十五、一键已读的即时性与竞态 + 切 tab 重新取数（2026-11-24）
+
+替代六点六十四第 ③ 节里的「顺序」三条（置读 → 批量 PATCH → 失败才回正），
+那三条在**并发**下会打脸，这一节是它的修订版。
+
+### ① 为什么会出现「数字不刷新 / 刷新后又跳回去」
+
+| 现象 | 根因 |
+|---|---|
+| 点完「一键已读」数字是 0，一两秒后又变成 2 | 点下去的同一瞬间正有一趟同步在路上（切 tab / 面板挂载）。那趟请求是在置读**之前**发出的，服务端回的 `handleStatus` 还是 0，`merge()` 朴朴素素地把本地 1 换成 0 |
+| 全部已读失败时，界面仍显示 0 | 失败只 `void syncFromVideo(force)` 补拉一次；若此时已有同步在途，`syncFromVideo` 直接 `return false`，等于什么也没补 |
+| 从别的 tab 切回消息页，未读数不动 | `MsgPage` 的 watch 里带 `!alarm.hasLive` 条件：首屏已拿到数据 ⇒ 以后再也不刷 |
+| 首页「今日预警数」长时间停在早上那个数 | 四个 tab 页常驻挂载（`.page.active` 切显隐），`onMounted` 一辈子只跑一次 |
+
+### ② 已读：本地权威登记 + 失败立即回正
+
+`stores/alarm.ts` 新增 `readMarks: Map<id, { at, patching }>`（本地已置读登记）：
+
+* `markLocalRead(a)`：`handleStatus = 1` 并登记 `{ at: now, patching: true }`；
+* `settleLocalRead(id, ok)`：成功解除 `patching`（登记留到下一次同步确认），
+  失败**立刻回正为未读**并撤销登记 —— PATCH 失败就是服务端没记住，本地挂着
+  「已读」，下次冷启动数字还会跳回来；
+* `merge(incoming, fetchedAt)`：`fetchedAt` 是**请求发出时刻**（不是回来时刻）。
+  - `patching === true` 或 `fetchedAt <= at` → 这批数据不可能知道我们刚置读，**本地为准**；
+  - 否则 → **服务端为准**，登记随之撤销（不制造一个永远压制服务端的本地值）。
+
+`stores/msg.ts`：
+
+* `markAllRead()`：先对今日未读全部 `markLocalRead`（数字、角标、红点同一帧归零），
+  再 4 路并发 PATCH，**逐条** `settleLocalRead`；有失败才 `void syncFromVideo(force)`
+  补一趟对账 + `showToast('部分预警标记失败，已恢复为未读，请重试')`；
+  返回「成功条数」，`markingAll` 在 `finally` 里复位。
+* 连点：`markingAll` 挡住进行中的第二次；置读后今日未读已是 0，第二次进来
+  `targets` 为空直接返回 0，一个请求都不发。
+* `markRead(id)` 同样走这套（单条失败也回正为未读，红点回来）。
+
+`alarm.syncFromVideo` 同时补了**在途复用**：`syncInflight` 存在时无论 `force`
+都返回同一个 promise。首屏面板挂载 + 消息页 watch + 切 tab + 失败回正四个入口
+在同一秒触发时只有一趟网络（两页 400 条），晚到的旧结果也不会覆盖新结果。
+
+### ③ 切 tab 重新取数
+
+新增 `src/utils/tabRefresh.ts::useTabRefresh(tab, reload, minGap = 600)`：
+`watch(shell.activeTab)`，只在**真的换了 tab**时调 `reload`；同一页面 600ms 内
+来回横跳只刷一次（真正的去重仍在各 store 里）。点当前 tab 不触发。
+
+接线（各自决定取哪些接口，不在这里一刀切）：
+
+| 页面 / 面板 | 切回时 |
+|---|---|
+| 首页 · 智巡 `SafetyPanel` | `overview.refresh()` + `alarm.refresh(token)`（force）+ `drone.load()` |
+| 首页 · 智眸 `PatrolPanel` | `patrol.loadCat(pickedCat, true)`（强制，绕过 15s 节流）；没选过则 `enterPanel()` |
+| 首页 · 智控 `EquipPanel` | `ledger.refresh` + `scaf.refresh` + `lift.refresh` + `uav.loadStat` + `uav.loadMission`（不重复注册 `startLive` 与 30s 定时器） |
+| 消息 `MsgPage` | `alarm.refresh(token)`（force）+ `drone.load()`；原来那条 `!alarm.hasLive` 的 watch 删掉 |
+| 我的 `MinePage` | `auth.refreshProfile()`（新函数：/me 重拉姓名与角色，在途复用、失败静默） |
+| 工作台 `WorkPage` | **不动**：这一页没有任何接口数据（快捷入口与工具卡都是 `data/config` 常量），挂了也只是空转 |
+
+### 落地
+
+| 文件 | 变化 |
+|---|---|
+| `src/stores/alarm.ts` | `readMarks` / `withLocalRead` / `markLocalRead` / `settleLocalRead`；`merge(incoming, fetchedAt)`、`fetchPages(..., fetchedAt)`；`runSync` 拆出；`syncFromVideo` 在途复用（`syncInflight`）；`clearLive` 清登记 |
+| `src/stores/msg.ts` | `markAllRead` 逐条 settle + 失败回正 + Toast；`markRead` 失败回正；导入 shell store |
+| `src/stores/auth.ts` | 新增 `refreshProfile()`（`profileInflight` 去重，账号变了丢弃结果） |
+| `src/utils/tabRefresh.ts` | 新增 |
+| `src/views/MsgPage.vue` / `MinePage.vue` / `home/SafetyPanel.vue` / `home/PatrolPanel.vue` / `home/EquipPanel.vue` | 接 `useTabRefresh`；SafetyPanel 的取数收成 `fetchPanel()` 供挂载与切 tab 共用 |
+| `src/views/WorkPage.vue` | 注释说明「无接口数据，故不挂刷新」 |
+
+### 验证
+
+```
+npx vue-tsc --noEmit                                                     → 通过
+npx vitest run tests/unit/msg-read-race.spec.ts                          → 6 passed（新增）
+npx vitest run tests/unit/tab-refresh.spec.ts                            → 5 passed（新增）
+npx vitest run tests/unit/msg-categories.spec.ts monitor-alarm.spec.ts alarm-thumb.spec.ts → 31 passed
+npx vitest run tests/unit/stores.spec.ts stores-views.spec.ts auth.spec.ts → 103 passed
+npm run build                                                            → 通过（precache 902.97 KiB）
+```
+
+已存在的红：`tests/unit/guards.spec.ts`「每个图片引用点都被登记」仍然失败
+（`src/utils/themeColor.ts` 注释里写了 `public/img/site-map.webp`，清单里没有它）——
+与本节无关，未改。
+
+## 六点六十六、预警状态只读 + 今日预警数/待处理 + 切 tab 刷新（2026-11-24）
+
+**本节取代六点六十五**（「一键已读的即时性与竞态」）：那套乐观置读、批量 PATCH、
+失败回正的实现已整体下线，不再是现行口径。
+
+### ① 删除「一键已读」及所有相关入口
+
+| 位置 | 变化 |
+|---|---|
+| `components/shell/NavBar.vue` | 删除右侧 `[data-read-all]` 按钮、`canReadAll`、`onReadAll`；`navRight` 恢复为空配重 |
+| `stores/msg.ts` | 删除 `markAllRead` / `markRead` / `markingAll` / `BATCH_READ_PARALLEL`，不再 import `setAlarmStatus`、`auth`、`shell` |
+| `stores/alarm.ts` | 删除 `readMarks` / `withLocalRead` / `markLocalRead` / `settleLocalRead`；`merge(incoming)` 原样采用服务端 `handleStatus`，`fetchPages` 去掉 `fetchedAt` |
+| `styles/app.css` | 删除 `.navbar.has-action` / `.nav-action` / `.msg-badge.is-plain` / `.insp-dot` |
+| `tests/unit/msg-read-race.spec.ts` | 随功能删除 |
+
+`syncInflight`（在途复用）保留：切 tab 与面板挂载仍可能同秒触发同步。
+
+### ② 两个列表的状态展示一致，且只读
+
+* 监控预警：`components/ui/InspectItem.vue` 右侧改为 `.wo-side`（相对时间 +
+  状态徽标），`handleStatus === 1` → 「已完成」/ `.alarm-src-done`，其余 →
+  「待处理」/ `.alarm-src-todo`；
+* 无人机预警：`WorkOrderItem.vue` 本来就是这套，两页现在逐像素同构；
+* **红点全部下线**（两页）：本 App 没有「标记已读 / 已处理」动作，红点点开也
+  清不掉，等于一颗永久装饰；
+* 进详情**不改状态**：`InspectList.onItemOpen()` 只调 `openAlarmDetail`，不再
+  发 `PATCH /api/video/alarms/{id}/status`；`AlarmDetail` 把「已处理 / 未处理」
+  改为「已完成 / 待处理」，只读展示；`WorkOrderDetail` 沿用 `drone.statusText`。
+
+### ③ 今日预警数 + 今日待处理（两个数都在）
+
+两个列表页统计卡结构相同：大数字 = **今日预警数**，下一行小字
+（`.stat-sub`）=「待处理 N」。
+
+| 页面 | 大数字 | 小字 |
+|---|---|---|
+| 监控 `InspectList` | `todayList.length` | `msg.monitorPending`（今日 `handleStatus !== 1`） |
+| 无人机 `WorkOrderList` | `drone.todayCount` | `drone.todayPending`（今日 `UNAUDITED`） |
+
+消息页两张卡都写「今日待处理」+ 红色徽标（`MsgCategory.hint` 统一，
+`tone` 字段删除）；**底栏角标 = `msg.pendingTotal` = 两份待处理之和**。
+数字不会因为「看过」下降，只随服务端把状态置为已完成而下降。
+
+### ④ 切 tab 必定刷新
+
+`utils/tabRefresh.ts::useTabRefresh` 不动，刷新内容改为 force 语义：
+
+* 消息 tab：`alarm.refresh(token)` + `drone.load(true)`（原来是 `load()`，
+  2 分钟保鲜会让「每次切回都刷新」落空）；
+* 首页智巡：`fetchPanel()` → `overview.refresh` + `alarm.refresh` + `drone.load(true)`；
+* 首页智眸：`loadCat(pickedCat, true)`；首页智控：台账/爬架/电梯/uav；
+* 我的：`auth.refreshProfile()`；工作台：无接口数据，不挂。
+
+### 落地文件
+
+`src/components/shell/NavBar.vue`、`src/components/shell/TabBar.vue`、
+`src/stores/msg.ts`、`src/stores/alarm.ts`、`src/stores/droneAlarm.ts`（注释）、
+`src/components/ui/InspectItem.vue`、`src/components/ui/WorkOrderItem.vue`、
+`src/views/MsgPage.vue`、`src/views/sub/InspectList.vue`、
+`src/views/sub/WorkOrderList.vue`、`src/views/sub/AlarmDetail.vue`、
+`src/views/home/SafetyPanel.vue`、`src/styles/app.css`、`src/utils/tabRefresh.ts`；
+测试：`monitor-alarm` / `msg-categories` / `stage5` / `guards` 改写，
+`msg-read-race.spec.ts` 删除。
+
+### 验证
+
+```
+npx vue-tsc --noEmit    → 通过
+npm run build           → 通过（precache 900.00 KiB）
+monitor-alarm 7 / msg-categories 12 / stage5 20 / work-order 29 /
+work-order-thumb 13 / tab-refresh 5                      → 86 passed
+guards `-t 底部标签栏`                                   → 3 passed
+```
+
+## 六点六十七、左滑闪首页：前进方向的历史条目（2026-11-24）
+
+### ① 现象与复述
+
+「在任意页面左滑一下，页面先闪出首页，一两秒后又自己回到左滑前那一页。」
+
+### ② 根因（两层，缺一不可）
+
+**第一层：历史里有一条「快照是首页」的旧条目，跑到了光标前面。**
+
+历史条目与覆盖层层数一一对应（六点六十二的模型）。页面内点返回、点底栏切 tab
+时，层是被**应用自己**关掉的，`utils/historyBack.ts::sync()` 就用
+`history.go(-1)` 把多余条目退掉。`go` 只能移光标，**条目本身还在**，于是它从
+「光标后面」变成「光标前面」（前向栈）。而这条条目的快照拍在它被压的那一刻 ——
+「那一层打开之前的屏幕」。登录页、子页、全屏层几乎都是从首页进的，所以那张
+快照绝大多数时候就是**首页**。用户随后切到别的 tab，快照和当前页就不是同一张
+图了。
+
+**第二层：左滑在浏览器那边就是「前进」。**
+
+iOS Safari 右边缘左滑、桌面触控板左滑、部分安卓浏览器的边缘手势，都走前向
+遍历。浏览器把光标移到那条旧条目上，并按它自己的快照演一遍转场 —— 屏幕上就
+是「闪一下首页」。紧接着 `onPop` 只按层数判断（`depth <= target` 走 `settle()`），
+80ms 后 `sync()` 发现「条目比层数多」，再补一次 `history.go(-1)`：浏览器又演
+一遍「退回来」。**「闪一下」+「过一会儿自动恢复」就是这么来的**，两段还是分开
+的两次遍历，所以现场感觉「停了好几秒」。
+
+同一条链路在**反向**（条目层数高于真实层数时按返回）会表现为「按了返回却退得
+比预期更深」——`sync()` 的 `go` 是方向无关的，它只管「把条目退到与层数相等」。
+
+### ③ 修法
+
+1. **`onPop` 分方向，前进零导航。** `target > depth`（前进 / 落到旧条目）时：
+   取消在途返回、清掉 `settle` 与 `sync` 定时器、**就地把条目改写成真实层数**
+   （`replaceState` 不产生遍历、不画新帧），一个 `history.go` 都不发。再加一次
+   80ms 后的复核（popstate 里写历史有被排队/丢弃的先例）。
+   `target === depth` 仍走 `settle()`（对齐时空转）。
+2. **裁剪从「逐条 go」改为「一次 go(-delta) 退到位」。** 以前每退一条都要等一轮
+   `settle`，每轮都是一次独立遍历 + 一次转场，「闪一下、过一会儿又闪一下」的节奏
+   就是它给的。现在一次退完（`MAX_TRIM_DELTA = 6`）。
+3. **裁剪加验证。** `TRIM_VERIFY_MS = 400` 后复查 `currentLayer()`：Safari 会节流
+   / 丢弃转场期间的 `go`，没生效就重试一次（`MAX_TRIM_TRIES = 2`），再不生效就
+   就地 `setLayer(want)`，绝不留「条目比层数多」这个会让返回算不出层的状态。
+4. **手势层把起手记录清干净**（`utils/swipeBack.ts`）：`giveUp()` 同时清
+   `tracking / layer / pid`。只置 `tracking = false` 会留下悬空的「正在跟手」的
+   层引用，下一次 pointerdown 先撞上 `abortGesture()` 的补偿路径 —— 左滑本来
+   什么都没发生，却像被硬中断过一次手势。
+
+### ④ 已知平台边界（不再尝试在网页层解决）
+
+只要历史里还有前向条目，iOS Safari 在**手指还按着**的时候就会把那张旧快照画
+出来（系统级手势预览，网页拿不到事件也拦不住）。现在保证的是：
+
+* 松手之后**不跳、不弹回、不重播动画**；
+* 那条旧条目被用掉一次就地归位（层数改写为真实值），不会反复咬人；
+* 前进消费完所有旧条目后，再前进就是彻底的空操作。
+
+真要「一次都看不到」，只能让历史里永远没有前向条目 —— 那就得放弃「页面自己
+关层后返回不空转」，两者不可兼得（`go` 是唯一能移光标的手段，而它必然把条目
+留在前向栈里）。这里选的是**返回正确**。
+
+### 落地文件
+
+`src/utils/historyBack.ts`（方向判定 + 裁剪/复核）、`src/utils/swipeBack.ts`
+（`giveUp()`）；测试 `tests/unit/history-back.spec.ts`（+3）、
+`tests/unit/swipe-back.spec.ts`（+1）。
+
+### 验证
+
+```
+npx vue-tsc --noEmit                     → 通过
+npm run build                            → 通过
+history-back 13 / swipe-back 19 /
+back-action 7 / interaction …            → 72 passed
+```
+
+新增用例：前进落到被裁掉的旧条目时不关层、不回弹、层数就地改写（并断言迟到的
+对齐也不会发 `go`）；`dismiss()` 一次关两层只发一次 `go(-2)`；`go` 被吞掉时
+重试一次后就地改写、不死循环；向左滑完全撒手且不污染下一次右滑的基准。
+
+## 六点六十八、三个预警历史页的日期控件统一成「单颗日期芯片」（2026-11-24）
+
+现场口径：预警历史页只留**一个日期控件**，不摆「今天 / 昨天」（今日预警本身
+就是另一个页签）。三处（监控预警 · 报警预警 · 无人机预警）逐项一致。
+
+### ① 组件
+
+`components/ui/DayPickChips.vue` 新增 `single` 模式：只渲染带日历图标的那一颗
+（`.cam-day.cam-day-pick.on`），文案固定是 `formatCamDate(selected)` →
+「今天 / 昨天 / MM/DD」，**永远带选中态**（单颗按钮必须能看出选的是哪天）。
+默认 `single=false`，监控抓拍 / 航拍照片那两处仍是「今天 / 昨天 / 选日期」三颗，
+一个字符都没动。
+
+样式完全复用既有的一份 `.cam-day` / `.cam-day-pick`：白底浅边 → 选中蓝底白字、
+8px 圆角、30px 高、图标 14px，与截图那颗一致。没有新增任何 CSS。
+
+### ② 三处接线
+
+| 页面 | 日期状态 | 默认值 | 列表 |
+|---|---|---|---|
+| 监控预警 `InspectList` | `alarm.inspHistDate` | 昨天 | `alarm.alarmsOnDate()` |
+| 报警预警 `AlarmHist` | `alarm.histDate` | 昨天 | `alarm.dayRecords()` + `worksOn(drone.items)` |
+| 无人机预警 `WorkOrderList` | **新增** `drone.histDate` | 昨天 | `drone.histItems`（改为按日筛） |
+
+三处都：点芯片 → `MonthCalendar` 展开（月份对齐所选日）；选日 → 写入 store、
+收起月历、`ensureDate` / `ensureDay` 按需回补；月历 `max-day` 仍是
+`inspCalMaxDay()`（昨天），筛选范围与改造前一致。
+
+`drone.histItems` 从「今天之前的已加载部分」改为「**所选日期那一天**」，
+`histCount` 随之变成那天的条数；`histDate / histCalMonth / histCalOpen` 存在
+store 里（与 `listTab` 同一规则：只有 `reset()` 归位，任何重扫都不改它）。
+审核中心没有服务端时间筛选，所以：
+
+* 那天在已加载范围内 → 精确值；
+* 更早 → `ensureDay` 回补几页；仍不够时列表下面写明「无人机预警仅加载到 X 日」
+  并给「继续加载」（版式同 `AlarmHist` 那条 `.insp-note`），**不假装那天没有**。
+
+无人机历史页原来的「下滑加载更多 / 还有 N 条」随按日筛选下线：按日筛的列表
+不是「今天之前全部」，那个计数已经没有意义；深历史改由「选日期 + 继续加载」走。
+
+### 落地文件
+
+`src/components/ui/DayPickChips.vue`（`single`）、`src/stores/droneAlarm.ts`
+（`histDate/histCalMonth/histCalOpen` + `histItems` 按日筛 + `reset`）、
+`src/views/sub/InspectList.vue`、`src/views/sub/AlarmHist.vue`、
+`src/views/sub/WorkOrderList.vue`；测试 `tests/unit/work-order.spec.ts`。
+
+> 本轮按用户要求**未做行为验证**（不跑用例、不截图），只过了 `vue-tsc --noEmit`。
+
+## 六点六十九、航拍照片筛选区：日期控件在 iOS 上被折行挤上去（2026-11-24）
+
+### ① 现象
+
+航拍照片（`AirPlayer`）。iPhone 上**切到较早日期**后，整块日期芯片往上跑，和
+「站点」下拉挤进同一行，并压住下面那行张数提示（`共 111 · … · 16 张`）。
+
+### ② 根因（不是数值没调好，是布局规则本身不确定）
+
+筛选区原来是 `display: flex; flex-wrap: wrap`，**折不折行由内容宽度自己算**：
+
+* 站点 `.air-pick` 是 `flex: 1 1 200px`（`min-width: 168px`）；
+* 日期三颗芯片按内容宽 ≈ 213px（「选日期」三字 15px/字）；
+* 换行判定用的是 hypothetical main size ≈ 200 + 8 + 213 = **421px**。
+
+而主流 iPhone 的可用内容宽正好贴在它附近：375→351、390→366、430→406。
+日期第三颗的文案会随选中日期在「选日期」（3 个字）和「11/23」之间变宽变窄，
+`--fs` 在 ≤359px 还会 +1 档 —— 于是同一台机器上**点一下日期就可能翻到另一侧**。
+iOS 27 又没把折行后的第二行算进容器高度，溢出的那行就画到 `.air-hint` 上：
+视觉上既是「上移」，也是「和站点同行」「压住提示」。同一份代码在 iOS 26 上
+看着正常，正是因为它恰好按两行算高。
+
+### ③ 修法：行数交给 grid 定死
+
+* `.air-filter` → `display: grid; grid-template-columns: minmax(0, 1fr);
+  align-items: center; gap: 10px`。单列 = 恒定两行，行高与总高都不再依赖
+  内容宽度、系统字体、iOS 版本，日期永远在站点下方那一行。
+* `.air-pick` 去掉 `flex: 1 1 200px` / `min-width: 168px`，改 `min-width: 0`
+  —— 站点名再长也只按 ellipsis 截断（`.air-select` 已有），不会把整行顶宽。
+* `.air-days` 改 `min-width: 0; flex-wrap: wrap`（三颗在极小屏 / 大字号下
+  真要折，也只让这一行变高，不会挤回上一行），并加
+  `.air-days .cam-day-pick { margin-left: 0 }` 中和第三颗的 `auto` 外边距 ——
+  那一颗是给满宽的 `.cam-shot-days` 靠右用的，这里必须仍靠左排。
+* `.air-player` 加 `overflow: hidden`：子项算高偏小时不再画到标题栏上。
+
+视觉零变化：手机上原本就是两行、三颗靠左、行距 10px、芯片 32px 高（与
+`.air-select` 等高），月历仍是 `.air-filter .cam-cal { top: calc(100% + 6px) }`
+贴着筛选区下沿。功能（今天 / 昨天 / 选日期 + 月历）一个都没动。
+
+### 落地文件
+
+`src/styles/app.css`（`.air-player` / `.air-filter` / `.air-pick` / `.air-days`）、
+`src/components/overlays/AirPlayer.vue`（只改注释）。未新增令牌、未改字号。
+
+> 同上：本轮未跑用例、未截图，只过了 `npm run build`（含 `vue-tsc --noEmit`），
+> 交给用户在真机验证。
+
+## 六点七十、视频监控画面加等待圈（2026-11-24）
+
+现场要求：视频监控模块里凡是视频画面，**加载 / 缓冲时**在画面正中转一颗小圈，
+能正常播放就自动消失；样式简洁、尺寸小，不新增第二套视觉。
+
+### ① 挂在哪
+
+视频监控层只有一个播放器（`CamPlayer`），全部点位 / 横屏全屏 / 切点位 /
+断流重连共用这一块 `<video>`，所以圈挂在 `.cam-player-stage` 里，
+紧贴 `<video>` 之后、右上两颗控件之前 —— **一处改动覆盖模块内所有画面**。
+历史抓拍视图与大图不是视频，不挂。
+
+### ② 什么时候转（单一事实源 = `cam.playState`，组件不另记）
+
+| 状态 | 转圈 | 理由 |
+|---|---|---|
+| `buffering` | ✅ | 连流 / 追帧 / MSE 缓冲枯竭 |
+| `reconnecting` | ✅ | 断流自动重连，画面已蒙起来，正等它回来 |
+| `idle`（且 `wantPlay`） | ✅ | 刚打开层 / 刚切点位，地址有了、第一帧还没到 |
+| `playing` | ❌ | 已经在放 |
+| `paused` | ❌ | 自动播放被策略拦下，该由说明条让用户点一下画面；转圈会被读成「正在努力」 |
+| `error` | ❌ | 真播不了，说明条写引擎原话 + 继续重连 |
+| 无可播地址（只有 RTSP / 未登录） | ❌ | 那不是加载，空态与「仅 RTSP」行各说各的 |
+
+`idle` 分支带 `wantPlay`：用户/系统停住的画面不该被画成正在加载。
+
+### ③ 兜底：别让圈转个不停
+
+部分机型从缓冲恢复只续帧、**不再补发 `playing`**（`canplay` 之后没有 `playing`），
+状态会卡在 `buffering`。加 `@timeupdate` → 若 `playState === 'buffering'` 就
+`markPlaying()`：有帧推进就是真在播。不碰 `reconnecting` —— 断流时 MSE 缓冲
+枯竭、帧不推进，这个回调不响，重连进度条照旧。
+
+### ④ 样式（与站内既有转圈同一套画法）
+
+`.cam-stage-spin`：`position:absolute; inset:0; z-index:1`（压画面、低于右上控件 2），
+`display:flex` 居中，**`pointer-events:none`** —— 点画面立即重连这一下不能被吃掉。
+
+`.cam-stage-ring`：20px、`border:2px` + `border-top-color:#fff` + `border-radius:50%`，
+`animation: spin 0.7s linear infinite`（复用已有的 `@keyframes spin`，与
+`.cam-shots-spin` / `.hazard-spin` 同一套：细环 + 顶部高亮 + 线性匀速）。
+黑画面上取白色系（`rgba(255,255,255,.3)` 环身 + 白顶），不加阴影不加底盘。
+横屏全屏下 `.cam-player-stage` 变 flex 容器，圈是 absolute，仍居画面正中。
+
+无障碍：视觉一颗环，另配 `<span class="sr-only" role="status">视频加载中</span>`
+（与 `EquipPanel` 同一写法）；说明条 `#camStageBar` 的 aria-live 不动。
+
+### 落地文件
+
+`src/components/overlays/CamPlayer.vue`（`stageSpinning` computed、`onMediaTimeUpdate`、
+模板里那颗圈 + `@timeupdate`）、`src/styles/app.css`（`.cam-stage-spin` /
+`.cam-stage-ring`）。未新增令牌、未改字号、未动 flvStream。
+
+> 本轮未跑用例、未截图、未真机，只过了 `npm run build`（含 `vue-tsc --noEmit`）。
+## 六点七十一、首页背景图（场景截图）加载优化（2026-11-24）
+
+### ① 实测到的现状（2026-11-24 16:2x，直接打接口）
+
+| 项 | 3D（首页背景 / 三维） | 2D（全屏二维） |
+|---|---|---|
+| 字节 | **3,349,212（3.19MB）** | **3,842,725（3.66MB）** |
+| 类型 | `image/png`（1920×1080 级，客户端无法要求更小尺寸） | 同 |
+| 缓存头 | `Cache-Control: private, no-cache` + `Vary: X-API-Key` | 同 |
+| 校验器 | `ETag: "5ba759…"` + `Last-Modified` | `ETag: "a9beb3…"` |
+| 条件请求 | **支持**，`If-None-Match` → `304`（body 为空） | 同 |
+| CORS | 预检放行 `If-None-Match`；`Access-Control-Expose-Headers` 已含 `ETag`、`Last-Modified`（304 响应同样带） | 同 |
+| 尺寸参数 | `&w=` / `&width=` / `&size=` / `&thumb=` 一律 **400** | 同 |
+
+### ② 定位到的四个真问题
+
+1. **冷启动每次都把整张图重下**（主因）。`sceneCache` 只存了 `blob + hash`，
+   没存任何服务端校验器；`run()` 的流程是「先无条件 GET 完 3.19MB → 再算指纹 →
+   和本地比 → 相同就什么都不做」。**比对的成本是一整次下载**，所以「图没变」
+   这个最常见的情况反而最亏：每次刷新白付 3.19MB（二维 3.66MB）。
+2. **请求头里没有 `If-None-Match`**。`api/scene.ts` 原注释写的是「服务端支持 304
+   但收益不值那个复杂度」—— 在「每次都要下完才能比」的前提下确实如此，
+   但把校验器存下来之后，304 就是最省的一条路。
+3. **首屏少一次预连接**。这张图只能走 `fetch`（要带 `X-API-Key`，不能进 `<img src>`），
+   请求要等 JS 起来、HomePage 挂载才发出；`index.html` 里没有 preconnect，
+   移动网络下白等一个 DNS+TCP+TLS（100~300ms）。
+4. **二维图「用时才下」的代价全压在点击上**。进全屏只取 3D，点「二维」才开始
+   下 3.66MB（截图里那句「二维加载中」）。而其中大部分用户其实**看过**二维
+   （本机 IDB 里有），完全可以提前确认一次。
+
+另外两条**不是**问题、但值得记下来免得再查：`<img>` 与 `.home-map` 的 CSS 背景
+用的是同一个 objectURL（不重复请求）；`warm()` 预解码也是 blob URL（不产生网络）。
+
+### ③ 改法
+
+**A. 把 ETag 存到本地图旁边，冷启动走 304**（`utils/sceneCache.ts` + `api/scene.ts` + `stores/scene.ts`）
+
+* `SceneCacheEntry` 增 `etag` / `lastModified`（可选字段，DB 版本不用升，旧记录读出来是空串）；
+* 新增 `fetchSceneImage(type, {etag, lastModified})` → `{ blob|null, etag, lastModified, notModified }`；
+  带 `If-None-Match`（无 ETag 时退 `If-Modified-Since`），并加 `cache: 'no-store'`
+  —— 本地 IDB 已有一份，不要浏览器再存 3.19MB；
+* `stores/scene.run()`：先 `hydrate`（IDB 上屏）→ 带校验器请求 →
+  · **304**：零字节，`states = ok`，不换 URL、不写库（省 3.19MB 下载 + 一次 IDB 写）；
+  · **200**：照原逻辑比指纹、换图、落盘（落盘时把新 ETag 一起写）；
+  · 304 但屏幕上没图（IDB 被清 / blob 坏了）：再无条件取一次，避免「一直 304 一直没有图」；
+  · 内容相同但 ETag 变了（nginx 的 ETag 是 mtime+size，重传同一张图也会变）：
+    把新 ETag 写回那条记录，否则以后每次都是 200 + 3.19MB，永远轮不到 304。
+* `fetchSceneBlob(type, signal)` 保留原签名（单测用它钉鉴权头 / 404 语义），
+  内部改为 `fetchSceneImage` 的薄封装。
+
+**B. 首屏预连接**（`index.html`）
+
+```html
+<link rel="preconnect" href="https://115.159.67.12" crossorigin />
+<link rel="dns-prefetch" href="https://115.159.67.12" />
+```
+
+`crossorigin` 必须加，否则带自定义头的跨域请求复不到这条连接上。
+
+**C. 二维图「本机有图才提前确认」**（`stores/scene.warmUp` + `MapLand.vue`）
+
+进全屏地图 1.5s 后调 `scene.warmUp('2d')`：
+* 本机 IDB **有**二维图 → 带 ETag 校验一次（通常就是 304，用户点「二维」一步到位）；
+* 本机**没有** → 什么都不做，不替用户猜着下 3.66MB（「减少不必要请求」的边界）。
+
+**D. 回前台补校验，保证不长期停在旧图**（`stores/scene.revalidate` + `HomePage.vue`）
+
+`visibilitychange → visible` 时若距上次确认超过 **10 分钟**，`load('3d', true)` 再问一次。
+有 ETag 在，这一次基本只是 304（几十毫秒、几百字节）；服务端真换了图才会下新图。
+失败也记 `checkedAt`，前后台来回切不会变成连续重试。
+
+### ④ 预期改善
+
+| 场景 | 改前 | 改后 |
+|---|---|---|
+| 冷启动、图没变（最常见） | 3.19MB 全量 + 指纹比对 | **304，约 0.3KB**（首屏本地图直接上屏） |
+| 冷启动、现场重截过 | 3.19MB | 3.19MB（必要的一次，无法再省） |
+| 首次访问（本机无图） | 3.19MB | 3.19MB + 少一个 TLS 握手（preconnect） |
+| 全屏点「二维」且本机有图 | 3.66MB 全量，按钮转圈等 | 通常 304 后立刻可切（预热已在后台完成） |
+| 浏览器存储 | HTTP 缓存 3.19MB + IDB 3.19MB | 只有 IDB（`no-store`） |
+| 同会话内第二次进入首页 | 不请求（原本就有） | 不请求（保持） |
+
+按现场 4G/弱网 1~3MB/s 估：冷启动背景图从 **1~3s 降到几十~两百毫秒**（只剩一次 RTT）。
+
+### ⑤ 为什么这样还能「及时拿到新图」
+
+旧实现「每次必下」在正确性上是天然最新的；加了 304 以后，靠下面三条保证不落后：
+
+1. **校验器就是版本号**：图一旦重传，nginx 的 ETag 立刻变 → 下一次请求就是 200 + 新图；
+2. **每次冷启动都校验**（不是按天/按缓存过期），用户重开 App 一定拿到最新；
+3. **长驻前台也有兜底**：`visibilitychange` + 10 分钟门槛补一次校验，不用重启 App 也能更新。
+
+只有一种情况会短暂落后：**用户一直让 App 停在前台超过 10 分钟且从不切后台** ——
+这是刻意的折中（现场图是小时级更新，多问几次只多几十毫秒但会打断首屏）。
+真要强制刷新，退出重进即可（会走一次校验）。
+
+### ⑥ 验证方式
+
+1. **Network 面板**：第二次打开首页，`/scene-screenshots/content?...&type=3d`
+   应是 **304**（Size 显示几十~几百 B，不是 3.2MB）；点「二维」同理。
+2. **Application → IndexedDB → `xyc-scene` → `shots`**：`3d` 记录里应能看到
+   `etag: "5ba7…"`、`lastModified`、`blob.size ≈ 3349212`。
+3. **更新及时性**：让现场重传一张三维图（或临时改 nginx 的 mtime）→ 冷启动一次，
+   应看到 200 + 新图，且 IDB 里的 `etag` 跟着变。
+4. **弱网**：DevTools 限速 Fast 3G，冷启动应只剩一次很短的请求；
+   首屏先显示内置 `site-map.webp`（130KB）或 IDB 上一张，不应白屏。
+5. **回归**：断网冷启动 → 仍显示 IDB 兜底图（状态 `error`，画面不清空）；
+   从未联网过 → 落到内置 `site-map.webp`。
+
+### 落地文件
+
+`src/api/scene.ts`（`fetchSceneImage` + 条件请求 + `no-store`）、
+`src/utils/sceneCache.ts`（记录里加 `etag` / `lastModified`，兼容旧记录）、
+`src/stores/scene.ts`（304 分支、ETag 回写、`revalidate`、`warmUp`）、
+`src/views/HomePage.vue`（`visibilitychange` 补校验）、
+`src/components/overlays/MapLand.vue`（1.5s 后 `warmUp('2d')`）、
+`index.html`（preconnect / dns-prefetch）。
+
+> 本轮未跑用例、未截图；接口行为用 curl 实测（响应头 / 304 / 400），构建用
+> `npm run build`（含 `vue-tsc --noEmit`）通过。**体积本身降不下来**：服务端只接受
+> `pid/type` 两个参数（多余参数 400），图片是 Unity 侧导出的 3.19/3.66MB PNG，
+> 想真正变小只能在上传侧转 WebP / 降分辨率，属服务端改造，不在本次前端范围。

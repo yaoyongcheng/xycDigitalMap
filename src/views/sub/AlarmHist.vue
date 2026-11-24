@@ -2,9 +2,9 @@
 import { computed, onMounted } from 'vue'
 
 import AlarmRow from '@/components/ui/AlarmRow.vue'
+import DayPickChips from '@/components/ui/DayPickChips.vue'
 import MonthCalendar from '@/components/ui/MonthCalendar.vue'
 import Skel from '@/components/ui/Skel.vue'
-import SvgIcon from '@/components/ui/SvgIcon.vue'
 import TouchChart from '@/components/ui/TouchChart.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
@@ -12,7 +12,7 @@ import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { useSubpageStore } from '@/stores/subpage'
 import { mergeAlarmEntries, mergeTrend, worksOn, type AlarmEntry } from '@/utils/alarmMerge'
 import { alarmTrendLive } from '@/utils/chart'
-import { dateKey, formatCamDate, formatMD, inspCalMaxDay, sameDay, startOfDay } from '@/utils/date'
+import { dateKey, formatCamDate, inspCalMaxDay, startOfDay } from '@/utils/date'
 import { useSlowLoading } from '@/utils/slowLoading'
 
 /**
@@ -96,8 +96,17 @@ const histList = computed(() =>
   mergeAlarmEntries(alarm.dayRecords(alarm.histDate), worksOn(drone.items, alarm.histDate)),
 )
 
-const isYesterday = computed(() => sameDay(alarm.histDate, inspCalMaxDay()))
-const pickLabel = computed(() => (isYesterday.value ? '昨天' : formatMD(alarm.histDate)))
+/**
+ * 历史页的日期控件（2026-11-24 改造）。
+ *
+ * 与监控预警、无人机预警两个历史页统一成 `ui/DayPickChips` 的**单芯片模式**：
+ * 一颗「当天 + 日历图标」按钮（选中态蓝底白字）+ `MonthCalendar`，不再摆
+ * 「今天 / 昨天」—— 这一页的语义就是「按某一天看两类预警」，那两个入口多余。
+ *
+ * 默认值仍是**昨天**（`alarm.histDate` 的初值，见 stores/alarm.ts），
+ * 选日期后的回补与筛选口径与改造前完全一致，改的只是控件外观与结构。
+ */
+const headLabel = computed(() => formatCamDate(alarm.histDate))
 
 /** 近 7 日趋势：两份按日相加（同一 7 天、同一标签），fillId 错开同 InspectList */
 const trend = computed(() => mergeTrend(alarm.trend, drone.weekTrend))
@@ -259,13 +268,16 @@ function goLogin(): void {
     <div class="insp-pane insp-hist" :class="{ hide: !onHist }">
       <div class="insp-hist-hd">
         <div>
-          <strong>{{ isYesterday ? '昨天' : formatCamDate(alarm.histDate) }}</strong>
+          <strong>{{ headLabel }}</strong>
           <span>{{ histSyncing ? '…' : `${histList.length}条` }}</span>
         </div>
-        <button class="cam-day cam-day-pick on" type="button" @click="onCalToggle">
-          {{ pickLabel }}
-          <span><SvgIcon name="cal" /></span>
-        </button>
+        <!-- 日期控件：与监控预警、无人机预警两个历史页同一个组件（单芯片） -->
+        <DayPickChips
+          single
+          :selected="alarm.histDate"
+          open-attr-name="data-alarm-cal-open"
+          @open="onCalToggle"
+        />
       </div>
 
       <MonthCalendar

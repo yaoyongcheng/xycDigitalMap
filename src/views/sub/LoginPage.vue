@@ -24,6 +24,15 @@ const error = ref('')
 const pwdVisible = ref(false)
 
 /**
+ * 品牌块用**桌面图标本身**（`public/pwa-192x192.png`，PWA manifest 里那颗 192）。
+ *
+ * 不另拷一份到 `public/img`：同一颗图标只该有一份源，装了 PWA 的用户在桌面上
+ * 看到的那张，与登录页上这张必须逐像素一致。路径走 `BASE_URL` 拼，
+ * 线上部署在 `/xycDigitalMap/` 子目录下也不会 404。
+ */
+const logoSrc = `${import.meta.env.BASE_URL}pwa-192x192.png`
+
+/**
  * 打开登录页的原因（未登录 / 登录已过期），由 `subpage.openLogin(notice)` 带进来。
  * 没有原因时（从「我的」主动进入）不显示提示条。
  */
@@ -54,7 +63,8 @@ async function onSubmit(): Promise<void> {
 <template>
   <div class="login-page">
     <div class="login-brand">
-      <span class="login-logo" aria-hidden="true">阳</span>
+      <!-- 桌面图标（与 PWA manifest 同一颗）：原先那个「阳」字方块已下线 -->
+      <img class="login-logo" :src="logoSrc" alt="" width="56" height="56" />
       <h2>欢迎回来</h2>
       <p>向阳村项目智能建造管理平台</p>
     </div>

@@ -11,26 +11,47 @@ import { useSlowLoading } from '@/utils/slowLoading'
  * 只读清单：时间 / 航线 / 状态。状态用颜色区分执行中、已完成、已失败 ——
  * 三行文字相近时，扫读靠的就是这点颜色。
  *
- * ## 清单 = 已执行的记录 + 还没飞的计划项
+ * ## 清单 = 当天全部排班（条数与三格严格一致）
  *
- * 三格的「今日任务」是**计划口径**（`taskCount` = 成功 + 失败 + 还没飞）。
- * 执行记录接口只返回「已产生记录」的项，所以早先 15 与 13 对不上 ——
- * 差的正是当天剩下那两条排班。2026-11-23 用户要求「查看今日任务里也要包含
- * 未执行的任务」，于是 `stores/uav.ts::todayPending` 把统计接口
- * `unfinishedTaskList` 里的计划项补进同一个清单，条数与三格一致，
- * 未起飞的显示「未执行」。
+ * 三格的「今日任务」= 统计的 `taskCount + suspendedCount`（都能对上清单条数）。
+ * 两条历史坑都已定位：
+ * ① **分页**（2026-11-24 根因）：统计响应里的 `completedTaskList` /
+ *    `unfinishedTaskList` 是分页列表，不带 `pageNum/pageSize` 时按默认页长截断
+ *    —— 12 条未完成只回 7 条，于是「清单 10 vs 卡上 15」。现在请求统一带
+ *    `pageSize=200`（`api/drone.ts::fetchTaskStat`），同时清单主源用
+ *    `/dashboard/task/list/execRecord/today`（`fetchTodayTaskList`）一次给全。
+ * ② **暂停口径**：当天 15 条排班里 11 条被服务端标 `suspended`，
+ *    `taskCount` 不计它们（只算 4 条），所以三格要把 `suspendedCount` 加回来；
+ *    清单里这 11 条按用户要求显示「未执行」，不再写「已暂停」。
+ * 万一哪天服务端又截断或混进别的项目，底部会多一行说明（双向提示）。
  *
  * ## 「失败」看 result
  *
  * `status` 对已执行记录恒为 2，失败写在 `result: 3`（见 `DroneTaskRecord.result`）。
  * 状态文案与配色由 `stores/uav.ts::stateText/stateClass` 统一给出。
  *
- * 明细已按本项目过滤（`pids: [本项目]`，与三格的 `pid` 同一口径）。
+ * 明细只留本项目：全量端点会连「光谷元著」一起回（`pidList` 参数服务端不认），
+ * 由 `api/drone.ts::fetchTodayTaskList` 按 `executeInfo.pid` 过滤，
+ * 与三格的 `pid` 同一口径。
  */
 const uav = useUavStore()
 
 const syncing = computed(() => uav.state === 'loading' && !uav.records.length)
 const showSkel = useSlowLoading(() => syncing.value)
+
+/**
+ * 清单条数与三格「今日任务」的差。
+ *
+ * 正常恒为 0（条数必须一致，见 `stores/uav.ts::loadTodayList`）。留着它是
+ * 兜底：服务端哪天又把明细截断了，弹层至少写一句「统计 15 条、本清单 10 条」，
+ * 而不是让人对着两个数字猜哪个是错的。
+ */
+const gap = computed(() => {
+  const total = uav.taskTotal
+  if (total === null) return 0
+  // 正数 = 清单少（统计里有、明细没回）；负数 = 清单多（多出未计入的排班）
+  return total - uav.todayTasks.length
+})
 </script>
 
 <template>
@@ -60,5 +81,13 @@ const showSkel = useSlowLoading(() => syncing.value)
       至少能说清「这一条不是本项目的」，而不是让人以为向阳村多了一条航线。
     -->
     <p v-if="uav.todayHasOthers" class="uav-log-note">含同账号其它项目的任务</p>
+
+    <!-- 条数对不上才出现（正常为 0）：分方向说清，不猜 -->
+    <p v-if="gap > 0" class="uav-log-note">
+      统计 {{ uav.taskTotal }} 条，本清单 {{ uav.todayTasks.length }} 条（其余排班未回传明细）
+    </p>
+    <p v-else-if="gap < 0" class="uav-log-note">
+      本清单 {{ uav.todayTasks.length }} 条，比统计多 {{ -gap }} 条（有排班未计入今日任务）
+    </p>
   </div>
 </template>

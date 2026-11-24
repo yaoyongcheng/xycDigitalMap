@@ -93,33 +93,70 @@ function sceneErrText(status: number, type: SceneType): string {
 }
 
 /**
- * 拉取某个类型的场景截图字节。
+ * 一次取图的结果。
  *
- * 返回 Blob（已校验是 image/* 且非空），调用方负责转 objectURL 并在换图时
- * revoke。带 `signal` 是为了「请求还没回来用户已经离开页面」时不白下 3MB。
- *
- * 注意：**不带 `If-None-Match`**。服务端的 ETag 确实可用（文档说支持 304），
- * 但每张图一次刷新只取一次、且对象 URL 在整个会话内复用（见 stores/scene），
- * 手工协商 304 的收益不如它带来的状态复杂度 —— `Cache-Control: private,no-cache`
- * 本身已经让浏览器在重复请求时走校验而不是直接吃缓存。
+ * `notModified` 是 2026-11-24 新增的条件请求分支：服务端对 `/content` 会回
+ * `ETag` + `Last-Modified`（实测 nginx 直接支持 `If-None-Match` → 304），
+ * 图没变时只回一个空响应（几百字节），**3.3~3.8MB 的字节一个都不传**。
+ * 这时 `blob` 为 `null`，调用方用本地那张（IndexedDB 里的兜底图）。
  */
-export async function fetchSceneBlob(type: SceneType, signal?: AbortSignal): Promise<Blob> {
+export interface SceneImage {
+  /** 304 时为 null：字节没变，本地那张就是最新的 */
+  blob: Blob | null
+  /** 服务端给的强 ETag（`"…"` 带引号），下次带回 `If-None-Match`；空串 = 服务端没给 */
+  etag: string
+  /** `Last-Modified`，ETag 缺失时的退路（`If-Modified-Since`） */
+  lastModified: string
+  /** 是否 304（本地副本可直接用） */
+  notModified: boolean
+}
+
+/**
+ * 拉某个类型的场景截图，**带条件请求**。
+ *
+ * 为什么要自己带 `If-None-Match` 而不是靠浏览器 HTTP 缓存（2026-11-24 优化）：
+ *   · 响应头是 `Cache-Control: private, no-cache` + `Vary: X-API-Key`，浏览器
+ *     每次都要发条件请求，但它存的那份 3.3MB 副本我们从来不用（我们有自己的
+ *     IndexedDB 兜底图），纯占手机存储；
+ *   · `cache: 'no-store'` 明确不要浏览器再存一份，条件判断完全由我们控制 ——
+ *     ETag 存在本地图旁边，冷启动先读它，再拿它换一次 304。
+ */
+export async function fetchSceneImage(
+  type: SceneType,
+  opts: { signal?: AbortSignal; etag?: string; lastModified?: string } = {},
+): Promise<SceneImage> {
   const url = `${SCENE_BASE}/content?pid=${encodeURIComponent(SCENE_PID)}&type=${type}`
+
+  const headers: Record<string, string> = { 'X-API-Key': SCENE_KEY, Accept: 'image/*' }
+  /*
+   * 强 ETag 优先；没有才退回 `If-Modified-Since`（秒级精度，只在同一秒内改两次
+   * 时可能漏判，概率可忽略）。两个都不带就是普通 GET。
+   */
+  if (opts.etag) headers['If-None-Match'] = opts.etag
+  else if (opts.lastModified) headers['If-Modified-Since'] = opts.lastModified
 
   let res: Response
   try {
     res = await fetch(url, {
       method: 'GET',
-      headers: { 'X-API-Key': SCENE_KEY, Accept: 'image/*' },
+      headers,
       // 密钥进了请求头 → 必须走 CORS；不加 credentials（服务端虽然回
       // Allow-Credentials，但我们不需要携带任何 Cookie）
-      signal,
+      signal: opts.signal,
+      // 本地已有一份（IDB），不要浏览器再存 3.3MB 的 HTTP 缓存副本
+      cache: 'no-store',
     })
   } catch (e) {
     // 用户主动取消：原样抛，调用方按 AbortError 忽略
     if ((e as Error)?.name === 'AbortError') throw e
     throw new ApiError(0, '场景截图接口访问失败（网络或跨域被拦）')
   }
+
+  const etag = res.headers.get('etag') ?? opts.etag ?? ''
+  const lastModified = res.headers.get('last-modified') ?? opts.lastModified ?? ''
+
+  // 图没变：只回一个空响应，本地副本直接继续用
+  if (res.status === 304) return { blob: null, etag, lastModified, notModified: true }
 
   if (res.status === 404) throw new SceneNotFoundError(type)
   if (!res.ok) throw new ApiError(res.status, sceneErrText(res.status, type))
@@ -132,5 +169,20 @@ export async function fetchSceneBlob(type: SceneType, signal?: AbortSignal): Pro
 
   const blob = await res.blob()
   if (!blob.size) throw new ApiError(0, '场景截图为空文件')
-  return blob
+  return { blob, etag, lastModified, notModified: false }
 }
+
+/**
+ * 拉取某个类型的场景截图字节（无条件版，返回 Blob）。
+ *
+ * 保留这个签名：调用方只有 store，但单测直接用它钉「鉴权头 / 地址 / 404 语义」。
+ * 需要「图没变就别重下」时用 `fetchSceneImage`。
+ *
+ * 带 `signal` 是为了「请求还没回来用户已经离开页面」时不白下 3MB。
+ */
+export async function fetchSceneBlob(type: SceneType, signal?: AbortSignal): Promise<Blob> {
+  const res = await fetchSceneImage(type, { signal })
+  if (!res.blob) throw new ApiError(0, '场景截图接口返回 304，但没有本地副本可用')
+  return res.blob
+}
+

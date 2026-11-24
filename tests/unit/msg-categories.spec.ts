@@ -1,16 +1,19 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 
 import type { DroneWorkOrder } from '@/api/drone'
+import NavBar from '@/components/shell/NavBar.vue'
 import { useAlarmStore } from '@/stores/alarm'
 import { useAuthStore } from '@/stores/auth'
 import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { useMsgStore } from '@/stores/msg'
+import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { dateKey } from '@/utils/date'
 import MsgPage from '@/views/MsgPage.vue'
+import InspectList from '@/views/sub/InspectList.vue'
 import { camAlarmFixtures } from '../fixtures/camAlarms'
 
 /**
@@ -22,8 +25,9 @@ import { camAlarmFixtures } from '../fixtures/camAlarms'
  *
  * 这一组钉住四件事，它们合起来才是「两类分得清、又不互相污染」：
  *   ① 只有两张卡，顺序固定（监控在前），不再按条罗列；
- *   ② 监控的未读仍是服务端 `handleStatus` 口径；无人机没有未读字段，按现场规则
- *      用「今日 + 待处理」；**两类都只算今日**，tabbar 角标 = 两者之和；
+ *   ② 两张卡统一报「今日待处理」（2026-11-24 现场口径）：监控 = 今日
+ *      `handleStatus !== 1` 的条数，无人机 = 今日 `UNAUDITED` 的条数，
+ *      tabbar 角标 = 两者之和；状态只读，App 内不提供任何变更操作；
  *   ③ 条数取不到时写「—」，不写 0；
  *   ④ 点哪张卡进哪条链路：监控 → 今日巡检预警列表，无人机 → 无人机预警列表。
  */
@@ -114,9 +118,9 @@ describe('消息页 · 两类预警分类卡', () => {
     w.unmount()
   })
 
-  it('监控未读仍按服务端 handleStatus 算；角标 = 两类今日数之和', async () => {
+  it('两张卡都报今日待处理；底栏角标是两处之和', async () => {
     const feed = camAlarmFixtures().slice(0, 3)
-    feed[1].handleStatus = 1 // 这条已读
+    feed[1].handleStatus = 1 // 这条已完成
     const alarm = useAlarmStore()
     alarm.liveAlarms = feed
     alarm.liveState = 'ok'
@@ -134,21 +138,28 @@ describe('消息页 · 两类预警分类卡', () => {
     signIn()
 
     const msg = useMsgStore()
-    expect(msg.monitorUnread).toBe(2) // 3 条里 1 条已读
-    expect(msg.categories[0].unread).toBe(2)
-    expect(msg.categories[1].unread).toBe(2) // 只数今日待处理，昨天那条不算
-    // 角标 = 监控今日未读 + 无人机今日待处理
-    expect(msg.unreadTotal).toBe(4)
+    expect(msg.monitorPending).toBe(2) // 3 条里 1 条已完成
+    expect(msg.dronePending).toBe(2) // 今日 3 条里 1 条已完成
+    // 角标 = 监控 + 无人机（2026-11-24 现场口径：两处相加）
+    expect(msg.pendingTotal).toBe(4)
+    expect(msg.categories[0].count).toBe(2)
+    expect(msg.categories[0].hint).toBe('今日待处理')
+    expect(msg.categories[1].count).toBe(2)
+    expect(msg.categories[1].hint).toBe('今日待处理')
 
     const w = mount(MsgPage)
     await nextTick()
     const cards = w.findAll('.msg-item')
     expect(cards[0].find('.msg-badge').text()).toBe('2')
+    expect(cards[0].find('.msg-hint').text()).toBe('今日待处理')
+    // 无人机也是待处理数（不是今日总数），标签与配色和监控一致
     expect(cards[1].find('.msg-badge').text()).toBe('2')
+    expect(cards[1].find('.msg-hint').text()).toBe('今日待处理')
+    expect(cards[1].find('.msg-badge').classes()).not.toContain('is-plain')
     w.unmount()
   })
 
-  it('无人机卡：数字是「今日待处理」，时间来自最新一条工单', async () => {
+  it('无人机卡：时间来自最新一条，数字是今日待处理', async () => {
     useAlarmStore().liveState = 'ok'
     const drone = useDroneAlarmStore()
     drone.apply([wo(1), wo(2), wo(3, { status: 'AUDITED' })], { total: 1048 })
@@ -156,7 +167,7 @@ describe('消息页 · 两类预警分类卡', () => {
     const msg = useMsgStore()
     const cat = msg.categories[1]
     expect(cat.title).toBe('无人机预警')
-    expect(cat.unread).toBe(2) // 今日 3 条里 1 条已完成
+    expect(cat.count).toBe(2) // 今日 3 条里 1 条已完成
     expect(cat.hint).toBe('今日待处理')
     expect(cat.known).toBe(true)
     // 相对时间取自最新一条（服务端按 businessTime 倒序）
@@ -290,6 +301,77 @@ describe('消息页 · 首屏骨架不提前下结论', () => {
 
     // 监控还没回来：它那格写「—」而不是 0
     expect(w.findAll('.msg-item')[0].find('.msg-unknown').text()).toBe('—')
+    w.unmount()
+  })
+})
+
+/**
+ * 状态只读（2026-11-24）
+ *
+ * 「一键已读」整体下线，进详情也不再顺手置状态。这一组钉的是：
+ *   ① 消息页顶栏没有任何动作按钮；
+ *   ② 点开监控预警只进详情，一个 PATCH 都不发，待处理数不变；
+ *   ③ 列表状态徽标只读 `handleStatus`（待处理 / 已完成）。
+ */
+describe('消息页 · 状态只读', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.stubGlobal('fetch', vi.fn(async () => emptyAlarms()))
+    vi.spyOn(useAlarmStore(), 'syncFromVideo').mockResolvedValue(true)
+    vi.spyOn(useDroneAlarmStore(), 'load').mockResolvedValue(undefined)
+    useShellStore().activeTab = 'msg'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('顶栏没有任何动作按钮（一键已读已下线）', () => {
+    signIn()
+    const alarm = useAlarmStore()
+    alarm.liveAlarms = camAlarmFixtures().slice(0, 3)
+    alarm.liveState = 'ok'
+
+    const w = mount(NavBar)
+    expect(w.find('[data-read-all]').exists()).toBe(false)
+    expect(w.find('.nav-action').exists()).toBe(false)
+    expect(w.findAll('button')).toHaveLength(0)
+    w.unmount()
+  })
+
+  it('点开监控预警：只进详情，不发 PATCH、待处理数不变', async () => {
+    signIn()
+    const alarm = useAlarmStore()
+    alarm.liveAlarms = camAlarmFixtures().slice(0, 3)
+    alarm.liveState = 'ok'
+
+    const w = mount(InspectList)
+    const items = w.findAll('.insp-pane:not(.insp-hist) .insp-item')
+    await items[0].trigger('click')
+    await flushPromises()
+
+    const asMock = fetch as unknown as ReturnType<typeof vi.fn>
+    expect(asMock.mock.calls.filter((c) => String(c[1]?.method) === 'PATCH')).toHaveLength(0)
+    expect(alarm.liveAlarms[0].handleStatus).not.toBe(1)
+    expect(useSubpageStore().view.kind).toBe('alarm-detail')
+    // 待处理是事实状态，不会因为「看过」减少
+    expect(useMsgStore().monitorPending).toBe(3)
+    w.unmount()
+  })
+
+  it('列表徽标：待处理 / 已完成 来自 handleStatus', () => {
+    signIn()
+    const feed = camAlarmFixtures().slice(0, 2)
+    feed[1].handleStatus = 1
+    const alarm = useAlarmStore()
+    alarm.liveAlarms = feed
+    alarm.liveState = 'ok'
+
+    const w = mount(InspectList)
+    const items = w.findAll('.insp-pane:not(.insp-hist) .insp-item')
+    expect(items[0].find('.alarm-src-todo').text()).toBe('待处理')
+    expect(items[1].find('.alarm-src-done').text()).toBe('已完成')
     w.unmount()
   })
 })

@@ -219,6 +219,18 @@ function onResize(): void {
   resizeSettleTimer = window.setTimeout(recalibrateSheet, 360)
 }
 
+/**
+ * 页面重新可见时，确认一次首页背景有没有更新（2026-11-24）。
+ *
+ * 本次优化后同一会话内不再重复取图（`ok` 直接返回），所以「早上截图、下午
+ * 一直开着前台」这种场景需要一次补确认。门槛在 store 里（10 分钟）：没过门槛
+ * 直接返回，过了就带 ETag 校验一次 —— 图没变只是一个 304，几十毫秒。
+ */
+function onVisible(): void {
+  if (document.visibilityState !== 'visible') return
+  void scene.revalidate('3d')
+}
+
 onMounted(() => {
   /*
    * 半开档只在「拖/点到达」时写过内联 top，刷新后这个内联值不存在，
@@ -236,8 +248,12 @@ onMounted(() => {
    */
   recalibrateTimer = window.setTimeout(applySheetTop, 600)
 
-  // 首页背景 = 三维场景图，挂载即取（store 保证一次会话只下一次）
+  // 首页背景 = 三维场景图，挂载即取。
+  // store 保证：本机有图时先上本地图再带 ETag 校验（没更新就 304，不再下 3.3MB），
+  // 同一会话内成功后也不再重复请求。
   void scene.load('3d')
+
+  document.addEventListener('visibilitychange', onVisible)
 
   window.addEventListener('resize', onResize)
   // Safari 的地址栏收放只改 visualViewport，未必触发 window 的 resize
@@ -250,6 +266,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   window.visualViewport?.removeEventListener('resize', onResize)
   window.removeEventListener('orientationchange', onResize)
+  document.removeEventListener('visibilitychange', onVisible)
   window.clearTimeout(recalibrateTimer)
   window.clearTimeout(resizeSettleTimer)
   onDragEnd()

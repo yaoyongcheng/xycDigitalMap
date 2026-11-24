@@ -53,8 +53,16 @@ const channelText = computed(() =>
   props.alarm.channelNo && props.alarm.channelNo > 0 ? `${props.alarm.channelNo}号通道` : '—',
 )
 
-/** 处理状态：服务端 handleStatus（0 未处理 / 1 已处理） */
-const handleText = computed(() => (props.alarm.handleStatus === 1 ? '已处理' : '未处理'))
+/**
+ * 处理状态：服务端 `handleStatus`（1 = 已完成，其余 = 待处理）。
+ *
+ * 文案与列表徽标（`InspectItem`）、无人机详情（`WorkOrderDetail`）统一为
+ * 「待处理 / 已完成」，不再是「未处理 / 已处理」。
+ *
+ * **只读**：这一页只展示服务端的原状态，没有任何状态变更操作 ——
+ * 进详情不会顺手把报警标成已读 / 已处理（2026-11-24 现场口径）。
+ */
+const handleText = computed(() => (props.alarm.handleStatus === 1 ? '已完成' : '待处理'))
 
 const { zoomed, label, imgStyle, animating, handlers, reset } = useImageZoom()
 

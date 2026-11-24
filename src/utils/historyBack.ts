@@ -60,9 +60,40 @@ import { markSilentBack } from '@/utils/backAction'
  * 幂等性：`drive()` 的目标来自历史条目里的层数，不是「再退一级」这种相对量。
  * 因此手势层、浏览器返回、页面按钮三方同时发生也不会退两级 —— 谁先落地，
  * 层数就已经对齐，后来者算出来「没有要关的」，自然什么都不做。
+ *
+ * ## ④ 前进方向必须「什么都不做」（2026-11-24，左滑闪首页）
+ *
+ * 现象：在任意页面左滑一下，页面先闪出**首页**，一两秒后又自己回到左滑前的
+ * 那一页。
+ *
+ * 成因有两层，缺一不可：
+ *
+ *   1. **图里那条「多出来的条目」是前面裁出来的。** 页面内点返回 / 点底栏切
+ *      tab 时，层被应用自己关掉了，历史里那条条目就没用了 —— `sync()` 用
+ *      `history.go(-1)` 把它退掉。但 `go` 只能移光标，**条目本身还在**，于是
+ *      它跑到了光标**前面**（前向栈）。这条条目的快照拍在它被压的那一刻 ——
+ *      「那一层打开之前的屏幕」，绝大多数情况下就是**首页**（登录页、子页、
+ *      全屏层几乎都是从首页进的）。用户随后切到别的 tab，快照与当前页就不
+ *      再是同一张图。
+ *   2. **左滑正是「前进」。** iOS Safari 右边缘左滑、桌面触控板左滑、以及部分
+ *      安卓浏览器的边缘手势都会走前向遍历 —— 浏览器把光标移到那条旧条目上，
+ *      并按它自己的快照演一遍转场，屏幕上就是「闪一下首页」。紧接着 `onPop`
+ *      只按层数判断（`depth <= target`）走了 `settle()`，80ms 后 `sync()` 发现
+ *      「条目比层数多」，再补一次 `history.go(-1)` —— 用户看到的就是「过一会儿
+ *      又自己跳回原来那页」。
+ *
+ * 所以这个文件对前进的处置只有一条铁律：**前进不关任何层，也不发起任何遍历。**
+ * 落到的条目就地把层数改写成真实层数（`replaceState` 不产生遍历、不画新帧），
+ * 这样既不会「自动跳回」，也不会连演两段转场；条目和层数再次对齐，下一次
+ * 返回仍按真实栈算。裁剪改成**一次 `go(-delta)` 退到位**（以前是逐条 go，
+ * 每退一条都是一次遍历、一次转场），并加了验证定时器：遍历被浏览器节流吞掉时
+ * 重试一次，最后退化为就地改写。
+ *
+ * 已知的平台边界：只要历史里存在前向条目，iOS Safari 在**手指还按着**的时候
+ * 就会把那张旧快照画出来（这是系统级手势预览，网页拿不到事件也拦不住）。
+ * 我们能保证的是「松手之后不跳、不弹回、不重播动画」，以及这条旧条目被用掉
+ * 一次后就地归位、不会反复咬人。
  */
-
-/** 刚挂载 / 从后台恢复时对齐条目用的延迟（那会儿没有「新页面」要看快照） */
 
 /**
  * popstate / 页面内关闭之后，等历史遍历落定再对齐条目（见文件头 ①）。
@@ -73,8 +104,14 @@ const SYNC_DELAY_MS = 80
 /** 一次返回动作的兜底窗口：比子页 0.22s 滑出略长，动画被打断时靠它继续 */
 const CLOSE_TIMEOUT_MS = 360
 
-/** 连续用 history.go 退条目的上限，超过就直接改写当前条目（防死循环） */
-const MAX_GO_STEPS = 3
+/** 裁剪时一次最多退几条（层数上限 = cam/air/hazard/sheet + 子页两级） */
+const MAX_TRIM_DELTA = 6
+
+/** 裁剪重试次数上限：遍历被节流 / 条目不够时最多再试一次，之后就地改写 */
+const MAX_TRIM_TRIES = 2
+
+/** 裁剪后验证遍历是否真的发生（Safari 会节流/丢弃 go） */
+const TRIM_VERIFY_MS = 400
 
 /** 读出历史条目里记录的层数（没有 / 非法都当 0） */
 function layerOf(state: unknown): number {
@@ -116,8 +153,12 @@ export function useHistoryBack(): void {
 
   let syncTimer = 0
   let settleTimer = 0
-  /** 一次 history.go 最多连几次（见 MAX_GO_STEPS） */
-  let goSteps = 0
+  /** 裁剪后的验证定时器（见 TRIM_VERIFY_MS） */
+  let trimTimer = 0
+  /** 前进落地后就地改写层数的复核定时器 */
+  let forwardTimer = 0
+  /** 本轮连续裁剪已经试了几次（超过 MAX_TRIM_TRIES 就地改写，防死循环） */
+  let trimTries = 0
 
   /** 浏览器返回的目标层数；-1 表示当前没有在处理的浏览器返回 */
   let wantDepth = -1
@@ -158,27 +199,44 @@ export function useHistoryBack(): void {
     const cur = currentLayer()
     const want = depth.value
     if (cur === want) {
-      goSteps = 0
+      trimTries = 0
+      window.clearTimeout(trimTimer)
+      trimTimer = 0
       return
     }
     if (cur < want) {
       // 补漏（打开层时的同步压栈被后台挂起吞掉了）：缺几条补几条
-      goSteps = 0
+      trimTries = 0
       pushNow(want)
       return
     }
     /*
-     * 条目比真实层数多：层是被页面自己的按钮关掉的，历史里那条已经没用了。
-     * 留着它，用户下次按返回会「什么都没发生」。
+     * 条目比真实层数多：层是被页面自己的按钮 / 底栏切 tab 关掉的，历史里那几条
+     * 已经没用了。留着它们，用户下次按返回会「什么都没发生」。
+     *
+     * 退法（2026-11-24 改）：**一次 go(-delta) 退到位**。以前是每次 go(-1) 等
+     * 一个 settle 循环再退下一条，每条都是一次独立的历史遍历，浏览器会为每次
+     * 遍历各演一遍转场 —— 「闪一下、过一会儿又闪一下」的节奏就是它给的。
      */
-    if (goSteps >= MAX_GO_STEPS) {
-      // 兜底：条目和层数已经乱到退不齐，直接改写当前条目，不再动历史
-      goSteps = 0
+    const delta = cur - want
+    if (trimTries >= MAX_TRIM_TRIES) {
+      /*
+       * 兜底：go 被浏览器节流 / 丢弃（Safari 在转场与后台期间确实会），或者
+       * 条目根本不够退。再退下去就是死循环，就地改写当前条目 —— 条目数虽然
+       * 还多着，但「层数」这一栏与真实状态是自洽的，后续返回仍按它算。
+       */
+      trimTries = 0
       setLayer(want)
       return
     }
-    goSteps += 1
-    history.go(cur - want > 0 ? -1 : 1)
+    trimTries += 1
+    history.go(-Math.min(delta, MAX_TRIM_DELTA))
+    // 验证遍历真的发生了：没有 popstate 就再试一次，最终退化为上面的就地改写
+    window.clearTimeout(trimTimer)
+    trimTimer = window.setTimeout(() => {
+      trimTimer = 0
+      if (currentLayer() > depth.value) sync()
+    }, TRIM_VERIFY_MS)
   }
 
   /**
@@ -283,20 +341,56 @@ export function useHistoryBack(): void {
   function onPop(e: PopStateEvent): void {
     const target = layerOf(e.state)
 
-    if (depth.value <= target) {
-      /*
-       * 两种情形都走这里：
-       *   · 前进（用户点了前进按钮 / 我们 history.go 的收尾）；
-       *   · 这次遍历的条目层数比真实层数还多 —— 说明层已经被页面按钮关掉了。
-       * 都只需要把条目写对，绝不能再关一层。
-       */
+    /*
+     * ① 目标条目的层数**不小于**真实层数：这一趟不该关任何层。
+     *
+     * 两种情况都落在这里，而它们的共同点正是「没有层要关」：
+     *   · 前进 —— 用户左滑 / 点了浏览器前进，落到的往往是一条被裁掉的旧条目
+     *     （`sync()` 用 go 退掉、但条目本身留在前向栈里，快照是首页）；
+     *   · 条目比真实层数还多 —— 层已经被页面自己的按钮关掉了。
+     *
+     * 这里的处置是 2026-11-24 修「左滑闪首页」的核心：**不 drive、不 settle，
+     * 更不允许任何 history.go**。
+     *
+     * 旧写法无论哪种情况都走 `settle()` → 80ms 后 `sync()` 发现「条目比层数多」
+     * 再补一次 `history.go(-1)`：浏览器先按旧条目自己的快照演一遍（首页），
+     * 过一会儿又被我们退回来 —— 现场就是「闪一下首页，几秒后自动恢复」。
+     *
+     * 现在改成**就地改写**：`replaceState` 既不产生遍历也不画新帧，画面与状态
+     * 一动不动，条目与层数立刻重新自洽（下一次返回仍按真实栈算）。
+     */
+    if (target >= depth.value) {
       wantDepth = -1
       inflight = false
+      window.clearTimeout(settleTimer)
+      settleTimer = 0
+      if (target > depth.value) {
+        // 任何在排队的对齐都不许再发 go（那正是「自动跳回」的来源）
+        window.clearTimeout(syncTimer)
+        syncTimer = 0
+        window.clearTimeout(trimTimer)
+        trimTimer = 0
+        trimTries = 0
+        setLayer(depth.value)
+        /*
+         * popstate 里写历史有被排队 / 丢弃的先例（文件头 ①），所以落定之后再
+         * 确认一次。**只改写、不 go**：这一步必须无条件保持「不产生遍历」，
+         * 否则又变回「闪一下再跳回来」。
+         */
+        window.clearTimeout(forwardTimer)
+        forwardTimer = window.setTimeout(() => {
+          forwardTimer = 0
+          if (wantDepth >= 0) return
+          if (currentLayer() !== depth.value) setLayer(depth.value)
+        }, SYNC_DELAY_MS)
+        return
+      }
+      // 目标层数正好等于真实层数：本来就没有要关的，对齐一下即可（对齐时空转）
       settle()
       return
     }
 
-    // 用户按了浏览器返回：关到这条历史条目对应的层数
+    // ② 真正的浏览器返回：关到这条历史条目对应的层数
     wantDepth = target
     drive()
   }
@@ -381,5 +475,7 @@ export function useHistoryBack(): void {
     document.removeEventListener('visibilitychange', onResume)
     window.clearTimeout(syncTimer)
     window.clearTimeout(settleTimer)
+    window.clearTimeout(trimTimer)
+    window.clearTimeout(forwardTimer)
   })
 }

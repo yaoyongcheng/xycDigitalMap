@@ -7,9 +7,10 @@ import { useAuthStore } from '@/stores/auth'
 import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useUavStore } from '@/stores/uav'
 import { DASH } from '@/utils/lift'
-import { useSlowLoading } from '@/utils/slowLoading'
 import { useMissionClock } from '@/utils/missionClock'
-import { missionProgress } from '@/utils/uavProgress'
+import { useSlowLoading } from '@/utils/slowLoading'
+import { useStreamHold } from '@/utils/streamHold'
+import { missionLine, missionProgress } from '@/utils/uavProgress'
 
 /**
  * 无人机页（2026-11-13 按设计稿 gx2 重排）
@@ -44,8 +45,13 @@ import { missionProgress } from '@/utils/uavProgress'
  *    与 V2 桌面端同一路流），不是萤石云 —— 之前那句「萤石云凭据失效」
  *    是错的：无人机画面从来不走萤石云。详见 `api/drone.ts` 的 `DroneLiveStream`。
  * ② **画面与读数只认无人机这一路**（2026-11-23 删掉机库页签后）：机库摄像头的流
- *    与读数都不再上屏。**有地址就先连**（`online` 只是 30s 快照，拿它当门禁会在
- *    起飞推流那半分钟里空窗）；连不上由播放器说「画面未开播」并每 20s 自动重连。
+ *    与读数都不再上屏。门禁是「有没有执行中的起飞任务」（2026-11-24 用户要求）：
+ *    没有任务时**不挂播放器、不连流、不排队重连**（那时本来就没有推流，重连只是
+ *    白烧流量和电），画面区改说「当前无正在执行的任务，无视频画面」；有任务时才
+ *    **有地址就先连**（`online` 只是 30s 快照，拿它当门禁会在起飞推流那半分钟里
+ *    空窗），连不上由播放器说「画面未开播」并每 20s 自动重连。
+ *    任务结束**留 2 分钟宽限**（`STREAM_HOLD_MS`）再卸载：飞机收尾往往还在推最后
+ *    几秒，按 `running` 立刻切会「活生生断在半空」，落地那一下看不到。
  * ③ **雨量口径未确认**。`rainfall` 实测为 1，同日机库湿度 99%，无法确认
  *    1 是「有雨」还是「无雨」，所以起飞条件按未知处理（不放行），
  *    并把原值写在原因里，等厂家确认口径再改判定。
@@ -182,13 +188,41 @@ const netBars = computed(() => {
 const streamNow = computed(() => (tab.value === 'fly' ? uav.droneStream : uav.dockStream))
 
 /**
- * **只要有地址就挂播放器**，不等 `online` 变 true。
+ * **有没有正在执行的起飞任务** —— 实时画面的总开关（2026-11-24 用户要求）。
+ *
+ * 没有任务时无人机根本不推流，此时去连流只会一直「挂着等」到超时、
+ * 再每 20s 重连一次，白白烧流量和电；而画面区还摆一个「重试」按钮，
+ * 更像是平台出了问题。所以门禁改成任务状态，而不是「有没有地址」：
+ *
+ * · `false` → 播放器**不挂载**（卸载即 `teardown()` + `seq++`，重连定时器
+ *   一并清掉，见 `LivePlayer.vue` 的 `onBeforeUnmount`），画面区说明原因；
+ * · `true`  → 回到原来的逻辑：有地址就先连、连不上由播放器自己收口。
+ *
+ * 用 `running`（只认本项目、`status === 1` 执行中）而不是「今日有没有任务」：
+ * 已排班未起飞、已完成的架次都不推流，挂上去就是空转。
+ */
+const missionOn = computed(() => uav.running !== null)
+
+/**
+ * 任务结束后的**宽限窗口**（2 分钟，2026-11-24）。
+ *
+ * 服务端把架次标成「已完成」的那一刻，飞机往往还在推最后几秒（落地、回库、
+ * 云台回中）。按 `running` 立刻卸载播放器，现场就是「画面活生生被切断」。
+ * 宽限窗口内 `streamOn` 仍为真：播放器不卸载、`LIVE` 角标不摘、断流重连照旧；
+ * 到点自动卸载，回到「当前无正在执行的任务，无视频画面」。
+ *
+ * 规则本体在 `utils/streamHold.ts`（可单测）：状态只在「跑过 → 结束」时开窗，
+ * 页面初开时没有任务不算「刚结束」；到期判据是共享时钟 `now`，不另开定时器。
+ */
+const { on: streamOn, minutes: holdMinutes } = useStreamHold(missionOn, now)
+
+/**
+ * 有任务 + 有地址才挂播放器。
  *
  * `online` 是 30s 一次的快照：无人机起飞推流那一刻它还是 false，
  * 早先拿它当门禁，起飞后要等下一轮刷新才出画面 —— 那半分钟的空窗就是这么来的。
- * ZLM 对未推流的流是「挂着等」的，先连上去，推流一开始就在同一根连接上出数据。
- *
- * 连不上由 `LivePlayer` 自己收口（超时 → 未开播 → 自动重连），页面不重复判断。
+ * 任务在执行时 ZLM 对未开始推流的流是「挂着等」的，先连上去，推流一开始就在
+ * 同一根连接上出数据。这与「没任务不连」不矛盾：门禁是任务，不是 `online`。
  */
 const hasStream = computed(() => !!streamNow.value?.flv)
 
@@ -198,16 +232,24 @@ const hasStream = computed(() => !!streamNow.value?.flv)
  */
 const liveState = ref<string>('idle')
 
-// 切页签 = 换一路流：旧状态立刻作废，否则会带着上一路的 LIVE 角标闪一下
-watch(tab, () => {
+/**
+ * 切页签 / 画面真正下屏时才清状态。
+ *
+ * 注意看的是 `streamOn` 而不是 `missionOn`：任务刚结束的那 2 分钟画面还在播，
+ * 这时把 `liveState` 清掉会把 `LIVE` 角标摘掉 —— 明明在播却装作没播。
+ */
+watch([tab, streamOn], () => {
   liveState.value = 'idle'
 })
 
-/** 完全没有地址时才走整块占位（地址在但没推流由播放器说「未开播」） */
+/** 有任务、但平台没给地址时才走整块占位（地址在但没推流由播放器说「未开播」） */
 const noStreamNote = '平台没有这台无人机的直播流'
 
 /** 未开播时补的那句原因 */
 const offAirHint = '无人机起飞推流后会自动出画面，不用手动刷新'
+
+/** 没有执行中任务时补的那句「什么时候会有画面」——与上面那句同一语气 */
+const idleHint = '起飞任务开始后会自动连上画面'
 
 /**
  * 状态 = 厂家状态码的文案（`utils/uavState.ts`），与 V2 同一张表。
@@ -228,10 +270,15 @@ const mission = computed(() =>
   missionProgress(uav.running?.startAt ?? null, uav.runningEstimate, now.value),
 )
 
-/** 已飞分钟：一位小数（8.4 分钟），小时级任务也不会挤爆这一行 */
-function min1(v: number): string {
-  return v.toFixed(1)
-}
+/**
+ * 「10:50 起飞 · 已飞 5.1 分钟 · 预计 7 分钟」。
+ *
+ * 2026-11-24：这句**不再在这里拼**，改由 `missionLine()` 统一出字 —— 首页无人机卡
+ * 也要显示同一行，两处各拼一遍就会慢慢长歪（空格 / 小数位 / 有没有「任务执行中」）。
+ */
+const missionNote = computed(() =>
+  uav.running ? missionLine(uav.running.time, mission.value) : '',
+)
 
 /** 阈值告警着色（告警值本身要看得出来） */
 function toneOf(v: string, k: string): string {
@@ -262,25 +309,42 @@ function retry(): void {
 
       <!--
         实时画面 = keehang 的 HTTP-FLV 直播（与 V2 同一路流，见 api/drone.ts）。
-        有地址就先连（ZLM 会挂着等推流），连不上由播放器自己说原因；
-        完全没有地址时才整块说明，不挂静态示意图 —— 示意图长得像现场画面，
-        会被当成实时情况看。
+
+        门禁是**有没有执行中的起飞任务**（2026-11-24）：没任务就不挂播放器 ——
+        卸载即清掉重连定时器，不再对着一条不存在的推流每 20s 空试一次；
+        有任务才回到「有地址就先连」（ZLM 会挂着等推流），连不上由播放器自己说原因。
+        任务刚结束的 2 分钟内仍算「有画面」（`streamOn`，见上面的宽限窗口）——
+        飞机收尾可能还在推流，不能一刀切掉。
+        两种情况都不挂静态示意图 —— 示意图长得像现场画面，会被当成实时情况看。
       -->
-      <div class="uav-stage" :class="{ 'is-wait': !hasStream }">
+      <div class="uav-stage" :class="{ 'is-wait': !streamOn || !hasStream }">
         <LivePlayer
-          v-if="hasStream"
+          v-if="streamOn && hasStream"
           :key="`${tab}-${streamNow?.id}`"
           :src="streamNow?.flv ?? null"
           :off-air-hint="offAirHint"
           @state="liveState = $event"
         />
-        <span v-if="liveState === 'playing'" class="uav-live"><i></i>LIVE</span>
+        <span v-if="streamOn && liveState === 'playing'" class="uav-live"><i></i>LIVE</span>
 
-        <template v-if="!hasStream">
+        <template v-if="!streamOn">
+          <p>当前无正在执行的任务，无视频画面</p>
+          <p class="uav-stage-sub">{{ idleHint }}</p>
+        </template>
+        <template v-else-if="!hasStream">
           <p>实时画面未开播</p>
           <p class="uav-stage-sub">{{ noStreamNote }}</p>
         </template>
       </div>
+
+      <!--
+        任务刚结束、画面还在的那 2 分钟：说清为什么还有画面，不让它像卡住了。
+        `hasStream` 一起判 —— 平台没给地址时画面区本来就在说「未开播」，
+        再补一句「保留 2 分钟」会自相矛盾。
+      -->
+      <p v-if="!missionOn && streamOn && hasStream" class="uav-note">
+        任务已结束，画面保留 {{ holdMinutes }} 分钟后自动关闭
+      </p>
 
       <!--
         飞行参数七格（状态 / 海拔 / 飞行距离 / 水平速度 / 垂直速度 / 翻滚角 / 偏航角）
@@ -327,7 +391,7 @@ function retry(): void {
           :aria-label="`当前巡检进度 ${mission.pct}%`"
         ><i :style="{ width: `${mission.pct}%` }"></i></div>
         <p :title="mission.estimateMin !== null ? '预计时长按同一任务近 7 天已完成执行的中位数' : ''">
-          {{ uav.running.time }} 起飞<template v-if="mission.elapsedMin !== null"> · 已飞 {{ min1(mission.elapsedMin) }} 分钟</template><template v-if="mission.estimateMin !== null"> · 预计 {{ mission.estimateMin }} 分钟</template><template v-if="mission.elapsedMin === null"> · 任务执行中</template>
+          {{ missionNote }}
         </p>
       </div>
       <div v-else-if="uav.state === 'error'" class="data-empty">
@@ -337,6 +401,14 @@ function retry(): void {
       <div v-else-if="!syncing && uav.taskTotal === 0" class="data-empty">
         <p>今日暂无无人机任务</p>
       </div>
+
+      <!--
+        刷新失败但手里还有上一轮数据（`load()` 不再清空 records，见 stores/uav.ts）：
+        明说这是旧的，别让三格和「当前巡检」看着像实时 —— 数据可以有，但不能装。
+      -->
+      <p v-if="uav.state === 'error' && (uav.records.length > 0 || uav.stat)" class="uav-note">
+        刷新失败，以上为上一次的数据
+      </p>
     </section>
 
     <!-- ③ 设备参数（设计稿八格，全部有源） -->

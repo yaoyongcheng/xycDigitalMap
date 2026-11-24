@@ -1508,7 +1508,87 @@ describe('无人机页', () => {
     w.unmount()
   })
 
-  it('完全没有直播流时整块说明，不挂静态示意图', async () => {
+  /**
+   * 2026-11-24：门禁从「有没有地址」改成「有没有执行中的起飞任务」。
+   * 没任务时无人机不推流，连上去只会挂到超时再每 20s 空试一次。
+   */
+  it('没有执行中的任务：不挂播放器、不发流，画面区说明原因', async () => {
+    // 地址是有的（平台一直挂着这条流），但今天没有任何执行中的架次
+    stubStream = [
+      {
+        deviceId: 23498,
+        streams: [
+          {
+            id: 934,
+            name: '无人机',
+            online: false,
+            playStreams: [{ type: 'flv', protocol: 'https', url: 'https://live.example.com/uav.live.flv' }],
+          },
+        ],
+      },
+    ]
+    stubRecords = [todayRecord({ status: 2, result: 0 })]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+
+    // 一个 player 都不该建：`mpegts` 的桩记录了 ERROR 回调，没建就还是空的
+    expect(w.find('.live-player').exists()).toBe(false)
+    expect(w.find('.live-video').exists()).toBe(false)
+    expect(w.find('.uav-stage').classes()).toContain('is-wait')
+    expect(w.find('.uav-stage').text()).toContain('当前无正在执行的任务，无视频画面')
+    // 没有流可连，就别给「重试」——那看起来像平台出故障
+    expect(w.find('.live-play').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('任务结束：画面再留 2 分钟，不立刻切断，并说明会自动关闭', async () => {
+    stubRecords = [todayRecord()]
+    stubStream = [
+      {
+        deviceId: 23498,
+        streams: [
+          {
+            id: 934,
+            name: '无人机',
+            online: true,
+            playStreams: [{ type: 'flv', protocol: 'https', url: 'https://live.example.com/uav.live.flv' }],
+          },
+        ],
+      },
+    ]
+
+    const sub = useSubpageStore()
+    sub.openUav()
+    const w = mount(Host)
+    await flushPromises()
+    await nextTick()
+    expect(w.find('.live-player').exists()).toBe(true)
+
+    // 画面真的出图了，LIVE 角标挂着
+    w.find('.live-video').element.dispatchEvent(new Event('playing'))
+    await nextTick()
+    expect(w.find('.uav-live').text()).toContain('LIVE')
+
+    /*
+     * 架次跑完（status 2）：飞机往往还在推落地那几秒，不能一刀切。
+     * 宽限窗口内播放器与 LIVE 都还在，另给一句「什么时候会自动关」。
+     * 到期（2 分钟）卸载的行为由 `tests/unit/stream-hold.spec.ts` 用短窗口守。
+     */
+    useUavStore().apply([todayRecord({ status: 2, result: 0 })])
+    await nextTick()
+    expect(w.find('.live-player').exists()).toBe(true)
+    expect(w.find('.uav-live').exists()).toBe(true)
+    expect(w.find('.uav-note').text()).toContain('任务已结束，画面保留 2 分钟')
+    w.unmount()
+  })
+
+  it('有执行中的任务、但没有直播流时整块说明，不挂静态示意图', async () => {
+    // 有任务才会走到这一段：没任务时先被上一条的门禁挡住
+    stubRecords = [todayRecord()]
     const sub = useSubpageStore()
     sub.openUav()
     const w = mount(Host)

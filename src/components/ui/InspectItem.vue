@@ -36,16 +36,23 @@ import { revealThumb } from '@/utils/thumbReveal'
 const props = defineProps<{
   alarm: Alarm
   useTitle?: boolean
-  /**
-   * 未读红点（2026-11-20）。
-   *
-   * 由调用方决定要不要点：只有**今日预警**参与已读/未读（见 InspectList 注释），
-   * 历史列表不传即为关闭。红点位置照微信：压在头像（这里是指摄图 / 占位图标）
-   * 右上角，圆点外留一圈白边，压在照片上也不会糊掉。
-   */
-  dot?: boolean
 }>()
 const emit = defineEmits<{ open: [] }>()
+
+/**
+ * 处理状态（2026-11-24 对齐无人机列表）。
+ *
+ * 服务端 `handleStatus`：1 = 已完成，其余（0 / 缺省）= 待处理。
+ * 与 `components/ui/WorkOrderItem.vue` 用同一套徽标样式与文案
+ * （`.alarm-src-todo` 橙 / `.alarm-src-done` 灰），两个预警列表因此一眼一致。
+ *
+ * 这里**只读**：本 App 不提供任何状态变更操作，也不再点「未读红点」——
+ * 红点会随着详情页无法清除而变成一颗永远清不掉的装饰。
+ */
+const statusText = computed(() => (props.alarm.handleStatus === 1 ? '已完成' : '待处理'))
+const statusClass = computed(() =>
+  props.alarm.handleStatus === 1 ? 'alarm-src-done' : 'alarm-src-todo',
+)
 
 const alarmStore = useAlarmStore()
 const auth = useAuthStore()
@@ -94,14 +101,13 @@ function onKey(e: KeyboardEvent): void {
   >
     <!-- 图标位：有抓拍图铺图，没有就铺灰底占位图标（尺寸/圆角都由 .insp-pic 定）；
          取图过程中在图标外圈叠一圈真实下载进度，图到了自动消失。
-         未读时在右上角压一颗红点（微信位置），白圈让它压在图上也看得清 -->
+         2026-11-24 起不再点未读红点：状态改在右侧徽标里如实展示（见下） -->
     <span class="insp-pic-box">
       <SmartImg v-if="thumb" class="insp-pic" :src="thumb" :alt="alarm.type" />
       <span v-else class="insp-pic alarm-tile" aria-hidden="true">
         <SvgIcon name="work-cam" />
         <ThumbRing :id="alarm.id" />
       </span>
-      <i v-if="dot" class="insp-dot" role="img" aria-label="未读" />
     </span>
     <div class="insp-meta">
       <div class="insp-hd">
@@ -110,6 +116,10 @@ function onKey(e: KeyboardEvent): void {
       </div>
       <p>{{ alarm.desc }}</p>
     </div>
-    <span class="insp-time">{{ alarm.rel }}</span>
+    <!-- 右侧两行：相对时间 + 处理状态（与无人机预警列表的 .wo-side 完全一致） -->
+    <div class="wo-side">
+      <span class="insp-time">{{ alarm.rel }}</span>
+      <span class="alarm-src" :class="statusClass">{{ statusText }}</span>
+    </div>
   </div>
 </template>

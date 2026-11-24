@@ -9,7 +9,6 @@ import SmartImg from '@/components/ui/SmartImg.vue'
 import { AIR_PAGE_SIZE, useAirHazardStore } from '@/stores/airHazard'
 import { useShellStore } from '@/stores/shell'
 import { addDays } from '@/utils/date'
-import { fetchBlobWithProgress } from '@/utils/blobFetch'
 import { useLandscape } from '@/utils/landscape'
 import { useSlideOverlay } from '@/utils/slideOverlay'
 import { fetchDetailOriginal } from '@/utils/photoOriginal'
@@ -207,7 +206,9 @@ watch(() => currentShot.value?.img, resetZoom)
  *   · 关弹层 / 换张 / 卸载直接 abort，4~8MB 不留在后台白烧；
  *   · 拉不到就退回直链（浏览器自己加载，慢但能看；角标仍写「原图」）。
  *
- * 同一张再打开时命中 `utils/photoOriginal.ts` 的内存缓存，直接就是原图。
+ * 同一张再打开时命中 `utils/photoOriginal.ts` 的内存缓存；刷过页面也不要紧 ——
+ * `utils/photoDetailCache.ts` 把字节落到了本机，列表没刷新时直接读本地，
+ * 不再下第二遍（体积 / 时刻与列表声明不符会自动作废）。
  */
 async function loadHd(): Promise<void> {
   const s = currentShot.value
@@ -224,6 +225,9 @@ async function loadHd(): Promise<void> {
   try {
     const blob = await fetchDetailOriginal(s.full, {
       signal: imgCtrl.signal,
+      // 作用域 = 站点 + 日期：换站点 / 换日期就是另一批列表，对账互不影响
+      scope: air.airScope,
+      meta: { id: s.photoId, time: s.at, size: s.size },
       onProgress: (loaded, total) => {
         if (key !== imgSeq) return
         imgHdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
@@ -324,7 +328,8 @@ function preload(url: string): Promise<void> {
  * （2026-11-23 现场口径，那颗「看高清」已下线）。
  *
  * 先带真实字节进度把原图拉下来再换源；拉不到就退回直链（慢，但图还是会出来），
- * 与智眸里的处理一致。
+ * 与智眸里的处理一致。全景同样是十几 MB，所以也走本机落盘缓存：
+ * 列表没刷新时再点开，直接读本地字节。
  */
 async function loadPanoHd(): Promise<void> {
   const p = air.airPano
@@ -334,14 +339,15 @@ async function loadPanoHd(): Promise<void> {
   panoHdPct.value = 0
   panoCtrl = new AbortController()
   try {
-    const blob = await fetchBlobWithProgress(
-      p.full,
-      (loaded, total) => {
+    const blob = await fetchDetailOriginal(p.full, {
+      signal: panoCtrl.signal,
+      scope: air.airScope,
+      meta: { id: `pano-${p.id}`, time: p.time, size: p.size },
+      onProgress: (loaded, total) => {
         if (key !== panoSeq) return
         panoHdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
       },
-      panoCtrl.signal,
-    )
+    })
     const url = URL.createObjectURL(blob)
     await preload(url)
     if (key !== panoSeq) {
@@ -387,12 +393,17 @@ function onPanoReady(): void {
   panoBroken.value = false
 }
 
+/*
+ * 航拍全景的全屏：只铺满视口 + 尽量锁横屏，**不带 `hint`**。
+ * 「把手机横过来看」那句引导只属于智眸 VR 360 环视的全景全屏
+ * （2026-11-24 口径，见 utils/landscapeHint.ts）。
+ */
 const {
   land: panoLand,
   setStage: setPanoStage,
   toggle: togglePanoLand,
   exit: exitPanoLand,
-} = useLandscape({ page: true, hint: true })
+} = useLandscape({ page: true })
 
 /** 关弹层 / 换站点时把全屏收回来 */
 watch(
@@ -415,11 +426,12 @@ watch(
     <BackBar title="航拍照片" back-id="btnAirBack" @back="onBack" />
 
     <!--
-      筛选区：站点下拉 + 日期芯片，同一块里排。
+      筛选区：站点下拉一行、日期芯片一行，**恒定两行**（.air-filter 是单列 grid）。
 
-      为什么不硬塞成一行：窄屏（375 宽）下两颗控件加起来要 400+ px，
-      站点名会被压到只剩三四个字，比换行更难认。所以用 flex-wrap ——
-      手机竖屏自动两行，横屏 / 平板（≥ 420 宽）并成一行，布局代码只有一套。
+      2026-11-24：原来靠 flex-wrap 按宽度自动折行，临界点正落在主流 iPhone 的
+      内容宽上，日期第三颗的文案又随选中日期变宽变窄 —— 切个日期就能让两行并成
+      一行，iOS 27 还把并行的第二行高度算丢，日期控件于是上移压住站点与张数提示。
+      行数交给 grid 定死，与文案宽度、系统字体、iOS 版本都无关。
 
       站点名称选项来自 V2 任务记录里的航线（= 站点）去重后的清单，
       顺序按最近一次采集时间倒序 —— 第一个就是「最近飞过的」。

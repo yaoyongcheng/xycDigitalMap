@@ -112,6 +112,51 @@ describe('智眸面板（真实航拍照片）', () => {
     w.unmount()
   })
 
+  /**
+   * 面板级进入 vs 子页切换（2026-11-24）
+   *
+   * 选中状态存在 store（`pickedCat`）里：首页切到智巡 / 智控再切回来，
+   * 面板是卸载重建的，但选中的子页必须还是走之前那一格。
+   */
+  it('切走再回来仍停在用户上次选的子页', async () => {
+    const patrol = usePatrolStore()
+    patrol.apply([photo({ id: 'a', name: 'a.jpeg', taskName: '向阳村-材料堆场' })], 'gate')
+
+    const w1 = mount(PatrolPanel)
+    await nextTick()
+    expect(w1.find('.patrol-cats button.on').text()).toContain('出入口管控')
+
+    // 用户自己点了「材料堆场」
+    patrol.pickCat('equip')
+    await nextTick()
+    expect(w1.find('.patrol-cats button.on').text()).toContain('材料堆场')
+    w1.unmount()
+
+    // 卸载再挂载 = 首页切走又切回来
+    const w2 = mount(PatrolPanel)
+    await nextTick()
+    expect(w2.find('.patrol-cats button.on').text()).toContain('材料堆场')
+    w2.unmount()
+  })
+
+  it('从别的标签切回：只取上次那一格，不连带别的格', async () => {
+    const patrol = usePatrolStore()
+    patrol.pickCat('equip')
+    const f = vi.fn(async (_url: string) => ({ ok: false, status: 500, json: async () => ({}) }))
+    vi.stubGlobal('fetch', f)
+
+    const w = mount(PatrolPanel)
+    await flushPromises()
+
+    // 「材料堆场」那条链只查执行记录 + 媒体：不拍门禁抓拍、不拉全景成果，
+    // 也不扫「全景航拍 / 设备设施 / 安全巡查」那条条链
+    const urls = f.mock.calls.map((c) => String(c[0])).join('\n')
+    expect(urls).not.toContain('/snapshots/history')
+    expect(urls).not.toContain('/dashboard/recreate/')
+    expect(w.find('.patrol-cats button.on').text()).toContain('材料堆场')
+    w.unmount()
+  })
+
   it('「材料堆场」不再按航线名收照片：塔吊定点的照片不进这一格', async () => {
     const patrol = usePatrolStore()
     // 塔吊定点仍归类到 equip（`catOfTask` 没改），但这一格现在只认分区定点那 3 张
@@ -146,20 +191,25 @@ describe('智眸面板（真实航拍照片）', () => {
     expect(card.text()).toContain('向阳村-钢筋加工棚')
     // 卡片显示的是「所属航线 + 拍摄时间」，不是文件名
     expect(card.text()).toContain('2026-07-15 09:38')
-    expect(card.text()).toContain('5.1MB')
+    // 2026-11-24：列表卡片不再显示照片体积（KB/MB/GB 一律不出现）
+    expect(card.text()).not.toContain('MB')
+    expect(card.text()).not.toContain('KB')
     expect(card.findAll('.patrol-tag').map((t) => t.text())).toEqual(['出入口管控'])
     expect(card.text()).toContain('无人机')
     w.unmount()
   })
 
   it('切到没有照片的分类给「这个分类下还没有照片」，不是空白', async () => {
+    // 2026-11-24 子页改成懒加载：切过去会**真的取这一格**，所以先把「VR 360环视」
+    // 桩成「取回来了，但没有全景」——它才是这一格自己的结论
+    vi.stubGlobal('fetch', panoFetch({ recreate: [] }))
     const patrol = usePatrolStore()
     patrol.apply([photo({ id: 'c', name: 'c.jpeg', taskName: '向阳村-土方1' })])
     const w = mount(PatrolPanel)
-    await nextTick()
+    await flushPromises()
 
-    // 只有「全景航拍」有照片，切到「VR 360环视」
     await w.findAll('.patrol-cats button')[0].trigger('click')
+    await flushPromises()
     expect(w.find('.patrol-card').exists()).toBe(false)
     expect(w.find('.patrol-empty').text()).toBe('这个分类下还没有照片')
     w.unmount()
@@ -254,8 +304,9 @@ describe('智眸面板（真实航拍照片）', () => {
     await nextTick()
 
     expect(w.findAll('.patrol-card')).toHaveLength(0)
-    expect(w.find('[data-empty="patrol"]').text()).toContain('offline')
-    expect(w.find('[data-empty="patrol"]').find('.data-empty-btn').exists()).toBe(true)
+    // 六格都取不到（offline）：写「暂时取不到」并给重试，不是「还没有照片」
+    expect(w.find('.patrol-empty').text()).toContain('暂时取不到')
+    expect(w.find('.patrol-empty').find('.data-empty-btn').exists()).toBe(true)
     w.unmount()
   })
 })
@@ -329,8 +380,9 @@ describe('智眸大图弹层（真实航拍照片）', () => {
     )
 
     await w.findAll('.patrol-card')[0].trigger('click')
-    // 体积写在弹层下方 meta（角标只写状态与百分比，不挤体积）
-    expect(w.find('.patrol-meta').text()).toContain('7.5MB')
+    // 2026-11-24：详情不再写体积（原来这里有一行「大小 7.5MB」）
+    expect(w.find('.patrol-meta').text()).not.toContain('MB')
+    expect(w.find('.patrol-meta').text()).not.toContain('大小')
     await nextTick()
 
     // 等它落地：happy-dom 不解码图片，`preload` 走 1.2s 兜底 —— 轮询到「原图」为止
@@ -911,8 +963,8 @@ describe('智眸面板 · VR 360环视卡片', () => {
     const card = w.find('.patrol-card.is-pano').text()
     expect(card).toContain('向阳村-全景')
     expect(card).toContain('可环视')
-    // 角标写真实体积（13.1MB），不写「N 张拼接」——那是原片张数，已不是显示对象
-    expect(card).toContain('13.1MB')
+    // 2026-11-24：全景卡片右下角那颗体积角标已删（列表不显示照片大小）
+    expect(card).not.toContain('MB')
     w.unmount()
   })
 
@@ -1026,8 +1078,9 @@ describe('智眸大图弹层 · 全景工具条（复位 / 全屏）', () => {
     expect(tools.text()).not.toContain('看高清')
     // 原来的「下载」整颗下线（全景要存相册走长按图片 / 系统菜单）
     expect(w.text()).not.toContain('下载')
-    // 体积不再挤在按钮上（弹层下方 meta 的「大小」已经写了 13.1MB）
-    expect(tools.text()).not.toContain('13.1MB')
+    // 2026-11-24：整个弹层（含下方 meta）都不再出现体积
+    expect(w.text()).not.toContain('13.1MB')
+    expect(w.text()).not.toContain('大小')
     w.unmount()
   })
 
@@ -1149,9 +1202,10 @@ describe('智眸大图弹层 · 单张照片工具条（只剩全屏）', () => 
     // 下方那行「原图 / 下载」整块不存在了
     expect(w.find('.photo-actions').exists()).toBe(false)
     expect(w.text()).not.toContain('下载')
-    // 体积写在弹层下方 meta 里，不挤在 26px 的胶囊上（与 VR360 的「看高清」一致）
+    // 2026-11-24：体积不再显示 —— 工具条和下方 meta 都没有
     expect(tools.text()).not.toContain('7.5MB')
-    expect(w.find('.patrol-meta').text()).toContain('7.5MB')
+    expect(w.find('.patrol-meta').text()).not.toContain('7.5MB')
+    expect(w.find('.patrol-meta').text()).not.toContain('大小')
     w.unmount()
   })
 

@@ -25,14 +25,19 @@
  *      而不是回报「lock 有没有成功」—— 桌面全屏后天然宽 > 高，
  *      不该被当成失败去提示用户转屏。
  *
- * 调用方（`shell.openMapLand` / `cam.setCamLand`）只做两件事：
- *   · 结果为 false（仍是竖屏）→ 摆出横屏引导卡（`utils/landscapeHint.ts`）；
+ * 调用方（`shell.openMapLand` / `cam.setCamLand` / `utils/landscape.ts`）只做一件事：
  *   · 关闭 / 卸载 → `exitNativeLandscape()`，**必须解锁**，
  *     否则用户整台手机被钉在横屏上（这是本方案唯一的硬风险）。
+ *
+ * 结果为 false（仍是竖屏）时**不在这里提示**：横屏引导卡只有智眸 VR 360 环视的
+ * 项目全景全屏会摆（`utils/landscapeHint.ts`，2026-11-24 口径），其余场景
+ * 就留在「铺满视口」那一层，画面照样能看。
  */
 type FullscreenDoc = Document & {
   webkitFullscreenElement?: Element | null
   webkitExitFullscreen?: (() => Promise<void> | void) | undefined
+  /** iOS 视频型全屏时代的老 API，个别内嵌 WebView 只认它 */
+  webkitCancelFullScreen?: (() => void) | undefined
 }
 
 type FullscreenRoot = HTMLElement & {
@@ -48,6 +53,21 @@ type LockableOrientation = ScreenOrientation & {
 function fullscreenElement(): Element | null {
   const doc = document as FullscreenDoc
   return doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null
+}
+
+/**
+ * 当前是不是在系统全屏里。
+ *
+ * 注意这是**唯一可见的信号，但它不可靠**：iOS / 微信里即使画面已经进了全屏，
+ * 这两个属性也常读成 null（`exitNativeLandscape` 的注释里记过这个毛病），
+ * 旋转的那一瞬间更是会先报 null 再恢复。所以：
+ *   · 读到 `true` —— 可信，说明确实在全屏；
+ *   · 读到 `false` —— **不能**当成「已经退出」，只能当成「看不到」。
+ * 凡是要用它做「收 UI / 跳过退出」这类不可逆决定的，都必须二次确认
+ * （见 `utils/landscape.ts::scheduleDropCheck`），或者干脆不看它、无条件退一次。
+ */
+export function isSystemFullscreen(): boolean {
+  return Boolean(fullscreenElement())
 }
 
 /** 系统全屏能力是否可用（iOS 上恒为 false） */
@@ -90,14 +110,15 @@ function afterRotate(): Promise<void> {
 
 /**
  * 「请横过手机」的引导交给 `utils/landscapeHint.ts` —— 这里只管申请与释放，
- * 不碰任何 UI 状态。
+ * 不碰任何 UI 状态（而且 2026-11-24 起只有智眸 VR 360 环视的全景全屏会用它）。
  */
 
 /**
  * 进入系统全屏 + 尽量锁横屏。
  *
  * @returns 落定后视口是否已横向。`true` 时调用方什么都不用做；
- *          `false` 时调用方酌情提示用户手动横转（iOS 恒为这条路）。
+ *          `false` 时留给调用方自行决定要不要提示（目前只有项目全景会提示，
+ *          其余场景静默铺满视口即可）。
  */
 export async function enterNativeLandscape(): Promise<boolean> {
   // 桌面不折腾：没有横屏概念，全屏只会藏掉浏览器 UI（见 isTouchDevice 注释）
@@ -129,19 +150,85 @@ export async function enterNativeLandscape(): Promise<boolean> {
   return isLandscapeViewport()
 }
 
+/** 等一小会儿（转场 / 退全屏动画） */
+function wait(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
 /**
- * 退出：先解锁方向再退全屏。
+ * 退全屏会发的事件：标准 / WebKit 前缀 / iOS 视频型收尾。
+ * `webkitendfullscreen` 不冒泡，所以下面统一用**捕获**阶段监听。
+ */
+const EXIT_EVENTS = ['fullscreenchange', 'webkitfullscreenchange', 'webkitendfullscreen'] as const
+
+/**
+ * 发一次退出请求，等一个「确实退出去了」的信号。
  *
- * 顺序不能反 —— 先进全屏再锁方向的逆过程，反了会有一段时间方向仍被钉住。
- * 两个动作都不抛错（本来就没进全屏时是空操作）。
+ * 只认三种结局：退出事件（最可信）、`exitFullscreen()` 被拒（说明本来就没在全屏）、
+ * 超时后复查属性。刻意**不认**「promise resolve」—— 2026-11-24 现场：iOS 上转场
+ * 期间第一次 `exitFullscreen` 会被吞掉，promise 照样 resolve，画面却还在全屏。
+ *
+ * @returns 是否确认已退出；属性读不到时按「已退出」处理（见 `isSystemFullscreen`）
+ */
+function fireExitOnce(timeout = 420): Promise<boolean> {
+  const doc = document as FullscreenDoc
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    function finish(ok: boolean): void {
+      if (settled) return
+      settled = true
+      for (const e of EXIT_EVENTS) document.removeEventListener(e, onChange, true)
+      window.clearTimeout(timer)
+      resolve(ok)
+    }
+    function onChange(): void {
+      if (!isSystemFullscreen()) finish(true)
+    }
+    for (const e of EXIT_EVENTS) document.addEventListener(e, onChange, true)
+    const timer = window.setTimeout(() => finish(!isSystemFullscreen()), timeout)
+
+    const fail = (): void => finish(!isSystemFullscreen())
+    try {
+      if (doc.exitFullscreen) {
+        void doc.exitFullscreen().catch(fail)
+      } else if (doc.webkitExitFullscreen) {
+        void Promise.resolve(doc.webkitExitFullscreen()).catch(fail)
+      } else if (doc.webkitCancelFullScreen) {
+        doc.webkitCancelFullScreen()
+      } else {
+        // 这台设备根本没有全屏 API（iOS 传统路径）：没什么可退的
+        finish(true)
+      }
+    } catch {
+      fail()
+    }
+  })
+}
+
+/**
+ * 退出：解锁方向 → 退全屏 → 再解锁一次。
+ *
+ * 顺序不能反 —— 先进全屏再锁方向的逆过程，反了会有一段时间方向仍被钉住；
+ * 而退出之后再补一次 `unlock()` 是给「iOS 退完全屏按物理方向重排、又把锁套回去」
+ * 这一档留的。两个动作都不抛错（本来就没进全屏时是空操作）。
  *
  * **不靠 `fullscreenElement()` 决定要不要退**（2026-11-23 修）：
  * iOS / 微信内置浏览器里这个属性常常读不到（标准与 `webkit` 前缀都可能是 null，
  * 即使画面已经进了全屏），一旦据此提前 return，用户就永远退不出系统全屏 ——
  * 现场表现正是「智眸里点了全屏，怎么都关不掉」。没在全屏时调 `exitFullscreen`
  * 只会 reject，catch 掉即可，代价是一次无害的异常。
+ *
+ * **退三次**（2026-11-24 修）：一次不够。iOS 上「横屏 → 竖屏」之后第一次调用
+ * 会被转场吞掉，且不发任何事件，只发一次就变成「退不出来」。间隔 0 / 260 / 700ms
+ * 覆盖转场动画；只有「仍读得到全屏」时才继续 —— 读不到（iOS 常态）当它退掉了，
+ * 不做无谓等待。三次都没退掉就返回 `false`，**由调用方决定怎么把用户放出来**
+ * （`utils/landscape.ts::exit()` 会保留退出按钮、900ms 后再试一次）。
+ *
+ * @returns 是否确认已退出（`false` 表示还读得到全屏，调用方应保留退出入口）
  */
-export async function exitNativeLandscape(): Promise<void> {
+export async function exitNativeLandscape(): Promise<boolean> {
   const orientation = screen.orientation as LockableOrientation | undefined
   try {
     // 同步调用，绝不 await —— 后面紧跟着的 exitFullscreen 还要靠这次点击的手势
@@ -150,13 +237,25 @@ export async function exitNativeLandscape(): Promise<void> {
     /* 忽略 */
   }
 
-  const doc = document as FullscreenDoc
-  try {
-    if (doc.exitFullscreen) await doc.exitFullscreen()
-    else await doc.webkitExitFullscreen?.()
-  } catch {
-    /* 没有全屏可退 / 手势已失效：忽略 */
+  const gaps = [0, 260, 700]
+  let exited = false
+  for (const gap of gaps) {
+    if (gap > 0) await wait(gap)
+    exited = await fireExitOnce(420)
+    // 还读得到全屏 → 再试一次；读不到就收手，不空转
+    if (exited || !isSystemFullscreen()) {
+      exited = true
+      break
+    }
   }
+
+  try {
+    orientation?.unlock?.()
+  } catch {
+    /* 忽略 */
+  }
+
+  return exited
 }
 
 /** 落定后广播 resize 的定时器（进 / 退连着点，只留最后一次） */

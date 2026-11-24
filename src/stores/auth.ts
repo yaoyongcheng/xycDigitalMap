@@ -4,6 +4,8 @@ import { defineStore } from 'pinia'
 import { fetchProfile, login as loginRequest, logout as logoutRequest } from '@/api/auth'
 import { clearPictureCache } from '@/api/video'
 import { ApiError, bindSession } from '@/api/http'
+import { clearDetailCache } from '@/utils/photoDetailCache'
+import { clearOriginalCache } from '@/utils/photoOriginal'
 import { useAlarmStore } from './alarm'
 import { useCraneReportStore } from './craneReport'
 import { useDeviceLedgerStore } from './deviceLedger'
@@ -149,6 +151,10 @@ export const useAuthStore = defineStore('auth', () => {
     // 抓拍图缓存在模块级 Map 里，不跟着 store 走；不清的话下一个人
     // 点开同一条报警会看到上一个人的现场照片
     clearPictureCache()
+    // 照片详情的原图字节（内存 LRU + 本机落盘）同理：几 MB 的现场照片
+    // 不能留给下一个人，换账号前先删干净
+    clearOriginalCache()
+    void clearDetailCache()
   }
 
   /** 启动时从本地恢复；已过期则直接丢掉 */
@@ -209,6 +215,44 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
+   * 重新拉一次 `/me`，把展示名与角色对齐服务端（2026-11-24）。
+   *
+   * 用在「切回『我的』tab」：姓名 / 角色可能被后台改过（换班组、加角色），
+   * 而这一页是常驻挂载的，`restore()` 之后不会自己再问一次。
+   *
+   * 三条约束：
+   *   · 未登录直接返回 —— 没有会话就没有可问的对象；
+   *   · 并发复用同一趟（`profileInflight`），连点底栏不会打两遍；
+   *   · 失败静默：会话本身仍然有效，401 由 http 层统一清会话并弹登录页，
+   *     这里再弹一次只会重复打扰。
+   */
+  let profileInflight: Promise<void> | null = null
+
+  async function refreshProfile(): Promise<void> {
+    const t = token.value
+    if (!t) return
+    if (profileInflight) return profileInflight
+    const p = (async () => {
+      try {
+        const me = await fetchProfile(username.value)
+        // 期间登出 / 换账号：这次结果属于上一个会话，丢掉
+        if (token.value !== t) return
+        if (me.displayName) displayName.value = me.displayName
+        role.value = me.role
+        persist()
+      } catch {
+        // 静默：展示名回落到已有值，下次切回来再试
+      }
+    })()
+    profileInflight = p
+    try {
+      await p
+    } finally {
+      if (profileInflight === p) profileInflight = null
+    }
+  }
+
+  /**
    * 退出登录。
    *
    * **本地先清、再通知服务端**（顺序不能反）：
@@ -255,6 +299,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLoggedIn,
     login,
     logout,
+    refreshProfile,
     rememberedAccount,
     /** 供测试与「会话失效」场景手动清空 */
     clear,

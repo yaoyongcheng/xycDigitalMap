@@ -19,6 +19,17 @@ import { useCamStore } from './cam'
 import { useShellStore } from './shell'
 import type { PatrolPhotoReal } from './patrol'
 import { addDays, dateKey, formatCamDate, monthStart, startOfDay } from '@/utils/date'
+import { detailKeyOf, reconcileDetailScope, type DetailItem } from '@/utils/photoDetailCache'
+
+/**
+ * 详情缓存作用域：`air|站点|YYYY-MM-DD`。
+ *
+ * 组件里拉原图（`AirPlayer.vue`）与这里做对账用的是**同一个字符串**，
+ * 两边各写一份迟早会飘，所以收敛成一个函数。
+ */
+function airScopeOf(name: string, day: Date): string {
+  return `air|${name}|${dateKey(day)}`
+}
 
 /** 无人机巡检照片（由站点取数派生，全景排第一） */
 export interface AirShot {
@@ -31,6 +42,10 @@ export interface AirShot {
   taskName?: string
   /** 原图直链（OSS 原签名链；列表用缩略图，点「原图」才换它） */
   full?: string
+  /** 原图体积（字节）：详情缓存的失效对账靠它 */
+  size?: number
+  /** 拍摄（或成果完成）时刻原文：缓存对账用，展示仍看 `time` */
+  at?: string
   /** 是不是球面全景（弹层换 `PanoViewer` 环视） */
   pano?: boolean
   /** 照片 id（照片墙 `photos` 里的 id，取原图时用） */
@@ -138,6 +153,14 @@ export const useAirHazardStore = defineStore('airHazard', () => {
   const airDateLabel = computed(() => formatCamDate(airDate.value))
 
   /**
+   * 详情缓存的作用域：**站点 + 日期**。
+   *
+   * 与 `utils/photoDetailCache.ts` 的键同源：换站点 / 换日期就是另一批照片，
+   * 对账时只清这一批的缓存，不会把别的站点已经下过的图一起删掉。
+   */
+  const airScope = computed(() => airScopeOf(station.value, airDate.value))
+
+  /**
    * 日期是**独立筛选条件**，默认今天，任何自动行为都不改它（2026-11-19 定稿）。
    *
    * 曾经两次在这上面栽跟头：
@@ -198,6 +221,9 @@ export const useAirHazardStore = defineStore('airHazard', () => {
       out.push({
         time: p.time ? briefTime(p.time.replace(' ', 'T')) : '',
         img: p.preview,
+        full: p.full,
+        size: p.size,
+        at: p.time,
         pos: 'fit',
         taskName: station.value,
         pano: true,
@@ -208,6 +234,8 @@ export const useAirHazardStore = defineStore('airHazard', () => {
         time: hhmm(s.time),
         img: s.thumbnail || s.url,
         full: s.url,
+        size: s.size,
+        at: s.time,
         pos: 'fit',
         taskName: s.taskName,
         photoId: s.id,
@@ -215,6 +243,25 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     }
     return out
   })
+
+  /**
+   * 拿当前这批列表去对账详情缓存（2026-11-24）。
+   *
+   * 规则与 `utils/photoDetailCache.ts::reconcileDetailScope` 一致：这批里已经没有的
+   * 照片整条删掉；体积 / 拍摄时刻变了的也删（下次打开重下）。**只动当前作用域**，
+   * 别的站点 / 别的日期已经下过的图继续留着。
+   *
+   * 换站点 / 换日期 / 列表刷新后调用 —— 不调的话本机会慢慢积一堆再也看不到的旧图，
+   * 而且同一路径若被服务端换了内容，还可能被当成有效缓存。
+   */
+  function syncDetailScope(): void {
+    const items: DetailItem[] = []
+    for (const s of airList.value) {
+      const key = detailKeyOf(s.full ?? '')
+      if (key) items.push({ key, size: s.size, time: s.at })
+    }
+    void reconcileDetailScope(airScope.value, items)
+  }
 
   /**
    * 已铺进网格的条数（首屏 {@link AIR_PAGE_SIZE}，下滑到底每次再 +8）。
@@ -390,6 +437,8 @@ export const useAirHazardStore = defineStore('airHazard', () => {
           : '这个站点近期没有采集到照片'
         // 空态不动日期：选了哪天就停在哪天（未指定日期时保持原值，等下一次取值）
         if (chosen) airDate.value = chosen
+        // 这一天确实没有照片：把这一批的详情缓存清掉（列表刷新过的语义）
+        syncDetailScope()
         return
       }
       // 采到的是哪一天，芯片就显示哪一天 —— 日期与列表必须始终对得上。
@@ -434,6 +483,8 @@ export const useAirHazardStore = defineStore('airHazard', () => {
       const pano = await fetchRecordPano([g.jobId], shiftDays(g.start, -3))
       if (my !== airSeq) return
       airPano.value = pano
+      // 列表已定稿（照片 + 可能的全景）：与详情缓存对账，旧的 / 换过的整条删掉
+      syncDetailScope()
     } catch (e) {
       if (my !== airSeq) return
       airState.value = 'error'
@@ -706,6 +757,7 @@ export const useAirHazardStore = defineStore('airHazard', () => {
     airHint,
     airDate,
     airDateLabel,
+    airScope,
     airMinDate,
     airMaxDate,
     airCalOpen,

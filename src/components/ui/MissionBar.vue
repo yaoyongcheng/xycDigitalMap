@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { MissionProgress } from '@/utils/uavProgress'
+import { missionLine, type MissionProgress } from '@/utils/uavProgress'
 
 /**
  * 「当前巡检」进度条 —— 与无人机页 `.uav-mission` 同一套实现，只是压成一行。
@@ -15,10 +15,16 @@ import type { MissionProgress } from '@/utils/uavProgress'
  * · 百分比仍然由调用方用 `missionProgress()` 算好传进来；
  * · 数据仍然是 store 里同一个 `running` / `runningEstimate`。
  *
- * 唯一的差别是**版面**：首页卡片只腾得出两行位置（数值行下方、卡片底部内边距
- * 之上），所以这里把「当前巡检 · 任务名 + 百分比」压成一行、进度条单独一行；
- * 无人机页那句「17:00 起飞 · 已飞 x 分钟 · 预计 y 分钟」放不下，改走 `title`
- * 与卡片的 aria-label（读屏仍然能看到）。
+ * ## 「起飞 · 已飞 · 预计」这一行（2026-11-24 现场要求）
+ *
+ * 原先首页只把它塞进 `title`（手机上没有悬停，等于看不到），现场要求与无人机页
+ * **显示同一行、且两边永远一致**。所以：
+ * · 文案由 `missionLine()` 统一出字（与无人机页调的是同一个函数，不是抄一份）；
+ * · 这里可见地排在进度条下方一行 —— 卡片本来就留着这段空白（进度条与下内边距之间）；
+ * · `title` 仍然留着，补上任务名，长按 / 悬停能看到完整一句。
+ *
+ * 于是首页与无人机页的三处信息同源：条的长度（`pct`）、这一行文字（`missionLine`）、
+ * 时间推进（`utils/missionClock.ts` 的共享时钟）—— 没有任何一处各算各的。
  *
  * ## 什么时候渲染
  *
@@ -37,13 +43,11 @@ const props = defineProps<{
 
 const pct = computed(() => props.progress.pct ?? 0)
 
-/** 悬停 / 长按给完整说明：卡片上只有一行，不能把四个字段全铺开 */
-const tip = computed(() => {
-  const parts = [`当前巡检 · ${props.name}`, `${props.time} 起飞`]
-  if (props.progress.elapsedMin !== null) parts.push(`已飞 ${props.progress.elapsedMin.toFixed(1)} 分钟`)
-  if (props.progress.estimateMin !== null) parts.push(`预计 ${props.progress.estimateMin} 分钟`)
-  return parts.join(' · ')
-})
+/** 与无人机页逐字一致的那一行（同一个函数出字，见上） */
+const note = computed(() => missionLine(props.time, props.progress))
+
+/** 悬停 / 长按补上任务名（任务名在卡片上可能已被省略号截断） */
+const tip = computed(() => `当前巡检 · ${props.name} · ${note.value}`)
 </script>
 
 <template>
@@ -65,5 +69,10 @@ const tip = computed(() => {
       aria-valuemax="100"
       :aria-label="`当前巡检进度 ${pct}%`"
     ><i :style="{ width: `${pct}%` }"></i></span>
+    <!--
+      起飞时刻 / 已飞 / 预计 —— 与无人机页 `.uav-mission p` 同一句（`missionLine()`）。
+      放在条下面单独一行：卡片这一段本来就是空的，不需要再往上挤空间。
+    -->
+    <span class="mission-note">{{ note }}</span>
   </span>
 </template>

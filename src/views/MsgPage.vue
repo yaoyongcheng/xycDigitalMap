@@ -8,7 +8,8 @@ import { useMsgStore, type MsgCategory } from '@/stores/msg'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import { useSlowLoading } from '@/utils/slowLoading'
-import { computed, onMounted, watch } from 'vue'
+import { useTabRefresh } from '@/utils/tabRefresh'
+import { computed, onMounted } from 'vue'
 import type { IconName } from '@/data/icons'
 
 /**
@@ -21,8 +22,12 @@ import type { IconName } from '@/data/icons'
  *     前者还是 `:8085` 视频报警（原数据源不动），后者接 keehang 审核中心的
  *     AI 工单（= V2 大屏「工单列表」，见 `stores/droneAlarm.ts`）。
  *
- * 所以这一页只做两件事：把两类的「几条 + 最新时间」摆出来、点开进各自列表。
- * 明细（分页、已读、日历、状态筛选）都在子页里，不在这里重复一套。
+ * 所以这一页只做两件事：把两类的「几条待处理 + 最新时间」摆出来、点开进各自列表。
+ * 明细（分页、状态展示、日历）都在子页里，不在这里重复一套。
+ *
+ * 2026-11-24：数字口径统一为**今日待处理**（监控 `handleStatus !== 1`、
+ * 无人机 `UNAUDITED`），两张卡同一标签、同一红色徽标；底栏角标是两者之和。
+ * 这一页不提供任何状态变更操作（「一键已读」已下线），状态只读。
  */
 const msg = useMsgStore()
 const shell = useShellStore()
@@ -70,16 +75,21 @@ onMounted(() => {
  *
  * 这一页是**常驻挂载**的（用 `.active` 切显隐），`onMounted` 一辈子只跑一次；
  * 而底栏角标读的就是这两份数据 —— 不补的话早上点开的数字会一直挂到晚上。
- * 过期判定在 store 里（`STALE_MS` 2 分钟），切 tab 不会白打请求。
+ *
+ * 2026-11-24：改用 `useTabRefresh` + `alarm.refresh()`。原来这里走的是
+ * `syncFromVideo` 且带「已有数据就跳过」的判断，等于**从别的 tab 切回来
+ * 从不刷新**（首屏已经拿到数据了）—— 「今日待处理」会一直停在旧值上。
+ * `refresh()` 是 force 语义（失败冷却仍生效），在途时自动并成同一趟请求；
+ * 无人机侧走 `load(true)` 强制重扫 —— 它有 2 分钟保鲜，不 force 的话
+ * 「切回消息 tab 一定刷新」就落不了地（工单状态由审核平台推进，需要看到最新值）。
  */
-watch(
-  () => shell.activeTab,
-  (t) => {
-    if (t !== 'msg' || !auth.token) return
-    if (!alarm.hasLive && alarm.liveState !== 'loading') void alarm.syncFromVideo(auth.token)
-    void drone.load()
-  },
-)
+function reloadTab(): void {
+  if (!auth.token) return
+  void alarm.refresh(auth.token)
+  void drone.load(true)
+}
+
+useTabRefresh('msg', reloadTab)
 
 function onItemClick(c: MsgCategory): void {
   if (!auth.isLoggedIn) {
@@ -106,8 +116,8 @@ function goLogin(): void {
 
 /** 卡片右侧数字：还没拿到数据时写「—」，不写 0（0 是个结论） */
 function badgeOf(c: MsgCategory): string {
-  if (!c.unread) return ''
-  return c.unread > 99 ? '99+' : String(c.unread)
+  if (!c.count) return ''
+  return c.count > 99 ? '99+' : String(c.count)
 }
 </script>
 
@@ -163,11 +173,14 @@ function badgeOf(c: MsgCategory): string {
           </div>
           <div class="msg-side">
             <span class="msg-time">{{ c.time }}</span>
-            <!-- 数字旁边写出含义：「今日未读 3」/「今日待处理 5」。
-                 单摆一个 3，读的人不知道是今日未读还是今日总数 -->
+            <!-- 两张卡口径一致：数字旁边写「今日待处理」，单摆一个 3 读不出
+                 是待处理还是今日总数；都是待处理，都用同一个强调色徽标 -->
             <span class="msg-count">
-              <span class="msg-hint">{{ c.hint }}</span>
-              <b v-if="badgeOf(c)" class="msg-badge">{{ badgeOf(c) }}</b>
+              <span v-if="c.hint" class="msg-hint">{{ c.hint }}</span>
+              <b
+                v-if="badgeOf(c)"
+                class="msg-badge"
+              >{{ badgeOf(c) }}</b>
               <!-- 条数还没拿到：写「—」，不写 0（0 是个结论，这里只是还不知道） -->
               <span v-else-if="!c.known" class="msg-unknown">—</span>
             </span>

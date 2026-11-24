@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import MapViewer from '@/components/ui/MapViewer.vue'
 import SvgIcon from '@/components/ui/SvgIcon.vue'
@@ -35,6 +35,10 @@ const subpage = useSubpageStore()
  * 三维 = `type=3d`，二维 = `type=2d`。首页背景用的也是同一份三维图，
  * 所以 `load('3d')` 基本是命中缓存；二维只有在真的点了「二维地图」时才拉
  * （3.8MB 一张，没必要进全屏就先下）。
+ *
+ * 2026-11-24 补一条折中：进全屏后**延迟 1.5s 静默预热二维**，但只在本机
+ * 已经有二维图时动手（`scene.warmUp`）—— 那种情况大概率只是一次 304，
+ * 用户点「二维」就能一步到位。没看过二维的人不会被多下 3.8MB。
  */
 const flat = ref(false)
 
@@ -94,20 +98,36 @@ async function toggleFlat(): Promise<void> {
   if (shell.mapLandOpen) flat.value = next
 }
 
+/**
+ * 二维图的静默预热句柄（见上方 2026-11-24 那条说明）。
+ *
+ * 延迟 1.5s 是为了不和三维图 / 撒点抢带宽：用户刚打开全屏时最需要的是「立刻
+ * 看到地图」，二维晚一点确认完全不影响观感。
+ */
+let warmTimer = 0
+
 watch(
   () => shell.mapLandOpen,
   (open) => {
+    window.clearTimeout(warmTimer)
     if (!open) {
       flat.value = false
       return
     }
     // 进全屏先确保三维图在手（首页已经取过时 store 直接返回，不重复请求）
     void scene.load('3d')
+    warmTimer = window.setTimeout(() => {
+      void scene.warmUp('2d')
+    }, 1500)
   },
   // 本层是常驻 DOM、开局就挂载；若用户是在「地图已打开」的状态下才挂上这个
   // 组件（深链 / 单测直接 openMapLand 后再 mount），没有 immediate 就永远不取图
   { immediate: true },
 )
+
+onBeforeUnmount(() => {
+  window.clearTimeout(warmTimer)
+})
 
 /** 报警撒点 → 先退出横屏地图，再进预警详情（原版 onAlarmPin 的顺序） */
 function onAlarmPin(id: string): void {

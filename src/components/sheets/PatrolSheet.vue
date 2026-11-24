@@ -2,12 +2,12 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import PanoViewer from '@/components/ui/PanoViewer.vue'
-import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
+import { PANO_SHEET_ID, PATROL_DETAIL_SCOPE, usePatrolStore } from '@/stores/patrol'
 import { useShellStore } from '@/stores/shell'
-import { fetchBlobWithProgress } from '@/utils/blobFetch'
 import { useLandscape } from '@/utils/landscape'
 import { isEquirect, panoLabel } from '@/utils/pano'
 import { fetchDetailOriginal } from '@/utils/photoOriginal'
+import { patchDetailMeta } from '@/utils/photoDetailCache'
 import { useImageZoom } from '@/utils/zoom'
 
 /**
@@ -61,8 +61,13 @@ const isPanoView = computed(() => props.id === PANO_SHEET_ID && Boolean(patrol.p
  */
 const panoTime = computed(() => (patrol.pano?.time ?? '').slice(0, 16).replace('T', ' '))
 
-/** 全景原图体积（真实字节数） */
-const panoSize = computed(() => patrol.sizeText(patrol.pano?.size ?? 0))
+/**
+ * 2026-11-24：详情里不再显示照片体积。
+ *
+ * 原来这里还有一个 `panoSize`（全景原图字节数）与 photo 那边的 `sizeText`，
+ * 现在是给弹层里那行「大小 11.4MB」用的；那行已按要求删除，两个 computed
+ * 随之摘掉 —— 列表卡片上的体积照旧（那是列表信息，不是详情信息）。
+ */
 
 /**
  * 这张全景属于哪个项目。
@@ -153,6 +158,9 @@ function releasePanoHd(): void {
  * 是「已收字节 / Content-Length」，与照片那一档是同一套。
  *
  * 拉不到（OSS 不回 ACAO / 断网 / 中途关掉）就退回直链：慢，但全景还是会出来。
+ *
+ * 与照片同一套取数顺序（内存 → 本机落盘 → 网络）：全景也是十几 MB，
+ * 列表没刷新时再进一次不该重下一遍；`size` / `time` 与列表声明不符会自动作废。
  */
 async function loadPanoHd(): Promise<void> {
   const p = patrol.pano
@@ -162,14 +170,15 @@ async function loadPanoHd(): Promise<void> {
   panoHdPct.value = 0
   panoCtrl = new AbortController()
   try {
-    const blob = await fetchBlobWithProgress(
-      p.full,
-      (loaded, total) => {
+    const blob = await fetchDetailOriginal(p.full, {
+      signal: panoCtrl.signal,
+      scope: PATROL_DETAIL_SCOPE,
+      meta: { id: `pano-${p.id}`, time: p.time, size: p.size, group: 'pano' },
+      onProgress: (loaded, total) => {
         if (key !== panoSeq) return
         panoHdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
       },
-      panoCtrl.signal,
-    )
+    })
     const url = URL.createObjectURL(blob)
     // 先解码再换源：避免切过去那一瞬间空一帧（上万像素的图解码要几百毫秒）
     await preload(url)
@@ -217,7 +226,10 @@ const panoTag = computed(() => {
  * `page: true` —— 与首页背景图那颗「全屏」同一套：对 `documentElement`
  * 申请系统全屏 + 锁横屏，整页一起进全屏（画布 Teleport 到 body 后铺满，
  * 横屏提示卡在 `.phone-screen` 里也就跟着进得去）。
- * `hint: true` —— 转不过去时摆出「把手机横过来看」，与首页一句不差。
+ *
+ * `hint` **只给 `panoLand`**（2026-11-24 现场口径）：「把手机横过来看」是
+ * VR 360 环视专用的一句引导 —— 球面全景在竖屏里只剩一条窄缝，不转屏基本没法看；
+ * 平面照片全屏哪怕没转过去也照样能看清，就不再打断（`photoLand` 不带 `hint`）。
  */
 const {
   land: panoLand,
@@ -231,7 +243,7 @@ const {
   setStage: setPhotoStage,
   toggle: togglePhotoLand,
   exit: exitPhotoLand,
-} = useLandscape({ page: true, hint: true })
+} = useLandscape({ page: true })
 
 /**
  * 全屏时点画布空白处（contain 留出的黑边）＝ 退出全屏。
@@ -239,6 +251,12 @@ const {
  * 全屏只有「右上角一颗 26px 胶囊」一个出口太险 —— 手指点不中、或者那颗按钮
  * 落在横屏刘海 / 圆角的边缘手势区里，就变成「怎么都关不掉」。黑边是整块画布，
  * 闭着眼睛也点得到。
+ *
+ * **只有平面图那条有效**（照片 `<img>` 是 contain，四周留出的就是这块 figure）：
+ * 全景的 WebGL canvas 铺满 `.pano-host`，`click.self` 不会被触发 —— 所以全景
+ * 全屏的唯一出口就是右上那颗「退出」。它的可靠性别指望这层兜着：
+ * 命中区已撑到 44pt（`app.css` 的 `.pano-tool::after`），状态机在
+ * `utils/landscape.ts` 里也不再会因为旋转误读把按钮提前拆掉。
  */
 function onPhotoBackdrop(): void {
   if (photoLand.value) void togglePhotoLand()
@@ -288,7 +306,6 @@ watch(
 /** 缩略图（低清）与原图直链 */
 const thumb = computed(() => photo.value?.thumbnail ?? '')
 const original = computed(() => photo.value?.url ?? '')
-const sizeText = computed(() => patrol.sizeText(photo.value?.size ?? 0))
 
 /* ---------- 详情即原图：打开就自动拉，带真实字节进度 ---------- */
 
@@ -375,12 +392,14 @@ function preload(url: string): Promise<void> {
  *   · 关弹层 / 换照片直接 abort，几 MB 的流量不留在后台白烧；
  *   · 拉不到就退回直链（浏览器自己加载，慢但能看）。
  *
- * 同一张照片关了再开时命中 `utils/photoOriginal.ts` 的内存缓存，直接就是原图，
- * 进度条收掉、不再发请求。
+ * 取数顺序（2026-11-24）：内存 → **本机落盘** → 网络。看一眼就关、过一会儿再打开
+ * 同一张，列表没刷新时直接读本地字节，不再下第二遍；尺寸也从缓存里一并恢复，
+ * 连「探宽高」那次缩略图解码都省了。
  */
 async function loadHd(): Promise<void> {
+  const p = photo.value
   const src = original.value
-  if (!photo.value || !src) return
+  if (!p || !src) return
   const key = ++seq
   hdBusy.value = true
   hdPct.value = 0
@@ -388,6 +407,14 @@ async function loadHd(): Promise<void> {
   try {
     const blob = await fetchDetailOriginal(src, {
       signal: ctrl.signal,
+      // 作用域与 `stores/patrol.ts::load()` 的对账字符串一致
+      scope: PATROL_DETAIL_SCOPE,
+      meta: { id: p.id, time: p.time, size: p.size, group: patrol.catOfPhoto(p.id) },
+      onLocal: (row) => {
+        if (key !== seq || !row.width || !row.height) return
+        dims.value = { w: row.width, h: row.height }
+        patrol.setDims(p.id, row.width, row.height)
+      },
       onProgress: (loaded, total) => {
         if (key !== seq) return
         hdPct.value = total ? Math.min(99, Math.round((loaded / total) * 100)) : 0
@@ -463,6 +490,8 @@ function probeDims(): void {
     if (photo.value?.id !== p.id) return
     patrol.setDims(p.id, img.naturalWidth, img.naturalHeight)
     dims.value = { w: img.naturalWidth, h: img.naturalHeight }
+    // 尺寸也写进详情缓存：下次打开这张直接从本地读，连缩略图都不用再解码一遍
+    void patchDetailMeta(p.url, { width: img.naturalWidth, height: img.naturalHeight })
   }
   img.src = patrol.previewOf(p)
 }
@@ -590,7 +619,6 @@ onBeforeUnmount(() => {
         <!-- 项目名必须写出来：全景按本项目 pid 过滤，但用户仍要知道这是哪片工地 -->
         <div><span>项目</span><b>{{ panoProject }}</b></div>
         <div><span>时间</span><b>{{ panoTime || '—' }}</b></div>
-        <div><span>大小</span><b>{{ panoSize || '—' }}</b></div>
         <div>
           <span>来源</span>
           <span class="alarm-src alarm-src-drone">无人机</span>
@@ -693,7 +721,6 @@ onBeforeUnmount(() => {
         </span>
       </div>
       <div><span>时间</span><b>{{ timeText }}</b></div>
-      <div><span>大小</span><b>{{ sizeText || '—' }}</b></div>
     </div>
     </template>
   </div>

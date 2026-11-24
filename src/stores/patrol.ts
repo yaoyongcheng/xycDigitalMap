@@ -5,7 +5,9 @@ import { beginRecordBatch, endRecordBatch, fetchFacilityGallery, fetchLatestPano
 import { fetchCamShotHistory } from '@/api/camsnap'
 import { ApiError } from '@/api/http'
 import { CRANE_SHOTS, GATE_SHOTS } from '@/data/cams'
+import { PATROL_CATS } from '@/data/config'
 import { isEquirect } from '@/utils/pano'
+import { detailKeyOf, reconcileDetailScope, type DetailItem } from '@/utils/photoDetailCache'
 import { ensureShot, latestShot, type ShotRecord } from '@/utils/shotArchive'
 
 /**
@@ -64,6 +66,14 @@ import { ensureShot, latestShot, type ShotRecord } from '@/utils/shotArchive'
  * 只留 `image/*`（每班还有 1 个 `.DAT` 日志），按 DJI 序号升序。
  * 这条航线的照片因此**不进** `photos`（否则会在「安全巡查」里重复一遍）。
  */
+
+/**
+ * 详情缓存作用域。
+ *
+ * `PatrolSheet.vue` 拉原图时写的是这个串，`load()` 结束时拿它做对账 ——
+ * 两边各写一份字面量迟早会飘，所以收在这里导出。
+ */
+export const PATROL_DETAIL_SCOPE = 'patrol'
 
 /** 一张真实航拍照片 */
 export interface PatrolPhotoReal {
@@ -157,12 +167,34 @@ const THROTTLE_WAIT = 3_000
 const THROTTLE_CODES = new Set([429, 42901])
 
 /**
- * 切回智眸面板的刷新节流。
+ * 同一格「刚取过就不重复取」的窗口（15 秒）。
  *
- * 首页三个标签来回切会反复触发 `refresh()`，每次都扫一遍媒体必然撞限流。
- * 一分钟内的重复进入直接复用上一批照片（现场照片不会秒级变化）。
+ * 首页三个标签来回切、登录页盖回首页，都会让面板真的卸载再挂载（`HomeSheet`
+ * 的 `:key="home.homeMod"`），也就是每次切回来都会重新走一遍「进入面板」。
+ * 15 秒内的重复进入直接复用上一批：既挡住连点标签把媒体接口打成 429，
+ * 又不影响「切回来看到的是此刻的照片」（正常来回切换的间隔远大于 15 秒）。
+ *
+ * 注意它只约束**自动触发**的取数（进入面板 / 切子页）；页面上的「重试」
+ * 走 `loadCat(id, true)`，绕过这道闸。
  */
-const REFRESH_GAP = 60_000
+const CAT_GAP = 15_000
+
+/**
+ * 某一格取数失败后的冷却（60 秒）。
+ *
+ * keehang 那串要两步 CAS 登录，失败一次代价不小；连点标签不该把注定失败的
+ * 请求反复打出去。重试按钮同样绕过它。
+ */
+const CAT_FAIL_GAP = 60_000
+
+/**
+ * 六格的 id，顺序 = 面板上的 3×2 顺序（`data/config.ts` 的 `PATROL_CATS`）。
+ *
+ * 首次进入（本会话还没选过任何子页）时按这个顺序**逐格探**，探到第一个有照片
+ * 的就停 —— 既保住「默认落在第一个有内容的分类上」的老口径，又不会一次把
+ * 六条链接连打一遍。之后的每次进入都只取当前这一格。
+ */
+const CAT_IDS: readonly string[] = PATROL_CATS.map((c) => c.id)
 
 /** `YYYY-MM-DD`，offset 为天 */
 function dayKey(offset = 0): string {
@@ -301,6 +333,32 @@ export const usePatrolStore = defineStore('patrol', () => {
   const gateState = ref<PatrolState>('idle')
 
   /**
+   * 用户选中的子页（六格之一）。
+   *
+   * **必须放在 store 里**：首页切「智巡 / 智眸 / 智控」时整个面板会卸载重建
+   * （`HomeSheet` 的 `:key="home.homeMod"`），组件内的 ref 会跟着没掉 ——
+   * 那样「上次选了全景航拍，切回来仍是全景航拍」就无从谈起。
+   *
+   * 空串 = 本会话还没选过：首次进入按 {@link CAT_IDS} 的顺序探，
+   * 落在第一个有内容的格子上（见 `enterPanel`）。
+   */
+  const pickedCat = ref('')
+
+  /**
+   * 是否正在「首次进入」逐格探测。
+   *
+   * 面板据此铺首屏骨架：探测期间如果按 `pickedCat` 走，会先显示「VR 360环视
+   * 还没有照片」再跳成全景航拍那 9 张，闪一下比多等 300ms 更难受。
+   */
+  const entering = ref(false)
+
+  /** 每一格最近一次**成功**取数的时刻（`CAT_GAP` 用） */
+  const catAt = ref<Record<string, number>>({})
+
+  /** 每一格最近一次**失败**的时刻（`CAT_FAIL_GAP` 冷却用） */
+  const catFailAt = ref<Record<string, number>>({})
+
+  /**
    * 照片 id → 原图尺寸（宽 × 高）。
    *
    * 来源是列表里 `<img>` 的 `naturalWidth/Height` —— 缩略图与原图尺寸一致，
@@ -313,7 +371,6 @@ export const usePatrolStore = defineStore('patrol', () => {
   const error = ref('')
 
   let lastFailAt = 0
-  let lastOkAt = 0
   let inflight: Promise<void> | null = null
   /**
    * 「设备设施」这一格的取数序号。
@@ -338,13 +395,13 @@ export const usePatrolStore = defineStore('patrol', () => {
       .sort((a, b) => b.time.localeCompare(a.time) || a.name.localeCompare(b.name)),
   )
 
-  /** 体积摘要（字节 → 可读） */
-  function sizeText(bytes: number): string {
-    if (!bytes) return ''
-    if (bytes < 1024) return `${bytes}B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`
-    return `${(bytes / 1024 / 1024).toFixed(1)}MB`
-  }
+  /**
+   * 体积摘要（字节 → 可读）—— 2026-11-24 已删除。
+   *
+   * 详情弹层与列表卡片都不再显示照片大小（KB/MB/GB 一律不出现），这个
+   * 唯一的格式化出口随之摘掉；`size` 字段仍保留在数据层（接口原样返回，
+   * 将来若要在别处用，不必重新映射）。
+   */
 
   /**
    * 毫秒 → 'YYYY-MM-DD HH:mm:ss'。
@@ -825,6 +882,48 @@ export const usePatrolStore = defineStore('patrol', () => {
   }
 
   /**
+   * 拿**某一格**这批照片与详情缓存对账（2026-11-24）。
+   *
+   * 详情打开时会把原图字节落到本机（`utils/photoDetailCache.ts`），换来「再打开
+   * 同一张不重下」。代价是：换班次 / 换日期后，旧照片的字节还躺在磁盘上。
+   * 所以每次**这一格**取完就调这里 ——
+   *
+   *   · 这一格里已经没有的照片 → 整条删掉；
+   *   · 体积 / 拍摄时刻变了的 → 删掉（下次打开重下，不拿旧像素冒充新照片）。
+   *
+   * ⚠️ 对账必须带 `group`：子页是懒加载的，一次刷新只知道自己这一格有哪些照片，
+   * 不带 group 地整作用域对账会把**还没打开过的那些格**的缓存一起删掉
+   * （比如这次停在「全景航拍」，材料堆场昨天看过的三张就被误删）。
+   *
+   * 抓拍（`snap: true`）的 `url` 是 `blob:` 地址，`detailKeyOf` 会返回空串：
+   * 它本身就是本机档案里的字节、零网络，不需要也不应该再缓存一份。
+   */
+  function syncDetailCat(id: string): void {
+    const items: DetailItem[] = []
+    const push = (p: PatrolPhotoReal): void => {
+      const key = detailKeyOf(p.url)
+      if (key) items.push({ key, size: p.size, time: p.time })
+    }
+    if (id === 'pano') {
+      const p = pano.value
+      if (p) {
+        const key = detailKeyOf(p.full)
+        if (key) items.push({ key, size: p.size, time: p.time })
+      }
+    } else if (id === 'pit') spot.value.forEach(push)
+    else if (id === 'equip') yard.value.forEach(push)
+    else if (id === 'face') facility.value.forEach(push)
+    else if (id === 'layout') safety.value.forEach(push)
+    else if (id === 'yard') gate.value.forEach(push)
+    void reconcileDetailScope(PATROL_DETAIL_SCOPE, items, id)
+  }
+
+  /** 六格全对一遍（只有整页 `load()` 会用到；懒加载路径走后一格的 {@link syncDetailCat}） */
+  function syncDetailCache(): void {
+    for (const id of CAT_IDS) syncDetailCat(id)
+  }
+
+  /**
    * 拉真实航拍照片。
    *
    * 失败不清空已有照片：网络抖一下就把现场照片墙清空，比显示旧照片难受得多。
@@ -894,7 +993,7 @@ export const usePatrolStore = defineStore('patrol', () => {
         state.value = 'ok'
         error.value = ''
         lastFailAt = 0
-        lastOkAt = Date.now()
+        syncDetailCache()
       } catch (e) {
         state.value = 'error'
         error.value = e instanceof Error ? e.message : '巡检照片加载失败'
@@ -908,21 +1007,174 @@ export const usePatrolStore = defineStore('patrol', () => {
     return inflight
   }
 
+  /* ------------------------------------------------------------------ *
+   * 子页（六格）的懒加载：一次只取一格
+   * ------------------------------------------------------------------ */
+
+  /** 这一格的状态（六格各有一套，互不牵连） */
+  function catStateOf(id: string): PatrolState {
+    switch (id) {
+      case 'pano':
+        return panoState.value
+      case 'pit':
+        return spotState.value
+      case 'equip':
+        return yardState.value
+      case 'face':
+        return facilityState.value
+      case 'layout':
+        return safetyState.value
+      case 'yard':
+        return gateState.value
+      default:
+        return state.value
+    }
+  }
+
+  /** 这一格手里有没有东西可看（照片墙那套只给未知分类兜底） */
+  function catHasData(id: string): boolean {
+    switch (id) {
+      case 'pano':
+        return Boolean(pano.value)
+      case 'pit':
+        return spot.value.length > 0
+      case 'equip':
+        return yard.value.length > 0
+      case 'face':
+        return facility.value.length > 0
+      case 'layout':
+        return safety.value.length > 0
+      case 'yard':
+        return gate.value.length > 0
+      default:
+        return photos.value.length > 0
+    }
+  }
+
   /**
-   * 切回智眸面板时的刷新（首页标签切换会调用）。
+   * 一张照片属于哪一格。
    *
-   * 两道闸：
-   *   · 失败冷却（60 秒）—— 连点标签时不该把注定失败的请求反复打出去
-   *     （keehang 那串要两步 CAS 登录，失败一次代价不小）；
-   *   · 成功节流（`REFRESH_GAP`）—— 每次刷新要串行扫十几条媒体请求，
-   *     来回复用标签会直接撞上服务端限流。一分钟内的重进直接用上一批照片。
-   *
-   * 页面上的「重试」按钮走 `load(true)`，绕过这两道闸。
+   * 详情落盘时把结果写进缓存的 `group`，刷新时按格对账（见 `syncDetailCat`）。
+   * 按「在哪张数组里」判断，不按航线名猜 —— 六格的取数规则和 `catOfTask`
+   * 那套按名字归类早就不是一回事了（同一条航线的照片可能被两条专用链各取一张）。
    */
-  async function refresh(): Promise<void> {
-    if (state.value === 'error' && Date.now() - lastFailAt < 60_000) return
-    if (state.value === 'ok' && Date.now() - lastOkAt < REFRESH_GAP) return
-    return load(true)
+  function catOfPhoto(id: string): string {
+    if (id === PANO_SHEET_ID) return 'pano'
+    if (spot.value.some((p) => p.id === id)) return 'pit'
+    if (yard.value.some((p) => p.id === id)) return 'equip'
+    if (facility.value.some((p) => p.id === id)) return 'face'
+    if (safety.value.some((p) => p.id === id)) return 'layout'
+    if (gate.value.some((p) => p.id === id)) return 'yard'
+    return ''
+  }
+
+  /** 记下用户选的子页（面板只调这一个入口，选中状态不放在组件里） */
+  function pickCat(id: string): void {
+    if (!id || id === pickedCat.value) return
+    pickedCat.value = id
+    // 用户已经自己选了：首次进入的探测到此为止，骨架立刻让位给他点的那一格
+    // （`enterPanel` 的循环下一次检查到 `pickedCat` 就返回）
+    entering.value = false
+  }
+
+  /**
+   * 取**一格**的数据 —— 面板切子页 / 切回面板都只走这里。
+   *
+   * 与 `load()` 的分工：
+   *   · `load()` 是整页刷新：照片墙 + 六条链一起扫（首屏一次性用得上，现在面板
+   *     不再调它，只留给单测与历史路径）；
+   *   · 这里是**按格取**：只动当前选中的那一格，别的格一个请求都不发。
+   *
+   * 两道闸：同一格已在取（连点）不叠加；15 秒内刚成功过 / 60 秒内刚失败过也不重发。
+   * 页面上的「重试」传 `force = true` 绕过它们。失败保留上一批（各链自己的策略），
+   * 所以切回来看到的是旧图而不是空骨架。
+   */
+  async function loadCat(id: string, force = false): Promise<void> {
+    if (catStateOf(id) === 'loading') return
+    if (!force) {
+      const at = catAt.value[id] ?? 0
+      if (at && Date.now() - at < CAT_GAP) return
+      const failAt = catFailAt.value[id] ?? 0
+      if (catStateOf(id) === 'error' && failAt && Date.now() - failAt < CAT_FAIL_GAP) return
+    }
+
+    switch (id) {
+      // 全景的直链是 OSS 预签名（2 小时过期），所以每次都重取一次签名
+      case 'pano':
+        await loadPano(true)
+        break
+      case 'pit':
+        await loadSpot()
+        break
+      case 'equip':
+        await loadYard()
+        break
+      case 'face':
+        await loadFacility()
+        break
+      case 'layout':
+        await loadSafety()
+        break
+      case 'yard':
+        await loadGate()
+        break
+      default:
+        // 六格之外（理论上不会有）：退回整页那套
+        return load(force)
+    }
+
+    if (catStateOf(id) === 'ok') {
+      catAt.value = { ...catAt.value, [id]: Date.now() }
+      syncDetailCat(id)
+    } else if (catStateOf(id) === 'error') {
+      catFailAt.value = { ...catFailAt.value, [id]: Date.now() }
+    }
+  }
+
+  /**
+   * **面板级进入**（首页从智巡 / 智控切回智眸，或首次打开）。
+   *
+   * 与「子页切换」的分界：
+   *   · 子页切换 = 用户在面板里点另一格 → 面板 `watch` 之后调 {@link loadCat}，
+   *     只取点中的那一格；
+   *   · 面板级进入 = 这里。它只做两件事：**续上上次那一格**并刷新它；
+   *     本会话还没选过时，按 {@link CAT_IDS} 的顺序**逐格探**，探到第一个有内容的
+   *     就停（这是唯一会碰到多格的路径，而且只发生在第一次进入）。
+   *
+   * 绝不会「切回来就把六格全刷一遍」—— 那正是之前 15 秒等待 + 429 的来源。
+   */
+  async function enterPanel(): Promise<void> {
+    if (pickedCat.value) {
+      await loadCat(pickedCat.value)
+      return
+    }
+
+    // 先看手里已经有的：这一批数据（可能是上次进入留下的、也可能是 `apply`
+    // 灌进来的）直接决定落点，一个请求都不用发
+    for (const id of CAT_IDS) {
+      if (catHasData(id)) {
+        pickedCat.value = id
+        return
+      }
+    }
+
+    entering.value = true
+    try {
+      for (const id of CAT_IDS) {
+        // 探测期间用户自己点了一格：立刻收手，不再替他做主
+        if (pickedCat.value) return
+        await loadCat(id)
+        if (pickedCat.value) return
+        if (catHasData(id)) {
+          pickedCat.value = id
+          return
+        }
+      }
+      // 六格都空：停在第一格，面板写「这个分类下还没有照片」
+      pickedCat.value = CAT_IDS[0]
+    } finally {
+      entering.value = false
+    }
   }
 
   /**
@@ -942,7 +1194,6 @@ export const usePatrolStore = defineStore('patrol', () => {
     }
     state.value = 'ok'
     error.value = ''
-    lastOkAt = Date.now()
   }
 
   function reset(): void {
@@ -971,7 +1222,11 @@ export const usePatrolStore = defineStore('patrol', () => {
     state.value = 'idle'
     error.value = ''
     lastFailAt = 0
-    lastOkAt = 0
+    // 换账号后不保留上一个人的子页选择与节流记录（登出即清）
+    pickedCat.value = ''
+    entering.value = false
+    catAt.value = {}
+    catFailAt.value = {}
   }
 
   return {
@@ -993,7 +1248,6 @@ export const usePatrolStore = defineStore('patrol', () => {
     state,
     error,
     list,
-    sizeText,
     setDims,
     isPano,
     previewOf,
@@ -1004,9 +1258,16 @@ export const usePatrolStore = defineStore('patrol', () => {
     loadFacility,
     loadSafety,
     loadGate,
+    pickedCat,
+    entering,
+    catStateOf,
+    catHasData,
+    catOfPhoto,
+    pickCat,
+    loadCat,
+    enterPanel,
     apply,
     load,
-    refresh,
     reset,
   }
 })

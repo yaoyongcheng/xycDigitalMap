@@ -1479,6 +1479,20 @@ button, input, textarea { font-family: inherit; color: inherit; }
   color: var(--muted);
 }
 
+/*
+ * 统计格里的第二行小字（2026-11-24）
+ *
+ * 「今日待处理」只是今日的一部分，不写总数会让人以为今天只报了这么点。
+ * 比主标签小一档、浅一档，读起来是补充说明而不是第二个 KPI。
+ */
+.home-stat .stat-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-11);
+  font-style: normal;
+  color: var(--ink-3);
+}
+
 .eq-stat {
   display: flex;
   align-items: center;
@@ -2008,15 +2022,16 @@ button, input, textarea { font-family: inherit; color: inherit; }
  * 无人机卡上的「当前巡检」进度条（`components/ui/MissionBar.vue`）
  *
  * 条本身就是无人机页那一条 `.uav-bar`（4px 高 / 圆角 / `--blue-2` 填充 /
- * 0.3s 缓动），这里只补版面两件事：
+ * 0.3s 缓动），这里只补版面三件事：
  * ① 有进度时卡片变成**纵向两段**（与 `.eq-card.is-climb` 同一思路）。不加这条，
  *    `.eq-card` 是 flex 行，进度块会被摆到箭头的右边、与图标并排；
- * ② 把「当前巡检 · 任务名 + 百分比」压成一行、进度条单独一行 ——
- *    无人机页那块「标题 / 条 / 说明」三段式的整版放不下两行空间。
+ * ② 把「当前巡检 · 任务名 + 百分比」压成一行、进度条单独一行；
+ * ③ 条下面再加一行「10:50 起飞 · 已飞 5.1 分钟 · 预计 7 分钟」（2026-11-24），
+ *    与无人机页 `.uav-mission p` 同一句（`missionLine()` 出字，不各拼一遍）。
  *
- * 净增高约 34px（15px 标题行 + 6px 间距 + 4px 条 + 8px 段间距）。
- * 没有执行中任务时整块不渲染，卡片与改动前完全一致（`has-mission` 是跟着
- * 进度条一起加的，不是常驻 class）。
+ * 净增高约 55px（15px 标题行 + 6px 间距 + 4px 条 + 6px 间距 + 15px 说明行
+ * + 8px 段间距）。没有执行中任务时整块不渲染，卡片与改动前完全一致
+ * （`has-mission` 是跟着进度条一起加的，不是常驻 class）。
  */
 .eq-card.has-mission {
   flex-direction: column;
@@ -2075,6 +2090,32 @@ button, input, textarea { font-family: inherit; color: inherit; }
   line-height: 1;
   color: var(--blue-2);
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 「10:50 起飞 · 已飞 5.1 分钟 · 预计 7 分钟」——与无人机页 `.uav-mission p`
+ * 同字号同色（2026-11-24，现场要求两边显示同一行）。
+ *
+ * `nowrap + ellipsis`：这一句最长也就二十来个字符，正常一行放得下；真到了
+ * 超长任务名 + 超大字号的无障碍设置里，宁可截断也不换行 —— 换行会把卡片
+ * 顶高一倍，而卡片本身是可以点进无人机页的，完整信息那边一直有。
+ * `tabular-nums`：分钟数每 5 秒变一次，等宽数字才不会让整行左右抖。
+ */
+.eq-card .mission-note {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-11);
+  line-height: 1.4;
+  color: var(--ink-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 首页是深色卡：与无人机页 `.uav-mission p` 用的是同一个深色底上的灰 */
+#page-home .eq-card .mission-note {
+  color: var(--ink-3-dark);
 }
 
 .pg-list {
@@ -2810,25 +2851,6 @@ button, input, textarea { font-family: inherit; color: inherit; }
   width: 48px;
   height: 48px;
   line-height: 0;
-}
-
-/*
- * 未读红点：9px 实心 + 2px 白圈。
- *
- * 白圈用 `box-shadow` 而不是 `border`（border 会把圆点撑大、且改变定位基准）；
- * 圈色取 `--surface`（列表底就是白卡），压在抓拍图上也能从画面里跳出来。
- * 不接指针事件：它是状态标记，点它应该等同点整行。
- */
-.insp-dot {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--danger);
-  box-shadow: 0 0 0 2px var(--surface);
-  pointer-events: none;
 }
 
 .insp-meta { flex: 1; min-width: 0; }
@@ -4065,6 +4087,39 @@ button, input, textarea { font-family: inherit; color: inherit; }
 }
 
 /*
+ * 画面上的等待圈（2026-11-24 现场要求）：连流 / 缓冲 / 重连时在画面正中转一颗
+ * 小圈，出画面自动收掉。铺满整块画面区只为居中那一颗环。
+ *
+ * 层级 1：压在 <video> 之上、右上两颗控件（`.cam-stage-acts` 是 2）之下 ——
+ * 「历史抓拍 / 全屏」在任何时候都得点得到。
+ *
+ * `pointer-events: none` 是必须的：点画面能立刻重连，圈不能把这一下吃掉。
+ */
+.cam-stage-spin {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/*
+ * 环：与 `.cam-shots-spin`、`.hazard-spin` 同一套画法（细边框 + 顶部高亮 +
+ * `@keyframes spin`），只有配色按黑底取白。20px 是 16:9 画面上还能认出「在转」
+ * 的最小一档，再小就只剩一个白点；不加阴影、不加底盘，保持简洁。
+ */
+.cam-stage-ring {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/*
  * 右上角操作（设计稿 .cam-stage-acts）
  *
  * 贴画面右上 8px，间距 6px。两颗不一样高是设计稿的既有结果：左边 28px、
@@ -5009,39 +5064,46 @@ button, input, textarea { font-family: inherit; color: inherit; }
   z-index: 90;
   background: var(--page);
   flex-direction: column;
+  /* 内容再多也只在本层里滚（.air-grid 自己 overflow:auto），
+     iOS 上子项算高偏小时不会画到导航栏 / 标题栏上去 */
+  overflow: hidden;
 }
 
 .air-player.open { display: flex; }
 
 /*
- * 顶部筛选区：站点下拉 + 日期芯片（同一块，flex-wrap 自适应）
+ * 顶部筛选区：站点一行、日期一行 —— **恒定两行**，不靠宽度判折行。
  *
- * 为什么两行而不是硬挤一行：375 宽的屏减去两侧 12px 只剩 351，
- * 日期三颗芯片本身就要 ~226px，留给站点下拉 117px —— 站点名（「向阳村-
- * 全局定点拍照」）会被截成三四个字，比换行更难认。所以窄屏折两行、
- * 宽屏（横屏 / 平板 ≥ 420）自动并成一行，只有一套布局代码。
+ * 2026-11-24 修复（iOS 27）：原来是 flex + flex-wrap，靠「站点 flex-basis 200
+ * + 日期三颗 ~213 是否超过容器」决定折不折行。这个临界点正好压在主流 iPhone
+ * 的内容宽上（375→351、390→366、430→406 都在 421 附近），而日期第三颗的文案
+ * 会随选中日期在「选日期 / 11/23」之间变宽变窄，于是同一台机器上切个日期就能
+ * 在「一行 / 两行」之间跳。iOS 27 又没把换行后的第二行算进容器高度，第二行
+ * 就溢出去：日期控件上移、和站点挤在一行、压住下面的张数提示。
  *
- * 行距比列距大一档（10 / 8）：折成两行时，站点点位与日期是「两组条件」，
- * 行距收紧会和同一行里的元素黏成一片。
+ * 改成单列 grid 后行数由 grid 定死：行高、总高都不再依赖内容宽度、系统字体和
+ * iOS 版本，日期永远落在站点下方那一行。站点名过长时按 ellipsis 截断（见
+ * .air-select），不再把整行顶宽。
+ *
+ * 行距 10px：站点与日期是「两组筛选条件」，比芯片之间的 8px 松一档，
+ * 免得两行读成一片。
  */
 .air-filter {
   position: relative;
   flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: 10px 8px;
+  gap: 10px;
   padding: 4px 12px 9px;
 }
 
 /*
  * 站点下拉：原生 <select>，手机上点开是系统选择器，滚轮式选中比自定义
  * 弹层快，自带无障碍语义，也不用为它再写一套手势。
- * min-width 是换行的临界点：低于它站点名就没法读了。
  */
 .air-pick {
-  flex: 1 1 200px;
-  min-width: 168px;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5076,8 +5138,8 @@ button, input, textarea { font-family: inherit; color: inherit; }
  *   · 按下压一档浅灰（≈ 微信列表按下色 #ECECEC）；
  *   · 展开时只有箭头翻转，不出现蓝色高亮环（触屏没有焦点环这回事）。
  *
- * 高度仍是 32px：必须与同排日期芯片（`.air-filter .cam-day`）等高，
- * 否则窄屏折两行时两行控件上下不齐。
+ * 高度仍是 32px：必须与下一行的日期芯片（`.air-filter .cam-day`）等高，
+ * 两行控件一上一下时高度不一致会显得一轻一重。
  */
 .air-select {
   width: 100%;
@@ -5211,23 +5273,32 @@ button, input, textarea { font-family: inherit; color: inherit; }
   transform: rotate(45deg);
 }
 
-/* 日期芯片行（原 .air-days，随日期控件一起恢复；在筛选区里不再自带边距） */
+/*
+ * 日期芯片行（原 .air-days，随日期控件一起恢复；在筛选区里不再自带边距）
+ *
+ * 独占筛选区的第二行；三颗芯片本身也允许折行（极小屏 + 系统字体放大时），
+ * 折了也只是这一行变高，不会挤到站点那一行去。
+ */
 .air-days {
-  flex: 0 0 auto;
+  min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
 .air-days .cam-day { flex-shrink: 0; }
 
-/* 与下拉框同排，高度必须对齐（只作用于航拍筛选区，别处仍 30px） */
+/* 三颗在筛选区里靠左排（.cam-day-pick 的 auto 外边距是给满宽的 .cam-shot-days 用的） */
+.air-days .cam-day-pick { margin-left: 0; }
+
+/* 与上一行下拉框等高（只作用于航拍筛选区，别处仍 30px） */
 .air-filter .cam-day { height: 32px; }
 
 /*
  * 月历：贴着筛选区下沿（含 air-filter 的 12px 边距）。
- * 用 `top: calc(100% + 6px)` 而不是固定像素 —— 窄屏两行、宽屏一行时
- * 高度不同，这样两种布局都不用另写一个 top。
+ * 用 `top: calc(100% + 6px)` 而不是固定像素 —— 筛选区是两行固定高度，
+ * 这样换屏幕尺寸也不用另写一个 top。
  */
 .air-filter .cam-cal {
   top: calc(100% + 6px);
@@ -7745,17 +7816,18 @@ button, input, textarea { font-family: inherit; color: inherit; }
   text-align: center;
 }
 
+/*
+ * 品牌块 = 桌面图标本身（`public/pwa-192x192.png`，2026-11-24 换掉原先那个
+ * 「阳」字渐变方块）。图标自带深色圆角底，所以这里不再画 background / 文字。
+ * `object-fit: contain`：图标是正方形，任何尺寸进来都完整不裁切。
+ */
 .login-logo {
-  display: inline-grid;
-  place-items: center;
+  display: block;
   width: 56px;
   height: 56px;
-  margin-bottom: 12px;
+  margin: 0 auto 12px;
   border-radius: var(--r-16);
-  background: linear-gradient(135deg, #5AA2FF, var(--blue));
-  color: #fff;
-  font-size: var(--fs-22);
-  font-weight: 700;
+  object-fit: contain;
   /* 与登录按钮同一套投影，让品牌块看起来是「按钮级」的分量 */
   box-shadow: var(--sh-1);
 }
@@ -9129,20 +9201,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   color: #fff;
 }
 
-/* 右下角原图体积：照片显示出来后，「多大」不该再占一整行 */
-.patrol-thumb-size {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: var(--r-4);
-  background: rgba(0, 0, 0, 0.45);
-  color: rgba(255, 255, 255, 0.86);
-  font-size: var(--fs-10);
-  font-weight: 650;
-  line-height: 16px;
-}
+/* 右下角原图体积的角标样式已随「列表不再显示照片大小」一并删除（2026-11-24） */
 
 .patrol-thumb-hint {
   font-size: var(--fs-11);
@@ -9368,14 +9427,41 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
  * 全屏时工具条原本 `top:8 right:8` 紧贴屏幕边缘：横屏右侧是刘海 / 屏幕圆角，
  * iOS 的边缘手势区还会吞掉靠近边缘的触摸 —— 手指看着点上了、click 不触发，
  * 表现就是「进全屏以后怎么都退不出来」。退进 `env(safe-area-inset-*)` 之后
- * 那颗「退出」才真正可点。底部那颗大按钮曾作为第二出口，已按现场要求下线；
- * 退出仍有两条路：右上「退出」与点画面四周黑边（`@click.self`）。
+ * 那颗「退出」才真正可点。
+ *
+ * `max(..., 12px)` 是 2026-11-24 补的兜底：iOS 上**转屏之后** `env()` 可能仍给
+ * 横屏的那一档（竖屏顶部为 0），胶囊就钻回传感器 / 圆角那一带，触摸又被吞掉 ——
+ * 与 `.status-bar` 的 `max(var(--status-h), env(...))` 是同一套修法：不信单个值，
+ * 取「安全区」与「至少 12px」的较大者。
  */
 .patrol-view.is-land .pano-tools,
 .pano-stage.is-land .pano-tools,
 .cam-shot-stage.is-land .pano-tools {
-  top: calc(env(safe-area-inset-top, 0px) + 10px);
-  right: calc(env(safe-area-inset-right, 0px) + 10px);
+  top: calc(max(env(safe-area-inset-top, 0px), 12px) + 10px);
+  right: calc(max(env(safe-area-inset-right, 0px), 12px) + 10px);
+}
+
+/*
+ * 命中区扩到 44pt 高（视觉一个像素都没动）
+ *
+ * 26px 的胶囊在横屏里是拇指最难点的尺寸，实机表现是「看得到、点不到」。
+ * 用伪元素把可点范围上下各撑 9px（26 + 18 = 44），左右各撑 3px；工具条 gap 是
+ * 6px，两边的热区正好相接、不重叠，不会出现「点复位却退出」。
+ * 只在全屏态挂 —— 弹层里的同样两颗胶囊本来就够点。
+ */
+.patrol-view.is-land .pano-tool,
+.pano-stage.is-land .pano-tool,
+.cam-shot-stage.is-land .pano-tool {
+  position: relative;
+}
+
+.patrol-view.is-land .pano-tool::after,
+.pano-stage.is-land .pano-tool::after,
+.cam-shot-stage.is-land .pano-tool::after {
+  content: '';
+  position: absolute;
+  inset: -9px -3px;
+  border-radius: var(--r-pill);
 }
 
 /* =====================================================================
@@ -11119,11 +11205,13 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /* =====================================================================
- * 横屏提示（2026-11-23）
+ * 横屏提示（2026-11-23；2026-11-24 收窄到全景环视一处）
  *
- * 触发：点「全屏」后没能自动转成横屏（iOS 全系 / 微信内置 / 系统旋转锁定）。
+ * 触发：智眸 VR 360 环视 → 项目全景 → 点「全屏」后没能自动转成横屏
+ * （iOS 全系 / 微信内置 / 系统旋转锁定）。**其它全屏场景不再使用这组样式**
+ * （首页全屏地图、监控播放器、抓拍大图、航拍全景、平面照片都不弹）。
  * 最简形态：一条深色胶囊 + 两行字，**无遮罩、无按钮**，4.2s 自动淡出，
- * 点一下也能立刻关。外层 pointer-events: none —— 弹着的时候地图照样能拖。
+ * 点一下也能立刻关。外层 pointer-events: none —— 弹着的时候画面照样能拖。
  * 层级 220：要压在全屏地图层（80）、监控层（90）与 toast（210）之上。
  * ===================================================================== */
 .land-hint {

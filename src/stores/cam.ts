@@ -13,7 +13,6 @@ import { CAM_GROUPS, CAM_POINTS, findCamPoint } from '@/data/cams'
 import { cctvPlayableUrl, cctvRtspUrl, streamModeOf, type StreamMode } from '@/data/cctv'
 import { addDays, dateKey, formatCamDate, monthStart, startOfDay } from '@/utils/date'
 import { enterNativeLandscape, exitNativeLandscape, settleViewport } from '@/utils/orientation'
-import { openLandscapeHint } from '@/utils/landscapeHint'
 import {
   clearShots as clearShotArchive,
   ensureShot,
@@ -686,15 +685,13 @@ export const useCamStore = defineStore('cam', () => {
     shell.isLand = on
     /*
      * 系统级转向（2026-11-23，与全屏地图同一套 utils/orientation.ts）：
-     * 先尽力申请全屏 + 锁横屏，失败就只剩「铺满视口」这一层，
-     * 落定后还是竖屏就摆一条横屏提示（iOS 恒走这条路）。
+     * 先尽力申请全屏 + 锁横屏，失败就只剩「铺满视口」这一层。
+     *
+     * 2026-11-24：**不再弹「把手机横过来看」**。监控画面全屏本身就是「能看就行」，
+     * 那句引导的适用范围收窄到智眸 VR 360 环视的全景全屏（见 utils/landscapeHint.ts）。
      */
     if (on) {
-      void enterNativeLandscape().then((ok) => {
-        // 等待期间用户可能已经退出全屏 / 关了播放器，别对着别的界面弹引导
-        if (ok || !shell.isLand) return
-        openLandscapeHint()
-      })
+      void enterNativeLandscape()
     } else {
       // 退完再落定视口：iOS 退出全屏会留 scrollY、dvh / 安全区也不会自己刷新
       void exitNativeLandscape().then(settleViewport)

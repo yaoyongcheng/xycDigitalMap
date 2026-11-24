@@ -4,7 +4,6 @@ import { defineStore } from 'pinia'
 import { titles } from '@/data/config'
 import type { TabId } from '@/types'
 import { enterNativeLandscape, exitNativeLandscape, settleViewport } from '@/utils/orientation'
-import { openLandscapeHint } from '@/utils/landscapeHint'
 
 /** 首页抽屉展开状态的持久化键（旧版布尔键，仅用于迁移读取） */
 const SHEET_UP_KEY = 'xyc.sheetUp'
@@ -174,14 +173,11 @@ export const useShellStore = defineStore('shell', () => {
      * 尽力让系统真的转成横屏（2026-11-23，见 utils/orientation.ts）。
      *
      * 必须在点击的同步栈里发起 —— `requestFullscreen` 要用户手势，
-     * 隔一个 await 就没了。iOS 上这两步都拿不到，落定后仍是竖屏就摆一条
-     * 横屏提示（`utils/landscapeHint.ts`：两行字 + 4.2s 自动消失）。
+     * 隔一个 await 就没了。iOS 上这两步都拿不到，落定后仍是竖屏就只剩
+     * 「铺满视口」这一层：**不再弹「把手机横过来看」**（2026-11-24 口径，
+     * 那句引导只留给智眸 VR 360 环视的全景全屏，见 utils/landscapeHint.ts）。
      */
-    void enterNativeLandscape().then((ok) => {
-      // 等转屏动画的 320ms 里用户可能已经退了，别对着首页弹引导
-      if (ok || !mapLandOpen.value) return
-      openLandscapeHint()
-    })
+    void enterNativeLandscape()
   }
 
   /** 原 js/app.js:1708-1713 closeMapLand() */

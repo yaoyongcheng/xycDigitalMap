@@ -127,6 +127,32 @@ describe('右滑返回手势', () => {
     expect(backSpy).not.toHaveBeenCalled()
   })
 
+  /*
+   * 向左滑不是返回手势 —— 浏览器 / 系统把它当成「前进」（iOS 右边缘左滑、
+   * 桌面触控板左滑），那一趟由 utils/historyBack.ts 的方向判定处理。
+   *
+   * 应用内这一侧必须彻底撒手：一像素都不位移、不点返回，并且把起手记录
+   * （layer / pid）整条丢掉。只置 tracking=false 会留下一个悬空的「正在跟手」
+   * 的层引用，下一次 pointerdown 先撞上 abortGesture 的补偿路径 —— 左滑本来
+   * 什么都没发生，却像被硬中断过一次手势。
+   */
+  it('向左滑完全撒手：不位移、不返回，也不污染下一次右滑的基准', () => {
+    openSubpage()
+    down(10)
+    move(-40) // 负向且超过 SLOP
+    expect(layer.style.transform).toBe('')
+    up(-40)
+
+    vi.advanceTimersByTime(400)
+    expect(backSpy).not.toHaveBeenCalled()
+    expect(document.body.style.userSelect).toBe('')
+
+    // 紧接着一次正常右滑：基准来自这一次的 pointerdown（20 → 120 = 100 × 0.55）
+    down(20)
+    move(120)
+    expect(layer.style.transform).toMatch(/^translate3d\(55(\.\d+)?px, 0, 0\)$/)
+  })
+
   it('只点左边缘不滑动 → 什么也不发生', () => {
     openSubpage()
     down(10)

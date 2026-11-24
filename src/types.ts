@@ -102,12 +102,14 @@ export interface Alarm {
   /** 设备序列号（服务端 `deviceNo`）；测试夹具可以不填 */
   deviceNo?: string
   /**
-   * 服务端已读/处理状态（`handleStatus`）：0 = 未读/待处理，1 = 已读/已处理。
+   * 服务端处理状态（`handleStatus`）：0 = 待处理，1 = 已完成。
    *
-   * 这是**唯一权威**的已读来源（参考 Unity 端 `AIAlarmMessage.AlarmStatus` ←
-   * 接口 `handleStatus`，消息列表据此显示未读红点，`PATCH .../status` 把它置 1）。
-   * 服务端持久化，刷新不丢 —— 早先靠前端本地 Set 记已读，刷新即归零，是错的。
-   * 测试夹具可以不填，消费方按「缺省未读」处理。
+   * 这是**唯一权威**的状态来源（参考 Unity 端 `AIAlarmMessage.AlarmStatus` ←
+   * 接口 `handleStatus`）：列表据此显示「待处理 / 已完成」徽标，详情页「处理状态」
+   * 读同一个值。服务端持久化，刷新不丢。
+   *
+   * **只读**（2026-11-24）：移动端不提供任何状态变更操作，也不再调用
+   * `PATCH .../status`。测试夹具可以不填，消费方按「待处理」处理。
    */
   handleStatus?: number
   /** 三维地图上的标注（无则不在三维图上撒点） */
@@ -119,8 +121,7 @@ export interface Alarm {
 /**
  * 消息列表项。
  *
- * 2026-11 阶段 5 起由真实报警派生，一条报警一条消息，`id` 用来做已读与
- * 跳详情（原按 `kind` 标记已读，同类消息会被一次性全清）。
+ * 2026-11 阶段 5 起由真实报警派生，一条报警一条消息，`id` 用来定位详情。
  */
 export interface Message {
   id: string

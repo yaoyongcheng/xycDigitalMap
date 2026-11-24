@@ -8,6 +8,18 @@
   <title>向阳村项目智能建造管理平台</title>
 
   <!--
+    场景截图接口（首页背景 / 全屏地图的二维三维）预连接（2026-11-24）。
+
+    这张底图是首屏视觉主体，而它走的是 `fetch` + `X-API-Key`（不能进 `<img src>`），
+    请求要等到 JS 启动、HomePage 挂载才发出。提前把 DNS + TCP + TLS 建好，
+    那一下就能省掉一个完整握手（移动网络下通常 100~300ms）。
+    地址与 `api/config.ts` 的 `MEDIA_ORIGIN` 默认值一致；换域名时两处一起改。
+    `crossorigin` 是必须的：带自定义请求头的跨域请求要复用同一个连接，必须匿名模式。
+  -->
+  <link rel="preconnect" href="https://115.159.67.12" crossorigin />
+  <link rel="dns-prefetch" href="https://115.159.67.12" />
+
+  <!--
     PWA 主题色：决定系统状态栏区域的底色与状态栏文字的黑白。
     这里给的是首屏默认值（浅色，与导航栏 #fff 一致，iOS 会配深色文字）；
     运行后由 src/utils/themeColor.ts 按当前视图动态更新 ——

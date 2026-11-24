@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useShellStore } from '@/stores/shell'
 import { useSubpageStore } from '@/stores/subpage'
 import type { IconName } from '@/data/icons'
+import { useTabRefresh } from '@/utils/tabRefresh'
 
 /**
  * 我的页
@@ -26,6 +27,16 @@ import type { IconName } from '@/data/icons'
 const shell = useShellStore()
 const subpage = useSubpageStore()
 const auth = useAuthStore()
+
+/**
+ * 切回「我的」tab 时对齐一次账号信息（2026-11-24）。
+ *
+ * 这一页没有列表数据，唯一的「远端状态」就是姓名 / 角色（来自 `/me`）。
+ * 页面常驻挂载、`restore()` 只在启动时跑一次，所以后台改过姓名或角色后
+ * 不切回来刷新的话，这里会一直显示旧值。未登录时 `refreshProfile` 自己返回，
+ * 连点底栏也只打一趟（store 内在途复用）。
+ */
+useTabRefresh('mine', () => void auth.refreshProfile())
 
 /** 菜单 id → 图标名（原 menuSvg 的三个 path，几何见 data/icons.ts） */
 const menuIcon: Record<string, IconName> = {

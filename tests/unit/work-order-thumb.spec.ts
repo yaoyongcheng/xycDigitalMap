@@ -289,7 +289,7 @@ describe('无人机预警 store · 缩略图', () => {
 })
 
 describe('无人机预警列表 · 图标位', () => {
-  it('有图铺缩略图；行里没图就铺原来那颗灰底占位图标；红点与图无关', async () => {
+  it('有图铺缩略图；行里没图就铺原来那颗灰底占位图标；不点红点', async () => {
     const drone = useDroneAlarmStore()
     drone.apply([wo(1), wo(2, { image: '' })])
     vi.stubGlobal('fetch', vi.fn(async () => picResponse(JPG)))
@@ -309,9 +309,9 @@ describe('无人机预警列表 · 图标位', () => {
     expect(items[1].find('.insp-pic.alarm-tile').exists()).toBe(true)
     expect(items[1].find('.alarm-tile > svg:not(.tile-ring)').exists()).toBe(true)
 
-    // 红点只看状态，与有没有图无关
-    expect(items[0].find('.insp-dot').exists()).toBe(true)
-    expect(items[1].find('.insp-dot').exists()).toBe(true)
+    // 红点已下线（无人机没有已读概念）：有没有图都不点，2026-11-24
+    expect(items[0].find('.insp-dot').exists()).toBe(false)
+    expect(items[1].find('.insp-dot').exists()).toBe(false)
     w.unmount()
   })
 

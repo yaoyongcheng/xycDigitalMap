@@ -26,6 +26,12 @@ import type { IconName } from '@/data/icons'
 const shell = useShellStore()
 const cam = useCamStore()
 const air = useAirHazardStore()
+/*
+ * 关于「切到工作台要不要刷新数据」：这一页**没有任何接口数据** ——
+ * 四个快捷入口与两张工具卡都是 `data/config` 里的静态常量，页面上没有
+ * 会过期的数字。所以这里不挂 `useTabRefresh`（挂了也只是空转一次）。
+ * 等哪天这一页接了台账 / 待办计数，再把刷新接到对应 store 上。
+ */
 
 interface Shortcut {
   work: string

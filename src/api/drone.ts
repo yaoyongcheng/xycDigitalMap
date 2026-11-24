@@ -89,6 +89,15 @@ export interface DroneTaskRecord {
   /** 执行记录 id（媒体文件接口按它取 job） */
   id: number
   /**
+   * 服务端原始记录号（**字符串原文**，去重专用）。
+   *
+   * 开放接口不返回 `uuid`，只给 19 位雪花号 `taskRecordId`；转成 `number` 会丢精度
+   * （`"5968386048883676116"` → `5968386048883676000`），两条相邻记录可能落成同一个数。
+   * 拿 `id` 当去重键会把不同记录误合并（少条），所以保留原文放这里
+   * （见 `recordKey`）。
+   */
+  rid?: string
+  /**
    * 服务端 uuid。
    *
    * **用做列表 key 的原因**：`id` 是 int64，部分行超过 JS 安全整数
@@ -135,6 +144,16 @@ export interface DroneTaskRecord {
   /** 是否排班任务 */
   scheduled: boolean
   /**
+   * 是否被暂停（统计里的 `suspendedCount` 就是数它）。
+   *
+   * 2026-11-24 修正路径：暂停项**在** `unfinishedTaskList` 里（`status:-1`、
+   * `result:4`、`suspended:true`），但**不计入** `taskCount` —— 单独数进
+   * `suspendedCount`。所以清单（含暂停）要跟三格的「今日任务」相等，
+   * 三格那边必须把 `suspendedCount` 加回去（`stores/uav.ts::taskTotal`）。
+   * 清单里的文案按用户要求统一显示「未执行」，不单独写「已暂停」。
+   */
+  suspended?: boolean
+  /**
    * 所属项目 id。
    *
    * 2026-11-16 起「今日任务」按账号口径取（三格 23 = 向阳村 15 + 光谷元著 8），
@@ -147,7 +166,15 @@ export interface DroneTaskRecord {
 /** 任务执行记录分页 */
 export interface DroneTaskPage {
   rows: DroneTaskRecord[]
+  /** 服务端给的区间总数（取翻页过程中见到的最大值） */
   total: number
+  /**
+   * 是否因为翻页上限而**没取完**（`rows.length < total`）。
+   *
+   * 正常情况下恒为 `false`。为 `true` 说明服务端返回的数据量超过了防御上限，
+   * 调用方可以据此提示「只取到前 N 条」，而不是把少条当成全部。
+   */
+  truncated?: boolean
 }
 
 /**
@@ -161,7 +188,14 @@ export interface DroneTaskPage {
  * `failedCount 0`、`runningCount 0`、`suspendedCount 0`。
  */
 export interface DroneTaskStat {
-  /** 今日任务总数（= 已完成 + 已完成之外的计划数） */
+  /**
+   * 今日任务总数 —— **不含已暂停**（暂停单独数在 `suspendedCount`）。
+   *
+   * ⚠️ 2026-11-24 10:13 实测：`taskCount 4`（2 完成 + 1 失败 + 1 执行中），
+   * 当天排班却是 15 条，差的 11 条全落进 `suspendedCount`。所以界面上的
+   * 「今日任务」= `taskCount + suspendedCount`（见 `stores/uav.ts::taskTotal`）；
+   * 直接拿 `taskCount` 上屏，就会出现「卡上 4、清单 15」。
+   */
   taskCount: number
   /** 已完成架次 */
   finishedCount: number
@@ -193,6 +227,14 @@ export interface DronePlanTask {
   start: string
   /** 任务（排班项）id —— 与执行记录去重时用它 */
   taskId: number | null
+  /**
+   * 这一条是否已被暂停。
+   *
+   * `unfinishedTaskList` 里混着两类：真正待执行的（`suspended:false`）和被暂停的
+   * （`suspended:true`、`status:-1`、`result:4`）。2026-11-24 实测 12 条未完成里
+   * 11 条是暂停 —— 补漏时若不区分，11 条暂停会被写成「未执行」，比少几行更误导。
+   */
+  suspended?: boolean
 }
 
 
@@ -537,6 +579,8 @@ export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
     if (id === null || !name) continue
     out.push({
       id,
+      // 原始 id 字符串：19 位雪花号转 number 会丢精度，去重要用原文（见 `recordKey`）
+      rid: str(o.taskRecordId ?? o.id) || undefined,
       uuid: str(o.uuid),
       taskName: name,
       taskId: num(o.taskId),
@@ -547,6 +591,7 @@ export function toTaskRecords(raw: unknown): DroneTaskRecord[] {
       status: num(o.status) ?? 0,
       result: num(o.result),
       scheduled: o.scheduled === true,
+      suspended: o.suspended === true,
       pid: num(o.pid),
     })
   }
@@ -640,7 +685,7 @@ function toPlanTasks(raw: unknown): DronePlanTask[] {
     const name = str(t.taskName)
     const start = str(t.start).replace(' ', 'T')
     if (!name || !start) continue
-    out.push({ taskName: name, start, taskId: num(t.taskId) })
+    out.push({ taskName: name, start, taskId: num(t.taskId), suspended: t.suspended === true })
   }
   return out
 }
@@ -657,8 +702,36 @@ function toPlanTasks(raw: unknown): DronePlanTask[] {
  * 实际也只回 100 行（2026-11-20）。所以「一次拿全」不可能，只能翻页。
  */
 const OPEN_PAGE_SIZE = 100
-/** 单次查询最多翻多少页（90 天实测 1133 条 → 12 页，留一倍余量防跑飞） */
-const OPEN_MAX_PAGES = 30
+/**
+ * 单次查询最多翻多少页（**防御上限**，不是业务上限）。
+ *
+ * 原先是 30（3000 条）：90 天窗口实测 1133 条（12 页）够用，但区间放宽或记录量
+ * 增长（重飞、补拍）时，30 页会**静默截断**且 `total` 仍是真实值 —— 调用方拿到
+ * 的是「完整」的样子，实际少了几百条。现在抬到 500（5 万条），并在触顶时
+ * 返回 `truncated: true` + 控制台告警，不再闷着。
+ */
+const OPEN_MAX_PAGES = 500
+/**
+ * 连续空页容忍次数。
+ *
+ * 翻页期间如果有人删记录，offset 会整体前移，中间可能翻出一个空页，
+ * 而后面还有数据。一页空就收手会漏页；连空两页才认定「到头」。
+ */
+const OPEN_EMPTY_TOLERANCE = 2
+
+/**
+ * 记录的去重键。
+ *
+ * **不能用 `id`**：开放接口给的是 19 位雪花号（`5968386048883676116`），
+ * 转 `number` 会丢精度（→ `5968386048883676000`），两条相邻记录可能落成同一个数，
+ * 拿 `id` 当键会把不同记录合并成一条（少条）。顺序：原始号 `rid` → `uuid` →
+ * 最后才退回 `id`，并拼上 taskId/start 降低误撞概率。
+ */
+function recordKey(r: DroneTaskRecord): string {
+  if (r.rid) return `rid:${r.rid}`
+  if (r.uuid) return `uuid:${r.uuid}`
+  return `id:${r.id}|${r.taskId ?? ''}|${r.start}`
+}
 
 /** 开放接口的一行执行记录（字段名照抄服务端，不要改名） */
 interface OpenRecordRow {
@@ -677,6 +750,7 @@ interface OpenRecordRow {
   status?: unknown
   result?: unknown
   scheduled?: unknown
+  suspended?: unknown
   startTime?: unknown
   endTime?: unknown
   start?: unknown
@@ -710,6 +784,8 @@ export function toOpenTaskRecords(raw: unknown): DroneTaskRecord[] {
     if (id === null || !name) continue
     out.push({
       id,
+      // 开放接口没有 uuid，19 位 `taskRecordId` 转 number 会丢精度 —— 去重靠这个原文
+      rid: str(o.taskRecordId ?? o.id) || undefined,
       // 开放接口没有 uuid；调用方拿它做去重键，缺失时退回 id
       uuid: str(o.uuid),
       taskName: name,
@@ -726,6 +802,7 @@ export function toOpenTaskRecords(raw: unknown): DroneTaskRecord[] {
       // 失败的架次会被当成「已完成」显示 —— 2026-11-23 就是这么错的
       result: num(o.result),
       scheduled: o.scheduled === true,
+      suspended: o.suspended === true,
       pid: num(o.projectId ?? o.pid),
     })
   }
@@ -856,8 +933,20 @@ export async function fetchTaskRecords(
 
   const task = (async (): Promise<DroneTaskPage> => {
     const rows: DroneTaskRecord[] = []
+    /** 已入列的记录号 —— 并发插入会让 offset 前移、同一行出现在相邻两页 */
+    const seen = new Set<string>()
     let total = 0
-    let p = page
+    // 页码从 1 开始；调用方传 0 / 负数 / 小数一律纠正，否则 offset 会整体错位
+    let p = Math.max(1, Math.floor(page) || 1)
+    /** 连续空页计数：并发删除会造成「空页后面还有数据」 */
+    let empty = 0
+    /** 短页重试标记：服务端偶尔瞬时截断，同一页再取一次 */
+    let shortRetry = 0
+    /** 是否因为翻页上限没取完 */
+    let hitLimit = false
+    /** 是否因为遇到「短页但 total 还有」提前收手 */
+    let hitShort = false
+
     for (let i = 0; i < OPEN_MAX_PAGES; i += 1) {
       const res = await fetchOpenRecordPage({
         page: p,
@@ -866,13 +955,70 @@ export async function fetchTaskRecords(
         ...(start ? { startTime: openDay(start) } : {}),
         ...(end ? { endTime: openDay(end) } : {}),
       })
-      total = res.total
-      rows.push(...res.rows)
-      // 已翻到末尾：`p * pageSize >= total`（服务端 total 是本次区间的总条数）
-      if (!res.rows.length || p * pageSize >= total) break
+
+      // 总数取「见过的最大值」：翻页期间若有新记录插入，`total` 会变大，
+      // 只保留最后一次会把先前判断过的进度作废；取 max 更接近真实总量
+      total = Math.max(total, res.total)
+
+      // 页内去重：不按 id（雪花号丢精度），见 `recordKey`。
+      // 服务端**越界页会重复返回最后一页**（实测 page=13/99 与 page=12 完全一样），
+      // 这里必须挡住，否则会重复计数并空转到上限。
+      let added = 0
+      for (const r of res.rows) {
+        const k = recordKey(r)
+        if (seen.has(k)) continue
+        seen.add(k)
+        rows.push(r)
+        added += 1
+      }
+
+      // 终止条件按「已覆盖到的 offset」算，而不是 rows.length ——
+      // 后者在 `page > 1` 或去重丢掉几行时会偏小，导致多翻页 / 提前退出。
+      const fetchedThrough = (p - 1) * pageSize + res.rows.length
+      if (fetchedThrough >= total) break
+
+      if (!res.rows.length) {
+        /**
+         * 空页先**重试同一页**：空返回也可能是限流 / 瞬时空响应。
+         * 直接 `p += 1` 会把这一页整段跳过（offset 前移），那才是真漏页。
+         */
+        if (!empty) {
+          empty = 1
+          continue
+        }
+        // 重试仍空：认定这一页确实没数据（并发删除），往后翻；连续多页空了才收手
+        empty += 1
+        if (empty > OPEN_EMPTY_TOLERANCE) break
+      } else if (res.rows.length < pageSize) {
+        // 短页但 total 说还有：服务端瞬时截断（限流/缓存）会这样。
+        // 重取同一页一次；仍短就收手 —— 继续 page+1 只会整段跳过缺口，漏得更多。
+        if (shortRetry) {
+          hitShort = true
+          break
+        }
+        shortRetry = 1
+        // 不推进页码，重取这一页
+        continue
+      } else {
+        empty = 0
+        shortRetry = 0
+        // 整页都是重复（服务端没往下走）：再翻只会拿到同一批，收手
+        if (added === 0) break
+      }
+
+      // 最后一次迭代仍在往下翻 → 是被上限截断，不是取完了
+      if (i === OPEN_MAX_PAGES - 1) hitLimit = true
       p += 1
     }
-    return { rows, total }
+
+    if (hitLimit) {
+      // 不再静默：调用方可以看 truncated，控制台也留一条可查的痕迹
+      console.warn(
+        `[drone] 执行记录翻页触顶（${OPEN_MAX_PAGES} 页 × ${pageSize} 条）：` +
+          `total=${total}，已取 ${rows.length}，剩余 ${Math.max(0, total - rows.length)} 条未取`,
+      )
+    }
+    return { rows, total, truncated: hitLimit || hitShort || rows.length < total }
   })()
 
   if (recordBatch && Date.now() - recordBatch.at < RECORD_BATCH_TTL) {
@@ -895,6 +1041,10 @@ export async function fetchTaskRecords(
  * `GET /dashboard/device/list?page=1&size=100` —— 这是唯一一个**不传 pid**
  * 就能列出账号全部设备的端点，顺带就列出了全部项目。实测该账号 5 台设备 / 2 个项目：
  * 向阳村 `193640872670213`（无人机 2 + 机库 1）、光谷元著 `231070463906821`（各 1）。
+ *
+ * **该端点的 `page` / `size` 不生效**（2026-11-24 实测：`size=2`、`page=2&size=2`
+ * 仍然返回全部 5 条），响应是裸数组、没有 `total` —— 所以这里不需要翻页，
+ * 别为它补循环（补了也只是反复拿同一批）。
  *
  * 本项目永远排第一位；请求失败只回本项目 —— 少列一个项目顶多少几条明细，
  * 编一个 pid 会拉回别人的数据。
@@ -929,6 +1079,10 @@ export async function fetchProjectIds(): Promise<number[]> {
 
 /**
  * 「今日任务」明细 —— 口径由调用方决定（`pids`）。
+ *
+ * ⚠️ **2026-11-24 起只作兜底**：清单主源改成 {@link fetchTodayTaskList}
+ * （一次回当天全部记录，条数与三格的 `taskCount` 逐条对得上）。本函数仍保留 ——
+ * 新端点挂了 / 老网关没有这个端点时退回它，页面至少还有「已执行的记录」可看。
  *
  * ⚠️ **2026-11-23 起调用方传 `pids: [KH_IDS.pid]`，只取本项目**：用户要求
  * 无人机页与「今日任务」弹层都剔除「光谷元著」。三格统计同样改成
@@ -970,26 +1124,75 @@ export async function fetchTodayRecords(
   const rows: DroneTaskRecord[] = []
   let ok = 0
   let firstError: unknown = null
-  for (const p of pages) {
+  for (let i = 0; i < pages.length; i += 1) {
+    const p = pages[i]
     if (p.status !== 'fulfilled') {
       firstError ??= p.reason
       continue
     }
     ok++
+    // 翻页触顶 / 服务端重复页会让该项目的记录取不全：留一条痕迹，
+    // 别让「少几条」静默混进合并结果（清单条数与三格的差由 `gap` 兜底）
+    if (p.value.truncated) {
+      console.warn(
+        `[drone] 项目 ${ids[i]} 的执行记录未取全：total=${p.value.total}，已取 ${p.value.rows.length}`,
+      )
+    }
     rows.push(...p.value.rows)
   }
   if (ok === 0) {
     // 把服务端原文往上抛（页面直接显示它），比统一文案更好定位
     throw firstError instanceof Error ? firstError : new ApiError(0, '无人机任务列表加载失败')
   }
-  // 按 uuid 去重（不同项目不会撞，防的是同一项目跨页重复取到）
+  // 去重键用 `recordKey`（原始记录号优先）：`uuid || String(id)` 在雪花号上会误合并
   const seen = new Set<string>()
   return rows.filter((r) => {
-    const key = r.uuid || String(r.id)
+    const key = recordKey(r)
     if (seen.has(key)) return false
     seen.add(key)
     return true
   })
+}
+
+/**
+ * 「今日任务」**完整清单** —— `/dashboard/task/list/execRecord/today`。
+ *
+ * ## 为什么不再拼 `unfinishedTaskList`（2026-11-24 现场实测）
+ *
+ * 统计端点 `/dashboard/task/list/record?pid=…` 的同一次响应里（**不带分页参数**）：
+ *
+ * | 字段 | 条数 | 内容 |
+ * |---|---|---|
+ * | `taskCount` | 4 | 三格那个「今日任务」（**不含暂停**） |
+ * | `suspendedCount` | 11 | 当天被平台暂停的排班 |
+ * | `completedTaskList` | 3 | 08:00 / 08:20 / 09:45（含 1 条失败） |
+ * | `unfinishedTaskList` | **7** | 09:00 执行中 + 6 条暂停（被默认页长截断） |
+ *
+ * 当天实有 15 条排班（4 + 11），这个响应只摊开 10 条 —— 差的 5 条是
+ * **默认页长截断**：补上 `pageNum/pageSize` 后同一个 `unfinishedTaskList`
+ * 立刻回全 12 条（见 `fetchTaskStat`）。所以「清单少 5 行」的根因是分页，
+ * 不是服务端没有数据。
+ *
+ * 本端点一次把当天全部记录摊开（实测 20 行 = 向阳村 15 + 光谷元著 5），
+ * 按 pid 过滤后正好 15 条，逐条带 `status` / `result` / `suspended`：
+ * 清单与三格的「今日任务」（`taskCount + suspendedCount`）**逐条相等**。
+ *
+ * ## 三个坑
+ *
+ * 1. `pidList` 参数服务端**不认**（实测传了仍回别的项目），只能在本地按
+ *    `executeInfo.pid` 过滤 —— 所以别以为少传一个参数就能省掉这一步。
+ * 2. 行结构是 `{ executeInfo, taskInfo }`，字段全在 `executeInfo` 上；
+ *    `taskInfo` 只有名字和机型（`taskType`），不要把两者搞混。
+ * 3. **本端点不分页**（2026-11-24 实测）：传 `pageSize=2`、`pageNum=2`
+ *    仍然回全部 20 条。清单条数只由当天排班量决定，别在这里自己加翻页循环。
+ */
+export async function fetchTodayTaskList(pid = KH_PROJECT_ID): Promise<DroneTaskRecord[]> {
+  const raw = await khAuthGet<unknown>('/dashboard/task/list/execRecord/today')
+  const list = Array.isArray(raw) ? raw : []
+  const rows = list.map((r) => (r as Record<string, unknown> | null)?.executeInfo ?? r)
+  // `pid` 缺失（老网关/裸数组）按本项目算：不确定时不要凭空扣掉一条，
+  // 那样又会变成「清单比三格少」
+  return toTaskRecords(rows).filter((r) => r.pid === null || r.pid === pid)
 }
 
 /**
@@ -1020,9 +1223,25 @@ export async function fetchTodayRecords(
  * 再逐个 pid 取，合并后的条数与这里的 `taskCount` 一致（23 = 15 + 8）。
  */
 export async function fetchTaskStat(opts: { pid?: number } = {}): Promise<DroneTaskStat> {
-  // 不传 pid 就是 V2 的口径；显式给了才过滤
-  const q = opts.pid ? `?pid=${opts.pid}` : ''
-  const raw = await khAuthGet<Record<string, unknown>>(`/dashboard/task/list/record${q}`)
+  /**
+   * **必须带分页参数**（2026-11-24 实测）。
+   *
+   * 这个响应里的 `completedTaskList` / `unfinishedTaskList` 会被默认页长截断：
+   * 不带参数时当天 12 条未完成只回 7 条，前 5 条静默丢失；补上
+   * `pageNum=1&pageSize=20` 立刻回全 12 条。先前「三格 15、清单 10」的根因
+   * 就在这里（7 + 3 = 10），不是服务端不给。
+   *
+   * 实测 20 / 200 / 1000 三档返回条数完全一样，`pageNum=2` 也不做偏移 ——
+   * 它**不是真分页**，只是「带了分页参数才解除默认截断」。所以取 1000
+   * （单日排班量远小于它）一次盖住，不必逐页翻；`pid` 照旧「显式给了才过滤」。
+   *
+   * 对照：清单主源 `/dashboard/task/list/execRecord/today` **不分页** ——
+   * 传 `pageSize=2`/`pageNum=2` 照样回全部 20 条（见 `fetchTodayTaskList`），
+   * 所以清单条数只取决于当天排班量，不会被分页截断。
+   */
+  const params = new URLSearchParams({ pageNum: '1', pageSize: '1000' })
+  if (opts.pid) params.set('pid', String(opts.pid))
+  const raw = await khAuthGet<Record<string, unknown>>(`/dashboard/task/list/record?${params}`)
   // 缺 `taskCount` 说明拿到的不是统计（比如被别的网关拦了返回一个空信封）。
   // 抛出去比「当 0 条」安全：0 会被读成「今天一架次都没飞」。
   if (!raw || typeof raw !== 'object' || !('taskCount' in raw)) {

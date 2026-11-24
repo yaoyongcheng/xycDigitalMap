@@ -13,16 +13,18 @@ import InspectList from '@/views/sub/InspectList.vue'
 import { camAlarmFixtures } from '../fixtures/camAlarms'
 
 /**
- * 监控预警子页：标题 + 今日未读红点（2026-11-20）
+ * 监控预警子页：标题 + 今日待处理 + 状态徽标（2026-11-24 口径）
  *
  * 现场口径：
  *   · 这一页标题就叫「监控预警」（它是消息页那张卡的明细）；
- *   · **今日预警**里未读的条目在图标位右上角点一颗红点（微信的位置），已读没有；
- *   · 已读/未读只对今日生效 —— 历史预警不打点，点开也不改已读状态；
- *   · 消息页那张卡的「今日未读」必须与红点个数一致（同一个判据）。
+ *   · 每行右侧显示「相对时间 + 待处理/已完成」，与无人机预警列表同一套样式与判据
+ *     （`handleStatus === 1` 才算已完成）；
+ *   · 状态**只读**：点开只进详情，不发 PATCH、不改状态；
+ *   · 未读红点已下线（本 App 没有「标记已读」这个动作，红点点开也清不掉）；
+ *   · 消息页那张卡的「今日待处理」必须与列表里「待处理」徽标个数一致。
  *
- * 这一组钉的正是「数字和红点不能各算一套」：卡片按 `handleStatus` 数、
- * 列表按同一判据点，两边一旦分叉，用户会立刻发现「写 3 条未读却只有 1 颗红点」。
+ * 这一组钉的正是「数字和徽标不能各算一套」：卡片按 `handleStatus` 数、
+ * 列表按同一判据显示，两边一旦分叉，用户会立刻发现。
  */
 
 function signIn(): void {
@@ -67,8 +69,8 @@ describe('标题', () => {
   })
 })
 
-describe('今日预警：未读红点', () => {
-  it('未读的条目有红点，已读的没有', async () => {
+describe('今日预警：处理状态徽标（与无人机列表一致）', () => {
+  it('待处理 / 已完成 来自服务端 handleStatus，缺省按待处理', async () => {
     signIn()
     const alarm = useAlarmStore()
     alarm.liveAlarms = feed()
@@ -79,12 +81,17 @@ describe('今日预警：未读红点', () => {
 
     const items = w.findAll('.insp-pane:not(.insp-hist) .insp-item')
     expect(items).toHaveLength(4)
-    // 101 未读 / 102 已读 / 103、104 未读
-    expect(items.map((i) => i.find('.insp-dot').exists())).toEqual([true, false, true, true])
+    // 101 待处理 / 102 已完成 / 103、104 待处理
+    expect(items.map((i) => i.find('.alarm-src-todo').exists())).toEqual([true, false, true, true])
+    expect(items.map((i) => i.find('.alarm-src-done').exists())).toEqual([false, true, false, false])
+    expect(items[0].find('.alarm-src-todo').text()).toBe('待处理')
+    expect(items[1].find('.alarm-src-done').text()).toBe('已完成')
+    // 未读红点已下线（本 App 不改状态，红点会永远清不掉）
+    expect(w.findAll('.insp-dot')).toHaveLength(0)
     w.unmount()
   })
 
-  it('历史预警不打点（就算 handleStatus 还是未读）', async () => {
+  it('历史预警同样显示状态徽标（状态是事实，不是「今天看没看过」）', async () => {
     signIn()
     const alarm = useAlarmStore()
     alarm.liveAlarms = feedWithYesterday()
@@ -97,13 +104,14 @@ describe('今日预警：未读红点', () => {
 
     const hist = w.findAll('.insp-pane.insp-hist .insp-item')
     expect(hist).toHaveLength(1)
+    expect(hist[0].find('.alarm-src-todo').text()).toBe('待处理')
     expect(hist[0].find('.insp-dot').exists()).toBe(false)
     w.unmount()
   })
 })
 
-describe('已读只发生在今日', () => {
-  it('点开今日某条：乐观置已读、发一次 PATCH、红点随即消失', async () => {
+describe('状态只读：点开只进详情，不改状态', () => {
+  it('点开今日某条：不发 PATCH、handleStatus 保持原值', async () => {
     signIn()
     const alarm = useAlarmStore()
     const rows = feed()
@@ -112,25 +120,19 @@ describe('已读只发生在今日', () => {
 
     const w = mount(InspectList)
     const target = w.findAll('.insp-pane:not(.insp-hist) .insp-item')[0]
-    expect(target.find('.insp-dot').exists()).toBe(true)
-    expect(useMsgStore().monitorUnread).toBe(3)
 
     await target.trigger('click')
     await flushPromises()
 
-    expect(alarm.byId(rows[0].id)?.handleStatus).toBe(1)
-    expect(target.find('.insp-dot').exists()).toBe(false)
-    // 卡片上的「今日未读」跟着掉一条 —— 两处同一个判据，不允许一个动一个不动
-    expect(useMsgStore().monitorUnread).toBe(2)
-
+    expect(alarm.byId(rows[0].id)?.handleStatus).toBe(0)
     const asMock = fetch as unknown as ReturnType<typeof vi.fn>
-    const patch = asMock.mock.calls.filter((c) => String(c[1]?.method) === 'PATCH')
-    expect(patch).toHaveLength(1)
-    expect(String(patch[0][0])).toContain('/api/video/alarms/101/status')
+    expect(asMock.mock.calls.filter((c) => String(c[1]?.method) === 'PATCH')).toHaveLength(0)
+    // 详情照常打开（只读展示原状态）
+    expect(useSubpageStore().view).toEqual({ kind: 'alarm-detail', id: rows[0].id })
     w.unmount()
   })
 
-  it('点开历史某条：只进详情，不发 PATCH、不改已读', async () => {
+  it('点开历史某条：同样只进详情、不改状态', async () => {
     signIn()
     const alarm = useAlarmStore()
     const rows = feedWithYesterday()
@@ -149,42 +151,44 @@ describe('已读只发生在今日', () => {
     const asMock = fetch as unknown as ReturnType<typeof vi.fn>
     expect(asMock.mock.calls.filter((c) => String(c[1]?.method) === 'PATCH')).toHaveLength(0)
     expect(alarm.byId(rows[4].id)?.handleStatus).not.toBe(1)
-    // 详情还是打开的（历史只是不参与已读，不影响看详情）
     expect(useSubpageStore().view).toEqual({ kind: 'alarm-detail', id: rows[4].id })
     w.unmount()
   })
 })
 
-describe('消息页「监控预警」入口的今日未读数', () => {
-  it('只数今日、只数未读，与列表红点个数一致', async () => {
+describe('消息页「监控预警」入口的今日待处理数', () => {
+  it('只数今日、只数待处理，与列表状态徽标一致', async () => {
     signIn()
     const alarm = useAlarmStore()
     alarm.liveAlarms = feedWithYesterday() // 今日 4 条（1 已读）+ 昨天 1 条（未读）
     alarm.liveState = 'ok'
 
     const msg = useMsgStore()
-    // 今日 4 条里 1 条已读 → 3；昨天那条未读**不算**（历史不参与未读判断）
-    expect(msg.monitorUnread).toBe(3)
-    expect(msg.categories[0].hint).toBe('今日未读')
+    // 今日 4 条里 1 条已完成 → 3 条待处理；昨天那条**不算**（历史不参与待办统计）
+    expect(msg.monitorPending).toBe(3)
+    expect(msg.categories[0].hint).toBe('今日待处理')
 
     const w = mount(MsgPage)
     await nextTick()
     const card = w.find('[data-kind="monitor"]')
-    expect(card.find('.msg-hint').text()).toBe('今日未读')
+    expect(card.find('.msg-hint').text()).toBe('今日待处理')
     expect(card.find('.msg-badge').text()).toBe('3')
 
-    // 同一份数据下，今日列表的红点正好也是 3 颗
+    // 同一份数据下，今日列表里「待处理」徽标正好也是 3 个
     const list = mount(InspectList)
     await nextTick()
     const today = list.findAll('.insp-pane:not(.insp-hist) .insp-item')
-    expect(today.filter((i) => i.find('.insp-dot').exists())).toHaveLength(3)
-    expect(list.findAll('.insp-pane.insp-hist .insp-item').filter((i) => i.find('.insp-dot').exists())).toHaveLength(0)
+    expect(today.filter((i) => i.find('.alarm-src-todo').exists())).toHaveLength(3)
+    // 历史那 1 条不参与统计，但状态徽标照实显示
+    const hist = list.findAll('.insp-pane.insp-hist .insp-item')
+    expect(hist).toHaveLength(1)
+    expect(hist[0].find('.alarm-src-todo').exists()).toBe(true)
 
     w.unmount()
     list.unmount()
   })
 
-  it('今日全部已读 → 不打角标（0 不是「未知」，不写 —）', async () => {
+  it('今日全部已完成 → 不打角标（0 不是「未知」，不写 —）', async () => {
     signIn()
     const alarm = useAlarmStore()
     const rows = camAlarmFixtures().slice(0, 3)

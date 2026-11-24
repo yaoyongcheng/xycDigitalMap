@@ -18,7 +18,8 @@ import { takeBackSlot } from '@/utils/backAction'
  * 几个刻意为之的约束：
  *   · 只在左边缘 24px 内起手（与微信一致）。页面里的普通横向拖动、图表
  *     触控、卡片滑动都不受影响。
- *   · 进入手势前先判方向：纵向为主就立刻撒手，不干扰列表滚动。
+ *   · 进入手势前先判方向：纵向为主就立刻撒手，不干扰列表滚动；**向左滑一律
+ *     不接管**（它不是返回，浏览器会把它当「前进」），起手记录同时清干净。
  *   · 全屏地图不接管 —— 它的拖拽本身就是平移地图，边缘手势会跟它抢。
  *   · **不再按平台让位**（2026-11 改）：以前 iOS Safari 上整个手势直接 return，
  *     理由是 Safari 自己也在这条边缘起手。代价是右滑时页面纹丝不动 —— 用户
@@ -122,6 +123,22 @@ export function useSwipeBack() {
     el.style.transform = ''
   }
 
+  /**
+   * 放弃这次起手：`tracking` 归位，并把 `layer` / `pid` 一并清掉。
+   *
+   * 只写 `tracking = false`（以前的写法）会把 `layer`（「正在跟手的层」）和
+   * `pid` 悬在那里：下一次 pointerdown 进来先撞上 `if (tracking || layer || held)
+   * abortGesture()`，白做一遍清理。向左滑尤其明显 —— 它一像素都没位移过，
+   * 却像刚被硬中断过一次手势；而左滑本身在浏览器里还可能被当成「前进」，
+   * 两层叠加起来就是现场那句「左滑之后页面闪一下首页又自己回来」。
+   * 清干净之后，「左滑 = 什么都没发生」才是字面意义上的什么都没发生。
+   */
+  function giveUp(): void {
+    tracking = false
+    layer = null
+    pid = -1
+  }
+
   function appEl(): HTMLElement | null {
     return document.querySelector<HTMLElement>('.app')
   }
@@ -208,13 +225,21 @@ export function useSwipeBack() {
     const dy = e.clientY - startY
 
     if (!active) {
-      // 纵向为主 → 用户要滚页面；向左 → 不是返回手势。立刻撒手，不做任何接管
+      /*
+       * 纵向为主 → 用户要滚页面；向左 → 不是返回手势。
+       * 两条都立刻撒手、不做任何接管，并且**把起手记录整条清掉**（见 giveUp）。
+       *
+       * 向左滑为什么必须彻底撒手：它不是「返回」，而是浏览器 / 系统层面的
+       * 「前进」（iOS 右边缘左滑、桌面触控板左滑）。应用内一像素都不该动，
+       * 剩下的交给 utils/historyBack.ts 的方向判定 —— 那边保证前进不关层、
+       * 不发任何 history.go。
+       */
       if (Math.abs(dy) > SLOP && Math.abs(dy) >= Math.abs(dx)) {
-        tracking = false
+        giveUp()
         return
       }
       if (dx < -SLOP) {
-        tracking = false
+        giveUp()
         return
       }
       if (dx < SLOP) return
@@ -311,9 +336,8 @@ export function useSwipeBack() {
   function onUp(e: PointerEvent): void {
     if (!tracking || e.pointerId !== pid) return
     if (!active) {
-      // 只是点了一下左边缘，什么也不做
-      tracking = false
-      pid = -1
+      // 只是点了一下左边缘，什么也不做（起手记录一并清掉）
+      giveUp()
       return
     }
     const dx = e.clientX - startX
@@ -333,8 +357,7 @@ export function useSwipeBack() {
   function onCancel(): void {
     if (!tracking) return
     if (!active || !layer) {
-      tracking = false
-      pid = -1
+      giveUp()
       return
     }
     const node = layer

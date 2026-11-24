@@ -103,6 +103,30 @@ const isPhone = isMobileDevice()
 const showLive = computed(() => hasStream.value && !streamBroken.value)
 
 /**
+ * 画面上要不要转那颗等待圈（2026-11-24 现场要求）。
+ *
+ * 只认「正在等画面」的三种态，全部来自 store 的 `playState`（组件不另记一份）：
+ *   · `buffering`    —— 引擎/元素在缓冲（连流、追帧、MSE 缓冲枯竭都会进这里）；
+ *   · `reconnecting` —— 断流后自动重连，画面已蒙起来，正等它回来；
+ *   · `idle`         —— 刚打开层 / 刚切点位，地址有了但还没接到第一帧。
+ *     加 `wantPlay` 是为了不把「用户自己停住的画面」画成在加载。
+ *
+ * 不转的三种：`playing`（已经在放）、`paused`（自动播放被策略拦下，该由说明条
+ * 提示点一下画面，转圈会被误读成「正在努力加载」）、`error`（真播不了）。
+ * 没有可播地址（只有 RTSP / 未登录）时也一律不转 —— 那不是加载。
+ *
+ * 未登录要单独挡一下：可播地址是按点位本地拼的，与登录无关，所以「登录掉了 +
+ * 地址还在」能同时成立；那时画面区摆的是「登录后可查看现场监控」的空态，
+ * 再叠一颗圈会和它抢正中央。
+ */
+const stageSpinning = computed(() => {
+  if (!hasStream.value || !auth.isLoggedIn) return false
+  const s = cam.playState
+  if (s === 'buffering' || s === 'reconnecting') return true
+  return s === 'idle' && wantPlay.value
+})
+
+/**
  * 「只有 RTSP」：地址拿到了，但浏览器/手机播不了。
  *
  * 这不是错误态 —— V2 桌面端能播（Unity 支持 RTSP，必要时还挂本地 ffmpeg 桥接），
@@ -443,6 +467,18 @@ function onMediaBuffering(): void {
 }
 
 /**
+ * 兜底：画面真在走就是「在播」。
+ *
+ * 正常情况下缓冲结束会来一个 `playing`，状态自己回到 `playing`；但部分机型从
+ * 缓冲恢复时只续帧、不再补发 `playing`，那颗等待圈就会一直转（现场表现是
+ * 「画面早就动了，圈还在」）。`timeupdate` 只在有帧推进时触发，用它把状态收回来
+ * 最省，也不会误伤重连 —— 断流时 MSE 缓冲枯竭，帧不再推进，这个回调不响。
+ */
+function onMediaTimeUpdate(): void {
+  if (cam.playState === 'buffering') cam.markPlaying()
+}
+
+/**
  * 原生 `<video>` 报错。
  *
  * FLV 的失败由引擎统一收口（先按退避重连，重试用完才把 error 抛回来），
@@ -521,14 +557,16 @@ const shotTitle = computed(() => {
   return `${cam.current.name} · ${cam.shotDateLabel} ${s.hm} 抓拍`
 })
 
-/** 详情正文那句：服务端抓拍时刻 + 原图体积 */
+/**
+ * 详情正文那句：只留服务端抓拍时刻。
+ *
+ * 2026-11-24：原来还拼了「原图 1.2MB」，按要求详情不再显示体积，一并去掉；
+ * 这句同时用作「查看原图」按钮的 aria-label 后半句，所以保持纯文字、不含单位。
+ */
 const shotMeta = computed(() => {
   const s = cam.shotPop
   if (!s) return ''
-  const size = s.size >= 1024 * 1024
-    ? `${(s.size / 1024 / 1024).toFixed(1)}MB`
-    : `${Math.max(1, Math.round(s.size / 1024))}KB`
-  return `抓拍 ${hhmm(s.at)} · 原图 ${size}`
+  return `抓拍 ${hhmm(s.at)}`
 })
 
 /**
@@ -602,14 +640,16 @@ watch(
 /**
  * 详情大图的全屏（2026-11-23 从「横屏」改为与智眸照片完全同一套）：
  * `page: true` 对 `documentElement` 申请系统全屏（整页全屏），而不是只把画布
- * 塞进全屏 —— 这样 `.phone-screen` 里的「把手机横过来看」提示卡也能一起进
- * 全屏；`hint: true` 在 iOS / 微信 / 系统锁了旋转时给出提示。
+ * 塞进全屏（`.cam-player` 有 transform，画布不铺满视口时 fixed 会以它为包含块）。
  *
- * `land` 为真时画布 Teleport 到 body 铺满视口（`.cam-player` 有 transform，
- * 不挪 DOM 的话 fixed 会以它为包含块，铺不满）。
+ * 2026-11-24：**不带 `hint`** —— 「把手机横过来看」那句引导只留给智眸
+ * VR 360 环视的全景全屏（见 `utils/landscapeHint.ts`），抓拍大图全屏即便
+ * 转不过去也不再弹卡片，画面本身照样铺满视口。
+ *
+ * `land` 为真时画布 Teleport 到 body 铺满视口。
  */
 const { land: shotLand, setStage: setShotStage, toggle: toggleShotLand, exit: exitShotLand } =
-  useLandscape({ page: true, hint: true })
+  useLandscape({ page: true })
 
 /** 关弹层 / 换日期时把全屏收回来，别留一块全屏黑挂在页面上 */
 watch(
@@ -741,8 +781,22 @@ function goLogin(): void {
           @playing="onMediaPlay"
           @pause="onMediaPause"
           @waiting="onMediaBuffering"
+          @timeupdate="onMediaTimeUpdate"
           @error="onMediaError"
         ></video>
+
+        <!--
+          等待圈（2026-11-24）：连流 / 缓冲 / 重连时在画面正中央转一个小圈，
+          出画面自动收掉。只管「在等」这一件事 —— 不写文案（说明条
+          `#camStageBar` 已经有一句 aria-live 在播报），也不挡点击
+          （`pointer-events: none`，点画面照旧能立即重连）。
+          与 `.cam-shots-spin` / `.hazard-spin` 同一套画法：细环 + 顶部高亮 +
+          `@keyframes spin`，这里只是配色按黑底取白、尺寸略大一点好辨认。
+        -->
+        <div v-if="stageSpinning" class="cam-stage-spin">
+          <i class="cam-stage-ring" aria-hidden="true"></i>
+          <span class="sr-only" role="status">视频加载中</span>
+        </div>
 
         <!-- 右上角操作（设计稿 #camPlayerStage > .cam-stage-acts） -->
         <div class="cam-stage-acts" id="camStageActs">

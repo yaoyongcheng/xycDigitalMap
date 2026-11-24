@@ -13,8 +13,11 @@ import type { TabId } from '@/types'
  * 原版 4 个 tab 是逐字重复的「svg + span」结构（仅图标 path 与文案不同），
  * 改 v-for 后渲染出的 DOM 完全相同 —— 属 1:1 范围内（依据迁移方案分层原则）。
  *
- * 角标：原版为硬编码 <b class="badge">2</b>，这里改读 msgStore.unreadTotal
- * （当前 2 条未读消息，和为 2，渲染结果一致），以便接入接口后自动更新。
+ * 角标：原版为硬编码 <b class="badge">2</b>，这里改读 msgStore.pendingTotal
+ * —— 那是**监控预警 + 无人机预警的今日待处理之和**（2026-11-24 现场口径）。
+ * 两个列表页各显示一份「今日待处理」，数字与底栏角标严格同源：切换 tab 刷新后
+ * 列表与角标一起变。移动端没有状态变更入口，所以这个数字只会随服务端的处置
+ * 结果下降，不会因为「点开看过」而减少。
  *
  * 2026-10：图标由「HTML 字符串 + v-html」改为 SvgIcon 直出（几何不变，
  * 配色仍由 app.css 的 .tab svg 规则提供），消除 innerHTML 解析。
@@ -65,12 +68,12 @@ function onTabClick(id: TabId): void {
       <SvgIcon :name="t.icon" />
       <span>{{ t.label }}</span>
       <!--
-        角标数字随消息页实际未读数联动（inspect 点击即清）。
+        角标数字 = 两类预警今日待处理之和，随切 tab 刷新一起更新（见 stores/msg.ts）。
         :key 让数字变化时元素重挂载，触发 app.css 的 badgePop 弹跳动画；
         超过 99 封顶显示 99+。
       -->
-      <b v-if="t.id === 'msg' && msg.unreadTotal" :key="msg.unreadTotal" class="badge">
-        {{ msg.unreadTotal > 99 ? '99+' : msg.unreadTotal }}
+      <b v-if="t.id === 'msg' && msg.pendingTotal" :key="msg.pendingTotal" class="badge">
+        {{ msg.pendingTotal > 99 ? '99+' : msg.pendingTotal }}
       </b>
     </button>
   </nav>

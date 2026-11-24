@@ -166,4 +166,35 @@ describe('子页滚动位置', () => {
     await nextTick()
     expect(bodyEl().scrollTop).toBe(0)
   })
+
+  /**
+   * 今日 / 历史各记各的位置（2026-11-24）。
+   *
+   * 同一个视图容器里有两套内容（`.insp-pane` / `.insp-pane.insp-hist` 用 `.hide`
+   * 切显隐），若滚动记忆只按视图 key 记，就会出现「在历史里滚到第 300px，
+   * 点进详情返回后，那 300px 被写到今日页签上」——今日列表没那么长，直接贴底，
+   * 现场观感是「返回后列表跑到别的地方去了」。所以记忆表的键是「视图 + 页签」。
+   */
+  it('今日 / 历史 各记各的滚动位置：切页签不串轴', async () => {
+    const sub = useSubpageStore()
+    sub.openAlarmHist('today')
+    await nextTick()
+    bodyEl().scrollTop = 120
+
+    // 切到历史：从顶部开始，不继承今日那 120
+    sub.openAlarmHist('hist')
+    await nextTick()
+    expect(bodyEl().scrollTop).toBe(0)
+    bodyEl().scrollTop = 600
+
+    // 切回今日：回到今日自己的位置
+    sub.openAlarmHist('today')
+    await nextTick()
+    expect(bodyEl().scrollTop).toBe(120)
+
+    // 再回历史：仍记着 600
+    sub.openAlarmHist('hist')
+    await nextTick()
+    expect(bodyEl().scrollTop).toBe(600)
+  })
 })

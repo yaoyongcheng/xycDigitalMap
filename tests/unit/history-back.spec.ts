@@ -302,4 +302,99 @@ describe('浏览器返回接管', () => {
     expect(back).not.toHaveBeenCalled()
     expect(stack[0]?.wbLayer).toBeUndefined()
   })
+
+  /*
+   * 2026-11-24 现场事故：「在任意页面左滑一下，页面先闪出首页，一两秒后又自己
+   * 回到左滑前那一页」。
+   *
+   * 左滑在浏览器那边是**前进**。而页面内点返回 / 点底栏切 tab 时，`sync()` 会用
+   * `history.go(-1)` 把多余的条目退掉 —— 条目本身还在，只是跑到光标前面（前向栈），
+   * 它的快照拍在「那一层打开之前」，也就是首页。
+   *
+   * 旧逻辑只按层数判断（`depth <= target` 就走 settle），80ms 后 `sync()` 又发现
+   * 「条目比层数多」，再补一次 `history.go(-1)` —— 于是浏览器先演一遍「前进到
+   * 首页」，再演一遍「退回来」。现在前进方向一个 go 都不许发：落到旧条目上就地
+   * 把层数改回真实值（replaceState 不产生遍历），画面与状态一动不动。
+   */
+  it('前进落到被裁掉的旧条目：不关层、不回弹，就地把层数改回来', async () => {
+    vi.useFakeTimers()
+    const sub = useSubpageStore()
+    sub.openInspectList('today')
+    wrapper = mount(Host)
+    await nextTick()
+    vi.advanceTimersByTime(400)
+    expect(cursor).toBe(1)
+
+    // 页面内关掉这一层：条目被裁到光标前面（前向栈里还留着它）
+    sub.close()
+    await nextTick()
+    vi.advanceTimersByTime(400)
+    expect(cursor).toBe(0)
+    expect(go).toHaveBeenCalledTimes(1)
+
+    // 用户左滑 → 前进到那条旧条目（wbLayer 1，而真实层数是 0）
+    travel(1)
+    await nextTick()
+
+    // 不许关层（否则会把用户已经关掉的页面再关一次），也不许再发 go 弹回去
+    expect(sub.isOpen).toBe(false)
+    expect(go).toHaveBeenCalledTimes(1)
+    expect(cursor).toBe(1)
+    // 层数就地改写：条目与真实层数重新自洽，下一次返回按真实栈算
+    expect(stack[1]?.wbLayer).toBeUndefined()
+
+    // 迟到的对齐也不许把它弹走（旧实现的 80ms 定时器就是在这里发 go 的）
+    vi.advanceTimersByTime(1000)
+    expect(go).toHaveBeenCalledTimes(1)
+    expect(cursor).toBe(1)
+  })
+
+  it('逐条裁剪改成一次退到位（少演几段转场）', async () => {
+    vi.useFakeTimers()
+    const sub = useSubpageStore()
+    sub.openInspectList('today')
+    wrapper = mount(Host)
+    await nextTick()
+    vi.advanceTimersByTime(400)
+    drillDown()
+    await nextTick()
+    vi.advanceTimersByTime(400)
+    expect(cursor).toBe(2)
+
+    // 底栏切 tab：dismiss() 一次关掉两层
+    sub.dismiss()
+    await nextTick()
+    vi.advanceTimersByTime(400)
+
+    expect(go).toHaveBeenCalledTimes(1)
+    expect(go).toHaveBeenCalledWith(-2)
+    expect(cursor).toBe(0)
+  })
+
+  /*
+   * Safari 会节流 / 丢弃转场期间的 history.go（现场已验证过）。裁剪发出去却没
+   * 生效时不能一直重试，也不能留下「条目比层数多」这个状态 —— 那会让下一位
+   * 用户按返回算不出要关哪一层。重试一次后直接就地改写层数。
+   */
+  it('裁剪的 go 被吞掉：重试一次后就地改写层数，不死循环', async () => {
+    vi.useFakeTimers()
+    const sub = useSubpageStore()
+    sub.openInspectList('today')
+    wrapper = mount(Host)
+    await nextTick()
+    vi.advanceTimersByTime(400)
+    expect(cursor).toBe(1)
+
+    // 从这一刻起，go 失效（模拟被浏览器节流）
+    go.mockImplementation(() => {})
+
+    sub.close()
+    await nextTick()
+    vi.advanceTimersByTime(2000)
+
+    // 两次尝试 + 一次兜底改写；条目还在，但层数已经和真实状态一致
+    expect(go.mock.calls.length).toBeLessThanOrEqual(2)
+    expect(cursor).toBe(1)
+    expect(stack[1]?.wbLayer).toBeUndefined()
+  })
 })

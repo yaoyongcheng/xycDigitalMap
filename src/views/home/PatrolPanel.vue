@@ -8,6 +8,7 @@ import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { PANO_SHEET_ID, usePatrolStore } from '@/stores/patrol'
 import { panoLabel } from '@/utils/pano'
 import { useSlowLoading } from '@/utils/slowLoading'
+import { useTabRefresh } from '@/utils/tabRefresh'
 
 /**
  * 首页 · 智眸面板（现场快照・实景核验）
@@ -50,6 +51,8 @@ import { useSlowLoading } from '@/utils/slowLoading'
  *
  * 默认选中「第一个真有照片的分类」，而不是设计稿写死的「项目全景」：现场如果
  * 没有全景航线，一进来就是「这个分类下还没有照片」，等于把页面做成空白。
+ * 2026-11-24 起这个「第一个有照片的」由首次进入时的逐格探测得出（见下方
+ * 「面板级进入 vs 子页切换」），探到就停，不会把六条链一起打一遍。
  *
  * ## 缩略图
  *
@@ -61,29 +64,39 @@ const sheet = useBottomSheetStore()
 const patrol = usePatrolStore()
 
 /**
- * 面板挂载即取一次。
+ * ## 面板级进入 vs 子页切换（2026-11-24 重构）
  *
- * 首页切换「智巡 / 智眸 / 智控」标签时面板是真的卸载再挂载（`HomeSheet` 的
- * `.home-panels` 带 `:key="home.homeMod"`），所以这里同时是「切回智眸」的入口。
- * 一分钟内的重复进入由 store 的 `refresh()` 直接复用上一批（媒体接口有限流，
- * 每次刷新都要串行扫十几条请求，见 `stores/patrol.ts` 的 `PROBE_GAP`）。
+ * 首页切「智巡 / 智眸 / 智控」时面板是真的卸载再挂载（`HomeSheet` 的
+ * `.home-panels` 带 `:key="home.homeMod"`），所以**挂载 = 从别的页面切回来**。
+ * 两条路径分得很清：
+ *
+ *   · 面板级进入（这里）→ `patrol.enterPanel()`：
+ *       续上上次选中的那一格并刷新它；本会话还没选过时才逐格探，探到第一个
+ *       有内容的就停。**不会把六条链一起打一遍。**
+ *   · 子页切换（面板内部的分类按钮）→ 下面那个 `watch(activeCat)`：
+ *       只取新点中的那一格。
+ *
+ * 选中状态不放在组件里，放 store 的 `pickedCat` —— 组件会被卸载，
+ * 而「上次选了全景航拍，切回来还是全景航拍」正是这次要保住的东西。
  */
 onMounted(() => {
-  void patrol.refresh()
+  void patrol.enterPanel()
 })
 
-/** 慢请求才显示骨架 */
-const syncing = computed(
-  () =>
-    patrol.state === 'loading' &&
-    !patrol.photos.length &&
-    !patrol.spot.length &&
-    !patrol.yard.length &&
-    !patrol.facility.length &&
-    !patrol.safety.length &&
-    !patrol.gate.length,
-)
-const showSkel = useSlowLoading(() => syncing.value)
+/**
+ * 切回「首页」tab 时重取当前这一格（2026-11-24）。
+ *
+ * 面板常驻的只有「当前 homeMod」那一个，所以这里只管自己这一格：
+ *   · 已经选过分类 → `loadCat(pickedCat, true)`：**强制**取一次，绕过 15 秒
+ *     成功节流 —— 用户切走再回来就是想看新图，命中节流等于没刷；
+ *   · 还没选过（首次进入前）→ 走 `enterPanel()` 的探测逻辑。
+ *
+ * 只取一格，不会把六条链一起打一遍（那正是 `enterPanel` 设计上要避免的）。
+ */
+useTabRefresh('home', () => {
+  if (patrol.pickedCat) void patrol.loadCat(patrol.pickedCat, true)
+  else void patrol.enterPanel()
+})
 
 /** 每张照片带上归属分类（`patrol.list` 已按时间倒序） */
 const tagged = computed(() => patrol.list.map((p) => ({ ...p, cat: catOfTask(p.taskName) })))
@@ -122,8 +135,15 @@ const chips = computed(() =>
   }),
 )
 
-/** 手动选中的分类（空串 = 还没点过，跟随默认） */
-const picked = ref('')
+/**
+ * 手动选中的分类 —— 存在 store（`pickedCat`）里，组件被卸载也不会丢。
+ *
+ * 空串 = 本会话还没点过，跟随 `defaultCat`。
+ */
+const picked = computed({
+  get: () => patrol.pickedCat,
+  set: (v: string) => patrol.pickCat(v),
+})
 
 /** 默认落点：第一个真有照片的分类，全空时退回设计稿的「项目全景」 */
 const defaultCat = computed(() => chips.value.find((c) => c.count > 0)?.id ?? PATROL_CATS[0].id)
@@ -132,6 +152,16 @@ const defaultCat = computed(() => chips.value.find((c) => c.count > 0)?.id ?? PA
 const activeCat = computed(() =>
   picked.value && chips.value.some((c) => c.id === picked.value) ? picked.value : defaultCat.value,
 )
+
+/**
+ * 子页切换：**只在面板内部点另一格时**发生，只取点中的这一格。
+ *
+ * 面板级进入不走这里 —— 那是 `onMounted` 的 `enterPanel()`，由它决定「续上
+ * 上次那一格」还是「首次探测」。两者分开，切回来才不会把六格全刷一遍。
+ */
+watch(activeCat, (id) => {
+  void patrol.loadCat(id)
+})
 
 /**
  * 当前分类下要铺的照片。
@@ -182,11 +212,11 @@ const hasContent = computed(
 )
 
 /**
- * 当前分类是否**还在等接口响应**。
+ * 当前分类是否**还在等接口响应**（含首次进入的逐格探测）。
  *
- * 六格各自一条链、各自一套状态（见 `stores/patrol.ts`：`panoState / spotState /
- * yardState / facilityState / safetyState`），所以判断也按当前选中的那一格去看
- * 它自己的状态；「出入口管控」走照片墙，看整页的 `state`。
+ * 六格各自一条链、各自一套状态（见 `stores/patrol.ts` 的 `catStateOf`），
+ * 所以判断也只看当前选中的那一格；`entering` 是「首次进入还在探第一格」，
+ * 探测期间无论停在哪一格都应当铺骨架。
  *
  * 为什么单独拎这个判断：以前「还在等响应」和「这格真的没照片」共用一句话，
  * 数据还在路上，页面已经写下结论「这个分类下还没有照片」—— 现场的观感就是
@@ -194,17 +224,53 @@ const hasContent = computed(
  * 响应回来（ok / error）才落回原文案。
  *
  * ⚠️ 必须放在 `activeCat` / `hasContent` 之后：下面的 `useSlowLoading` 会在
- * setup 阶段**立刻**读一次 `catLoading`（`watch` 的 immediate），提前定义会
- * 命中「Cannot access before initialization」。
+ * setup 阶段**立刻**读一次（`watch` 的 immediate），提前定义会命中
+ * 「Cannot access before initialization」。
  */
-const catLoading = computed(() => {
-  if (activeCat.value === 'pano') return patrol.panoState === 'loading'
-  if (activeCat.value === 'pit') return patrol.spotState === 'loading'
-  if (activeCat.value === 'equip') return patrol.yardState === 'loading'
-  if (activeCat.value === 'face') return patrol.facilityState === 'loading'
-  if (activeCat.value === 'layout') return patrol.safetyState === 'loading'
-  if (activeCat.value === 'yard') return patrol.gateState === 'loading'
-  return patrol.state === 'loading'
+const catLoading = computed(() => patrol.entering || patrol.catStateOf(activeCat.value) === 'loading')
+
+/** 当前分类自己的状态（ok / error / idle），空态文案按它落 */
+const catState = computed(() => patrol.catStateOf(activeCat.value))
+
+/** 六格里任何一格手里有东西（首屏骨架只在「一片空白」时才铺） */
+const anyData = computed(
+  () =>
+    Boolean(patrol.pano) ||
+    patrol.list.length > 0 ||
+    patrol.spot.length > 0 ||
+    patrol.yard.length > 0 ||
+    patrol.facility.length > 0 ||
+    patrol.safety.length > 0 ||
+    patrol.gate.length > 0,
+)
+
+/**
+ * 首屏骨架：当前这一格还在取，而且**哪一格都还没有东西**。
+ *
+ * 与下面「图片刷新」的区别：这是第一次进来（手里什么都没有），铺的就是
+ * 智眸的首屏骨架；已经有别的格子在显示时改成小字提示，不把已有画面盖掉。
+ */
+const syncing = computed(() => catLoading.value && !anyData.value)
+const showSkel = useSlowLoading(() => syncing.value)
+
+/** 当前分类取不到时写哪一句（六格各说各的，不统一成「照片」） */
+const catErrorText = computed(() => {
+  switch (activeCat.value) {
+    case 'pano':
+      return 'VR 360环视暂时取不到'
+    case 'pit':
+      return '全景航拍照片暂时取不到'
+    case 'equip':
+      return '材料堆场照片暂时取不到'
+    case 'face':
+      return '设备设施照片暂时取不到'
+    case 'layout':
+      return '安全巡查照片暂时取不到'
+    case 'yard':
+      return '出入口管控照片暂时取不到'
+    default:
+      return '巡检照片暂时取不到'
+  }
 })
 
 /**
@@ -221,7 +287,7 @@ const gateMissing = computed(() => {
 })
 
 /** 刷新提示同样「慢才显示」：几十毫秒就回来的请求不该闪一下「图片刷新」 */
-const showRefresh = useSlowLoading(() => catLoading.value)
+const showRefresh = useSlowLoading(() => catLoading.value && !hasContent.value)
 
 /** 全景的**拼接完成**时间（`endTime`，与 V2 重建成果列表一致，见 `api/drone.ts`） */
 const panoTime = computed(() => (patrol.pano?.time ?? '').slice(0, 16).replace('T', ' '))
@@ -275,38 +341,14 @@ function onThumbLoad(id: string, e: Event): void {
   if (img) patrol.setDims(id, img.naturalWidth, img.naturalHeight)
 }
 
-function retry(): void {
-  void patrol.load(true)
-}
-
-/** 全景单独重试：不重扫照片墙（那串要十几秒且撞限流） */
-function retryPano(): void {
-  void patrol.loadPano(true)
-}
-
-/** 「全景航拍」9 张单独重试：同样不惊动照片墙 */
-function retrySpot(): void {
-  void patrol.loadSpot()
-}
-
-/** 「材料堆场」3 张单独重试 */
-function retryYard(): void {
-  void patrol.loadYard()
-}
-
-/** 「设备设施」4 张（航拍 2 + 塔吊抓拍 2）单独重试 */
-function retryFacility(): void {
-  void patrol.loadFacility()
-}
-
-/** 「安全巡查」2 张单独重试（两条航线各拉一次） */
-function retrySafety(): void {
-  void patrol.loadSafety()
-}
-
-/** 「出入口管控」5 张单独重试（不重扫照片墙：5 张快照串行要几秒） */
-function retryGate(): void {
-  void patrol.loadGate()
+/**
+ * 空态上的「重试」：只重取**当前这一格**，不惊动别的格。
+ *
+ * `force` 绕过 store 里 15 秒 / 60 秒那两道闸 —— 用户已经明说要再取一次了。
+ * 也不用再按分类写六个函数：取数入口已经收成 `loadCat(id)` 一个。
+ */
+function retryCurrent(): void {
+  void patrol.loadCat(activeCat.value, true)
 }
 </script>
 
@@ -317,21 +359,14 @@ function retryGate(): void {
       <em>{{ chips.find((c) => c.id === activeCat)?.count ?? 0 }} 张</em>
     </div>
 
-    <!-- 分类：3 列 × 2 行固定版式（设计稿 .patrol-cats），0 张的分类照旧占位 -->
-    <div
-      v-if="
-        patrol.list.length ||
-        patrol.pano ||
-        patrol.spot.length ||
-        patrol.yard.length ||
-        patrol.facility.length ||
-        patrol.safety.length ||
-        patrol.gate.length
-      "
-      class="patrol-cats"
-      role="group"
-      aria-label="照片分类"
-    >
+    <!--
+      分类：3 列 × 2 行固定版式（设计稿 .patrol-cats），0 张的分类照旧占位。
+
+      2026-11-24：这排按钮**恒定显示**，不再等「有数据才出现」。子页改成懒加载后
+      计数只有点开过的那一格才知道，按钮如果也藏着，首屏一空就没有任何入口可切；
+      而它本来就是六个固定的位置，不依赖数据。
+    -->
+    <div class="patrol-cats" role="group" aria-label="照片分类">
       <button
         v-for="c in chips"
         :key="c.id"
@@ -389,74 +424,15 @@ function retryGate(): void {
       <p class="patrol-refreshing-tip" role="status">图片刷新</p>
     </div>
 
-    <!-- 有内容，但当前分类下没有：设计稿原文「这个分类下还没有照片」 -->
-    <div
-      v-else-if="
-        !hasContent &&
-        (patrol.list.length ||
-          patrol.pano ||
-          patrol.spot.length ||
-          patrol.yard.length ||
-          patrol.facility.length ||
-          patrol.safety.length ||
-          patrol.gate.length)
-      "
-      class="patrol-empty"
-    >
-      <!-- 全景 / 全景航拍 / 材料堆场 / 设备设施走的是另外几条接口，挂了要说「取不到」而不是「没有照片」 -->
-      <p v-if="activeCat === 'pano' && patrol.panoState === 'error'">VR 360环视暂时取不到</p>
-      <p v-else-if="activeCat === 'pit' && patrol.spotState === 'error'">全景航拍照片暂时取不到</p>
-      <p v-else-if="activeCat === 'equip' && patrol.yardState === 'error'">材料堆场照片暂时取不到</p>
-      <p v-else-if="activeCat === 'face' && patrol.facilityState === 'error'">设备设施照片暂时取不到</p>
-      <p v-else-if="activeCat === 'layout' && patrol.safetyState === 'error'">安全巡查照片暂时取不到</p>
-      <p v-else-if="activeCat === 'yard' && patrol.gateState === 'error'">出入口管控照片暂时取不到</p>
+    <!--
+      当前分类下没有东西：取不到就写「暂时取不到」+ 重试，取到了但没有照片就写
+      设计稿原文「这个分类下还没有照片」。两条都只看**这一格**自己的状态。
+    -->
+    <div v-else-if="!hasContent" class="patrol-empty">
+      <!-- 六格各走自己的链，挂了要说「取不到」而不是「没有照片」 -->
+      <p v-if="catState === 'error'">{{ catErrorText }}</p>
       <p v-else>这个分类下还没有照片</p>
-      <button
-        v-if="activeCat === 'pano' && patrol.panoState === 'error'"
-        class="data-empty-btn"
-        type="button"
-        @click="retryPano"
-      >
-        重试
-      </button>
-      <button
-        v-else-if="activeCat === 'pit' && patrol.spotState === 'error'"
-        class="data-empty-btn"
-        type="button"
-        @click="retrySpot"
-      >
-        重试
-      </button>
-      <button
-        v-else-if="activeCat === 'equip' && patrol.yardState === 'error'"
-        class="data-empty-btn"
-        type="button"
-        @click="retryYard"
-      >
-        重试
-      </button>
-      <button
-        v-else-if="activeCat === 'face' && patrol.facilityState === 'error'"
-        class="data-empty-btn"
-        type="button"
-        @click="retryFacility"
-      >
-        重试
-      </button>
-      <button
-        v-else-if="activeCat === 'layout' && patrol.safetyState === 'error'"
-        class="data-empty-btn"
-        type="button"
-        @click="retrySafety"
-      >
-        重试
-      </button>
-      <button
-        v-else-if="activeCat === 'yard' && patrol.gateState === 'error'"
-        class="data-empty-btn"
-        type="button"
-        @click="retryGate"
-      >
+      <button v-if="catState === 'error'" class="data-empty-btn" type="button" @click="retryCurrent">
         重试
       </button>
     </div>
@@ -483,7 +459,6 @@ function retryGate(): void {
             referrerpolicy="no-referrer"
           />
           <span class="patrol-thumb-tag is-pano">全景</span>
-          <span class="patrol-thumb-size">{{ patrol.sizeText(patrol.pano.size) }}</span>
         </div>
         <div class="patrol-card-ft">
           <div class="patrol-card-name">
@@ -517,12 +492,9 @@ function retryGate(): void {
             @load="onThumbLoad(p.id, $event)"
             @error="markBroken(p.id)"
           />
-          <span v-else class="patrol-thumb-hint">点击查看原图 · {{ patrol.sizeText(p.size) }}</span>
+          <span v-else class="patrol-thumb-hint">点击查看原图</span>
           <span class="patrol-thumb-tag" :class="{ 'is-pano': patrol.isPano(p.id) }">
             {{ patrol.isPano(p.id) ? '全景' : p.snap ? '抓拍' : '航拍' }}
-          </span>
-          <span v-if="p.thumbnail && !broken[p.id]" class="patrol-thumb-size">
-            {{ patrol.sizeText(p.size) }}
           </span>
         </div>
         <div class="patrol-card-ft">
@@ -548,13 +520,6 @@ function retryGate(): void {
       <p v-if="gateMissing.length" class="patrol-gate-note" role="status">
         {{ gateMissing.join('、') }} 暂时没有画面
       </p>
-    </div>
-
-    <div v-else class="data-empty" data-empty="patrol">
-      <p>{{ patrol.state === 'error' ? patrol.error || '巡检照片加载失败' : '暂无航拍照片' }}</p>
-      <button v-if="patrol.state === 'error'" class="data-empty-btn" type="button" @click="retry">
-        重试
-      </button>
     </div>
   </div>
 </template>

@@ -11,6 +11,7 @@ import {
   fetchTaskRecords,
   fetchTaskStat,
   fetchTodayRecords,
+  fetchTodayTaskList,
   fetchTelemetry,
   type DroneDock,
   type DroneLiveStream,
@@ -112,7 +113,17 @@ const ESTIMATE_RETRY = 5 * 60 * 1000
  * 早先只读 `status`，于是 15:00 那次失败的「安全巡检」一直显示「已完成」，
  * 而三格里的「失败次数」又确实是 1 —— 同一份数据两处两个说法。
  */
-function stateText(s: number, result: number | null): string {
+function stateText(s: number, result: number | null, suspended = false): string {
+  /**
+   * 暂停的排班按「未执行」显示（用户 2026-11-24 定）。
+   *
+   * 服务端把当天被暂停的排班放在 `unfinishedTaskList` 里（`suspended:true`），
+   * 但现场看清单只关心「这一架次飞没飞」——「已暂停」是个平台侧的调度状态，
+   * 摆到清单里反而像另一种执行结果。这里与 `result === 4` 合并成「未执行」，
+   * 配色也一致（`stateClass` 给 `is-plan` 灰）。暂停条数仍单独统计在
+   * `suspendedCount` 里，供三格的「今日任务」把总数补齐。
+   */
+  if (suspended) return '未执行'
   if (result === 3) return '已失败'
   if (result === 4 || s === -1) return '未执行'
   if (s === 1) return '执行中'
@@ -124,7 +135,8 @@ function stateText(s: number, result: number | null): string {
 }
 
 /** 任务状态 → 展示 class（沿用页面已有的 is-ok / is-done / is-bad 语义） */
-function stateClass(s: number, result: number | null): string {
+function stateClass(s: number, result: number | null, suspended = false): string {
+  if (suspended) return 'is-plan'
   if (result === 3 || s === 3) return 'is-bad'
   if (s === 1) return 'is-ok'
   if (s === 2) return 'is-done'
@@ -233,6 +245,12 @@ export const useUavStore = defineStore('uav', () => {
    *
    * 2026-11-23 起改回**只本项目**（用户要求剔除「光谷元著」）：明细只传
    * `pids: [KH_IDS.pid]`，统计只传 `pid: KH_IDS.pid`，两边条数依然对得上。
+   *
+   * 2026-11-24：清单主源换成 `fetchTodayTaskList`（全量端点，见 `loadTodayList`），
+   * `records` 现在是**当天全部排班**（已完成 / 执行中 / 未执行，含平台标 `suspended`
+   * 的暂停项 —— 暂停在清单里按「未执行」显示，见 `stateText`），
+   * 不再只是「已产生记录的项」。这里的日期过滤留着 —— 它拦的是服务端把
+   * 次日排班混进来的边界差异，与新数据源无关。
    */
   const todayRecords = computed<DroneTaskRecord[]>(() => {
     const key = dayKey(0)
@@ -242,12 +260,12 @@ export const useUavStore = defineStore('uav', () => {
   })
 
   /**
-   * 当天还没飞的任务（统计接口的 `unfinishedTaskList`）。
+   * 当天还没飞的任务（统计接口的 `unfinishedTaskList`）—— 现在只是**补漏**。
    *
-   * 为什么要它：三格的「今日任务」是**计划口径**（成功 + 失败 + 还没飞），
-   * 而执行记录接口只返回「已产生记录」的项。2026-11-23 现场 15 与明细 13 对不上，
-   * 差的就是当天剩下那两条排班（17:00 土方1 / 17:45 安全巡检）。用户要求
-   * 「查看今日任务」里**也要包含未执行的任务**，所以这里把它们补进清单。
+   * 2026-11-24 实测这个字段会被截断：三格 `taskCount 15`、`planCount 11`，
+   * 而 `unfinishedTaskList` 只回 7 条（当天最后 5 条排班不在里面）。
+   * 所以清单主源改成全量端点（`loadTodayList`），它已经把 15 条给全；
+   * 这里只在「主源少给了某条」时补上，保证清单条数不低于三格。
    *
    * 与记录去重：同一 `taskId + 开始时间` 已经在记录里（例如正在执行的任务，
    * 统计里仍算「未完成」但也已有记录），就不再补一条 —— 否则会出现
@@ -282,10 +300,11 @@ export const useUavStore = defineStore('uav', () => {
   })
 
   /**
-   * 今日任务（视图）：**已执行的记录 + 还没飞的计划项**，按开始时间倒序。
+   * 今日任务（视图）：**当天全部排班 + 统计里没回传的那几条补漏**，按开始时间倒序。
    *
-   * 两者合起来才等于三格的 `taskCount`；只列记录会让「15 与 13 对不上」
-   * 反复被当成丢数据。
+   * 条数必须与三格的 `taskCount` 一致（用户 2026-11-24 明确要求「永远一致」）：
+   * 主源是全量端点，已包含已完成 / 执行中 / 未执行（含暂停）三类文案；
+   * `todayPending` 只补主源漏掉的，按 `taskId + start` 去重后不会重复。
    */
   const todayTasks = computed<UavTaskView[]>(() => {
     const done = todayRecords.value.map((r) => {
@@ -295,8 +314,8 @@ export const useUavStore = defineStore('uav', () => {
         time: r.start.slice(11, 16),
         name: r.taskName,
         taskId: r.taskId,
-        state: stateText(r.status, r.result),
-        stateClass: stateClass(r.status, r.result),
+        state: stateText(r.status, r.result, r.suspended === true),
+        stateClass: stateClass(r.status, r.result, r.suspended === true),
         startAt: Number.isFinite(a) ? a : null,
         // pid 缺失（老数据）按本项目算，不确定时不要凭空扣掉一条
         own: r.pid === null || r.pid === KH_IDS.pid,
@@ -330,8 +349,20 @@ export const useUavStore = defineStore('uav', () => {
     return estimates.value[String(r.taskId)] ?? null
   })
 
-  /** 三格统计：接口没取到就是 null（页面写「—」，不拿本地条数冒充） */
-  const taskTotal = computed(() => stat.value?.taskCount ?? null)
+  /**
+   * 三格统计：接口没取到就是 null（页面写「—」，不拿本地条数冒充）。
+   *
+   * 「今日任务」= `taskCount + suspendedCount`（用户 2026-11-24 定）：
+   * 服务端的 `taskCount` **不含已暂停**，而当天排班（清单）含。
+   * 10:13 实测 `taskCount 4`（2 完成 + 1 失败 + 1 执行中）+ `suspendedCount 11`
+   * = 15，正好等于全量清单 15 条 —— 只显示 4 就会重现「卡上 4、清单 15」。
+   * 暂停的行在清单里按「未执行」显示（见 `stateText`），不再单列一种状态。
+   */
+  const taskTotal = computed(() => {
+    const s = stat.value
+    if (!s) return null
+    return s.taskCount + (s.suspendedCount ?? 0)
+  })
   const taskDone = computed(() => stat.value?.finishedCount ?? null)
   const taskFailed = computed(() => stat.value?.failedCount ?? null)
 
@@ -520,6 +551,29 @@ export const useUavStore = defineStore('uav', () => {
   }
 
   /**
+   * 今日任务清单：**先取全量端点，挂了才退回老拼法**。
+   *
+   * 2026-11-24 实测：三格 `taskCount` 是 15，而统计响应里的
+   * `unfinishedTaskList` 只有 7 条（+ `completedTaskList` 3 条 = 10）——
+   * 15:00 / 15:30 / 16:15 / 17:00 / 17:45 这 5 条排班服务端不回，
+   * 于是「查看今日任务」永远比卡上的 15 少 5 行。全量端点
+   * （`/dashboard/task/list/execRecord/today`）把这 15 条一次给全，
+   * 清单与三格才对得上（见 `api/drone.ts::fetchTodayTaskList`）。
+   *
+   * 兜底路径不动：老网关没有这个端点时用旧的两段式（执行记录 + 未完成排班），
+   * 少列几条也强过整页报错。
+   */
+  async function loadTodayList(): Promise<DroneTaskRecord[]> {
+    try {
+      const rows = await fetchTodayTaskList(KH_IDS.pid)
+      if (rows.length) return rows
+    } catch {
+      // 端点不存在 / 被网关拦 / 超时：落到下面的兜底
+    }
+    return fetchTodayRecords({ start: dayKey(0), end: dayKey(1), pids: [KH_IDS.pid] })
+  }
+
+  /**
    * 拉一轮无人机数据（子页用）。
    *
    * 四块各自成败互不影响：任务列表是主信息（决定 state），遥测/统计/航线
@@ -533,7 +587,7 @@ export const useUavStore = defineStore('uav', () => {
     state.value = 'loading'
     inflight = (async () => {
       const [list, s, tel, dk, rt, fly, dockFly] = await Promise.allSettled([
-        fetchTodayRecords({ start: dayKey(0), end: dayKey(1), pids: [KH_IDS.pid] }),
+        loadTodayList(),
         fetchTaskStat({ pid: KH_IDS.pid }),
         fetchTelemetry(),
         fetchDockTelemetry(),
@@ -563,7 +617,18 @@ export const useUavStore = defineStore('uav', () => {
         state.value = 'error'
         const e = list.reason
         error.value = e instanceof Error ? e.message : '无人机任务加载失败'
-        records.value = []
+        /*
+         * **不清空 `records`**（2026-11-24）。
+         *
+         * 原来这里写 `records.value = []`，代价是「一次刷新失败 = 当前巡检消失」：
+         * 页面 mount 与点「重试」都走这条强制刷新，失败一次就会让 `running` 变
+         * null —— 「当前巡检」卡片、进度条、实时画面（门禁是 `running`）一起下线，
+         * 而飞机其实还在飞。30s 那轮 `refreshSlow` 本来就不清，两条路口径还打架。
+         *
+         * 现在与 `refreshSlow` 一致：失败只改状态和原因，手上有什么就留着什么；
+         * 页面在 `state === 'error'` 时补一句「以上为上一次的数据」，不假装实时。
+         * 真正该清空的是退出登录（`reset()`），不是一次网络抖动。
+         */
         lastFailAt = Date.now()
       }
       inflight = null
@@ -642,11 +707,7 @@ export const useUavStore = defineStore('uav', () => {
     missionAt = Date.now()
     missionInflight = (async () => {
       try {
-        records.value = await fetchTodayRecords({
-          start: dayKey(0),
-          end: dayKey(1),
-          pids: [KH_IDS.pid],
-        })
+        records.value = await loadTodayList()
         if (running.value) await loadEstimates()
       } catch {
         // 静默：卡片上少一条进度条，比摆一条假的进度条好
@@ -702,17 +763,17 @@ async function refreshSlow(): Promise<void> {
     fetchLiveStream(KH_IDS.droneDeviceId),
     fetchLiveStream(KH_IDS.dockDeviceId),
     fetchTaskStat({ pid: KH_IDS.pid }),
-    fetchTodayRecords({ start: dayKey(0), end: dayKey(1), pids: [KH_IDS.pid] }),
+    loadTodayList(),
     fetchDockTelemetry(),
   ])
   // `online` 会从 false 变 true（机库摄像头开始推流），页面靠它决定要不要挂播放器
   if (fly.status === 'fulfilled') droneStream.value = fly.value
   if (dockFly.status === 'fulfilled') dockStream.value = dockFly.value
   if (s.status === 'fulfilled') stat.value = s.value
-    if (list.status === 'fulfilled') records.value = list.value
-    // 任务刚起飞（进页面时还没跑）：这时才去补历史时长，补到就出进度条
-    if (running.value) void loadEstimates()
-  }
+  if (list.status === 'fulfilled') records.value = list.value
+  // 任务刚起飞（进页面时还没跑）：这时才去补历史时长，补到就出进度条
+  if (running.value) void loadEstimates()
+}
 
   /** 整页刷一轮：进页面、切回标签页时用，两档节拍都走一遍 */
   async function refreshLive(): Promise<void> {

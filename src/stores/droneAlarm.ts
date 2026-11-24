@@ -5,7 +5,7 @@ import { ApiError } from '@/api/http'
 import { fetchAuditWorkOrders, fetchWorkOrderPicture, type DroneWorkOrder } from '@/api/drone'
 import { useAuthStore } from './auth'
 import { relTime } from '@/utils/videoAlarm'
-import { addDays, dateKey, startOfDay } from '@/utils/date'
+import { addDays, dateKey, monthStart, startOfDay } from '@/utils/date'
 import { shrinkDataUrl } from '@/utils/imageThumb'
 import { clearThumbCache, readThumb, writeThumb } from '@/utils/thumbCache'
 import type { TrendPoint } from '@/utils/chart'
@@ -35,17 +35,30 @@ import type { TrendPoint } from '@/utils/chart'
  *     100 条实测正好覆盖 7 天（11-14 ~ 11-20），所以**通常一次请求就够**；
  *   · `今日` = 前缀里 `businessTime` 是今天的那些（`todayItems`），条数是**精确值**；
  *   · `近7日趋势` = 同一批行按日期分桶（窗口内的日子一定被完整覆盖）；
- *   · `历史` = 其余行，继续用 `size=20` 往后翻页（`nextPage` 接着扫描的页号）。
+ *   · `历史` = 按用户选中的那一天过滤（`histItems`，见 {@link histDate}）；
+ *     那天早于已加载范围时用 `ensureDay` 从新往旧回补，回补不够就照实说明。
  *
  * 早先这里问两次 `size=1` 只为拿「待处理 / 已完成」的总数（717 / 316）——
  * 现场只要「今日多少条待处理」，那两个全局总数就不必再打了，省两次往返。
  *
- * ## 红点（未处理）
+ * ## 红点与「待处理」（2026-11-24 现场口径）
  *
  * 行数据里**没有**未读/已读字段（`auditStatusType` 只有 `UNAUDITED` / `AUDITED`，
- * 没有 `readStatus` 之类），所以按现场规则退化成**状态**：今日且 `UNAUDITED`
- * 的条目带红点，`AUDITED` 不带；历史一律不带、也不参与计数。
- * 点开一条不会让它变少 —— 那是审核平台里的人工动作，本 App 不做，不假装能做。
+ * 没有 `readStatus` 之类），本 App 也没有「把审核平台里的工单标成已读」这个动作。
+ * 所以**列表不点红点、消息卡不显示未读徽标** —— 点开也清不掉的红点只会被当成
+ * 按钮坏了（监控预警列表同日起也下线了红点，两边统一改为右侧状态徽标）。
+ *
+ * 但「今日待处理」是一条**事实**，照常统计：{@link todayPending} 就是消息页
+ * 「无人机预警」卡上的数字，并与监控那一份**相加成为底栏角标**（`stores/msg.ts`）。
+ * 它不会因为「看过」减少，只会随审核平台把工单置为已完成而下降 ——
+ * 那正是「还剩几件要处理」这个语义。
+ *
+ * ## 列表页签为什么在 store 里
+ *
+ * 从详情返回时 `WorkOrderList` 会被整棵重建（子页栈是同一个容器换内容），
+ * 页签若存在组件的 `ref` 里就会掉回「今日预警」—— 用户明明是从历史里点进去的，
+ * 回来却落在另一个页签，滚动位置也跟着错位。监控列表把页签存在
+ * `alarm.inspTab`，这里用同一条规则（`listTab`）。
  */
 
 /** 历史翻页一页多少条 */
@@ -136,6 +149,36 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
   /** 首屏扫描是否完成 —— 今日条数与 7 日趋势这时才是结论 */
   const scanned = ref(false)
 
+  /**
+   * 列表页签：`today` 今日预警 / `hist` 历史预警。
+   *
+   * 放 store 是为了「从详情返回后回到原来那个页签」，理由见文件头。
+   * 页签不属于数据，但也**不能**跟着 `reset()` 之外的任何刷新走 ——
+   * 重扫一次首屏不该把用户从历史拽回今日。
+   */
+  const listTab = ref<'today' | 'hist'>('today')
+
+  /**
+   * 历史页选中的日期（2026-11-24 新增日期控件）。
+   *
+   * 默认**昨天** —— 与监控预警历史页（`alarm.inspHistDate`）和报警预警历史页
+   * （`alarm.histDate`）的默认值完全一致，三处翻到历史页看到的是同一天。
+   *
+   * 审核中心没有时间筛选（见文件头），所以这里只做**本地按日过滤**：
+   * 选中日只要还在已加载范围内就是精确值；更早的由 `ensureDay` 按需回补，
+   * 回补不够时页面会写明「仅加载到 X 日」并给「继续加载」，不假装那天没有预警。
+   *
+   * 属于「用户选择」而不是「数据」，所以只随 `reset()`（登出 / 换账号）归位，
+   * 任何一次重扫都不改它 —— 与 `listTab` 同一条规则。
+   */
+  const histDate = ref<Date>(addDays(startOfDay(new Date()), -1))
+
+  /** 历史页月历当前月份 */
+  const histCalMonth = ref<Date>(monthStart(histDate.value))
+
+  /** 历史页月历是否展开 */
+  const histCalOpen = ref(false)
+
   /** 上次扫描成功的时刻（配合 `STALE_MS` 决定要不要重扫） */
   const fetchedAt = ref(0)
 
@@ -149,10 +192,14 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
   const todayCount = computed(() => todayItems.value.length)
 
   /**
-   * 今日未处理数 —— 消息页「无人机预警」卡上的数字、tabbar 角标的一半。
+   * 今日待处理数（2026-11-24 现场口径）。
    *
-   * 与列表红点同一条判据（`status === 'UNAUDITED'` && 今日），
-   * 所以卡片上的数与今日列表里的红点个数永远一致。
+   * 判据是「今日 + `UNAUDITED`」，与 {@link isUnread} 一致。消息页那张卡的数字、
+   * 列表统计卡第二行的小字、底栏角标里属于无人机的份额，全都读这一个值 ——
+   * 与监控预警的 `handleStatus !== 1` 同一语义：今天还剩几条没处理。
+   *
+   * 它不随「看过」变化（本 App 不提供状态变更），只随服务端状态变化。
+   * 想显示「今日一共报了几条」请用 {@link todayCount}。
    */
   const todayPending = computed(
     () => todayItems.value.filter((w) => w.status === 'UNAUDITED').length,
@@ -161,10 +208,13 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
   /** 今日数是否已知（首屏扫描完成才算；未完成时卡片写「—」而不是 0） */
   const todayKnown = computed(() => scanned.value)
 
-  /** 历史预警（今天之前的，已加载部分） */
-  const histItems = computed(() => items.value.filter((w) => dayOf(w) !== todayKey()))
+  /** 历史预警（所选日期的，见 {@link histDate}） */
+  const histItems = computed(() => {
+    const key = dateKey(histDate.value)
+    return items.value.filter((w) => dayOf(w) === key)
+  })
 
-  /** 历史已加载条数 */
+  /** 历史已加载条数（= 所选日期那天的条数） */
   const histCount = computed(() => histItems.value.length)
 
   /** 近 7 日趋势（窗口内每天一条，没有数据的日子就是 0） */
@@ -224,7 +274,12 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
     return w.at ? relTime(w.at) : ''
   }
 
-  /** 今日 + 待处理 = 带红点 */
+  /**
+   * 今日 + 待处理（单条判据，与 {@link todayPending} 同一口径）。
+   *
+   * **不接红点**：列表已无红点（点了清不掉的装饰）。留着是因为它是「这条今天
+   * 还没处理」的唯一判据，详情页 / 将来的状态筛选可能要用。
+   */
   function isUnread(w: DroneWorkOrder): boolean {
     return w.status === 'UNAUDITED' && dayOf(w) === todayKey()
   }
@@ -512,6 +567,10 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
     nextPage.value = 0
     scanned.value = false
     fetchedAt.value = 0
+    listTab.value = 'today'
+    histDate.value = addDays(startOfDay(new Date()), -1)
+    histCalMonth.value = monthStart(histDate.value)
+    histCalOpen.value = false
     clearThumbs()
   }
 
@@ -532,6 +591,10 @@ export const useDroneAlarmStore = defineStore('droneAlarm', () => {
     exhausted,
     nextPage,
     scanned,
+    listTab,
+    histDate,
+    histCalMonth,
+    histCalOpen,
     latest,
     todayItems,
     todayCount,

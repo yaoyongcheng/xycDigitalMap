@@ -96,3 +96,23 @@ export function missionProgress(
   const pct = Math.round((elapsed / est) * 100)
   return { pct: Math.max(0, Math.min(99, pct)), elapsedMin: elapsed, estimateMin: est }
 }
+
+/**
+ * 「10:50 起飞 · 已飞 5.1 分钟 · 预计 7 分钟」——**无人机页与首页无人机卡共用这一句**。
+ *
+ * 2026-11-24 起两处都显示它（首页原先只把它塞在 `title` 里，手机上没有悬停，
+ * 等于用户看不到）。既然是同一句，就只能在**一个地方**拼：各写一遍迟早一个字
+ * 不一样（「已飞5.1分钟」vs「已飞 5.1 分钟」），现场就会问「这两个数为什么不同」。
+ *
+ * 三条规则与原来逐字一致：
+ * · 先写起飞时刻，`10:50 起飞`；
+ * · 起飞时刻取不到（`elapsedMin === null`）就写「任务执行中」，不编一个 0 分钟；
+ * · 没有历史样本（`estimateMin === null`）就不写预计，不拿排班间隔当分母。
+ */
+export function missionLine(time: string, p: MissionProgress): string {
+  const parts = [`${time} 起飞`]
+  if (p.elapsedMin !== null) parts.push(`已飞 ${p.elapsedMin.toFixed(1)} 分钟`)
+  else parts.push('任务执行中')
+  if (p.estimateMin !== null) parts.push(`预计 ${p.estimateMin} 分钟`)
+  return parts.join(' · ')
+}

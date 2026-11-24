@@ -4,7 +4,6 @@ import { join, relative } from 'node:path'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { nextTick } from 'vue'
 
 import TabBar from '@/components/shell/TabBar.vue'
 import { useAirHazardStore } from '@/stores/airHazard'
@@ -291,18 +290,14 @@ describe('结构性守卫', () => {
       assertAllSvgReal(w)
     })
 
-    it('底部标签栏：未读角标读消息 store（真实报警条数）', async () => {
+    it('底部标签栏：角标读消息 store（两类今日待处理之和）', () => {
       // 阶段 5：消息由真实报警派生，不再是 2 条写死数据
       const feed = camAlarmFixtures().slice(0, 2)
       useAlarmStore().liveAlarms = feed
       const w = mount(TabBar)
       expect(w.find('.badge').text()).toBe('2')
-
-      const msg = useMsgStore()
-      msg.markRead(feed[0].id)
-      msg.markRead(feed[1].id)
-      await nextTick()
-      expect(w.find('.badge').exists()).toBe(false)
+      // 状态只读（2026-11-24）：没有「点开即已读」，待处理不会因为看过而减少
+      expect(useMsgStore().pendingTotal).toBe(2)
     })
 
     it('底部标签栏：点击切换 activeTab', async () => {

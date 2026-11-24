@@ -111,6 +111,17 @@ export const useAlarmStore = defineStore('alarm', () => {
 
   let liveTriedAt = 0
 
+  /**
+   * 在途的同步（2026-11-24）。
+   *
+   * 同一瞬间可能有四处要同步：首屏面板挂载、消息 tab 首次进入、切 tab 回首页、
+   * 一键已读失败后的回正。不拦的话就是 4 × 2 页 = 8 个 400 条的请求，现场网络下
+   * 首屏直接慢一倍；更糟的是它们回来的先后顺序不定，晚到的旧结果会把新结果盖回去。
+   *
+   * 所以「在途」这件事收成一个 promise：后来者直接复用同一趟，一个字节都不多打。
+   */
+  let syncInflight: Promise<boolean> | null = null
+
   /** 有没有拿到过真实报警 */
   const hasLive = computed(() => liveAlarms.value.length > 0)
 
@@ -124,6 +135,10 @@ export const useAlarmStore = defineStore('alarm', () => {
    *
    * 用 id 去重：回补更早的页时难免与上一批重叠（服务端没有稳定游标，
    * 拉取期间新报警会把整页往后挤），重复项留在列表里会变成两条一样的卡片。
+   *
+   * `handleStatus` **原样采用服务端值**：2026-11-24 起移动端不再提供任何
+   * 状态变更操作（没有「一键已读」也没有「点开即已读」），本地没有乐观值，
+   * 也就没有需要压住服务端的屏障。
    */
   function merge(incoming: Alarm[]): void {
     if (!incoming.length) return
@@ -138,6 +153,7 @@ export const useAlarmStore = defineStore('alarm', () => {
    *
    * 用 `allSettled`：中间某一页 500 不该把已拿到的几页一起丢掉，那正是
    * 「翻历史翻到一半突然空了」的由来。整段全失败才抛错。
+   *
    */
   async function fetchPages(token: string, from: number, count: number): Promise<number> {
     const reqs = Array.from({ length: count }, (_, i) =>
@@ -160,21 +176,8 @@ export const useAlarmStore = defineStore('alarm', () => {
     return okPages
   }
 
-  /**
-   * 从视频报警接口同步真实报警（登录后 / 进首页时调用）。
-   *
-   * 失败保留现有数据并记录原因；一次失败后 `RETRY_MS` 内不重试。
-   * 返回是否取到了数据，便于调用方决定要不要提示。
-   */
-  async function syncFromVideo(token: string, force = false): Promise<boolean> {
-    if (!token) return false
-    if (liveState.value === 'loading') return false
-    if (!force && liveState.value === 'error' && Date.now() - liveTriedAt < RETRY_MS) return false
-    // 已经成功同步过就直接复用：首页安全面板（onMounted + watch token）与
-    // 消息页（刷新后直接落在消息 tab）都会触发这里，不拦的话首屏 400 条
-    // 会被来回打好几遍，现场网络下纯属浪费
-    if (!force && liveState.value === 'ok' && liveAlarms.value.length) return true
-
+  /** 走一完整趟同步（只由 {@link syncFromVideo} 调用，靠外面那个 promise 做去重） */
+  async function runSync(token: string): Promise<boolean> {
     liveState.value = 'loading'
     liveTriedAt = Date.now()
     try {
@@ -192,12 +195,45 @@ export const useAlarmStore = defineStore('alarm', () => {
   }
 
   /**
+   * 从视频报警接口同步真实报警（登录后 / 进首页 / 切回 tab 时调用）。
+   *
+   * 失败保留现有数据并记录原因；一次失败后 `RETRY_MS` 内不重试。
+   * 返回是否取到了数据，便于调用方决定要不要提示。
+   *
+   * **并发保护（2026-11-24）**：已有同步在途时，无论 `force` 与否都复用那一趟 ——
+   * 一处「切 tab 立刻回到首页」会同时触发面板挂载、消息页 watch、底栏角标三条路径，
+   * 不合并就是同一秒内打 3 遍全量 400 条，且晚到的旧结果会覆盖新结果。
+   */
+  async function syncFromVideo(token: string, force = false): Promise<boolean> {
+    if (!token) return false
+    if (syncInflight) return syncInflight
+    if (!force && liveState.value === 'error' && Date.now() - liveTriedAt < RETRY_MS) return false
+    // 已经成功同步过就直接复用：首页安全面板（onMounted + watch token）与
+    // 消息页（刷新后直接落在消息 tab）都会触发这里，不拦的话首屏 400 条
+    // 会被来回打好几遍，现场网络下纯属浪费
+    if (!force && liveState.value === 'ok' && liveAlarms.value.length) return true
+    // 回补历史（`ensureDate`）在途：那一趟同样会写 liveState，别与它并行打同一批页
+    if (liveState.value === 'loading') return false
+
+    const p = runSync(token)
+    syncInflight = p
+    try {
+      return await p
+    } finally {
+      if (syncInflight === p) syncInflight = null
+    }
+  }
+
+  /**
    * 切回智巡面板时的刷新（首页标签切换会调用）。
    *
    * 与 `syncFromVideo(token, true)` 的区别：**失败冷却仍生效** ——
    * 连点标签时不该把注定失败的请求反复打出去；页面上的「重试」按钮
    * 才走 force 版本。成功过的也要重拉：现场报警是持续新增的，
    * 切回来看到的应该是此刻的今日条数与趋势。
+   *
+   * 这是「切回 tab 立刻看到最新今日未读数」的唯一入口（2026-11-24）：
+   * 页面每次切到前台都调它，在途时自动合并成同一趟（见 `syncFromVideo`）。
    */
   async function refresh(token: string): Promise<boolean> {
     if (!token) return false

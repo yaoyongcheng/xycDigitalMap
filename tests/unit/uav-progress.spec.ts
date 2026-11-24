@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { estimateByTask, missionProgress, runMinutes } from '@/utils/uavProgress'
+import { estimateByTask, missionLine, missionProgress, runMinutes } from '@/utils/uavProgress'
 
 /** 造一条已完成执行的起止串 */
 function span(taskId: number | null, start: string, end: string) {
@@ -103,5 +103,29 @@ describe('missionProgress', () => {
 
   it('预计时长非正数当没有', () => {
     expect(missionProgress(T0, 0, T0 + 60_000).pct).toBeNull()
+  })
+})
+
+/**
+ * 「10:50 起飞 · 已飞 5.1 分钟 · 预计 7 分钟」——首页无人机卡与无人机页共用这一句。
+ * 两处曾各拼一遍，空格与「任务执行中」的写法都不同；收成一个函数后就不会再分叉。
+ */
+describe('missionLine', () => {
+  it('三件齐全时按「起飞 · 已飞 · 预计」的顺序出字', () => {
+    expect(missionLine('10:50', { pct: 73, elapsedMin: 5.08, estimateMin: 7 })).toBe(
+      '10:50 起飞 · 已飞 5.1 分钟 · 预计 7 分钟',
+    )
+  })
+
+  it('没有起飞时刻 → 写「任务执行中」，不编 0 分钟', () => {
+    expect(missionLine('10:50', { pct: null, elapsedMin: null, estimateMin: 11 })).toBe(
+      '10:50 起飞 · 任务执行中 · 预计 11 分钟',
+    )
+  })
+
+  it('没有历史样本 → 不写预计', () => {
+    expect(missionLine('10:50', { pct: null, elapsedMin: 3, estimateMin: null })).toBe(
+      '10:50 起飞 · 已飞 3.0 分钟',
+    )
   })
 })

@@ -211,7 +211,8 @@ async function wfGet(path: string, token: string, signal?: AbortSignal): Promise
  * 拉一页视频报警。
  *
  * 只读接口 —— 同组还有 DELETE /api/video/alarms/{id}，按项目约定
- * （写接口一律接但不调用）不在客户端暴露。标记已读（PATCH .../status）见下。
+ * （写接口一律接但不调用）不在客户端暴露。状态写接口（PATCH .../status）见下，
+ * 同样**不再调用**（2026-11-24 起移动端状态只读）。
  */
 export async function fetchVideoAlarms(
   token: string,
@@ -223,15 +224,17 @@ export async function fetchVideoAlarms(
 }
 
 /**
- * 标记一条报警的已读/处理状态。
+ * 标记一条报警的已读/处理状态（**契约记录，本 App 不调用**）。
  *
  * 契约来自 Unity 端 `AIAlarmHelp.UpdateAlarmStatusCoroutine`：
  *   PATCH {8085}/api/video/alarms/{id}/status
- *   Body `{"status": 1}`（1 = 已读，0 = 未读）
+ *   Body `{"status": 1}`（1 = 已完成 / 已处理，0 = 待处理）
  *   响应 `{code, message}`，code === 200 算成功。
  *
- * 这是「消息已读」的唯一权威落点：状态存在服务端，刷新/换端不丢。前端只是
- * 乐观更新本地，最终以服务端为准。
+ * 2026-11-24 起移动端**不提供任何状态变更操作**（「一键已读」与「点开即已读」
+ * 均已下线，列表 / 详情只读展示服务端的 `handleStatus`），所以这个函数没有
+ * 调用方。留着只为记录接口契约 —— 与 DELETE 那条写接口同一处理方式，
+ * 不要因为「它已经写好了」就把它接回界面。
  */
 export async function setAlarmStatus(
   token: string,

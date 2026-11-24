@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { applySession, clearSession, fetchAuditWorkOrders, type DroneWorkOrder } from '@/api/drone'
@@ -20,8 +21,12 @@ import WorkOrderList from '@/views/sub/WorkOrderList.vue'
  *   ② 不筛选就**不能**带 `auditStatusType`（空串会 400）；
  *   ③ 服务端忽略全部时间参数、但按 `businessTime` 倒序 → 「今日」是数据前缀，
  *      首屏用一页 100 条扫到 7 日窗口之外，今日条数与趋势就都是精确值；
- *   ④ 历史接着往后按 `size=20` 翻页；翻页失败不清空已有列表；
- *   ⑤ 红点没有「已读」可用，只能按状态：**今日 + 待处理**；历史一律不点。
+ *   ④ 历史页按**所选日期**筛（单颗日期芯片 + 月历，默认昨天，2026-11-24）；
+ *      那天早于已加载范围时按需回补，回补不够就照实说明，不假装没有；
+ *      翻页失败不清空已有列表；
+ *   ⑤ 无人机侧**没有红点**（2026-11-24）：`auditStatusType` 只有待处理/已完成，
+ *      没有「标已读」这个动作，点了清不掉的红点只会被当成 bug；
+ *      列表页签归 store，从详情返回时不会掉回「今日预警」。
  */
 
 /** keehang 的响应包：`{code, msg, data}`，code === 200 才算成功 */
@@ -231,7 +236,10 @@ describe('无人机预警 store · 今日 / 历史 / 趋势', () => {
     expect(drone.todayCount).toBe(5)
     expect(drone.todayPending).toBe(4) // 已完成的那条不算
     expect(drone.todayKnown).toBe(true)
-    expect(drone.histCount).toBe(95)
+    // 历史按「所选日期」筛：默认昨天，而这批 95 条最早也在 8 天前 → 昨天没有
+    expect(drone.histCount).toBe(0)
+    drone.histDate = ago(8)
+    expect(drone.histCount).toBe(6) // 8 天前那天的 6 条
     expect(drone.total).toBe(1048)
     expect(drone.hasMore).toBe(true)
     expect(drone.hiddenCount).toBe(948)
@@ -273,8 +281,14 @@ describe('无人机预警 store · 今日 / 历史 / 趋势', () => {
     expect(drone.todayItems.map((w) => w.id)).toEqual(['dp-1', 'dp-2', 'dp-3'])
     expect(drone.todayCount).toBe(3)
     expect(drone.todayPending).toBe(2)
-    expect(drone.histItems.map((w) => w.id)).toEqual(['dp-4', 'dp-5', 'dp-6', 'dp-7', 'dp-8'])
-    expect(drone.histCount).toBe(5)
+    // 历史 = **所选日期**那一天；默认昨天（与监控 / 报警预警历史页同一个默认值）
+    expect(drone.histItems.map((w) => w.id)).toEqual(['dp-4', 'dp-5'])
+    expect(drone.histCount).toBe(2)
+
+    // 换到 3 天前：只剩那天的三条（按日筛选，不是「今天之前全部」）
+    drone.histDate = ago(3)
+    expect(drone.histItems.map((w) => w.id)).toEqual(['dp-6', 'dp-7', 'dp-8'])
+    expect(drone.histCount).toBe(3)
 
     // 7 个点：最后一个是今天，往前依次是昨天、前天……
     const trend = drone.weekTrend
@@ -414,7 +428,7 @@ describe('无人机预警列表', () => {
     w.unmount()
   })
 
-  it('今日列表：来源徽标 + 状态徽标；未带红点、已完成不带；不铺现场图', () => {
+  it('今日列表：来源徽标 + 状态徽标；不点红点；不铺现场图', () => {
     seed()
     const w = mount(WorkOrderList)
 
@@ -422,7 +436,8 @@ describe('无人机预警列表', () => {
     expect(items).toHaveLength(2) // 历史那条不在今日页签里
     expect(items[0].find('.alarm-src-drone').text()).toBe('无人机')
     expect(items[0].find('.alarm-src-todo').text()).toBe('待处理')
-    expect(items[0].find('.insp-dot').exists()).toBe(true)
+    // 无人机预警没有「已读」这个动作，点开也清不掉的红点一律不点（2026-11-24）
+    expect(items[0].find('.insp-dot').exists()).toBe(false)
     expect(items[1].find('.alarm-src-done').text()).toBe('已完成')
     expect(items[1].find('.insp-dot').exists()).toBe(false)
     // 这批工单行里本来就没有现场图（image 为空）→ 一个请求都不发，继续铺灰底占位图标
@@ -434,14 +449,18 @@ describe('无人机预警列表', () => {
     w.unmount()
   })
 
-  it('切到历史：只剩更早的条目，一条红点都没有', async () => {
+  it('切到历史：只剩所选那一天（默认昨天），一条红点都没有', async () => {
     seed()
     const w = mount(WorkOrderList)
 
     await w.find('[data-wo-tab="hist"]').trigger('click')
 
     expect(w.findAll('.insp-tab')[1].classes()).toContain('on')
-    expect(w.find('.insp-hist-hd').text()).toContain('更早的预警')
+    // 头部写所选日期 + 条数，右侧只有**一颗**日期芯片（现场要求，不摆今天/昨天）
+    expect(w.find('.insp-hist-hd').text()).toContain('昨天')
+    expect(w.find('.insp-hist-hd').text()).toContain('1条')
+    expect(w.findAll('.insp-hist .cam-day')).toHaveLength(1)
+    expect(w.find('.insp-hist .cam-day-pick').text()).toBe('昨天')
     const hist = w.findAll('.insp-hist .insp-item')
     expect(hist).toHaveLength(1)
     expect(hist[0].find('.insp-dot').exists()).toBe(false)
@@ -519,12 +538,62 @@ describe('无人机预警列表', () => {
     w.unmount()
   })
 
-  it('历史底部给「还有 N 条」（只算历史那一侧）', async () => {
+  /**
+   * 审核中心只能从新往旧翻页，所以「那天还没取」必须和「那天没有」区分开
+   * （`stores/droneAlarm.ts::ensureDay`）。版式与报警预警历史页那条提示相同。
+   */
+  it('所选日期比已加载范围更早：写明只加载到哪天，并给「继续加载」', async () => {
     seed()
+    const drone = useDroneAlarmStore()
     const w = mount(WorkOrderList)
     await w.find('[data-wo-tab="hist"]').trigger('click')
 
-    expect(w.find('.insp-hist [data-more="more"]').text()).toContain('还有 1045 条')
+    // 默认昨天，正好是已加载的最后一天 —— 没有缺口，不该出现提示
+    expect(w.find('.insp-hist .insp-note').exists()).toBe(false)
+
+    // 选到 5 天前（早就超出首屏扫到的范围）
+    drone.histDate = ago(5)
+    await nextTick()
+
+    const note = w.find('.insp-hist .insp-note')
+    expect(note.text()).toContain('仅加载到')
+    expect(note.find('.insp-note-btn').text()).toBe('继续加载')
+    w.unmount()
+  })
+
+  /**
+   * 从详情返回后要落在原来那个页签（2026-11-24）。
+   *
+   * 子页栈是同一个容器换内容：进详情时本组件被整棵卸载，返回时重新挂载。
+   * 页签若存在组件的 ref 里就会掉回「今日预警」—— 用户从历史里点进去、
+   * 回来却站在今日，滚动位置也跟着错位（`SubPage` 按「视图 + 页签」记位置）。
+   * 所以页签归 store（`drone.listTab`），与监控列表的 `alarm.inspTab` 同一条规则。
+   */
+  it('页签存在 store 里：模拟「从详情返回」重新挂载后仍在历史', async () => {
+    seed()
+    const drone = useDroneAlarmStore()
+    const w = mount(WorkOrderList)
+    await w.find('[data-wo-tab="hist"]').trigger('click')
+    expect(drone.listTab).toBe('hist')
+    w.unmount() // 进详情：组件整棵卸载
+
+    const back = mount(WorkOrderList) // 返回：重新挂载
+    expect(back.find('.insp-tab.on').text()).toBe('历史预警')
+    expect(back.find('.insp-hist').classes()).not.toContain('hide')
+    expect(back.find('.insp-pane:not(.insp-hist)').classes()).toContain('hide')
+    back.unmount()
+
+    // 退出登录才回到「今日预警」
+    drone.reset()
+    expect(drone.listTab).toBe('today')
+  })
+
+  it('返回不重扫：已经扫过就不在挂载时再打一次接口', async () => {
+    seed()
+    const drone = useDroneAlarmStore()
+    const spy = vi.spyOn(drone, 'load').mockResolvedValue(undefined)
+    const w = mount(WorkOrderList)
+    expect(spy).not.toHaveBeenCalled()
     w.unmount()
   })
 })

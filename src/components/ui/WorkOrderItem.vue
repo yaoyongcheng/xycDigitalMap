@@ -20,12 +20,12 @@ import { revealThumb } from '@/utils/thumbReveal'
  *   · 标题 —— `title`，空时写「识别预警」（服务端没给就不假装识别出了什么）；
  *   · 副标题 —— `jobName` → `projectName` → 「—」；
  *   · 右侧 —— 相对时间 + 状态徽标（`UNAUDITED` 待处理 / `AUDITED` 已完成）；
- *   · 图标位 —— 缩略图 or 灰底无人机占位 + 真实字节进度环。
+ *   · 图标位 —— 缩略图 or 灰底无人机占位 + 真实字节进度环；
+ *   · 右上也**没有红点**：状态只在右侧徽标里如实展示，本 App 不改状态，
+ *     点开也清不掉的红点只会被当成 bug（与监控列表同一口径，2026-11-24）。
  */
 const props = defineProps<{
   wo: DroneWorkOrder
-  /** 未处理红点（今日 + 待处理）。历史列表 / 历史页不传即为关闭 */
-  dot?: boolean
   /**
    * 垫底层（右滑返回时露出的只读副本）不取图：
    * 同一批 id 主层已经在取了，再登记一遍只是让观察器多一份无用回调。
@@ -92,8 +92,8 @@ function onKey(e: KeyboardEvent): void {
     @keydown="onKey"
   >
     <!-- 图标位：与监控列表同一套 —— 有缩略图铺图，没有就铺灰底占位图标；
-         取图过程中在图标外圈叠一圈真实进度，图到了自动消失；
-         未处理在右上角压一颗红点（与图无关，状态单独决定） -->
+         取图过程中在图标外圈叠一圈真实进度，图到了自动消失。
+         不再点红点：状态改在右侧徽标里如实展示 -->
     <span class="insp-pic-box">
       <SmartImg
         v-if="drone.thumbOf(wo.id)"
@@ -109,7 +109,6 @@ function onKey(e: KeyboardEvent): void {
           :pct="drone.thumbPctOf(wo.id)"
         />
       </span>
-      <i v-if="dot" class="insp-dot" role="img" aria-label="未处理" />
     </span>
     <div class="insp-meta">
       <div class="insp-hd">
