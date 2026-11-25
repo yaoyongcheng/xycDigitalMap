@@ -25,7 +25,7 @@ import { fetchAreas, fetchDeviceInfos, type AreaRow, type DeviceInfoRow } from '
 import { fetchCraneWorkCycle } from '@/api/towerCrane'
 import { CRANE_SNS } from '@/data/craneSn'
 import { setLiveUnits } from '@/data/device'
-import { byUnitNo, categoryOf, serialOf, toEquip, toUnit, type DeviceCategory } from '@/utils/deviceLedger'
+import { byUnitNo, categoryOf, isHiddenDevice, serialOf, toEquip, toUnit, type DeviceCategory } from '@/utils/deviceLedger'
 import type { CraneDayStats, CraneWorkCycle, DeviceKind, DeviceUnit, Equip } from '@/types'
 
 /** 失败后的冷却时间（与 overview 一致） */
@@ -117,12 +117,14 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
   /**
    * 某一类的真实机组（塔机 / 电梯 / 爬架 / 无人机），设备页与弹层共用。
    *
-   * **按台号升序**：服务端按 id 倒序返回（传统塔机5 在最前），而现场读数习惯是
-   * 智能塔机2 → 3 → 4 → 传统塔机5。排序键见 `utils/deviceLedger.ts: byUnitNo`。
+   * **按台号升序**：服务端按 id 倒序返回，而现场读数习惯是从小到大。排序键见
+   * `utils/deviceLedger.ts: byUnitNo`。名称走展示名覆盖表（带楼栋前缀），
+   * 现场已下线的设备（传统塔机5）在这里被过滤掉 —— 与 `toEquip` 同一口径，
+   * 否则首页机组列表会多出一台、点进去却没有卡片。
    */
   function categoryUnits(kind: DeviceCategory): DeviceUnit[] {
     return rows.value
-      .filter((r) => categoryOf(r.device_name) === kind)
+      .filter((r) => categoryOf(r.device_name) === kind && !isHiddenDevice(r.device_name))
       .map(toUnit)
       .sort(byUnitNo)
   }
@@ -198,6 +200,8 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     const own: string[] = []
     for (const row of list) {
       if (categoryOf(row?.device_name) !== 'crane') continue
+      // 页面上已隐藏的车不查：结果没人展示，白打一次第三方接口
+      if (isHiddenDevice(row?.device_name)) continue
       const sn = serialOf(row)
       if (sn && !own.includes(sn)) own.push(sn)
     }

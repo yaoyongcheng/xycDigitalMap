@@ -207,3 +207,17 @@ export function timeHm(time: string): string {
   const m = /\s(\d{2}):(\d{2})/.exec(time)
   return m ? `${m[1]}:${m[2]}` : ''
 }
+
+/**
+ * 更新时间 → 严格的 `yyyy-MM-dd HH:mm:ss`（导航栏副标题用，2026-11-25）。
+ *
+ * 服务端 `updateTime` 本来就是定长这个格式（见文件头的报文样例），所以这里
+ * **不做时区换算、不做补零猜测**，只做两件事：
+ *   · 容忍分隔符写成 `T`（`2026-11-07T14:02:49`，有些 CDN 会这么序列化）；
+ *   · 格式对不上就返回空串 —— 让调用方显式写「—」，绝不把半截日期拼成
+ *     「2026-11-07 14:02:00」这种看起来精确、其实是编的时间。
+ */
+export function timeStamp(time: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(String(time ?? '').trim())
+  return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}` : ''
+}

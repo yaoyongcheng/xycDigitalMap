@@ -38,6 +38,47 @@ export function categoryOf(name: string): DeviceCategory | null {
   return null
 }
 
+/*
+ * 展示名覆盖表（2026-11-25 现场要求）
+ *
+ * 台账 `device_name` 是「智能塔机2 / 3 / 4」，现场要按楼栋叫，于是前端
+ * **只改展示名**，不动服务端那条记录（台账是事实来源，我们无权也无需去改）。
+ *
+ * 两条必须守住的规则：
+ *   ① 新名字里**保留台号数字**（2/3/4）—— `unitNo()` 是按「名称里第一段
+ *      数字」取台号的，实时工况的 sn 也靠它映射（`craneSnOf`）。一旦把数字
+ *      拿掉，卡片会立刻掉成「—」与「离线」；
+ *   ② 只在 `toUnit` / `toEquip` / `categoryUnits` 这三个「出机组」的出口套用，
+ *      `rows` 原始行永远是服务端原样 —— 统计（total / online）仍按台账全量算，
+ *      不会因为改名或隐藏而少一台。
+ */
+const DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  智能塔机2: '2#楼-智能塔机2',
+  智能塔机3: '3#楼-智能塔机3',
+  智能塔机4: '酒店-智能塔机4',
+}
+
+/**
+ * 现场已不展示的台账设备（2026-11-25）。
+ *
+ * 「传统塔机5」在场景里没有 `deviceSn`，没接塔机平台：四格恒「—」、状态恒
+ * 离线、报表里也只是一句「无平台编号，未纳入统计」。现场要求把这条从页面
+ * 删掉 —— 这里隐藏而不是从 `rows` 里剔除，是因为台账总数/在线数仍应如实反映
+ * 「平台登记了几台」。
+ */
+const HIDDEN_NAMES: ReadonlySet<string> = new Set(['传统塔机5'])
+
+/** 台账设备名 → 页面展示名；没登记的原样返回 */
+export function displayNameOf(name: string): string {
+  const text = String(name ?? '')
+  return DISPLAY_NAMES[text] ?? text
+}
+
+/** 这一行还要不要在设备页 / 机组列表里出现 */
+export function isHiddenDevice(name: string): boolean {
+  return HIDDEN_NAMES.has(String(name ?? ''))
+}
+
 /**
  * 设备种类数（保留给需要「台账里到底有几种设备」口径的调用方）。
  *
@@ -155,8 +196,8 @@ const CELL_FIELDS: Record<DeviceCategory, readonly string[]> = {
  * 台账行 → 设备卡数据。
  *
  * `cells` 是实时状态卡的四格，`info` 是「设备信息」弹层的明细（全字段 + 责任人 +
- * 更新时间）。名称后面的台号不另算：`name` 直接用服务端的 device_name，
- * 服务端本来就区分了「智能塔机2」「智能塔机3」。
+ * 更新时间）。名称走 `displayNameOf()`（现场带楼栋前缀的那套），不直接用服务端的
+ * `device_name` —— 但台号仍由名称里的数字决定，见展示名覆盖表的注释。
  */
 export function toUnit(row: DeviceInfoRow): DeviceUnit {
   const fields = parseExtraFields(row?.device_info?.extra_fields)
@@ -179,8 +220,10 @@ export function toUnit(row: DeviceInfoRow): DeviceUnit {
 
   return {
     id: String(row.id),
-    tab: String(row.device_name ?? ''),
-    name: String(row.device_name ?? ''),
+    // `tab` / `name` 都用展示名：前者是页签文案（当前没人读，留着语义一致），
+    // 后者是卡片标题与弹层标题的唯一来源。
+    tab: displayNameOf(row.device_name ?? ''),
+    name: displayNameOf(row.device_name ?? ''),
     status: statusOf(row),
     cells,
     info,
@@ -316,9 +359,14 @@ export function toEquip(rows: DeviceInfoRow[], craneDay: CraneDayStats | null = 
   for (const row of rows) {
     const cat = categoryOf(row?.device_name)
     if (!cat) continue
-    units[cat].push({ name: String(row.device_name ?? ''), on: isOnline(row), rows: [] })
+    // 高度聚合先做：它算的是「这一类设备在台账里的最大高度」，与某台是否
+    // 在页面上展示无关，隐藏设备不该让这个数变小。
     const h = heightOf(row)
     if (h !== null) heights[cat].push(h)
+    // 现场已下线的设备（传统塔机5）不进机组列表：它没有 sn、四格恒「—」，
+    // 留在卡里只会让人以为「这台车查不到数据」。台账统计不受影响（走 rows 全量）。
+    if (isHiddenDevice(row?.device_name)) continue
+    units[cat].push({ name: displayNameOf(row.device_name), on: isOnline(row), rows: [] })
   }
 
   return CARD_DEFS.map((def) => {

@@ -111,8 +111,6 @@ vi.mock('@/api/lift', () => ({
   fetchLiftOnline: vi.fn(),
   fetchLiftToday: vi.fn(),
   fetchLiftAttr: vi.fn(),
-  // 作业报表（电梯分支）：这个 spec 只测实时状态页，报表页有自己的 lift-report.spec
-  fetchLiftWorkRange: vi.fn(async () => null),
   // 凭证失效标记：默认「没失效」，用例按需让它为真以驱动提示条
   liftAuthFailed: vi.fn(() => false),
   // 「重试过、网关还没轮换令牌」：默认假，用例按需打开第二句文案
@@ -232,9 +230,9 @@ describe('智控面板（真实台账）', () => {
     expect(pages).toEqual(['crane', 'lift', 'uav', 'climb'])
 
     const crane = w.find('[data-page="crane"]')
-    // 塔机 4 台、2 台在线：智能塔机3 台账就是离线；传统塔机5 没有平台编号，
-    // 实时四态恒为「离线」（子页面里它也显示离线）。没推帧的其余车回落台账。
-    expect(crane.text()).toContain('2/4')
+    // 塔机 3 台、2 台在线：智能塔机3 台账就是离线。传统塔机5 已于 2026-11-25
+    // 从机组列表移除（无平台编号、四格恒「—」），分母不再含它。
+    expect(crane.text()).toContain('2/3')
     // 塔机的作业指标（吊重/吊次）要工作循环接口 + sn，现场没有 →
     // 数值位退回台账里的最大高度；单位走 .eq-stat-unit 单独排（设计稿做法）
     expect(crane.text()).toContain('70')
@@ -268,13 +266,13 @@ describe('智控面板（真实台账）', () => {
     w.unmount()
   })
 
-  it('塔机在线数按子页面口径：有实时帧就算在线，没编号的传统塔机5 恒离线', async () => {
+  it('塔机在线数按子页面口径：有实时帧就算在线（台数不含已移除的传统塔机5）', async () => {
     signIn()
     const w = mount(EquipPanel)
     await nextTick()
 
     // 还没推帧：通道判断不了这几台 → 回落到台账（智能塔机3 台账离线）
-    expect(w.find('[data-page="crane"]').text()).toContain('2/4')
+    expect(w.find('[data-page="crane"]').text()).toContain('2/3')
 
     // 三台车各来一帧、都没动 → 子页面里是「待机」，都算非离线
     craneHandlers?.onState?.('open')
@@ -296,9 +294,9 @@ describe('智控面板（真实台账）', () => {
     await nextTick()
 
     const crane = w.find('[data-page="crane"]')
-    expect(crane.text()).toContain('3/4')
-    // 3/4 是「部分在线」，状态点跟着走，不能还是满格绿
-    expect(crane.find('.eq-dot').classes()).toContain('warn')
+    // 3 台全部有帧 → 3/3，状态点回到满格绿
+    expect(crane.text()).toContain('3/3')
+    expect(crane.find('.eq-dot').classes()).not.toContain('warn')
 
     w.unmount()
   })
@@ -497,20 +495,22 @@ describe('智控面板（真实台账）', () => {
 
     // 滚完之后上屏的也是这两个数
     // 种类 = 页面上的设备类别数（4 台账类 + 5 机器人，与 V2 装备管理页同口径）
-    // 台数 = 各卡分母之和 10 台（塔机 4 + 电梯 4 + 无人机 1 + 爬架 1）+ 5 类机器人各 1 台
-    // 电梯按 4 个轿厢计（台账只有 2 行「楼」，见 data/liftSn.ts）
+    // 台数 = 各卡分母之和 9 台（塔机 3 + 电梯 4 + 无人机 1 + 爬架 1）+ 5 类机器人各 1 台
+    // 电梯按 4 个轿厢计（台账只有 2 行「楼」，见 data/liftSn.ts）；
+    // 塔机不再含 2026-11-25 移除的传统塔机5
     vi.advanceTimersByTime(1000)
     await nextTick()
     expect(items[0].find('b').text()).toBe('9种')
-    expect(items[1].find('b').text()).toBe('15台')
+    expect(items[1].find('b').text()).toBe('14台')
 
     // 在线 = 塔机 2 + 电梯 0（网关没应答 → 连不上即离线，不回落台账）+ 爬架 1
-    //      + 无人机 1 + 5 类机器人各计 1 台 = 9；离线 = 15 - 9 = 6
-    // 离线那六台：4 个轿厢（网关连不上）+ 台账就是离线的智能塔机3 + 没有平台编号的传统塔机5
+    //      + 无人机 1 + 5 类机器人各计 1 台 = 9；离线 = 14 - 9 = 5
+    // 离线那五台：4 个轿厢（网关连不上）+ 台账就是离线的智能塔机3
+    //（传统塔机5 已移出机组列表，不再占一台离线）
     const leg = w.findAll('.eq-status-leg > div')
     expect(leg).toHaveLength(2)
     expect(leg[0].find('b').text()).toBe('9')
-    expect(leg[1].find('b').text()).toBe('6')
+    expect(leg[1].find('b').text()).toBe('5')
 
     w.unmount()
     vi.useRealTimers()
@@ -579,7 +579,14 @@ describe('智控面板（真实台账）', () => {
     w.unmount()
   })
 
-  it('电梯凭证失效：首页给提示条，点「重试」重新取数而不是跳登录页', async () => {
+  /**
+   * 2026-11-25 现场改定：首页智控面板**不再挂**电梯凭据/网关的提示条。
+   *
+   * 首页是总览，不该被单个子系统的凭证问题顶在九张卡上方；那条提示只留在
+   * 智能电梯子页面（`DevicePage` 的 `.dev-auth` / `.dev-auth.is-warn`，
+   * 见下面两条详情页用例）。数据链路没动：电梯那几格照旧如实显示。
+   */
+  it('电梯凭证失效：首页不挂提示条，提示只在智能电梯子页面', async () => {
     signIn()
     vi.mocked(liftAuthFailed).mockReturnValue(true)
 
@@ -587,28 +594,13 @@ describe('智控面板（真实台账）', () => {
     await nextTick()
     await flushPromises()
 
-    const bar = w.find('.dev-auth')
-    expect(bar.exists()).toBe(true)
-    expect(bar.text()).toContain('电梯物联网网关凭证失效')
-    expect(bar.find('.dev-auth-btn').text()).toBe('重试')
-
-    const before = mockLiftOnline.mock.calls.length
-    await bar.find('.dev-auth-btn').trigger('click')
-    await flushPromises()
-    // 真的又去取了一轮
-    expect(mockLiftOnline.mock.calls.length).toBeGreaterThan(before)
-    // 但**不跳登录页**：登录换的是 :8081 的 Bearer，跟 IOT 的 ak/sk 令牌不同源
-    expect(useSubpageStore().view.kind).not.toBe('login')
+    expect(w.find('.dev-auth').exists()).toBe(false)
+    expect(w.find('.dev-auth-btn').exists()).toBe(false)
+    expect(w.text()).not.toContain('物联网网关')
     w.unmount()
   })
 
-  /**
-   * 「重试过了，网关还是原来那张令牌」—— 网络层已经收手（一个数据请求都没发），
-   * 页面上必须换句话，否则用户会以为自己没点上，反复点。
-   *
-   * 这里连 `authLost` 的文案边界一起钉住：不能再说「重试可重新获取」。
-   */
-  it('网关未恢复：提示条换成「尚未恢复」，不再承诺重试可得', async () => {
+  it('网关未恢复：首页同样不提示', async () => {
     signIn()
     vi.mocked(liftAuthFailed).mockReturnValue(true)
     vi.mocked(liftGatewayStale).mockReturnValue(true)
@@ -617,10 +609,8 @@ describe('智控面板（真实台账）', () => {
     await nextTick()
     await flushPromises()
 
-    const bar = w.find('.dev-auth')
-    expect(bar.exists()).toBe(true)
-    expect(bar.text()).toContain('电梯物联网网关未恢复')
-    expect(bar.text()).not.toContain('重新获取')
+    expect(w.find('.dev-auth').exists()).toBe(false)
+    expect(w.text()).not.toContain('物联网网关')
     w.unmount()
   })
 
@@ -654,7 +644,7 @@ describe('智控面板（真实台账）', () => {
 
     // 句式照设计稿 app.js:982-990，但只念真实存在的格子（没有的格子不报）
     expect(w.find('[data-page="crane"]').attributes('aria-label')).toBe(
-      '5G塔机，在线设备2/4，最大高度70m，点击查看明细',
+      '5G塔机，在线设备2/3，最大高度70m，点击查看明细',
     )
     // 电梯「今日运行时长」那格常驻（设计稿是两列），没数就念「—」——
     // 与可视格同口径，不拿台账的高度冒充
@@ -869,11 +859,13 @@ describe('设备详情页（真实台账）', () => {
 
     expect(w.find('#subTitle').text()).toBe('5G塔机')
     const cards = w.findAll('.dev-card')
-    expect(cards).toHaveLength(4)
+    // 3 张：传统塔机5 已于 2026-11-25 从页面移除（见 utils/deviceLedger.ts: HIDDEN_NAMES）
+    expect(cards).toHaveLength(3)
 
     // 按台号升序（服务端按 id 倒序返回，页面排序；见 utils/deviceLedger.ts: byUnitNo）
+    // 名称带楼栋前缀，台号仍由名称里的数字决定（craneSnOf 靠它拿 sn）
     const names = cards.map((c) => c.find('.dev-card-hd strong span').text())
-    expect(names).toEqual(['智能塔机2', '智能塔机3', '智能塔机4', '传统塔机5'])
+    expect(names).toEqual(['2#楼-智能塔机2', '3#楼-智能塔机3', '酒店-智能塔机4'])
 
     // 四格照 V2 塔机卡（今日吊次 / 今日吊重 / 当前吊重 / 当前负荷）
     const labels = cards[0].findAll('.dev-card-grid span').map((s) => s.text())
@@ -885,9 +877,6 @@ describe('设备详情页（真实台账）', () => {
     expect(vals).toEqual(['2次', '3.75t', '—', '—'])
     // 没有实时帧就不画负荷条（画一条 0% 会被读成「负荷为零」）
     expect(cards[0].find('.dev-load').exists()).toBe(false)
-
-    // 传统塔机5 没有平台编号 → 四格全「—」，不拿台账的高度/功效顶替
-    expect(cards[3].findAll('.dev-card-grid b').map((b) => b.text())).toEqual(['—', '—', '—', '—'])
 
     // 状态：实时通道没通 → 回落台账（智能塔机3 的 online_status 是 0）
     expect(cards.some((c) => c.find('.dev-status').classes().includes('is-off'))).toBe(true)
@@ -915,10 +904,9 @@ describe('设备详情页（真实台账）', () => {
     await nextTick()
 
     const cards = w.findAll('.dev-card')
+    expect(cards).toHaveLength(3)
     // 2#/3#/4# 查询成功、当天 0 条：吊次 0次、吊重 0.00t（「今天没吊」是结论）
     expect(cards[0].findAll('.dev-card-grid b').map((b) => b.text())).toEqual(['0次', '0.00t', '—', '—'])
-    // 传统塔机5 没有平台编号，连「今天没吊」都无从谈起 → 保持「—」
-    expect(cards[3].findAll('.dev-card-grid b').map((b) => b.text())).toEqual(['—', '—', '—', '—'])
     w.unmount()
   })
 
@@ -932,10 +920,10 @@ describe('设备详情页（真实台账）', () => {
     // 台账只有「智能电梯1/2」两行（按楼登记），但实时数据是逐笼的 —— 4 个轿厢各一张卡
     expect(cards).toHaveLength(4)
     expect(cards.map((c) => c.find('.dev-card-hd strong span').text())).toEqual([
-      '智能电梯1-1',
-      '智能电梯1-2',
-      '智能电梯2-1',
-      '智能电梯2-2',
+      '酒店-智能电梯1-1',
+      '酒店-智能电梯1-2',
+      '2#楼-智能电梯2-1',
+      '2#楼-智能电梯2-2',
     ])
     // 四格照设计稿 gx2 的 renderLiftCard；网关没有工况帧时全「—」，
     // 不回落到台账的「高度 60m」—— 档案字段不该冒充实时读数
@@ -978,8 +966,8 @@ describe('设备详情页（真实台账）', () => {
       '3人',
       '480.5kg',
     ])
-    // 工况帧时间要露出来：电梯静止时不发包，帧可能是几小时前的
-    expect(first.find('.dev-note').text()).toContain('09:59')
+    // 卡片底部不再有「HH:mm 工况帧」小字（2026-11-25 下线）
+    expect(first.find('.dev-note').exists()).toBe(false)
     expect(first.find('.dev-status').text()).toBe('在线')
     w.unmount()
   })
@@ -1023,7 +1011,7 @@ describe('设备详情页（真实台账）', () => {
     w.unmount()
   })
 
-  it('作业报表：工作循环是真数据源 —— 三格合计 + 机队分台表 + 结论', async () => {
+  it('作业报表：工作循环是真数据源 —— 6 格统计 + 三卡风险 + 三张分布图', async () => {
     const auth = useAuthStore()
     auth.token = 'test-token'
     auth.expiresAt = Date.now() + 3_600_000
@@ -1054,21 +1042,87 @@ describe('设备详情页（真实台账）', () => {
     await w.findAll('.dev-view-tabs button')[1].trigger('click')
     await flushPromises()
 
-    // 三格合计：3 台车 × (2 次 / 3.75t / 300s) —— 传统塔机5 无编号，不进合计
-    const kpis = w.findAll('.report-kpi')
-    expect(kpis).toHaveLength(3)
-    expect(kpis.map((k) => k.find('span').text())).toEqual(['合计吊次', '合计吊重', '作业时长'])
-    expect(kpis.map((k) => k.find('b').text())).toEqual(['6次', '11.25t', '15分'])
+    // 粒度只剩周报 / 月报（日报 2026-11-25 按现场要求下线）
+    expect(w.findAll('.report-span button').map((b) => b.text())).toEqual(['周报', '月报'])
 
-    // 机队表：4 台都占一行（缺数的也要露脸），表头是设计稿的位置但换成可核验的量
-    expect(w.findAll('.report-line.is-hd span').map((s) => s.text())).toEqual(['吊次', '吊重', '峰值', '时长'])
-    const lines = w.findAll('.report-line:not(.is-hd)')
-    expect(lines).toHaveLength(4)
-    expect(lines[0].find('b').text()).toBe('智能塔机2')
-    expect(lines[0].findAll('span').map((s) => s.text())).toEqual(['2次', '3.75t', '2.50t', '5分'])
-    // 传统塔机5 没有平台编号：四格全「—」，并在结论里说明未纳入统计
-    expect(lines[3].findAll('span').map((s) => s.text())).toEqual(['—', '—', '—', '—'])
-    expect(w.find('.report-points').text()).toContain('传统塔机5 无平台编号，未纳入统计')
+    // 6 格统计：默认第一台（2 条循环 → 2 次 / 3.75t / 峰值 2.50t / 均值 1.88t·2.5分·37.5%）
+    const kpis = w.findAll('.report-kpi')
+    expect(kpis).toHaveLength(6)
+    expect(kpis.map((k) => k.find('span').text())).toEqual([
+      '累计吊次',
+      '累计吊重',
+      '峰值载荷',
+      '平均载荷',
+      '平均作业时长',
+      '平均载荷利用率',
+    ])
+    expect(kpis.map((k) => k.find('b').text())).toEqual(['2次', '3.75t', '2.50t', '1.88t', '2.5分', '37.5%'])
+
+    // 机组页签用现场叫法（去掉「智能」前缀），顺序与台账一致；默认选中第一台
+    const devs = w.findAll('.report-dev')
+    expect(devs.map((b) => b.text())).toEqual(['2#楼-塔机2', '3#楼-塔机3', '酒店-塔机4'])
+    expect(devs[0].classes()).toContain('on')
+
+    // 风险三卡 + 三张分布图；「分析建议」按要求下线
+    expect(w.findAll('.report-insight')).toHaveLength(3)
+    expect(w.find('.report-advice').exists()).toBe(false)
+    expect(w.findAll('.crane-chart')).toHaveLength(3)
+
+    // 横轴：24 个小时桶只标 12 个刻度，且标签去前导 0（0/2/4…22）
+    const hours = w.findAll('.crane-chart')[0]
+    expect(hours.findAll('.alarm-x text').map((t) => t.text())).toEqual([
+      '0', '2', '4', '6', '8', '10', '12', '14', '16', '18', '20', '22',
+    ])
+
+    // 点柱子看读数：24 列各有命中区，点 9 时那列出「9时 · 2次」，再点收起
+    const hits = hours.findAll('.crane-bar-hit')
+    expect(hits).toHaveLength(24)
+    await hits[9].trigger('click')
+    expect(hours.find('.crane-tip-text').text()).toBe('9时 · 2次')
+
+    // 读数标签必须整块落在绘图区内（340×168 视图：左 28 / 右 332 / 基线 142），
+    // 否则会贴边被裁；并且画在柱子之后 → 层级在柱子与柱顶数值之上
+    const box = hours.find('.crane-tip-bg')
+    const tx = Number(box.attributes('x'))
+    const ty = Number(box.attributes('y'))
+    const tw = Number(box.attributes('width'))
+    expect(tx).toBeGreaterThanOrEqual(28)
+    expect(tx + tw).toBeLessThanOrEqual(332)
+    expect(ty).toBeGreaterThanOrEqual(0)
+    expect(ty + 20).toBeLessThanOrEqual(142)
+    const svgHtml = hours.find('svg').html()
+    expect(svgHtml.indexOf('crane-tip')).toBeGreaterThan(svgHtml.indexOf('crane-bar-shapes'))
+
+    await hits[9].trigger('click')
+    expect(hours.find('.crane-tip-text').exists()).toBe(false)
+
+    // 峰值载荷分布：0.5 一档共 7 个区间，最后一个 3t 及以上（开区间）
+    const loads = w.findAll('.crane-chart')[1]
+    expect(loads.findAll('.alarm-x text').map((t) => t.text())).toEqual([
+      '0–0.5', '0.5–1', '1–1.5', '1.5–2', '2–2.5', '2.5–3', '≥3',
+    ])
+    // 2.5 → [2.5,3)、1.25 → [1,1.5)，两根柱各 1 次
+    expect(loads.findAll('.crane-bar-hit')).toHaveLength(7)
+    expect(loads.findAll('.crane-chart-val').map((t) => t.text())).toEqual(['1', '1'])
+    await loads.findAll('.crane-bar-hit')[5].trigger('click')
+    expect(loads.find('.crane-tip-text').text()).toBe('2.5–3t · 1次')
+
+    // 作业时长分布：2 分钟一档共 8 个区间，最后一箱 14 分钟及以上（开区间）
+    const durs = w.findAll('.crane-chart')[2]
+    expect(durs.findAll('.alarm-x text').map((t) => t.text())).toEqual([
+      '0–2', '2–4', '4–6', '6–8', '8–10', '10–12', '12–14', '≥14',
+    ])
+    // 120s(2分) 与 180s(3分) 都落 [2,4)，同箱合计 2 次
+    expect(durs.findAll('.crane-bar-hit')).toHaveLength(8)
+    expect(durs.findAll('.crane-chart-val').map((t) => t.text())).toEqual(['2'])
+    await durs.findAll('.crane-bar-hit')[1].trigger('click')
+    expect(durs.find('.crane-tip-text').text()).toBe('2–4分 · 2次')
+
+    // 机队对比表 2026-11-25 按现场要求下线（机组页签已能逐台看）
+    expect(w.find('.report-fleet').exists()).toBe(false)
+    expect(w.find('.report-line').exists()).toBe(false)
+    // 原有的「结论」区已换成风险分析三卡
+    expect(w.find('.report-points').exists()).toBe(false)
     expect(w.find('.report-share').exists()).toBe(true)
     w.unmount()
   })
@@ -1122,7 +1176,8 @@ describe('设备弹层（真实台账）', () => {
     await nextTick()
 
     expect(w.find('.pop-title').text()).toBe('设备信息')
-    expect(w.find('.pop-sub').text()).toBe('智能塔机4')
+    // 展示名（带楼栋前缀）；台账原名是「智能塔机4」
+    expect(w.find('.pop-sub').text()).toBe('酒店-智能塔机4')
 
     const blocks = w.findAll('.dev-info-block')
     expect(blocks).toHaveLength(2)
@@ -1155,37 +1210,10 @@ describe('设备弹层（真实台账）', () => {
     w.unmount()
   })
 
-  it('设备信息：传统塔机5 没有编号与实时工况（与 V2 同口径，照常弹、缺的留「—」）', async () => {
-    signIn()
-    const sub = useSubpageStore()
-    sub.openDevice('crane')
-    const sheet = useBottomSheetStore()
-    const w = mount(Host)
-    await nextTick()
-
-    sheet.openDeviceInfo('crane', '70')
-    await nextTick()
-
-    expect(w.find('.pop-sub').text()).toBe('传统塔机5')
-    const blocks = w.findAll('.dev-info-block')
-    // 段落不隐藏：与 V2 一样照常给出两段
-    expect(blocks).toHaveLength(2)
-
-    const rows = new Map(blocks[0].findAll('.dev-info-row').map((r) => [r.find('span').text(), r.find('b').text()]))
-    // 状态取实时四态：没有 sn → 平台不推它 → 「离线」（V2 弹层同样是离线，
-    // 那里能显示「在线」是因为它读台账；V2 的 GetTowerState("") 也是离线）
-    expect(rows.get('当前状态')).toBe('离线')
-    // 场景里这台车的 deviceSn 是空的 → 编号「—」
-    expect(rows.get('塔机编号')).toBe('—')
-    // 不在实时订阅列表 → 高度与四行实时值都是「—」，不拿台账的 10.3 顶替
-    expect(rows.get('塔机高度')).toBe('—')
-    expect(blocks[0].text()).not.toContain('10.3m')
-    // 功效靠平台编号统计：这台车没有 sn → V2 弹层这一行也是 `--`
-    // （台账里的「功效统计信息 60 吊次/台班」没有任何界面在用）
-    expect(rows.get('功效')).toBe('—')
-    expect(blocks[1].findAll('.dev-info-row b.is-dash')).toHaveLength(4)
-    w.unmount()
-  })
+  // 2026-11-25：原本这里有一条「传统塔机5 没有编号与实时工况」的用例。
+  // 那台车已按要求从机组列表移除（utils/deviceLedger.ts: HIDDEN_NAMES），
+  // 设备页与弹层都不会再出现它，用例随之删除。无 sn 车该怎么显示的口径仍留在
+  // DeviceInfoSheet 的文件头注释里，台账将来新增同类设备时照那套处理。
 
   it('设备信息：电梯按轿厢展示 V2 那八行（状态/编号 + 六项工况与今日）', async () => {
     signIn()
@@ -1213,8 +1241,8 @@ describe('设备弹层（真实台账）', () => {
     sheet.openDeviceInfo('lift', '78', '3225122202')
     await flushPromises()
 
-    // 副标题用轿厢名，不用台账那行「智能电梯1」
-    expect(w.find('.pop-sub').text()).toBe('智能电梯1-1')
+    // 副标题用轿厢展示名（带楼栋前缀），不用台账那行「智能电梯1」
+    expect(w.find('.pop-sub').text()).toBe('酒店-智能电梯1-1')
 
     const blocks = w.findAll('.dev-info-block')
     expect(blocks).toHaveLength(2)
@@ -1308,6 +1336,24 @@ describe('智能爬架（真实台账 + 空态）', () => {
     await nextTick()
 
     expect(w.find('[data-empty="climb"]').text()).toContain('登录后可查看智能爬架状态')
+    w.unmount()
+  })
+
+  // 2026-11-25：标题带楼栋前缀，标题下补一行「更新时间 yyyy-MM-dd HH:mm:ss」，
+  // 取传感器报文里的 updateTime（不是本地时间）
+  it('标题是「2#楼-智能爬架」，副标题报真实更新时间', async () => {
+    signIn()
+    mockScaffold.mockResolvedValue({
+      sensors: [{ item: '1#机位', lrTilt: 1, fbTilt: 1, load: 0, time: '2026-11-25 14:02:49' }],
+      source: 'live',
+    })
+    const sub = useSubpageStore()
+    sub.openClimb()
+    const w = mount(Host)
+    await flushPromises()
+
+    expect(w.find('#subTitle').text()).toBe('2#楼-智能爬架')
+    expect(w.find('.nav-sub').text()).toBe('更新时间 2026-11-25 14:02:49')
     w.unmount()
   })
 

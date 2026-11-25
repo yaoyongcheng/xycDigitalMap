@@ -434,6 +434,36 @@ const ICON_MAP = {
       { tag: 'path', d: 'M20 8.6v8.9a2 2 0 0 1-2 2H6.6' },
     ],
   },
+
+  /*
+   * 作业报表的三张风险卡（2026-11-25 按标准版报表页补）
+   *
+   * 设计稿里是内联 SVG，这里收成数据表，与其它图标同一条渲染通路
+   * （禁止再在组件里写 v-html 或手写 <svg>）。颜色一律由父级
+   * `currentColor` 给，图标自己不带色。
+   */
+  'report-peak': {
+    viewBox: '0 0 24 24',
+    attrs: MOD_STROKE,
+    shapes: [
+      { tag: 'path', d: 'M12 3.2v1.6M12 19.2v1.6M4.8 12H3.2M20.8 12h-1.6M6.2 6.2 5 5M19 19l-1.2-1.2M17.8 6.2 19 5M5 19l1.2-1.2' },
+      { tag: 'circle', cx: 12, cy: 12, r: 3.2 },
+    ],
+  },
+  'report-night': {
+    viewBox: '0 0 24 24',
+    attrs: MOD_STROKE,
+    shapes: [{ tag: 'path', d: 'M20 14.5A7.5 7.5 0 0 1 9.5 4 7.2 7.2 0 1 0 20 14.5Z' }],
+  },
+  'report-over': {
+    viewBox: '0 0 24 24',
+    attrs: MOD_STROKE,
+    shapes: [
+      { tag: 'path', d: 'M12 3.5 2.8 19.5h18.4L12 3.5Z' },
+      { tag: 'path', d: 'M12 9.2v4.6' },
+      { tag: 'path', d: 'M12 16.8h.01' },
+    ],
+  },
 } satisfies Record<string, IconDef>
 
 /**

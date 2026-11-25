@@ -59,8 +59,16 @@
 export interface LiftCage {
   /** 网关设备编号 */
   sn: string
-  /** 展示名 —— V2 场景里的 `friendlyName`，原样使用 */
+  /**
+   * V2 场景里的 `friendlyName`，**原样保留**。
+   *
+   * 这一列是数据出处的凭证（上面那张 sn 表就是照它抄的），也是将来回查
+   * UnityPy 解析结果的唯一线索 —— 所以现场要改叫法时**不动它**，
+   * 只改下面的 `display`。
+   */
   name: string
+  /** 页面展示名（现场按楼栋叫的那套，2026-11-25 起带楼栋前缀） */
+  display: string
   /** 所属台账楼的台号（台账里那一行的 `unitNo()`；设备信息弹层按它找档案） */
   building: number
 }
@@ -78,11 +86,28 @@ export interface LiftCage {
  *   · **设备档案**（安检有效期、责任人）→ 按楼，仍取台账那 2 行。
  */
 export const LIFT_CAGES: readonly LiftCage[] = [
-  { sn: '3225122202', name: '智能电梯1-1', building: 1 },
-  { sn: '32251222021', name: '智能电梯1-2', building: 1 },
-  { sn: '32251222023', name: '智能电梯2-1', building: 2 },
-  { sn: 'E03C1CB9F5011824', name: '智能电梯2-2', building: 2 },
+  { sn: '3225122202', name: '智能电梯1-1', display: '酒店-智能电梯1-1', building: 1 },
+  { sn: '32251222021', name: '智能电梯1-2', display: '酒店-智能电梯1-2', building: 1 },
+  { sn: '32251222023', name: '智能电梯2-1', display: '2#楼-智能电梯2-1', building: 2 },
+  { sn: 'E03C1CB9F5011824', name: '智能电梯2-2', display: '2#楼-智能电梯2-2', building: 2 },
 ]
+
+/**
+ * 展示名怎么来的（2026-11-25 现场要求）
+ *
+ * 现场按楼栋叫：1# 那栋其实叫「酒店」，2# 就叫「2#楼」。所以 4 个轿厢的
+ * 卡片标题 / 弹层副标题统一用 `display`，不再用 `name`（电梯的作业报表子页
+ * 已于 2026-11-25 下线，展示点只剩这两处）。
+ *
+ * 两条与塔机改名（`utils/deviceLedger.ts` 的 `DISPLAY_NAMES`）一致的约束：
+ *   · 新名字里**保留楼号与笼号数字**（1-1 / 1-2 / 2-1 / 2-2）—— 现场念设备
+ *     就念这两个号，去掉之后四张卡谁也分不清谁；
+ *   · 只改展示层。`sn` 与 `building` 是数据线的两端（IOT 读数、台账档案），
+ *     一个字都不动，所以改名不会让任何一格掉成「—」。
+ *
+ * 名字变长（7 字 → 9 字）不影响卡头：`.dev-card-hd strong span` 是弹性文本，
+ * 放不下会自己截断，状态胶囊与「设备信息」始终 `flex: none` 贴在右侧。
+ */
 
 /** 全部轿厢编号（拉数时一次查完，不逐台打请求） */
 export const LIFT_SNS: readonly string[] = LIFT_CAGES.map((c) => c.sn)

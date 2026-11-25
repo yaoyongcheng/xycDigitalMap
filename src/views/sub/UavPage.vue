@@ -448,7 +448,6 @@ function retry(): void {
       </div>
       <div class="uav-soon">
         <b>接入中，敬请期待</b>
-        <p>航线下发要走原厂控制台通道，平台没有对应接口；目前只做任务与航线只读，二期接入。</p>
       </div>
     </section>
   </div>

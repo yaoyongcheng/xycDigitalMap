@@ -98,6 +98,23 @@ export function hasMse(): boolean {
 }
 
 /**
+ * 是不是在微信内置浏览器里打开的（含企业微信、小程序 web-view）。
+ *
+ * 只看 UA 里的 `MicroMessenger`：企业微信与小程序 web-view 的 UA 都带这一段，
+ * 它们的内核同样**不给 Web Share**（`navigator.share` 不存在），`a[download]`
+ * 也不生效。所以「导出分享」必须在这里换一条路（把图摆到页面上长按保存），
+ * 否则用户点了按钮会觉得没反应。
+ *
+ * 判定只读 UA、不做响应式：UA 在一次页面生命周期里不会变。
+ *
+ * @param ua 便于单测注入；默认取 `navigator.userAgent`
+ */
+export function isWeChatBrowser(ua?: string): boolean {
+  const s = ua ?? (typeof navigator === 'undefined' ? '' : navigator.userAgent)
+  return /MicroMessenger/i.test(s)
+}
+
+/**
  * 把重连提示里的「次数 / 倒计时」裁掉（手机端不展示计数）。
  *
  * 引擎的原话是有用的（出什么事了），只是不该让人盯着数次数：

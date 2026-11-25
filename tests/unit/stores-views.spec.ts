@@ -211,8 +211,8 @@ describe('stores · alarm / home / subpage', () => {
       const home = useHomeStore()
 
       const crane = home.siteEquip.find((d) => d.id === 'crane')!
-      // 4 台塔机，智能塔机3 离线
-      expect(home.equipCount(crane)).toEqual({ on: 3, total: 4, st: 'warn' })
+      // 3 台塔机（传统塔机5 已于 2026-11-25 移出机组列表），智能塔机3 离线
+      expect(home.equipCount(crane)).toEqual({ on: 2, total: 3, st: 'warn' })
       expect(crane.value).toBe('70m')
 
       const lift = home.siteEquip.find((d) => d.id === 'lift')!

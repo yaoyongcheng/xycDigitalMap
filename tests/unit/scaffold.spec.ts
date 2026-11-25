@@ -8,6 +8,7 @@ import {
   scaffoldLabel,
   summarize,
   timeHm,
+  timeStamp,
   toNumber,
 } from '@/utils/scaffold'
 import type { ScaffoldSensor } from '@/types'
@@ -222,6 +223,15 @@ describe('阈值与文案', () => {
     expect(timeHm('2026-11-07 14:02:49')).toBe('14:02')
     expect(timeHm('')).toBe('')
     expect(timeHm('2026-11-07')).toBe('')
+  })
+
+  // 导航栏副标题要「严格」的 yyyy-MM-dd HH:mm:ss：对不上就不显示，绝不拼半截
+  it('timeStamp 只认完整的 yyyy-MM-dd HH:mm:ss', () => {
+    expect(timeStamp('2026-11-07 14:02:49')).toBe('2026-11-07 14:02:49')
+    expect(timeStamp(' 2026-11-07T14:02:49 ')).toBe('2026-11-07 14:02:49')
+    expect(timeStamp('2026-11-07 14:02')).toBe('')
+    expect(timeStamp('2026-11-07')).toBe('')
+    expect(timeStamp('')).toBe('')
   })
 })
 

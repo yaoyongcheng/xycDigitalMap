@@ -63,7 +63,8 @@ describe('deviceLedger 映射', () => {
     const unit = toUnit(row)
 
     expect(unit.id).toBe('69')
-    expect(unit.name).toBe('智能塔机4')
+    // 展示名带楼栋前缀（`utils/deviceLedger.ts: displayNameOf`），台账原名仍是智能塔机4
+    expect(unit.name).toBe('酒店-智能塔机4')
     expect(unit.status).toBe('在线')
     expect(unit.cells).toEqual([
       ['高度', '70m'],
@@ -99,9 +100,11 @@ describe('deviceLedger 映射', () => {
     const drone = cards.find((c) => c.id === 'drone')!
     const climb = cards.find((c) => c.id === 'climb')!
 
-    // 塔机 4 台（智能 2/3/4 + 传统 5），其中 3# 离线
-    expect(crane.units).toHaveLength(4)
-    expect(crane.units.filter((u) => u.on)).toHaveLength(3)
+    // 塔机 3 台（智能 2/3/4；传统塔机5 已于 2026-11-25 从页面移除），其中 3# 离线。
+    // 最大高度仍按台账全量算（含已隐藏那台的 10.3m，不影响 70m 这个上限）。
+    expect(crane.units).toHaveLength(3)
+    expect(crane.units.filter((u) => u.on)).toHaveLength(2)
+    expect(crane.units.map((u) => u.name)).toEqual(['2#楼-智能塔机2', '3#楼-智能塔机3', '酒店-智能塔机4'])
     expect(crane.value).toBe('70m')
     expect(crane.metric).toBe('最大高度')
 
@@ -140,21 +143,21 @@ describe('deviceLedger store', () => {
     ledger.apply(deviceRows())
 
     expect(ledger.hasData).toBe(true)
+    // 统计仍按台账全量（8 台 / 7 在线）：隐藏「传统塔机5」只影响页面条目，不改台账事实
     expect(ledger.total).toBe(8)
     expect(ledger.online).toBe(7) // 智能塔机3 离线
-    expect(ledger.unitsOf('crane')).toHaveLength(4)
+    expect(ledger.unitsOf('crane')).toHaveLength(3)
     expect(ledger.unitsOf('lift')).toHaveLength(2)
     expect(ledger.categoryUnits('climb')).toHaveLength(1)
 
     // deviceSet 是同步消费方（弹层宿主 / 报表），必须立刻看到同一批机组
-    expect(deviceSet('crane').units).toHaveLength(4)
+    expect(deviceSet('crane').units).toHaveLength(3)
     // 机组按台号升序（服务端按 id 倒序返回，见 utils/deviceLedger.ts: byUnitNo）
     expect(deviceSet('lift').units.map((u) => u.name)).toEqual(['智能电梯1', '智能电梯2'])
     expect(deviceSet('crane').units.map((u) => u.name)).toEqual([
-      '智能塔机2',
-      '智能塔机3',
-      '智能塔机4',
-      '传统塔机5',
+      '2#楼-智能塔机2',
+      '3#楼-智能塔机3',
+      '酒店-智能塔机4',
     ])
   })
 

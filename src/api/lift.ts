@@ -1,4 +1,4 @@
-import { fetchEventRows, fetchRealtimeRows, snOfMetric, IotStaleTokenError, iotTokenUnreachable, type IotEventRow } from './iot'
+import { fetchEventRows, fetchRealtimeRows, snOfMetric, IotStaleTokenError, iotTokenUnreachable } from './iot'
 import { ApiError } from './http'
 import { LIFT_SNS } from '@/data/liftSn'
 import { sumWork, toAttr, type LiftAttr, type LiftToday } from '@/utils/lift'
@@ -211,66 +211,6 @@ export async function fetchLiftToday(now = new Date()): Promise<Record<string, L
       }
       for (const [sn, list] of Object.entries(grouped)) out[sn] = sumWork(list)
     }
-    clearLiftAuthFailure()
-    return out
-  } catch (err) {
-    noteAuth(err)
-    return null
-  }
-}
-
-/**
- * 区间工作循环（作业报表用）：`{ sn → 该台在区间内的全部事件 }`。
- *
- * 与 `fetchLiftToday` 查的是同一个事件码，只是把区间从「当天」换成任意一段
- * —— 对应 V2 的 `QueryWorkCycleHistoryAsync(sn, date, token)`，那边一天一次，
- * 这里一次拿整段（周报 / 月报不重复请求 7 / 30 次）。
- *
- * 为什么不在这里直接聚合：报表要按**日切片**算在运时段（见 `utils/liftReport.ts`），
- * 那需要保留每条的时间，聚合交给纯函数做才测得准。
- *
- * ## 键的语义（报表要靠它区分两件事）
- *
- * · 键**存在** = 网关认得这个编号（值为空数组说明区间内没跑过）；
- * · 键**缺失** = 网关不认这个编号（`status:10`）或这一台请求失败。
- *
- * 所以这里不复用 `perSn`（它会把失败的 reject 过滤掉、丢失「哪台失败」的
- * 对应关系），改为 `allSettled` 保序配对 —— 报表的结论区要能说出「哪几台
- * 未纳入统计」，而不是笼统地少几行。
- *
- * 量级实测（2026-11-13，单台 `3225122202`）：当天 27KB / 7 天 213KB /
- * 30 天 656KB，耗时 0.2s / 0.4s / 0.7s。四台并发约 1~2 秒，所以报表只在
- * 用户真正切到某个粒度时查一次，不做预取。
- */
-export async function fetchLiftWorkRange(
-  start: number,
-  end: number,
-): Promise<Record<string, IotEventRow[]> | null> {
-  if (!LIFT_SNS.length) return null
-  try {
-    const results = await Promise.allSettled(
-      LIFT_SNS.map((sn) =>
-        fetchEventRows([{ productCode: LIFT_PRODUCT, sn, eventCode: 'EVENT_WORKDATA' }], start, end),
-      ),
-    )
-
-    const out: Record<string, IotEventRow[]> = {}
-    let ok = 0
-    let firstErr: unknown = null
-    LIFT_SNS.forEach((sn, i) => {
-      const r = results[i]
-      if (r.status === 'fulfilled') {
-        ok += 1
-        out[sn] = r.value
-        return
-      }
-      if (firstErr === null) firstErr = r.reason
-      // 部分失败时也要留 401 的痕：那是凭证问题，不是这台没数据
-      noteAuth(r.reason)
-    })
-
-    // 一台都没应答 = 整体失败（令牌 / 网络），交给上层显示提示条
-    if (!ok && firstErr !== null) throw firstErr
     clearLiftAuthFailure()
     return out
   } catch (err) {

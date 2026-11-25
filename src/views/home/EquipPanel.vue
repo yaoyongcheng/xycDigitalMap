@@ -667,24 +667,14 @@ function goLogin(): void {
   subpage.openLogin('登录后可查看设备台账与运行状态')
 }
 
-/**
- * 电梯数据凭证失效 —— 台账是好的（走 `:8084`），所以九张卡都在，
- * 只是电梯那几张每一格都是「—」。不说清楚用户只会反复下拉。
+/*
+ * 首页不再提示「电梯物联网网关凭证失效 / 未恢复」（2026-11-25 现场改定）。
  *
- * 与设备详情页同一条提示、同一个出口，两处不该有两种说法。
+ * 那块 `.dev-auth` 横幅（文案 + 重试按钮）只留在智能电梯子页面
+ * （`views/sub/DevicePage.vue`），首页九张卡里电梯那几格直接显示「—」即可 ——
+ * 首页是「总览」，不该被一条属于单个子系统的凭证问题顶在卡片区上方。
+ * 电梯 store 本身照旧 refresh / startLive，数据链路没动。
  */
-const needsRetry = computed(() => lift.authLost)
-
-/**
- * 「重试」—— **不是**「重新登录」。
- *
- * 电梯走 IOT 云网关的项目级 ak/sk，跟登录页那套 `:8081` 业务账号（`xiangyangcun`）
- * 是两套凭证，登录换不到 IOT 令牌。之前这里写成「重新登录」，用户登完回来提示
- * 还在，看着像没生效。真正有效的是丢掉 IOT 旧令牌重换一张。
- */
-function goRetry(): void {
-  void lift.relogin()
-}
 </script>
 
 <template>
@@ -792,12 +782,7 @@ function goRetry(): void {
       </div>
     </div>
 
-    <!-- 电梯数据凭证失效：九张卡都在，只有电梯那几张是「—」。得说清是为什么 -->
-    <section v-if="needsRetry" class="dev-auth" role="alert">
-      <!-- 与设备详情页同一条提示、同一个出口，两处不该有两种说法 -->
-      <p>{{ lift.gatewayStale ? '电梯物联网网关未恢复，请稍后再试' : '电梯物联网网关凭证失效，请稍后重试' }}</p>
-      <button class="dev-auth-btn" type="button" @click="goRetry">重试</button>
-    </section>
+    <!-- 电梯网关凭证问题不在这里提示：只留在智能电梯子页面（DevicePage 的 .dev-auth） -->
 
     <div class="eq-grid fill-in">
       <!--

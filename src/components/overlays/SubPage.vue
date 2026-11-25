@@ -5,8 +5,11 @@ import SvgIcon from '@/components/ui/SvgIcon.vue'
 import { mineNotes } from '@/data/config'
 import { useAlarmStore } from '@/stores/alarm'
 import { useDroneAlarmStore } from '@/stores/droneAlarm'
+import { useScaffoldStore } from '@/stores/scaffold'
 import { titleOf, useSubpageStore, type SubView } from '@/stores/subpage'
 import { takeSilentBack } from '@/utils/backAction'
+import { DASH } from '@/utils/lift'
+import { timeStamp } from '@/utils/scaffold'
 import AlarmDetail from '@/views/sub/AlarmDetail.vue'
 import AlarmHist from '@/views/sub/AlarmHist.vue'
 import ClimbPage from '@/views/sub/ClimbPage.vue'
@@ -59,6 +62,20 @@ const workDetail = computed(() =>
 )
 
 const placeholderName = computed(() => (sub.view.kind === 'placeholder' ? sub.view.name : ''))
+
+/**
+ * 导航栏副标题（2026-11-25）—— 目前只有「2#楼-智能爬架」有。
+ *
+ * 标题下面那行「更新时间 yyyy-MM-dd HH:mm:ss」取自传感器报文里的 `updateTime`
+ * （`stores/scaffold.ts` 的 `summary.updatedAt` 是所有机位里最新的那一条），
+ * 不是本地时间、也不是页面渲染时间：CDN 那份 JSON 本身几分钟才更新一次，
+ * 报「现在」等于骗人。取不到时写「—」，不拿当前时间顶替。
+ */
+const scaf = useScaffoldStore()
+const navSub = computed(() => {
+  if (sub.view.kind !== 'climb') return ''
+  return `更新时间 ${timeStamp(scaf.summary.updatedAt) || DASH}`
+})
 
 /** 各「我的」入口的范围说明（见 data/config.ts 的 mineNotes 注释） */
 const placeholderNote = computed(() => mineNotes[placeholderName.value] ?? '')
@@ -389,7 +406,11 @@ onUnmounted(() => {
           <SvgIcon name="back" />
         </button>
       </div>
-      <h1 class="nav-title" id="subTitle">{{ sub.title }}</h1>
+      <div class="nav-mid">
+        <h1 class="nav-title" id="subTitle">{{ sub.title }}</h1>
+        <!-- 智能爬架：标题下方显示传感器数据的更新时间（其余页面 navSub 为空，不占高度） -->
+        <p v-if="navSub" class="nav-sub">{{ navSub }}</p>
+      </div>
       <div class="nav-side right"></div>
     </nav>
 

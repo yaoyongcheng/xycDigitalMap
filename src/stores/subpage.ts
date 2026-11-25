@@ -59,7 +59,8 @@ export function titleOf(v: SubView): string {
     case 'uav':
       return '无人机'
     case 'climb':
-      return '智能爬架'
+      // 2026-11-25 现场要求：爬架在 2# 楼，标题带楼栋前缀（页面内读数与逻辑不变）
+      return '2#楼-智能爬架'
     case 'alarm-hist':
       return '报警预警'
     case 'work-orders':

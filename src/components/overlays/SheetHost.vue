@@ -100,7 +100,8 @@ const subtitle = computed(() => {
   // 电梯按轿厢出卡，副标题用轿厢名（台账行只有「1#楼电梯」这种按楼的登记名）
   if (sheet.view?.sn) {
     const cage = LIFT_CAGES.find((c) => c.sn === sheet.view?.sn)
-    if (cage) return cage.name
+    // 副标题用展示名（带楼栋前缀），与卡片标题、报表行名同一份文案
+    if (cage) return cage.display
   }
   if (sheet.kind === 'device-history' || sheet.kind === 'device-info')
     return deviceUnit.value?.name ?? ''

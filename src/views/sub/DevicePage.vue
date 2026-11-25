@@ -25,9 +25,11 @@ import type { DeviceKind, DeviceUnit } from '@/types'
  *
  * 智能塔机与智能电梯共用一份页面，机组来自设备台账接口（`:8084`），
  * 经 data/device.ts 的响应式登记表拿（`deviceSet(kind).units`）。
- * 顶部双页签：
- *   ① 设备实时状态 —— 机组卡片（名称 + 实时状态 + 设备信息按钮 + 四格 + 负荷条）
- *   ② 作业报表     —— 日报/周报/月报
+ *
+ * 页签**只有塔机有**（两个）：① 设备实时状态 ② 作业报表（日报/周报/月报）。
+ * 电梯模块 2026-11-25 起只保留「设备实时状态」—— 原先那个「作业报表」子页
+ * （`views/sub/LiftReport.vue`，数据源是 IOT 的 `EVENT_WORKDATA`）已整条下线，
+ * 所以电梯页没有页签栏，进来就是四张轿厢卡。
  *
  * **塔机卡四格是「今日吊次 / 今日吊重 / 当前吊重 / 当前负荷」**，与 V2 客户端的
  * 塔机卡同源（`UIBottomCardCraneLv2`）：
@@ -57,12 +59,13 @@ const set = computed(() => deviceSet(props.kind))
 
 const isCrane = computed(() => props.kind === 'crane')
 
+/** 塔机的两个页签。电梯没有页签（见文件头），这个值对电梯不生效 */
 const pageTab = ref<'live' | 'report'>('live')
 
 /** 慢请求才显示骨架：台账通常一两百毫秒就回来了，快请求不该闪灰条 */
 const showSkel = useSlowLoading(() => !set.value.units.length && ledger.state === 'loading')
 
-/** 切塔机 ↔ 电梯时回到实时页，避免停在电梯报表看塔机的空报表 */
+/** 切塔机 ↔ 电梯时回到实时页，避免停在塔机报表看另一个模块的空报表 */
 watch(
   () => props.kind,
   () => {
@@ -133,7 +136,6 @@ onUnmounted(() => {
  *
  * 塔机取实时四态；`stateOf` 返回 null 表示**通道整个没通**（线上 HTTPS 没有 WS 反代），
  * 这时才回落台账 `status_text` —— 与弹层同一口径，不把「我们看不到」写成「设备离线」。
- * 传统塔机5 没有平台编号，`stateOf(null)` 恒为「离线」，与弹层一致。
  */
 function statusOf(u: DeviceUnit, sn: string | null): string {
   if (!isCrane.value) return u.status
@@ -159,7 +161,6 @@ const DASH = '—'
  * 显示值与进度条不可能不一致。
  *
  * 后两格是**实时**的，25s 没有帧就过期成「—」—— 不留着最后一帧假装还在动。
- * 传统塔机5 没有 sn，四格全是「—」。
  */
 function craneCells(sn: string | null, frame: CraneRealtime | null, pct: number | null): [string, string][] {
   const day = sn ? ledger.craneDayBySn[sn] : undefined
@@ -186,10 +187,10 @@ function craneCells(sn: string | null, frame: CraneRealtime | null, pct: number 
  * （载重的 kg 是 V2 硬编码的单位，网关没有给换算说明；`status:11` 收回权限后
  * 也拿不到新样本复核，此处按 V2 的契约走。）
  *
- * 这一帧的时间会被带到卡片下方的小字里 —— 电梯静止时不发包，帧可能是几小时
- * 前的，不给时间就等于让人以为这是此刻的读数。
+ * 帧的时间戳不往卡面上带（2026-11-25 起下线了卡片底部的「HH:mm 工况帧」小字），
+ * 但「这一格是不是此刻的读数」仍然重要 —— 弹层里那两段照旧，卡面只保留四格。
  */
-function liftCells(sns: readonly string[]): { cells: [string, string][]; at: number | null } {
+function liftCells(sns: readonly string[]): { cells: [string, string][] } {
   const a = lift.attrOf(sns)
   return {
     cells: [
@@ -198,16 +199,7 @@ function liftCells(sns: readonly string[]): { cells: [string, string][]; at: num
       ['当前人数', formatPeople(a?.people ?? null)],
       ['当前载重', formatLoad(a?.load ?? null)],
     ],
-    at: a?.at ?? null,
   }
-}
-
-/** 工况帧时间 → `HH:mm`；拿不到就空串（不写「刚刚」这种假时间） */
-function frameTime(ms: number | null): string {
-  if (!ms) return ''
-  const d = new Date(ms)
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 /**
@@ -225,8 +217,6 @@ interface Card {
   cells: [string, string][]
   /** 负荷条百分比；null = 没有实时帧，不画条（「没有数据」不该画成「负荷为零」） */
   load: number | null
-  /** 卡片底部一行小字（电梯用它标出工况帧的时间） */
-  note?: string
   /** 「设备信息」弹层要的台账主键；null = 台账里没有对应档案，不渲染按钮 */
   infoId: string | null
   /** 「设备信息」弹层要的轿厢 sn（只有电梯有：档案按楼、读数按笼） */
@@ -239,8 +229,9 @@ interface Card {
  *
  * 台账只有 2 行（按楼登记），所以档案类字段（安检有效期、责任人）仍从
  * 所属那栋楼的台账行取 —— `data/liftSn.ts` 的 `building` 就是这条线。
- * 卡片标题用轿厢名（`智能电梯1-1`），「设备信息」弹层同时带台账主键（取档案）
- * 和轿厢 sn（取这一笼的读数）。
+ * 卡片标题用轿厢**展示名**（`c.display`，现场叫「酒店-智能电梯1-1」这种带楼栋
+ * 前缀的；V2 原始名 `c.name` 保留在表里作数据出处），「设备信息」弹层同时带
+ * 台账主键（取档案）和轿厢 sn（取这一笼的读数）。
  */
 const liftCards = computed<Card[]>(() =>
   LIFT_CAGES.map((c) => {
@@ -249,14 +240,13 @@ const liftCards = computed<Card[]>(() =>
     // 不回落台账 `status_text`：那是平台登记态，不随实时通断变化，拿它顶替
     // 就是「卡片说在线、每一格却是—」。用户 2026-11-13 明确要求连不上即离线。
     const status = lift.isOnline(c.sn) ? '在线' : '离线'
-    const { cells, at } = liftCells([c.sn])
+    const { cells } = liftCells([c.sn])
     return {
       key: c.sn,
-      name: c.name,
+      name: c.display,
       status,
       cells,
       load: null,
-      note: at ? `${frameTime(at)} 工况帧` : '',
       infoId: row?.id ?? null,
       sn: c.sn,
     }
@@ -340,7 +330,11 @@ function goRetry(): void {
 
 <template>
   <div class="dev-page">
-    <div class="uav-tabs dev-view-tabs">
+    <!--
+      页签只属于**塔机**。电梯模块的「作业报表」子页 2026-11-25 已下线（现场要求），
+      所以电梯页没有页签栏，直接就是四张实时状态卡。
+    -->
+    <div v-if="isCrane" class="uav-tabs dev-view-tabs">
       <button type="button" :class="{ on: pageTab === 'live' }" :aria-pressed="pageTab === 'live'" @click="pageTab = 'live'">设备实时状态</button>
       <button type="button" :class="{ on: pageTab === 'report' }" :aria-pressed="pageTab === 'report'" @click="pageTab = 'report'">作业报表</button>
     </div>
@@ -351,7 +345,7 @@ function goRetry(): void {
       <button class="data-empty-btn" type="button" @click="goLogin">去登录</button>
     </div>
 
-    <template v-else-if="pageTab === 'live'">
+    <template v-else-if="!isCrane || pageTab === 'live'">
       <!-- 换令牌那一跳没出去：多半是部署漏了 /iot-api 反代，点「重试」不管用也得给 -->
       <section v-if="gatewayLost" class="dev-auth is-warn" role="alert">
         <p>电梯网关没连上 —— 部署环境缺「/iot-api」反代，或服务器无法出网</p>
@@ -438,15 +432,12 @@ function goRetry(): void {
                 <i :style="{ width: `${c.load}%` }"></i>
               </div>
             </div>
-
-            <!-- 电梯：标出四格取自哪一刻的工况帧（静止时不发包，帧可能已经几小时前） -->
-            <p v-if="c.note" class="dev-note">{{ c.note }}</p>
           </article>
         </div>
       </section>
     </template>
 
-    <!-- ② 作业报表 -->
-    <DeviceReport v-else :kind="kind" />
+    <!-- ② 作业报表（只有塔机有；下面的分支对电梯永不成立） -->
+    <DeviceReport v-else-if="isCrane" :kind="kind" />
   </div>
 </template>

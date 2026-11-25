@@ -209,6 +209,8 @@
   --warn-dark: #F5C14A;
   --danger-dark: #FF6B6B;
   --orange-dark: #FF9A4D;
+  /* 夜间作业卡的淡紫（2026-11-25 报表风险分析）：深色底下只有它够「夜里」又不刺眼 */
+  --violet-dark: #C4B5FD;
   /* 实心强调色上的文字（状态胶囊的绿底黑字）：不能直接用 --ink-*，那组是给底色当字的 */
   --on-ok: #06281a;
   /* 深色地图上的「在线」青 + 浅色列表上的「在线」绿 + 质量预警琥珀 */
@@ -591,6 +593,32 @@ select,
   font-size: var(--fs-17);
   font-weight: 600;
   color: var(--text);
+}
+
+/*
+ * 导航栏中栏（2026-11-25）：标题 + 可选副标题。
+ *
+ * 副标题只有「2#楼-智能爬架」用（传感器数据的更新时间）。两行合计约 37px，
+ * 仍在 .navbar 的 44px 内容高之内，所以导航栏高度不变 —— 其余页面没有副标题，
+ * 这一层只有标题一个子元素，居中结果与改前完全一致。
+ */
+.nav-mid {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.nav-sub {
+  margin: 0;
+  font-size: var(--fs-10);
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
 .nav-side {
@@ -10070,14 +10098,6 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .dev-load { margin-top: 10px; }
 
-/* 卡片脚注（电梯用来说明四格取自哪一刻的工况帧） */
-.dev-note {
-  margin: 8px 0 0;
-  font-size: var(--fs-11);
-  line-height: 1.4;
-  color: var(--ink-3-dark);
-}
-
 .dev-load-hd {
   display: flex;
   align-items: baseline;
@@ -10546,6 +10566,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
  * 不放一个 disabled 的「选择航线」按钮 —— 那看起来像点得动，点了没反应，
  * 用户会以为是 bug 而不是排期。
  */
+/* 任务下发二期占位：只剩一行「接入中，敬请期待」（2026-11-25 删掉下方说明小字） */
 .uav-soon {
   padding: 18px 14px;
   border-radius: var(--r-10);
@@ -10558,13 +10579,6 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   font-size: var(--fs-14);
   font-weight: 650;
   color: var(--ink-2-dark);
-}
-
-.uav-soon p {
-  margin: 6px 0 0;
-  font-size: var(--fs-12);
-  line-height: 1.7;
-  color: var(--ink-3-dark);
 }
 
 .uav-allow {
@@ -10785,8 +10799,7 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 }
 
 /* 「—」= 这个指标没取到数（无编号 / 接口不通），比真读数弱一档 */
-.report-kpi b.is-dash,
-.report-line .is-dash {
+.report-kpi b.is-dash {
   font-weight: 600;
   color: var(--ink-3-dark);
 }
@@ -10801,6 +10814,56 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   font-size: var(--fs-14);
   font-weight: 700;
   cursor: pointer;
+}
+
+/*
+ * 「导出分享」悬浮底栏（2026-11-25 现场要求：固定在视口底部）
+ *
+ * 报表很长（三张柱图），按钮原来只在文档末尾 —— 想在看完分布图之后导出，
+ * 得先滚到底。现在它常驻屏幕底部，滚到哪都点得到。
+ *
+ * 几何：
+ *   · 左右 32px = `.subpage-body` 的 16 + `.dev-block` 的 16 —— 二者和，
+ *     按钮才会与上面三张图的左右边缘严格对齐；写 16 会宽出一圈；
+ *   · 底部 `--safe-bot` 必须自己补：`.subpage` 向下多延伸了一个底栏高度去盖
+ *     隐藏的 tabbar，而 fixed 贴的是**视口**底，不补就压到 Home Indicator 上；
+ *   · `pointer-events` 只在按钮上开：底栏上沿那 12px 羽化区不拦截滚动/点击，
+ *     手指从那里起手仍能拖动下面的内容。
+ *
+ * 层级 41：只需要压过 `.subpage`(40) 内部的图与文字即可 —— 它形成的是**子页内部**
+ * 的层叠，整条栏仍随 `.subpage`(40) 待在 `.pop-layer`(45) 与 Toast(50) 之下，
+ * 弹层、月历、toast 打开时都不会被它压住。
+ */
+.report-share-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  /* 顶部 12px 由透明渐到页面底色，滚动时内容淡出而不是被一条硬边切断 */
+  padding: 12px 32px calc(10px + var(--safe-bot));
+  background: linear-gradient(to bottom, transparent 0, var(--bg-2) 12px);
+  pointer-events: none;
+}
+
+.report-share-bar .report-share {
+  pointer-events: auto;
+}
+
+/*
+ * 报表页底部占位（配合上面那条悬浮底栏）。
+ *
+ * 这个数不能按「浮层多高就补多高」算 —— `.subpage` 为了盖住隐藏的 tabbar
+ * 向下多延伸了 `--tabbar-h + --safe-bot`，滚动到底时内容底边其实落在**屏幕下方**
+ * `--tabbar-h - 14px ≈ 38px` 处（`.subpage-body` 自己那 14px+safe-bot 内边距
+ * 刚好抵消掉 safe-bot）。所以要补的是「浮层高 66 + safe-bot」再加这 38，
+ * 取 112 留 8px 余量。
+ *
+ * 补在 section 上而不是 body 上：只有报表页有这条浮层，别的子页不该多出空白。
+ * 滚到底时最后一张柱子图（以及微信里那张降级大图）完整露在按钮上方。
+ */
+.crane-report {
+  padding-bottom: calc(112px + var(--safe-bot));
 }
 
 /*
@@ -11085,42 +11148,511 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 
 .uav-tabs.report-span button.on::after { content: none; }
 
-.report-fleet { margin-top: 8px; }
+/*
+ * ============ 作业报表（2026-11-25 对齐标准版） ============
+ *
+ * 新增：周期芯片 + 深色日历、机组切换、三张风险卡、三张柱状图、6 格统计。
+ * 颜色全部走令牌（tokens.spec 守着正文不许出现旧色值），间距沿用 8 的倍数，
+ * 栏距统一 8/10 —— 与设计稿的 .report-* 一一对应。
+ */
 
-.report-line {
-  display: grid;
-  grid-template-columns: 0.95fr 0.62fr 0.78fr 0.7fr 0.58fr;
-  gap: 4px;
+/* 周期芯片：[今天/本周/本月] [11/10–11/16 ▾] */
+.report-pick {
+  position: relative;
+  display: flex;
   align-items: center;
-  padding: 10px 0;
-  border-top: 1px solid var(--line-dark);
-  font-size: var(--fs-13);
+  gap: 8px;
+  margin: 0 0 6px;
 }
 
-.report-line.is-hd {
-  border-top: 0;
-  padding-bottom: 4px;
-  color: var(--ink-3-dark);
+.report-chip {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line-dark-strong);
+  border-radius: var(--r-8);
+  background: transparent;
+  color: var(--ink-2-dark);
   font-size: var(--fs-12);
+  font-weight: 650;
+  cursor: pointer;
 }
 
-.report-line b {
+.report-chip.on {
+  border-color: rgba(76, 159, 255, 0.55);
+  background: rgba(47, 124, 255, 0.18);
+  color: var(--blue-2);
+}
+
+.report-chip-pick {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+}
+
+.report-chip-pick svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 深色日历浮层：比卡片高一档（--bg-4），带投影才「浮」得起来 */
+.report-cal {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 8;
+  width: 232px;
+  padding: 10px;
+  border: 1px solid var(--line-dark-strong);
+  border-radius: var(--r-12);
+  background: var(--bg-4);
+  box-shadow: var(--sh-3);
+}
+
+.report-cal-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.report-cal-hd strong {
+  font-size: var(--fs-12);
   font-weight: 650;
   color: var(--ink-1-dark);
 }
 
-.report-line.is-hd b,
-.report-line.is-hd span { color: var(--ink-3-dark); font-weight: 500; }
+.report-cal-nav {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--r-6);
+  background: var(--bg-3);
+  color: var(--ink-2-dark);
+  font-size: var(--fs-14);
+  line-height: 1;
+  cursor: pointer;
+}
 
-.report-line span { color: var(--ink-2-dark); }
+.report-cal-nav:disabled {
+  opacity: 0.35;
+}
 
-.report-line b em {
-  display: block;
-  margin-top: 2px;
-  font-style: normal;
+.report-cal-tip {
+  margin: 0 0 6px;
+  font-size: var(--fs-10);
+  color: var(--ink-3-dark);
+}
+
+.report-cal-week,
+.report-cal-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.report-cal-week {
+  margin-bottom: 2px;
+  font-size: var(--fs-9);
+  color: var(--ink-4-dark);
+  text-align: center;
+}
+
+.report-cal-day {
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--ink-2-dark);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.report-cal-day.today:not(.on) {
+  box-shadow: inset 0 0 0 1px var(--line-dark-strong);
+}
+
+.report-cal-day.on {
+  background: var(--blue);
+  color: #fff;
+}
+
+.report-cal-day.is-off,
+.report-cal-day.is-off:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.report-weeks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 232px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.report-week {
+  height: 30px;
+  border: 0;
+  border-radius: var(--r-8);
+  background: var(--bg-3);
+  color: var(--ink-2-dark);
   font-size: var(--fs-11);
   font-weight: 650;
+  cursor: pointer;
+}
+
+.report-months {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.report-month {
+  height: 32px;
+  border: 0;
+  border-radius: var(--r-8);
+  background: var(--bg-3);
+  color: var(--ink-2-dark);
+  font-size: var(--fs-11);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.report-week.on,
+.report-month.on {
+  background: var(--blue);
+  color: #fff;
+}
+
+.report-week:disabled,
+.report-month:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.report-period-range {
+  margin: 0 0 12px;
+  font-size: var(--fs-10);
+  color: var(--ink-3-dark);
+}
+
+/*
+ * 机组切换（2026-11-25 现场改定）：三台**同一行**，等宽三等分。
+ *
+ * 原来是 `repeat(2, …)` 的 2×2 网格 —— 3 台时第三颗独占半行、右边空一块，
+ * 看着像漏了一台。改三列后正好一行；机组数量多于 3 时仍会自动折行，
+ * 不会挤成一条。
+ *
+ * 为了让「2#楼-塔机2」这类 7 字名字 + 图标在 320 屏也不被 ellipsis 吃掉，
+ * 内边距与图标尺寸各收了一档（8→6 / 14→13），≤359px 再收一档（见文件末尾）。
+ */
+.report-devs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 2px 0 0;
+}
+
+.report-dev {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 36px;
+  min-width: 0;
+  padding: 0 6px;
+  border: 1px solid var(--line-dark-strong);
+  border-radius: var(--r-8);
+  background: var(--bg-3);
+  color: var(--ink-2-dark);
+  font-size: var(--fs-11);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.report-dev svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  opacity: 0.7;
+}
+
+.report-dev span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-dev.on {
+  border-color: transparent;
+  background: var(--blue);
+  color: #fff;
+}
+
+.report-dev.on svg {
+  opacity: 1;
+}
+
+/* 段标题：左侧竖色条，颜色区分「统计 / 风险 / 图表 / 机队」 */
+.report-part {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 10px;
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.report-part::before {
+  content: "";
+  width: 3px;
+  height: 14px;
+  border-radius: var(--r-2);
+  background: var(--blue-dark);
+}
+
+.report-part.is-stat::before { background: var(--ink-3-dark); }
+.report-part.is-risk::before { background: var(--warn-dark); }
+.report-part.is-chart::before { background: var(--ok-dark); }
+
+/* 6 格统计：3 列 2 行，比原三格矮一点，两行才不至于吃掉半屏 */
+.report-kpis.is-six {
+  margin-bottom: 4px;
+}
+
+.report-kpis.is-six .report-kpi {
+  padding: 8px 4px;
+}
+
+.report-kpis.is-six .report-kpi span {
+  font-size: var(--fs-10);
+  line-height: 1.25;
+}
+
+.report-kpis.is-six .report-kpi b {
+  font-size: var(--fs-15);
+}
+
+/* 单台没取到数时的说明行（不写「0 次」，那会被读成「确实没吊」） */
+.report-none {
+  margin: 0 0 8px;
+  padding: 14px 12px;
+  border: 1px dashed var(--line-dark-strong);
+  border-radius: var(--r-12);
+  font-size: var(--fs-11);
+  line-height: 1.45;
+  color: var(--ink-3-dark);
+  text-align: center;
+}
+
+/* 风险分析三卡 */
+.report-analysis {
+  margin: 0;
+}
+
+.report-insight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 12px;
+  border: 1px solid var(--line-dark);
+  border-radius: var(--r-12);
+  background: var(--bg-3);
+}
+
+.report-insight i {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: var(--r-10);
+  background: var(--blue);
+  color: #fff;
+}
+
+.report-insight i svg {
+  width: 18px;
+  height: 18px;
+}
+
+.report-insight i.is-peak {
+  background: rgba(245, 193, 74, 0.16);
+  color: var(--warn-dark);
+}
+
+.report-insight i.is-night {
+  background: rgba(196, 181, 253, 0.18);
+  color: var(--violet-dark);
+}
+
+.report-insight i.is-over {
+  background: rgba(46, 230, 166, 0.16);
+  color: var(--ok-dark);
+}
+
+.report-insight i.is-alert {
+  background: rgba(255, 107, 107, 0.18);
   color: var(--danger-dark);
+}
+
+.report-insight div {
+  flex: 1;
+  min-width: 0;
+}
+
+.report-insight strong {
+  display: block;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink-1-dark);
+}
+
+.report-insight p {
+  margin: 2px 0 0;
+  font-size: var(--fs-10);
+  line-height: 1.4;
+  color: var(--ink-3-dark);
+}
+
+.report-insight > b {
+  flex-shrink: 0;
+  font-size: var(--fs-18);
+  font-weight: 700;
+  color: var(--blue-dark);
+}
+
+.report-insight.is-peak > b { color: var(--warn-dark); }
+.report-insight.is-night > b { color: var(--violet-dark); }
+.report-insight.is-over > b { color: var(--ok-dark); }
+.report-insight.is-alert > b { color: var(--danger-dark); }
+
+/* 分布可视化：一张图一张卡 */
+.crane-chart {
+  margin-bottom: 8px;
+  padding: 12px 12px 6px;
+  border: 1px solid var(--line-dark);
+  border-radius: var(--r-12);
+  background: var(--bg-3);
+}
+
+.crane-chart-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-12);
+  font-weight: 650;
+  color: var(--ink-1-dark);
+}
+
+.report-chart-note {
+  margin: 2px 0 0;
+  font-size: var(--fs-10);
+  line-height: 1.45;
+  color: var(--ink-3-dark);
+}
+
+.crane-bars {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 6px;
+}
+
+/* 复用图表的 .alarm-grid / .alarm-x 分组名，深色底换成低亮描边 */
+.crane-bars .alarm-grid line { stroke: rgba(255, 255, 255, 0.05); }
+.crane-bars .alarm-grid text,
+.crane-bars .alarm-x text { fill: var(--ink-4-dark); font-size: var(--fs-9); }
+
+.crane-bars .crane-chart-val {
+  font-size: var(--fs-9);
+  font-weight: 700;
+}
+
+/* 点柱子看读数（2026-11-25）：命中的那根描一道亮边，读数标签贴在该柱上方 */
+.crane-bar-void { fill: transparent; }
+
+.crane-bar-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.crane-bars .crane-bar-shapes rect.is-on {
+  stroke: var(--ink-1-dark);
+  stroke-width: 0.8;
+}
+
+/* 读数标签：实底 + 描边 + 投影，压在柱子与柱顶数值之上（12% 透明白底会透出柱色，
+ * 现场看就是「字被柱子吃了」）。pointer-events 关掉，标签本身不拦点击 */
+.crane-tip {
+  pointer-events: none;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.55));
+}
+
+.crane-tip-bg {
+  fill: var(--bg-4);
+  stroke: rgba(255, 255, 255, 0.22);
+  stroke-width: 0.5;
+}
+
+.crane-tip-text {
+  fill: var(--ink-1-dark);
+  font-size: var(--fs-9);
+  font-weight: 700;
+}
+
+.crane-bars.is-blue .crane-bar-shapes rect,
+.crane-bars.is-blue .crane-chart-val { fill: var(--blue-dark); }
+
+.crane-bars.is-warn .crane-bar-shapes rect,
+.crane-bars.is-warn .crane-chart-val { fill: var(--warn-dark); }
+
+.crane-bars.is-ok .crane-bar-shapes rect,
+.crane-bars.is-ok .crane-chart-val { fill: var(--ok-dark); }
+
+.report-share:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/*
+ * 导出分享的降级面板（2026-11-25）
+ *
+ * 只在微信内置浏览器里出现：那里没有 `navigator.share`，`a[download]` 也不生效，
+ * 唯一可靠的路是把长图当普通图片摆出来，让用户用系统「长按」菜单保存 / 转发。
+ *
+ * `-webkit-touch-callout` 必须单独开回来 —— `body` 上为了禁选与禁长按菜单
+ * 全局写了 `none`（见文件顶部那三条），不覆盖的话 iOS 长按这张图**什么都不弹**，
+ * 降级就白做了。`user-select` 一起放开，桌面长按拖图或右键另存也顺手。
+ */
+.report-shot {
+  margin: 12px 0 0;
+  padding: 10px;
+  border-radius: var(--r-12);
+  background: var(--bg-3);
+}
+
+.report-shot img {
+  display: block;
+  width: 100%;
+  border-radius: var(--r-8);
+  -webkit-touch-callout: default;
+  user-select: auto;
+}
+
+.report-shot figcaption {
+  margin-top: 8px;
+  color: var(--ink-3-dark);
+  font-size: var(--fs-11);
+  text-align: center;
 }
 
 /* 设备详情页顶部的 live/report 双页签（实时卡的列宽见上方 .dev-card-grid） */
@@ -11265,6 +11797,26 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
     --num-lg: 25px;
     --num-md: 19px;
     --num-unit: 12px;
+  }
+}
+
+/*
+ * 机组三颗按钮在 320 屏的最后一档（2026-11-25）：
+ * 三等分后每颗只剩 ~90px，「图标 + 2#楼-塔机2」按 13px 字号差几像素会被省略号吃掉。
+ * 这一档把内边距、间距、图标各收一点，字号退到 fs-10 —— 只影响 ≤359px。
+ */
+@media (max-width: 359px) {
+  .report-devs { gap: 5px; }
+
+  .report-dev {
+    gap: 4px;
+    padding: 0 4px;
+    font-size: var(--fs-10);
+  }
+
+  .report-dev svg {
+    width: 12px;
+    height: 12px;
   }
 }
 
