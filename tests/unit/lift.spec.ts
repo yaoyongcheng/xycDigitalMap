@@ -492,7 +492,7 @@ describe('iot 原始行', () => {
       ),
     )
 
-    const rows = await fetchEventRows([{ sn: 'SN1', eventCode: 'E' }], 0, 1)
+    const rows = await fetchEventRows([{ productCode: LIFT_PRODUCT, sn: 'SN1', eventCode: 'E' }], 0, 1)
     expect(rows).toHaveLength(1)
     expect(rows[0].resultMap).toEqual({ a: 1 })
   })

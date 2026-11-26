@@ -15,24 +15,24 @@ npm run build          # = vue-tsc --noEmit && vite build
 | 路径 | 内容 | 体积 |
 |---|---|---|
 | `index.html` | 唯一入口 | 9.6 kB（gzip 4.5 kB） |
-| `assets/index-DnqJ_CXE.js` | 业务主包 | 519.6 kB（gzip 182.7 kB） |
-| `assets/mpegts-CaRIv7do.js` | 视频流解码（首屏按需加载） | 272.4 kB（gzip 61.8 kB） |
-| `assets/index-skO1WFge.css` | 全站样式 | 142.2 kB（gzip 26.6 kB） |
+| `assets/index-DYF_2RCM.js` | 业务主包 | 519.7 kB（gzip 182.7 kB） |
+| `assets/mpegts-C7LVOrfd.js` | 视频流解码（首屏按需加载） | 272.4 kB（gzip 61.8 kB） |
+| `assets/index-BULs1g1V.css` | 全站样式 | 142.2 kB（gzip 26.6 kB） |
 | `img/` | 业务图片（WebP 为主） | 3.3 MB |
 | `startup/` | iOS 启动图（10 张） | 968 kB |
 | `data/` | 静态兜底 JSON（2 个） | 12 kB |
-| `sw.js` / `workbox-*.js` | Service Worker（预缓存 12 项 / 921.7 KiB） | — |
+| `sw.js` / `workbox-*.js` | Service Worker（预缓存 12 项 / 921.9 KiB） | — |
 | `manifest.webmanifest` + 7 张图标 | PWA 安装信息 | — |
 
 ## 二、必须知道的三个硬约束
 
-### 1. 只能部署在 `/xycDigitalMap/` 子路径
+### 1. 只能部署在 `/xycMobileDigitalMap/` 子路径
 
-`vite.config.ts` 里 `base: '/xycDigitalMap/'`，构建产物里所有引用都写死了这个前缀：
+`vite.config.ts` 里 `base: '/xycMobileDigitalMap/'`，构建产物里所有引用都写死了这个前缀：
 
 ```html
-<link rel="stylesheet" href="/xycDigitalMap/assets/index-skO1WFge.css">
-<script type="module" src="/xycDigitalMap/assets/index-DnqJ_CXE.js"></script>
+<link rel="stylesheet" href="/xycMobileDigitalMap/assets/index-BULs1g1V.css">
+<script type="module" src="/xycMobileDigitalMap/assets/index-DYF_2RCM.js"></script>
 ```
 
 放到别的路径（例如根 `/`）会全站 404 白屏。想放根路径必须改 4 处后**重新构建**（不能只改 nginx）：
@@ -99,7 +99,7 @@ cd /opt/xyc && node server/serve.mjs --port 8080 --dir /opt/xyc/dist
 > `server/serve.mjs` 默认按仓库结构解析 `--dir`（相对项目根 `dist`），
 > 上面显式传 `--dir` 就是给这种「dist 和 server 分开放」的部署准备的。
 
-访问：`http://<服务器IP>:8080/xycDigitalMap/`
+访问：`http://<服务器IP>:8080/xycMobileDigitalMap/`
 
 长期运行建议交给进程管理器（`pm2 start server/serve.mjs -- --port 8080`，或 systemd）。它可以再被 nginx 反代到 80：
 
@@ -122,7 +122,7 @@ server {
 
 ## 四、方案 B：nginx 纯静态 + 一个 Node 桥
 
-把 dist 内容放到 `/var/www/xycDigitalMap/`，另起一个进程只提供反代与 `/mqtt`（同样用 `node server/serve.mjs`，它也会顺带托管静态文件，重复无害）：
+把 dist 内容放到 `/var/www/xycMobileDigitalMap/`，另起一个进程只提供反代与 `/mqtt`（同样用 `node server/serve.mjs`，它也会顺带托管静态文件，重复无害）：
 
 ```nginx
 server {
@@ -130,17 +130,17 @@ server {
   server_name your.host;
   root /var/www;
 
-  # 站点（dist 内容放在 /var/www/xycDigitalMap/）
-  location /xycDigitalMap/ {
-    try_files $uri $uri/ /xycDigitalMap/index.html;
+  # 站点（dist 内容放在 /var/www/xycMobileDigitalMap/）
+  location /xycMobileDigitalMap/ {
+    try_files $uri $uri/ /xycMobileDigitalMap/index.html;
   }
 
   # PWA 自动更新的关键：这两个必须每次回源
-  location = /xycDigitalMap/sw.js        { add_header Cache-Control "no-cache"; }
-  location = /xycDigitalMap/index.html   { add_header Cache-Control "no-cache"; }
+  location = /xycMobileDigitalMap/sw.js        { add_header Cache-Control "no-cache"; }
+  location = /xycMobileDigitalMap/index.html   { add_header Cache-Control "no-cache"; }
 
   # 带内容哈希，可永久缓存
-  location /xycDigitalMap/assets/ {
+  location /xycMobileDigitalMap/assets/ {
     add_header Cache-Control "public, max-age=31536000, immutable";
   }
 
@@ -193,7 +193,7 @@ server {
 
 ## 六、上线自检清单
 
-1. `http://host/xycDigitalMap/` 返回 200，页面出现启动骨架并进入首页；
+1. `http://host/xycMobileDigitalMap/` 返回 200，页面出现启动骨架并进入首页；
 2. F12 Network：`assets/index-*.js`、`assets/index-*.css`、`manifest.webmanifest`、`pwa-192x192.png` 全 200；
 3. 登录能进（说明 `:8081` 通）；首页设备台账有数字（说明 `:8084` 通）；
 4. 塔机卡「今日吊次」有值、状态点会闪（说明 `/mqtt` 通）；点进去「作业报表」有图表（说明 `/crane-api` 通）；
@@ -218,3 +218,38 @@ npm run build
 ```
 
 不填 `VITE_DATA_BASE` / `VITE_WF_BASE` / `VITE_WEATHER_BASE` 时，它们会从 `VITE_API_BASE` **换端口**推导（8081 → 8084/8085/8088），所以同一台机器换 IP 时只填 `VITE_API_BASE` 就够。
+
+## 八、方案 C：Docker Compose（仓库已自带）
+
+三个文件已经放在仓库里，不用自己写：
+
+| 文件 | 作用 |
+|---|---|
+| `Dockerfile` | 多阶段，三个 target：`builder`（npm ci + build）、`web`（nginx）、`bridge`（Node `/mqtt` 桥） |
+| `docker-compose.yml` | `web` + `bridge` 两个服务，端口、依赖、健康检查都配好 |
+| `deploy/nginx.conf.template` | 静态托管 + `/crane-api`、`/iot-api` 两段反代 + `/mqtt` 转发 + 缓存策略；上游地址用 `${CRANE_UPSTREAM}` 等占位符，**启动时**由 nginx 官方 entrypoint 的 envsubst 渲染成 `conf.d/default.conf` |
+| `deploy/README.md` | 给发布者的一页纸：配置项、验收命令、故障对照 |
+| `.dockerignore` | 排除 `node_modules`/`dist`/`legacy` 等，**保留 `.env`**（现场地址靠它在构建期写入） |
+
+```bash
+docker compose config            # 先校验（不启动）
+docker compose up -d --build     # 构建并启动
+docker compose logs -f bridge    # 看 MQTT 桥有没有连上 broker
+```
+
+访问 `http://<宿主机IP>:8080/xycMobileDigitalMap/`（`WEB_PORT=80 docker compose up -d` 可改端口）。
+
+**为什么是两个容器**：`/crane-api`、`/iot-api` 只是普通 HTTP 反代，nginx 够用；但 `/mqtt`
+不是「转发到现成的 WebSocket 服务」——现场没有可用的 WS 上游（厂商网关 `:8084` 自
+2026-11-12 起 502/404），真实上游是 `bridge` 里的 Node 进程：它用 TCP 连 broker 的
+`1883`，再把长连接包装成 WebSocket。nginx 做不了这件事。
+
+Docker 部署下有三条与裸机一样的硬约束，另加两条容器特有的：
+
+| 约束 | 说明 |
+|---|---|
+| 容器要能出网到 `115.159.67.12:1883`（TCP） | 否则 `/mqtt` 永远连不上，塔机实时不刷新 |
+| 只跑 nginx 不跑 bridge | `/mqtt` 会 502，页面不报错、只是数值停住 |
+| 别给它套 HTTPS | 现场 `:8081/:8084/:8085/:8088/:9689` 全是 HTTP，混合内容会整批拦掉 |
+| `web` 必须等 `bridge` 健康 | nginx 启动时就要解析 `bridge` 这个服务名，解析不到会反复重启（compose 里已用 `depends_on.condition` 处理） |
+| 改 `base` 要重建镜像 | 前缀写在构建产物里，`COPY` 目标目录也跟着变 |

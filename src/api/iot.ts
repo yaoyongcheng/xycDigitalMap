@@ -137,11 +137,17 @@ export class IotStaleTokenError extends ApiError {
   }
 }
 
-/** 实时数据查询项 */
+/** 实时数据查询项（V2 `DigitalMap.Elevator.QueryListItem`：`productCode / sn / field / code` 全 string） */
 export interface RealtimeQueryItem {
-  /** 项目码，实测 `P000000076` */
+  /**
+   * 产品码，实测项目码 `P000000076`（= `SCENE_CODE`）。
+   *
+   * 电梯**不能**用它 —— 电梯在网关里注册成 `01724121a94f4893b693f253173d1082`。
+   * 传空串时 `realtimeBody` 会回落到项目码（对塔机/大屏成立），这是本侧保留的
+   * 便利；事件查询那侧已取消兜底（见 `EventQueryItem`）。
+   */
   productCode: string
-  /** 设备序列号 */
+  /** 设备序列号（V2 原样透传，不 trim） */
   sn: string
   /** 度量字段名，如 `height` / `angleSpeed` */
   field: string
@@ -162,16 +168,27 @@ export interface RealtimePoint {
 }
 
 /**
- * 事件查询项（2026-11 第三轮：按 V2 端 IL 修正）。
+ * 事件查询项（2026-11 第三轮：按 V2 端 IL 修正；2026-11-26 按 DTO 收紧必填）。
  *
  * 老代码往 `eventItems` 里塞的是实时数据那套 `{productCode, sn, field, code}` ——
  * 与 `CraneWorkCycleRequester` 还原出来的 `{productCode, sn, eventCode}` 不符。
  * 事件是按**事件码**查的（如 `EVENT_WORKDATA`），没有 field/code 这两个键。
+ *
+ * 2026-11-26 用 `HotUpdateScripts.dll` 的元数据复核：`DigitalMap.Elevator.EventItems`
+ * 三个属性就是 `ProductCode / Sn / EventCode`（全 string），`QueryEventRequest` 是
+ * `startTime / endTime / eventItems`。V2 侧 `set_ProductCode` **恒被显式赋值**
+ * （`ElevatorIotModel.ProductCode` = `01724121a94f4893b693f253173d1082`），
+ * 从来不存在「缺省回落项目码」这条路。
+ *
+ * 所以这里 `productCode` 由可选改为**必填**，`eventBody` 也不再回落 `SCENE_CODE`：
+ * 项目码只对塔机/大屏那套产品成立，用它查电梯换到的是
+ * `status:10 所选设备您无权操作`（2026-11-26 实测），看起来像「没权限」，
+ * 实际是**查错了产品** —— 静默兜底等于把配置错误伪装成设备故障。
  */
 export interface EventQueryItem {
-  /** 项目码，缺省用 SCENE_CODE */
-  productCode?: string
-  /** 设备序列号 */
+  /** 产品码，必须显式给：电梯 `01724121a94f4893b693f253173d1082` */
+  productCode: string
+  /** 设备序列号（V2：`BuildingElevatorCage.sn` 原样透传，不 trim、不改大小写） */
   sn: string
   /** 事件码，如 `EVENT_WORKDATA` */
   eventCode: string
@@ -204,6 +221,21 @@ async function iotFetch(path: string, init: RequestInit = {}, base = IOT_BASE): 
  *
  * 注意它与大屏 open 不同：**成功码是 `status === 0`**（不是 200），
  * 业务失败是 `status: 10`（缺少必要输入）、`status: 1` 之类。
+ *
+ * ## 错误码与 HTTP 码的组合（2026-11-26 逐条实测，别再猜）
+ *
+ * | HTTP | status | msg（原样） | 含义 |
+ * |---|---|---|---|
+ * | 200 | 0 | — | 成功 |
+ * | **400** | 10 | `startTime:查询起始时间戳必传` / `eventItems:待查询事件列表不能为空` / `endTime大于0时，endTime 必须大于 startTime` | 参数不合法（多条用 `;` 拼接） |
+ * | **400** | 10 | `所选设备您无权操作` | **sn 空/不认**，或 productCode 传错产品（不是权限被收） |
+ * | **400** | 10 | `JSON parse error: Cannot deserialize value of type java.lang.Long …` | 时间传了字符串 |
+ * | **401** | 11 | `权限不足` | 令牌无效（见下） |
+ * | 200 | 2 | `Content-Type错误` | 只认 `application/json`，但**不回 4xx** |
+ *
+ * 也就是说：**业务失败也可能回 HTTP 400**，且 `status` 恒为 10 —— 单看状态码
+ * 分不清「参数错」「设备不认」「产品错」，必须看 `msg`。反过来，看到 400
+ * 基本可以排除反代/跨域（那种情况根本到不了这里，会是 `ApiError(0)`）。
  */
 async function iotJson<T>(path: string, init: RequestInit = {}, base = IOT_BASE): Promise<T> {
   const res = await iotFetch(path, init, base)
@@ -235,6 +267,19 @@ function str(v: unknown): string {
 
 let token: IotToken | null = null
 let inflight: Promise<IotToken> | null = null
+
+/**
+ * 令牌「代次」—— 用户每点一次「重试」就 +1（见 `clearToken`）。
+ *
+ * 解决的是「旧连接残留」：点重试的瞬间，上一轮可能还有一次换令牌请求在途。
+ * 那个请求回来后会无条件 `token = next` 写回缓存，于是新一轮拿到的还是**旧令牌**
+ * （甚至是被判 401 的那张），用户点了等于没点。
+ *
+ * 所以每张在途的换令牌请求都记下发起时的代次，回来时对不上就直接丢弃、不写回。
+ * 与 `inflight` 的引用比较配合使用：旧请求结束时也不能把**新一轮**的
+ * `inflight` 清掉。
+ */
+let generation = 0
 
 /**
  * 上一次「重换之后仍然 401」的时刻 —— 冷却期内不再重换。
@@ -311,9 +356,16 @@ export async function requestToken(): Promise<IotToken> {
 export async function ensureToken(): Promise<IotToken> {
   if (token && token.expiresAt > Date.now()) return token
   if (inflight) return inflight
-  inflight = (async () => {
+  const gen = generation
+  const run = (async () => {
     try {
       const next = await requestToken()
+      /*
+       * 这张令牌是**上一代**的产物（用户在等待期间点了「重试」）→ 整张丢弃。
+       * 不写回 `token`、不清 `tokenProbeFailAt`：这一轮的结论已经不作数了，
+       * 让新一代的请求自己说结果。
+       */
+      if (gen !== generation) throw new ApiError(0, '令牌请求已被新的重连取代')
       if (rejectedValue && next.tokenValue === rejectedValue) {
         lastAuthFailAt = Date.now()
         throw new IotStaleTokenError()
@@ -324,14 +376,21 @@ export async function ensureToken(): Promise<IotToken> {
     } catch (err) {
       // 只记「请求没打通」那一类：401 归 `authLost` 提示条，这里不抢话。
       // `IotStaleTokenError` 继承自 `ApiError(401)`，一并被排除。
-      const credentialIssue = err instanceof ApiError && err.code === 401
-      if (!credentialIssue) tokenProbeFailAt = Date.now()
+      // 已被取代的那一代也不记 —— 否则会把上一轮的失败痕迹盖到新一轮上。
+      if (gen === generation) {
+        const credentialIssue = err instanceof ApiError && err.code === 401
+        if (!credentialIssue) tokenProbeFailAt = Date.now()
+      }
       throw err
-    } finally {
-      inflight = null
     }
   })()
-  return inflight
+  inflight = run
+  try {
+    return await run
+  } finally {
+    // 只清自己那一份：被取代的旧请求结束时，`inflight` 可能已经是新一代的
+    if (inflight === run) inflight = null
+  }
 }
 
 /**
@@ -364,11 +423,41 @@ export function applyToken(t: IotToken | null): void {
  * 顺带清掉自愈冷却 —— 这是**用户显式要重来**，应该立刻真的去换一次；
  * 自动自愈才受 `TOKEN_RETRY_GAP` 约束。也顺手清掉「没打通」的痕迹：
  * 这一下要是再失败，`ensureToken` 会重新记上，不必留着上一轮的旧结论。
+ *
+ * **还会作废在途的换令牌请求**（`generation += 1` + `inflight = null`）：
+ * 用户已经重新发起连接，上一轮还在路上的那次换令牌不该再改写缓存 ——
+ * 否则它回来时会写进一张旧令牌，新一轮 `ensureToken` 见「有令牌、没过期」
+ * 就直接复用，页面上的表现就是「点了重试，还是那排横杠」。
+ *
+ * 这里清 `inflight` 不会引起「并发 401 各自换令牌」的抖动：本条路径只在
+ * 用户显式重试时走一次，自动自愈走的是 `refreshToken`，两者互不影响。
  */
 export function clearToken(): void {
+  generation += 1
   token = null
+  inflight = null
   lastAuthFailAt = 0
   tokenProbeFailAt = 0
+}
+
+/**
+ * 放开「废牌自检」（**只在用户显式点「重试」时**调用）。
+ *
+ * `ensureToken` 有一道自检：换回来的令牌若与被判 401 的那张逐字节相同，就认定
+ * 网关还没轮换，直接抛 `IotStaleTokenError` —— 好处是那一轮 6 个数据请求不会
+ * 白打，坏处是现场看到的景象很怪：**点一次「重试」，Network 里只多了一条
+ * `/access/token`**，在线 / 今日 / 工况一个都没发，页面自然「没有刷新」。
+ *
+ * 用户主动重来不该被自动自愈的节流拦住：清掉废牌记录后，这一轮会带着新令牌
+ * 把三路真的打一遍，结果由它们自己说 —— 还是 401 就由 `authLost` 接住
+ * （提示条与按钮保留），确实已轮换就正常刷新。
+ *
+ * 只清自检用的这两项，**不动** `token` / `inflight` / `generation`：那些归
+ * `clearToken()` 管。两者职责分开，免得一次重试把在途请求作废两遍。
+ */
+export function releaseStaleGuard(): void {
+  rejectedValue = ''
+  lastAuthFailAt = 0
 }
 
 /** 带令牌的 POST（401 时自愈一次，失败进冷却） */
@@ -443,14 +532,59 @@ export function toPoints(raw: unknown): RealtimePoint[] {
  * 这一层先建好，等台账补上 sn 即可直接用。
  */
 export async function fetchRealtimeData(items: RealtimeQueryItem[]): Promise<RealtimePoint[]> {
-  if (!items.length) return []
-  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryRealTimeDataV2', realtimeBody(items))
+  const list = usableSn(items)
+  if (!list.length) return []
+  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryRealTimeDataV2', realtimeBody(list))
   return toPoints(raw)
+}
+
+/**
+ * 按 V2 口径清洗查询项：**空 sn 丢掉、重复 sn 只留第一条**。
+ *
+ * 出处是 V2 `ElevatorModel.RebuildCageCache`（IL 实证，2026-11-26）：
+ *
+ * ```csharp
+ * foreach (var cage in ...) {
+ *     if (cage == null) continue;
+ *     if (string.IsNullOrEmpty(cage.sn)) continue;   // ← 空编号不进字典
+ *     if (cache.ContainsKey(cage.sn)) continue;     // ← 同号只留一台
+ *     cache[cage.sn] = cage;
+ * }
+ * ```
+ *
+ * `GetSceneDeviceSnList()` 返回的就是这份字典的键集合，`ElevatorRequester` 再逐台发。
+ * 注意它**只判空、不 Trim、不改大小写** —— 网关也照原样比对，`"3225122202 "`
+ * 这种带空格的编号查不到设备，会回 `status:10 所选设备您无权操作`。
+ * 所以这里同样不做任何「顺手清洗」，只把空值挡在门外：
+ * 空 sn 发出去换回来的就是那句误导人的「无权操作」（2026-11-26 实测 400）。
+ */
+function usableSn<T extends { sn: string }>(items: T[]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const i of items) {
+    const sn = typeof i?.sn === 'string' ? i.sn : ''
+    if (!sn || seen.has(sn)) continue
+    seen.add(sn)
+    out.push(i)
+  }
+  return out
+}
+
+/**
+ * 事件查询项再紧一道：`productCode` 为空的也丢掉。
+ *
+ * V2 的 `EventItems.ProductCode` 恒有值，所以「空产品码」只会出现在我们自己的
+ * 调用方写漏。发出去换回来的是 `status:10 所选设备您无权操作`（实测），
+ * 与「设备没接入」完全同码同文案，事后根本分不清 —— 不如不发、直接空态。
+ */
+function usableEventItems(items: EventQueryItem[]): EventQueryItem[] {
+  return usableSn(items).filter((i) => typeof i.productCode === 'string' && i.productCode.length > 0)
 }
 
 function realtimeBody(items: RealtimeQueryItem[]): unknown {
   return {
     queryList: items.map((i) => ({
+      // 实时这侧仍有兜底：项目码对塔机/大屏成立（电梯必须显式传自己的产品码）
       productCode: i.productCode || SCENE_CODE,
       sn: i.sn,
       field: i.field,
@@ -473,8 +607,9 @@ export async function fetchEvents(
   startTime: number | string,
   endTime: number | string,
 ): Promise<RealtimePoint[]> {
-  if (!items.length) return []
-  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryEvent', eventBody(items, startTime, endTime))
+  const list = usableEventItems(items)
+  if (!list.length) return []
+  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryEvent', eventBody(list, startTime, endTime))
   return toPoints(raw)
 }
 
@@ -506,7 +641,8 @@ function eventBody(items: EventQueryItem[], startTime: number | string, endTime:
     startTime,
     endTime,
     eventItems: items.map((i) => ({
-      productCode: i.productCode || SCENE_CODE,
+      // 不再回落 SCENE_CODE：V2 恒显式赋值，缺了就是配置错，别伪装成「设备无权」
+      productCode: i.productCode,
       sn: i.sn,
       eventCode: i.eventCode,
     })),
@@ -559,14 +695,16 @@ export async function fetchEventRows(
   startTime: number | string,
   endTime: number | string,
 ): Promise<IotEventRow[]> {
-  if (!items.length) return []
-  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryEvent', eventBody(items, startTime, endTime))
+  const list = usableEventItems(items)
+  if (!list.length) return []
+  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryEvent', eventBody(list, startTime, endTime))
   return toEventRows(raw)
 }
 
 /** 查询实时数据并保留原始字符串（电梯在线状态用） */
 export async function fetchRealtimeRows(items: RealtimeQueryItem[]): Promise<IotRealtimeRow[]> {
-  if (!items.length) return []
-  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryRealTimeDataV2', realtimeBody(items))
+  const list = usableSn(items)
+  if (!list.length) return []
+  const raw = await iotAuthPost<unknown>('/api/data/v1/tsdb/queryRealTimeDataV2', realtimeBody(list))
   return toRealtimeRows(raw)
 }

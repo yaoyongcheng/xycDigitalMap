@@ -1,0 +1,213 @@
+# ============================================================================
+# 工地数字地图 —— nginx 站点配置（模板）
+#
+# 这是一个 **模板文件**，不是最终的 nginx 配置。
+# 镜像启动时，nginx 官方 entrypoint 的 /docker-entrypoint.d/20-envsubst-on-templates.sh
+# 会读取 /etc/nginx/templates/*.template，把里面「环境里已定义的变量」替换掉，
+# 渲染成 /etc/nginx/conf.d/default.conf 再用它启动。
+#
+# 因此 ${CRANE_UPSTREAM} 这类占位符在生成的配置里**已经变成纯文本**，
+# proxy_pass 里不存在变量 —— 不需要配 resolver，也不会变成运行时 DNS 解析。
+#
+# 需要发布者填的 5 个变量（都有默认值，不填也能跑）：
+#   CRANE_UPSTREAM  塔机服务 host:port   默认 tciccs.cscec3bxjy.cn:30400
+#   CRANE_HOST      塔机服务纯域名       默认 tciccs.cscec3bxjy.cn（SNI 与 Host 用）
+#   IOT_UPSTREAM    物联网网关 host:port 默认 iot.cscec3b-iti.com
+#   IOT_HOST        物联网网关纯域名     默认 iot.cscec3b-iti.com
+#   MQTT_UPSTREAM   /mqtt 上游          默认 bridge:8080（compose 里的容器名）
+# 默认值写在 docker-compose.yml 的 environment 里，不用在 .env 重复。
+#
+# ⚠️ 只写 ${大写变量}，不要给 nginx 自己的 $remote_addr / $uri / $host 加花括号
+#    —— 官方脚本只替换「环境里存在的变量名」，这类小写变量不受影响。
+#
+# 这个文件承担三件事，缺一件就有「页面能开但没数据」的坑：
+#   ① 静态托管 + 缓存策略（assets 永久、HTML/SW 回源）
+#   ② 两段 POST 反代：/crane-api、/iot-api
+#      上游都不放行跨域（预检 403 / 无 ACAO），浏览器直连必失败，
+#      表现是「塔机报表全 —」「电梯四格全 —」，且页面不报错。
+#   ③ /mqtt 转发给 bridge 容器
+#      注意它不是转发给某个现成的 WebSocket 服务：现场没有可用的 WS 上游
+#      （厂商网关 :8084 自 2026-11-12 起持续 502/404），真实上游是 bridge 里
+#      的 Node 进程 —— 它用 TCP 连 broker 的 1883，再把长连接包装成 WebSocket。
+#
+# ⚠️ add_header 的继承规则：子 location **一旦自己写了 add_header，就不再继承
+#    上层的 add_header**（不是叠加）。所以这里刻意不在 server 级写安全/缓存头，
+#    全部按 location 各自声明，避免「以为设了其实被覆盖」。
+# ============================================================================
+
+server {
+    listen      80;
+    server_name _;
+
+    # 站点根：访问 /xycMobileDigitalMap/x.png → <root>/xycMobileDigitalMap/x.png
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    charset       utf-8;
+    server_tokens off;
+
+    # 两个反代只收查询条件（前端自己限 64KB），1m 足够且不放开大包上传
+    client_max_body_size 1m;
+
+    # ---------------------------------------------------------------- 压缩
+    gzip            on;
+    gzip_vary       on;
+    gzip_comp_level 6;
+    gzip_min_length 1024;
+    gzip_proxied    any;
+    gzip_types
+        text/plain
+        text/css
+        text/javascript
+        application/javascript
+        application/json
+        application/manifest+json
+        image/svg+xml;
+
+    # ------------------------------------------------------- 根路径跳子路径
+    location = / {
+        return 302 /xycMobileDigitalMap/;
+    }
+
+    # ------------------------------------------------------------ 站点入口
+    # 目录与 index.html 本身必须回源：它们决定引用哪几个哈希文件，
+    # 缓存住就等于「发版后用户永远拿旧外壳」。
+    location = /xycMobileDigitalMap/ {
+        add_header Cache-Control "no-cache" always;
+        try_files /xycMobileDigitalMap/index.html =404;
+    }
+
+    location = /xycMobileDigitalMap/index.html {
+        add_header Cache-Control "no-cache" always;
+    }
+
+    # Service Worker：同样必须回源，否则 PWA 自动更新永远发现不了新版本
+    location = /xycMobileDigitalMap/sw.js {
+        add_header Cache-Control "no-cache" always;
+    }
+
+    # manifest：改动不频繁，但换图标/改 start_url 要能及时生效
+    location = /xycMobileDigitalMap/manifest.webmanifest {
+        types {
+            application/manifest+json webmanifest;
+        }
+        default_type application/manifest+json;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    # ------------------------------------------ 带内容哈希的产物（永久缓存）
+    location ~ ^/xycMobileDigitalMap/assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        access_log off;
+    }
+
+    # Workbox 运行时也是哈希命名（workbox-835c8c05.js），同样可永久缓存
+    location ~ ^/xycMobileDigitalMap/workbox-[0-9a-f]+\.js$ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        access_log off;
+    }
+
+    # ---------------------------------- 业务图片与 iOS 启动图（无哈希，30 天）
+    location ~ ^/xycMobileDigitalMap/(?:img|startup)/ {
+        add_header Cache-Control "public, max-age=2592000" always;
+        access_log off;
+    }
+
+    # ------------------------------------- 根级图标（无哈希，7 天）
+    location ~ ^/xycMobileDigitalMap/[^/]+\.(?:png|ico|svg)$ {
+        add_header Cache-Control "public, max-age=604800" always;
+        access_log off;
+    }
+
+    # -------------------------------------------------------------- 静态兜底
+    # 命中真实文件走这里（1 小时）；未命中交给 @xyc_fallback 回 index.html，
+    # 那里单独声明 no-cache —— 不能给「回退出来的 HTML」套上 1 小时缓存。
+    location /xycMobileDigitalMap/ {
+        add_header Cache-Control "public, max-age=3600" always;
+        try_files $uri $uri/ @xyc_fallback;
+    }
+
+    location @xyc_fallback {
+        add_header Cache-Control "no-cache" always;
+        try_files /xycMobileDigitalMap/index.html =404;
+    }
+
+    # ========================================================================
+    # ① 塔机工作循环：POST /crane-api/* → ${CRANE_UPSTREAM}
+    #    上游不放行任何跨域来源（预检 403、响应无 ACAO），浏览器直连必失败。
+    #    proxy_pass 末尾的 / 不能省：它负责把 /crane-api 前缀替换掉。
+    # ========================================================================
+    location /crane-api/ {
+        proxy_pass https://${CRANE_UPSTREAM}/;
+
+        # 上游是非标准端口 + 虚拟主机分发，缺 SNI 会被拒
+        proxy_ssl_server_name on;
+        proxy_ssl_name        ${CRANE_HOST};
+        proxy_set_header      Host ${CRANE_HOST};
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # 与 server/serve.mjs 的 20s 保持一致
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    20s;
+        proxy_read_timeout    20s;
+
+        # 响应是 JSON（几 KB～几百 KB），关掉缓冲让首字节更快出来
+        proxy_buffering off;
+    }
+
+    # ========================================================================
+    # ② 电梯云网关：POST /iot-api/* → ${IOT_UPSTREAM}
+    #    只有「换令牌」那一跳缺 CORS（预检 403 且无 ACAO），数据接口本身是好的，
+    #    但统一走这里最省事，也避免以后接口再变时又踩一次。
+    #    超时 25s：换令牌 + 一次 6 小时工况窗可能回几百 KB。
+    # ========================================================================
+    location /iot-api/ {
+        proxy_pass https://${IOT_UPSTREAM}/;
+
+        proxy_ssl_server_name on;
+        proxy_ssl_name        ${IOT_HOST};
+        proxy_set_header      Host ${IOT_HOST};
+
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    25s;
+        proxy_read_timeout    25s;
+
+        proxy_buffering off;
+    }
+
+    # ========================================================================
+    # ③ 塔机实时：WS /mqtt → ${MQTT_UPSTREAM}
+    #    前端连的是 ws(s)://<当前域名>/mqtt（src/api/craneRealtime.ts），
+    #    与 base 无关，所以这里用精确匹配而不是子路径。
+    #    proxy_pass 不带 URI 部分，请求路径原样透传给 bridge。
+    # ========================================================================
+    location = /mqtt {
+        proxy_pass http://${MQTT_UPSTREAM};
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host       $host;
+        proxy_set_header X-Real-IP  $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        proxy_buffering    off;
+        # 长连接：默认 60s 会把闲置的 MQTT 连接掐掉（心跳 30s，勉强够，但不保险）
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # ------------------------------------------------------------ 其余一律 404
+    location / {
+        return 404;
+    }
+}

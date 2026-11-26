@@ -53,6 +53,10 @@
  * 另一个容易误判的点：令牌失效时网关回的是 **HTTP 401 + `status:11 权限不足`**，
  * 看起来像「没有产品权限」，其实只是令牌过期。`api/iot.ts` 已把它规整成 401
  * 并自动重换，不要在业务层把它当权限问题处理。
+ *
+ * > 2026-11-26 补充：上表后两行（`32251222021` / `32251222023`）已按现场要求
+ * > **临时屏蔽取数**（`blocked: true`，见下方 `LIFT_SNS`）—— 它们仍在表里、
+ * > 仍出卡片，但不再发任何请求。等设备接入后删掉 `blocked` 即恢复。
  */
 
 /** 一个轿厢 */
@@ -71,6 +75,23 @@ export interface LiftCage {
   display: string
   /** 所属台账楼的台号（台账里那一行的 `unitNo()`；设备信息弹层按它找档案） */
   building: number
+  /**
+   * **临时屏蔽取数**（`TEMP-BLOCKED`，2026-11-26）。
+   *
+   * 为 `true` 时：**仍然参与展示**（卡片还留着，占一格「—」），但**不参与任何
+   * 请求** —— `LIFT_SNS` 会把它排除在外，在线 / 今日作业 / 当前工况三条线都
+   * 不会再为它发一个包。
+   *
+   * 为什么单独一个字段而不是直接从表里删掉：这两台的 `sn` 是场景包里的原值
+   * （现场迟早要接入，或要拿它们去找厂商核对），删了就丢了线索；卡片也还得
+   * 在，否则「4 笼变 2 笼」会被误读成设备减少。所以只摘掉「发请求」这一件事。
+   *
+   * **恢复方式**：把对应那条的 `blocked: true` 删掉即可，其余代码一处都不用动
+   * （`LIFT_SNS` 是按这个字段算出来的，测试断言也用的是 `LIFT_SNS.length`）。
+   * 恢复前请先确认网关侧已注册 —— 否则会回到每 10 秒 2 条
+   * `HTTP 400 / status:10 所选设备您无权操作` 的状态。
+   */
+  blocked?: boolean
 }
 
 /**
@@ -87,8 +108,11 @@ export interface LiftCage {
  */
 export const LIFT_CAGES: readonly LiftCage[] = [
   { sn: '3225122202', name: '智能电梯1-1', display: '酒店-智能电梯1-1', building: 1 },
-  { sn: '32251222021', name: '智能电梯1-2', display: '酒店-智能电梯1-2', building: 1 },
-  { sn: '32251222023', name: '智能电梯2-1', display: '2#楼-智能电梯2-1', building: 2 },
+  // TEMP-BLOCKED(2026-11-26)：网关回 `status:10 所选设备您无权操作`，现场尚未接入。
+  // 只停取数、不停展示；恢复 = 删掉 `blocked: true`。
+  { sn: '32251222021', name: '智能电梯1-2', display: '酒店-智能电梯1-2', building: 1, blocked: true },
+  // TEMP-BLOCKED(2026-11-26)：同上，网关不认这个编号。
+  { sn: '32251222023', name: '智能电梯2-1', display: '2#楼-智能电梯2-1', building: 2, blocked: true },
   { sn: 'E03C1CB9F5011824', name: '智能电梯2-2', display: '2#楼-智能电梯2-2', building: 2 },
 ]
 
@@ -109,5 +133,53 @@ export const LIFT_CAGES: readonly LiftCage[] = [
  * 放不下会自己截断，状态胶囊与「设备信息」始终 `flex: none` 贴在右侧。
  */
 
-/** 全部轿厢编号（拉数时一次查完，不逐台打请求） */
-export const LIFT_SNS: readonly string[] = LIFT_CAGES.map((c) => c.sn)
+/**
+ * 全部轿厢编号（**逐台**发请求，不是一次查完）。
+ *
+ * 2026-11-13 起 `api/lift.ts::perSn` 照 V2 `foreach (sn in DeviceSnList)` 改成一台
+ * 一个请求：混批时网关只会静默跳过它不认的编号，出了问题分不清是哪一台。
+ * 4 台 × 3 个接口 = 12 个请求，都是并发发出去的。
+ *
+ * ## 2026-11-26 二次复核（UnityPy 重解场景包，逐字节比对）
+ *
+ * 重新下载 `CDN/PC/v1.0/cb4440f68c48489259d528982c1d7320.bundle`，遍历
+ * `BuildingElevatorCage` 共 4 个节点，`sn` 字段与上表**完全一致**（含长度
+ * 10 / 11 / 11 / 16，不是截断或错位）：
+ *
+ * ```
+ * 智能电梯2-2  E03C1CB9F5011824   len=16
+ * 智能电梯1-2  32251222021        len=11
+ * 智能电梯2-1  32251222023        len=11
+ * 智能电梯1-1  3225122202         len=10
+ * ```
+ *
+ * 同时对照 V2 侧 `ElevatorModel.RebuildCageCache`（IL）：它只用
+ * `IsNullOrEmpty(cage.sn)` 跳空、用字典键去重，**不 Trim、不改大小写、不补零**。
+ * 所以 V2 的 `DeviceSnList` 就是这 4 个串，和本表一字不差 —— 那两台「网关不认」
+ * 的编号 V2 也在发，也会拿到同样的 `HTTP 400 / status:10 所选设备您无权操作`。
+ * 换句话说：**这不是我们的取值错误，是现场这两台轿厢还没在网关侧注册**；
+ * 要消掉控制台那两条 400，只能等设备接入，或由现场确认场景包里的编号。
+ *
+ * ## 2026-11-26 起：这两台**临时屏蔽取数**（TEMP-BLOCKED）
+ *
+ * 现场确认「这两个有问题的轿厢数据尚未接入」，于是把它们从取数名单里摘掉 ——
+ * 只影响「发不发请求」，不影响「显不显示」：
+ *
+ *   · `LIFT_SNS` 只含未屏蔽的 2 台 → 在线（`queryRealTimeDataV2`）、今日作业
+ *     （`queryEvent` + `EVENT_WORKDATA`）、当前工况（`queryEvent` + `EVENT_POST_ATTR`）
+ *     三条线都不会再为它们发包，控制台那两条 400 随之消失；
+ *   · `LIFT_CAGES` 仍是 4 条 → 电梯子页依旧 4 张卡、首页仍按「x/4」计，
+ *     只是这两台的格子照旧是「—」（与屏蔽前一致，不拿 0 冒充）。
+ *
+ * 屏蔽是**数据表上的一个字段**，没有散落在各处的 `if`：恢复时把
+ * `blocked: true` 删掉，三条线一起恢复，别处一行都不用改。
+ */
+export const LIFT_SNS: readonly string[] = LIFT_CAGES.filter((c) => !c.blocked).map((c) => c.sn)
+
+/**
+ * 被临时屏蔽的编号（目前就是那 2 台）。
+ *
+ * 单独导出只为**排查与恢复时能一眼看到是谁**（不参与任何请求），
+ * 不想为了知道「哪两台没在查」而去翻表里的 `blocked` 标记。
+ */
+export const LIFT_BLOCKED_SNS: readonly string[] = LIFT_CAGES.filter((c) => c.blocked).map((c) => c.sn)

@@ -106,11 +106,35 @@ const units = computed<ReportUnit[]>(() =>
 /**
  * 台账可能比页签晚到（先点「作业报表」再等台账回来），所以盯住机组 id 集合：
  * 一到齐就按当前粒度查一次。`immediate` 负责首次进入页面。
+ *
+ * ## 两个守卫是 2026-11-26 补的（「点重试后多出塔机请求」）
+ *
+ * 原来 key 直接取 `units` 的 id 串，不看机种。而 `DevicePage` 是塔机/电梯共用
+ * 的同一个实例，页面从塔机切到电梯时：`props.kind` 先变 → `units` 跟着变成
+ * **电梯**的机组 → 而 `DeviceReport` 要到同一次 patch 才被卸载。watch 的 pre
+ * 回调赶在卸载之前跑，于是拿电梯机组又去调 `report.load()` —— 只要 `craneSnOf`
+ * 能从电梯楼栋号里解出编号，就是货真价实的一轮 `getWorkCycleInfoHis`。
+ *
+ * 现在：
+ *   · key 里带机种 —— 非塔机恒为空串，`if (!key)` 直接不放行；
+ *   · `alive` —— 卸载之后即使还有排队中的 flush，也不再发请求。
+ *
+ * 这两条一起，保证「电梯页做任何事（包括点重试）」都不会冒出塔机接口。
  */
+let alive = true
+onBeforeUnmount(() => {
+  alive = false
+})
+
+const reportKey = computed(() =>
+  props.kind === 'crane' ? units.value.map((u) => u.id).join(',') : '',
+)
+
 watch(
-  () => units.value.map((u) => u.id).join(','),
+  reportKey,
   (key) => {
-    if (key) void report.load(units.value, report.span, report.anchor)
+    if (!alive || !key) return
+    void report.load(units.value, report.span, report.anchor)
   },
   { immediate: true },
 )
@@ -154,8 +178,10 @@ const devices = computed(() =>
 
 /** 默认第一台；台账刷新后选中的那台不在了就落到新的第一台（不留空页签） */
 watch(
-  () => units.value.map((u) => u.id).join(','),
+  () => (props.kind === 'crane' ? units.value.map((u) => u.id).join(',') : ''),
   () => {
+    // 切到电梯的那一帧 key 会变空，此时 units 已是别家的机组 —— 不能拿它覆盖选中态
+    if (props.kind !== 'crane') return
     if (!units.value.some((u) => u.id === picked.value)) picked.value = units.value[0]?.id ?? ''
   },
   { immediate: true },

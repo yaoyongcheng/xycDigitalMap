@@ -16,7 +16,7 @@
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173/xycDigitalMap/
+npm run dev        # http://localhost:5173/xycMobileDigitalMap/
 npm run build      # 产出 dist/
 npm run preview    # 以生产产物预览（验证 PWA 安装与离线）
 npm run typecheck  # 仅做类型检查
@@ -135,11 +135,14 @@ npm run typecheck  # 仅做类型检查
 推送到 `main` 触发 `.github/workflows/deploy.yml`，自动构建并发布到 GitHub Pages：
 
 ```
-https://yaoyongcheng.github.io/xycDigitalMap/
+https://yaoyongcheng.github.io/xycMobileDigitalMap/
 ```
 
-> ⚠️ `vite.config.ts` 的 `base` 必须与仓库名逐字符匹配（含大写）。
-> 若改为根路径部署，把 `base` 换成 `'/'` 并同步调整 `workbox.navigateFallback`。
+> ⚠️ `vite.config.ts` 的 `base` 是 `/xycMobileDigitalMap/`。**GitHub Pages 的站点路径由
+> 仓库名决定**，继续用 Pages 就要把仓库改名为 `xycMobileDigitalMap`，否则线上会整站 404；
+> 自托管部署把 `dist/` 放到同名目录下即可。
+> 若改为根路径部署，把 `base` 换成 `'/'`，并同步 manifest 的 `id`/`start_url`/`scope`
+> 与 `workbox.navigateFallback` 四处。
 
 ### HTTP 部署（绕开混合内容）
 
@@ -156,11 +159,11 @@ npm run serve:http -- --port 80  # dist 已构建时只起服务
 启动后打印可访问地址：
 
 ```
-本机     http://localhost:8080/xycDigitalMap/
-局域网   http://192.168.8.54:8080/xycDigitalMap/   ← 手机同 WiFi 用这个
+本机     http://localhost:8080/xycMobileDigitalMap/
+局域网   http://192.168.8.54:8080/xycMobileDigitalMap/   ← 手机同 WiFi 用这个
 ```
 
-站点挂在 `/xycDigitalMap/`（与 `vite.config.ts` 的 `base` 一致，故无需二次构建），
+站点挂在 `/xycMobileDigitalMap/`（与 `vite.config.ts` 的 `base` 一致，故无需二次构建），
 访问 `/` 会 302 过去。`assets/` 永久缓存、`sw.js` 与 HTML 强制回源。
 
 实测（局域网 HTTP 地址）：登录页不再出现混合内容提示，填错误账号能拿到服务端原文
@@ -173,16 +176,16 @@ server {
   listen 80;
   server_name _;
   root /var/www;
-  location = / { return 302 /xycDigitalMap/; }
-  location /xycDigitalMap/ {
+  location = / { return 302 /xycMobileDigitalMap/; }
+  location /xycMobileDigitalMap/ {
     # 单页回退：不带扩展名的路径交给 index.html
-    try_files $uri $uri/ /xycDigitalMap/index.html;
+    try_files $uri $uri/ /xycMobileDigitalMap/index.html;
   }
   # 哈希文件名可长缓存；sw.js 必须回源，否则新版本永远发现不了
-  location ~* ^/xycDigitalMap/assets/ {
+  location ~* ^/xycMobileDigitalMap/assets/ {
     add_header Cache-Control "public, max-age=31536000, immutable";
   }
-  location = /xycDigitalMap/sw.js {
+  location = /xycMobileDigitalMap/sw.js {
     add_header Cache-Control "no-cache";
   }
 

@@ -809,11 +809,18 @@ select,
   /*
    * 40px 是「宿主已让出状态栏」时的位置（微信 / 浏览器里首页标题的观感）。
    * 独立窗口下安全区有 47~62px，写死 40 会让标题钻到刘海/灵动岛底下，
-   * 故取两者较大值：`--status-h` 在浏览器里是 0，这里就仍是 40px。
+   * 故取两者较大值：`--status-h` 在浏览器里是 0，这里就仍是保底值。
    * 后面再 max 一次 env()，理由同 `.status-bar`：自定义属性里的 env() 会缓存，
    * 全屏进出一趟后可能仍是横屏时的 0，标题就会钻到刘海底下。
+   *
+   * 2026-11-26（用户反馈「首页标题太靠下」）：下限 40 → 36、净距 8 → 4，
+   * 两种宿主统一上移 4px —— 浏览器/微信里 40 → 36，独立窗口 safe+8 → safe+4。
+   * 同日第二次反馈「再上移」：36 → 32、净距 4 → 2，再上移 4px。
+   * 净距只留 2px 不再往下压：独立窗口里再少就顶到状态栏（iOS 26+ 那层玻璃）底下了。
+   * 只动这一行标题的 top：`.home-top` 是 absolute，不占布局，地图与抽屉
+   * （`.home-sheet`）的位置、尺寸都不受影响。
    */
-  top: max(40px, calc(max(var(--status-h), env(safe-area-inset-top, 0px)) + 8px));
+  top: max(32px, calc(max(var(--status-h), env(safe-area-inset-top, 0px)) + 2px));
   z-index: 2;
   color: #fff;
 }
@@ -9962,6 +9969,34 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
 .dev-auth-btn:active { opacity: 0.8; }
 
 /*
+ * 重连中：按钮禁用。
+ *
+ * 只降不透明度、不改配色 —— 按钮还得占住原位（宽度不跳、横幅不塌），
+ * 用户看到的是「这颗现在不能点」，而不是「按钮没了」。
+ */
+.dev-auth-btn:disabled {
+  opacity: 0.55;
+}
+
+/*
+ * 横幅里的重连转圈。
+ *
+ * 与 `.cam-stage-spin` / `.cam-shots-spin` 同一套画法：复用全局 `@keyframes spin`
+ * （0.7s），靠 `currentColor` 取配色、把右边框透明化做出缺口，不用额外资源。
+ * 尺寸跟随 12px 字号（13px），再大就会把横幅行高顶起来。
+ */
+.dev-auth-spin {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  color: var(--ink-2-dark);
+  animation: spin 0.7s linear infinite;
+}
+
+/*
  * 「网关没连上」与「凭证失效」要一眼分开。
  *
  * 前者是部署问题（nginx 漏了 /iot-api 反代、或服务器出不了网），点「重试」
@@ -11826,18 +11861,30 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
  * 触发：智眸 VR 360 环视 → 项目全景 → 点「全屏」后没能自动转成横屏
  * （iOS 全系 / 微信内置 / 系统旋转锁定）。**其它全屏场景不再使用这组样式**
  * （首页全屏地图、监控播放器、抓拍大图、航拍全景、平面照片都不弹）。
- * 最简形态：一条深色胶囊 + 两行字，**无遮罩、无按钮**，4.2s 自动淡出，
+ * 最简形态：一条深色胶囊 + 一行字，**无遮罩、无按钮**，4.2s 自动淡出，
  * 点一下也能立刻关。外层 pointer-events: none —— 弹着的时候画面照样能拖。
  * 层级 220：要压在全屏地图层（80）、监控层（90）与 toast（210）之上。
+ *
+ * 位置（2026-11-26）：**底对齐、水平居中**，落在画面底边「拖动环视…」那行
+ * 说明的正上方。原来整屏居中，正好压在球面画面的视线焦点上；挪到底部既不
+ * 挡画面，也和说明文字连成一组。底距 60px 与 `.pano-hint`（18 + 一行 13px
+ * ≈20 + 8 ≈ 46px）留约 14px 净间距 —— 改说明条 padding 或字号时这里要跟着改，
+ * 否则会压字。卡只在 `landscapeHintOpen` 时可见，仍不占布局、不挤压任何文字。
+ *
+ * 为什么是 `fixed` 而不是 `absolute`：铺满时画布是 `.pano-stage.is-land`
+ * （`position: fixed; inset: 0`），在大屏 / 平板上它会溢出手机壳、贴到视口边；
+ * 卡若按 `.phone-screen` 定位就会比画布底边高出一截、压到说明文字上。
+ * 祖先链（`.phone` → `.phone-screen` → 本层）没有任何 `transform`，
+ * 所以 `fixed` 不会被包含块改写，两者的框严格重合。
  * ===================================================================== */
 .land-hint {
-  position: absolute;
+  position: fixed;
   inset: 0;
   z-index: 220;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  padding: 0 24px;
+  padding: 0 24px 60px;
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -11861,13 +11908,8 @@ img.zoomable.is-anim { transition: transform 0.26s var(--ease-out); }
   margin: 0;
   font-size: var(--fs-15);
   font-weight: 600;
-}
-
-.land-hint-sub {
-  margin: 4px 0 0;
-  font-size: var(--fs-13);
+  /* 单行时也别让标点孤零零折下去；宽屏本来就放得下 */
   line-height: 1.4;
-  color: rgba(255, 255, 255, 0.7);
 }
 
 /* =====================================================================

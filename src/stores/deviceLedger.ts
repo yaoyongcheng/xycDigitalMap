@@ -32,6 +32,14 @@ import type { CraneDayStats, CraneWorkCycle, DeviceKind, DeviceUnit, Equip } fro
 const RETRY_GAP = 60_000
 
 /**
+ * 塔机日指标的复用窗口（`ensureCraneDay` 用）。
+ *
+ * 3 台塔机 = 3 条第三方请求（`getWorkCycleInfoHis`），比台账本身贵得多，
+ * 所以「来回切页签」不该反复打。5 分钟内的结果直接沿用。
+ */
+const CRANE_DAY_GAP = 5 * 60_000
+
+/**
  * 工作循环数组 → 当日指标（吊次 + 吊重）。
  *
  * 两条口径：
@@ -97,6 +105,15 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
    * 表里没有的车（例如无 sn 的传统塔机5）就是「—」。
    */
   const craneDayBySn = ref<Record<string, CraneDayStats>>({})
+
+  /**
+   * 最近一次发出塔机日指标请求的时刻（毫秒）。
+   *
+   * 只给 `ensureCraneDay()` 做节流用 —— 那两个 ref 是给页面的，这个是给
+   * 「要不要再问一次」的判断。失败也记：第三方接口挂了的时候反复重问，
+   * 只会把塔机页切页变成连打。
+   */
+  let craneDayAt = 0
 
   const equip = computed<Equip[]>(() => toEquip(rows.value, craneDay.value))
 
@@ -213,6 +230,8 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     }
 
     const today = new Date()
+    // 记「问过了」：切页签时 ensureCraneDay 据此挡掉窗口内的重复请求
+    craneDayAt = Date.now()
     const results = await Promise.all(sns.map((sn) => fetchCraneWorkCycle(sn, today)))
 
     // 逐台：某台失败只是这台的指标缺，不影响别台（合计才要求全队齐全）
@@ -232,6 +251,25 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     craneDay.value = summarize(cycles)
   }
 
+  /**
+   * 按需补取塔机日指标（2026-11-26 补）。
+   *
+   * 为什么需要它：`load()` 现在允许调用方声明「我不需要塔机日指标」
+   * （`opts.craneDay === false`，电梯页就是这么调的 —— 那一屏只用台账行里的
+   * 楼栋与档案，塔机的今日吊次/吊重一个都用不上）。
+   *
+   * 但台账是单例：先进电梯页、再切塔机页时，`load()` 已经因为 `state === 'ok'`
+   * 直接返回，塔机卡片的今日吊次/吊重就会整片变成「—」。所以切到塔机页时用
+   * 这里补一次，靠 `CRANE_DAY_GAP` 保证来回切页不会反复打那 3 条请求。
+   *
+   * @param maxAge 复用窗口（毫秒）；默认 5 分钟，传 0 表示「只要没在飞就打」
+   */
+  function ensureCraneDay(maxAge = CRANE_DAY_GAP): void {
+    if (state.value !== 'ok' || !rows.value.length) return
+    if (Date.now() - craneDayAt < maxAge) return
+    void loadCraneDay(rows.value)
+  }
+
   function stamp(): string {
     const d = new Date()
     const p = (n: number): string => String(n).padStart(2, '0')
@@ -242,8 +280,26 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
    * 取台账。`token` 为空直接返回（未登录由调用方走登录守卫）。
    *
    * 并发调用复用同一个 Promise：首页智控面板与设备页可能同时挂载。
+   *
+   * ## `opts.craneDay`：要不要顺带取塔机日指标（2026-11-26 加）
+   *
+   * 台账一到手就会 fire-and-forget 地给**每台塔机**打一条
+   * `getWorkCycleInfoHis`（3 台 = 3 条，比台账本身贵）。而电梯页只用台账行里的
+   * 楼栋与档案，塔机的今日吊次/吊重一个都不展示 —— 于是「电梯页点重试」会凭空
+   * 多出 3 条塔机请求（现象见 docs 六点一百零二）。
+   *
+   * 所以把「需不需要」交给调用方声明：
+   *   · 缺省 `true` —— 首页、塔机页、深链进来都保持原行为；
+   *   · 电梯页传 `false` —— 只刷台账行，不碰塔机指标。
+   *
+   * 传 `false` 之后如果用户切到塔机页，用 `ensureCraneDay()` 补（否则那两张
+   * 卡片的今日吊次/吊重会是「—」）。
    */
-  async function load(token: string, force = false): Promise<void> {
+  async function load(
+    token: string,
+    force = false,
+    opts: { craneDay?: boolean } = {},
+  ): Promise<void> {
     if (!token) return
     if (inflight) return inflight
     if (!force && state.value === 'ok') return
@@ -260,8 +316,9 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
         error.value = ''
         updatedAt.value = stamp()
         syncLive()
-        // 塔机作业指标晚一步回填（没有 sn 时这条路自己会短路）
-        void loadCraneDay(list)
+        // 塔机作业指标晚一步回填（没有 sn 时这条路自己会短路）。
+        // 电梯页显式不要这一段 —— 那是 3 条第三方请求，而这一屏一条都用不上。
+        if (opts.craneDay !== false) void loadCraneDay(list)
       } catch (e) {
         state.value = 'error'
         error.value = e instanceof Error ? e.message : '设备台账加载失败'
@@ -303,6 +360,7 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     lastFailAt = 0
     craneDay.value = null
     craneDayBySn.value = {}
+    craneDayAt = 0
     areas.value = []
     areasState.value = 'idle'
     areasError.value = ''
@@ -316,6 +374,7 @@ export const useDeviceLedgerStore = defineStore('deviceLedger', () => {
     updatedAt,
     craneDay,
     craneDayBySn,
+    ensureCraneDay,
     equip,
     hasData,
     total,

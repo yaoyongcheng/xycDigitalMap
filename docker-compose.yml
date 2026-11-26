@@ -1,0 +1,99 @@
+# ============================================================================
+# 工地数字地图 —— Docker Compose
+#
+#   访问：http://<宿主机IP>:8080/xycMobileDigitalMap/
+#
+# 两个服务的关系：
+#   web     nginx：静态文件 + /crane-api + /iot-api 两段反代 + /mqtt 转发
+#   bridge  Node ：/mqtt 的真实上游（TCP 直连 broker 1883，自己提供 WebSocket）
+#
+#   为什么不能只跑 nginx：见 deploy/nginx.conf.template 顶部注释，或
+#   deploy/README.md（发布者一页纸）、docs/deploy-h5.md。
+#
+# 常用命令：
+#   docker compose config            # 校验本文件
+#   docker compose up -d --build     # 构建并启动
+#   docker compose logs -f bridge    # 看 MQTT 桥是否连上 broker
+#   docker compose down              # 停止
+#
+# 前置条件（很容易漏）：
+#   · 宿主机/容器要能出网访问 115.159.67.12:1883（TCP），否则塔机实时不刷新；
+#   · 现场后端全是 HTTP，所以这里默认只暴露 HTTP。给这个站点套 HTTPS 会让
+#     :8081 / :8084 / :8085 / :8088 等接口被混合内容拦掉，不是加个证书那么简单。
+# ============================================================================
+
+name: xyc-digital-map
+
+services:
+  # ---------------------------------------------------------------- nginx 前端
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    image: xyc-digital-map-web:local
+    container_name: xyc-web
+
+    # 默认 8080，避免与宿主机已有的 80 冲突；要 80 就 WEB_PORT=80 docker compose up -d
+    # 引号不能省：YAML 会把 8080:80 当成六十进制数
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+    # 三处反代的上游。全部有默认值 —— 什么都不填就是现场现在的地址，
+    # 容器照常起来；只有换环境（另一台网关 / 另一个项目）时才需要在 .env 里改。
+    #
+    # 注意 `${X:-默认}` 这层兜底不能删：nginx 模板里的 ${CRANE_UPSTREAM} 如果
+    # 渲染时环境里没有这个变量，会原样留在配置里，nginx 直接起不来（invalid URL prefix）。
+    environment:
+      CRANE_UPSTREAM: "${CRANE_UPSTREAM:-tciccs.cscec3bxjy.cn:30400}"
+      CRANE_HOST: "${CRANE_HOST:-tciccs.cscec3bxjy.cn}"
+      IOT_UPSTREAM: "${IOT_UPSTREAM:-iot.cscec3b-iti.com}"
+      IOT_HOST: "${IOT_HOST:-iot.cscec3b-iti.com}"
+      # 指向 compose 里的服务名，别改成 127.0.0.1（那是容器自己）
+      MQTT_UPSTREAM: "${MQTT_UPSTREAM:-bridge:8080}"
+
+    # 等 bridge 健康再启动：nginx 启动时就要解析 bridge 这个域名，
+    # 解析不到会直接退出（容器反复重启）。
+    depends_on:
+      bridge:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    healthcheck:
+      # nginx:alpine 自带 busybox wget
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/xycMobileDigitalMap/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ------------------------------------------------------- /mqtt 的 Node 桥
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: bridge
+    image: xyc-digital-map-bridge:local
+    container_name: xyc-bridge
+
+    # 不映射到宿主机：只有 nginx 通过服务名访问它
+    expose:
+      - "8080"
+
+    restart: unless-stopped
+
+    environment:
+      TZ: Asia/Shanghai
+
+    healthcheck:
+      # 用 node 自己的 fetch 探活，镜像里没有 curl
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://127.0.0.1:8080/xycMobileDigitalMap/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

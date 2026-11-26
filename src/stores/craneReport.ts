@@ -91,6 +91,17 @@ export const useCraneReportStore = defineStore('craneReport', () => {
   let seq = 0
 
   /**
+   * 同一批机组 + 同一区间**正在飞**的那一轮（2026-11-26）。
+   *
+   * 报表页一挂载就取数，而用户在「实时状态 ↔ 作业报表」之间来回切、或点完
+   * 「重试」回到报表，都会在几十毫秒内再叫一次 `load`。逐台的 45s `cache`
+   * 挡不住这种连发 —— 它只对「已经回来」的结果生效，在途的那一轮还没写入。
+   * 不复用就是同一批 `getWorkCycleInfoHis` 打两遍。
+   */
+  let inflightKey = ''
+  let inflightRun: Promise<void> | null = null
+
+  /**
    * 拉一次报表。
    *
    * @param units 当前机组（塔机页面的 set.units 派生，只有 id 与 sn 有用）
@@ -105,45 +116,69 @@ export const useCraneReportStore = defineStore('craneReport', () => {
     next: ReportSpan = span.value,
     day: Date = anchor.value,
   ): Promise<void> {
-    const token = ++seq
     span.value = next
     anchor.value = startOfDay(day)
     range.value = reportRange(next, anchor.value)
+
+    const { start, end, key } = range.value
+    const unitKey = `${key}|${units.map((u) => `${u.id}:${u.sn ?? ''}`).join(',')}`
+
+    /*
+     * 在途复用。**必须放在 `++seq` 之前**：复用不能再抬序号，否则会把在途那
+     * 一轮判成过期、结果全丢，页面就停在骨架屏上。
+     */
+    if (inflightRun && inflightKey === unitKey) return inflightRun
+
+    const token = ++seq
     state.value = 'loading'
     // 清掉上一档的数字：区间文案已经换成新档，留着旧结果会让人把日报的
     // 22 次读成周报的数。缓存命中时下一个微任务就回填，看不到闪
     rows.value = []
     series.value = []
 
-    const { start, end, key } = range.value
+    const run = (async (): Promise<void> => {
+      const results = await Promise.all(
+        units.map(async (unit): Promise<{ row: ReportRow; list: CraneWorkCycle[] }> => {
+          if (!unit.sn) return { row: { id: unit.id, stats: null }, list: [] }
 
-    const results = await Promise.all(
-      units.map(async (unit): Promise<{ row: ReportRow; list: CraneWorkCycle[] }> => {
-        if (!unit.sn) return { row: { id: unit.id, stats: null }, list: [] }
+          const hit = cache.get(`${unit.sn}|${key}`)
+          if (hit && Date.now() - hit.at < TTL) {
+            return { row: { id: unit.id, stats: summarize(hit.value) }, list: hit.value }
+          }
 
-        const hit = cache.get(`${unit.sn}|${key}`)
-        if (hit && Date.now() - hit.at < TTL) {
-          return { row: { id: unit.id, stats: summarize(hit.value) }, list: hit.value }
-        }
+          const value = await fetchCraneWorkCycles(unit.sn, start, end)
+          // 失败不进缓存：让下次重进页面时还能再试一次
+          if (value) cache.set(`${unit.sn}|${key}`, { at: Date.now(), value })
+          return { row: { id: unit.id, stats: value ? summarize(value) : null }, list: value ?? [] }
+        }),
+      )
 
-        const value = await fetchCraneWorkCycles(unit.sn, start, end)
-        // 失败不进缓存：让下次重进页面时还能再试一次
-        if (value) cache.set(`${unit.sn}|${key}`, { at: Date.now(), value })
-        return { row: { id: unit.id, stats: value ? summarize(value) : null }, list: value ?? [] }
-      }),
-    )
+      // 过期结果直接丢：它对应的粒度已经被用户换掉了
+      if (token !== seq) return
 
-    // 过期结果直接丢：它对应的粒度已经被用户换掉了
-    if (token !== seq) return
+      rows.value = results.map((r) => r.row)
+      series.value = results.map((r, i) => ({ id: units[i].id, cycles: r.list }))
+      state.value = results.some((r) => r.row.stats !== null) ? 'ready' : 'empty'
+    })()
 
-    rows.value = results.map((r) => r.row)
-    series.value = results.map((r, i) => ({ id: units[i].id, cycles: r.list }))
-    state.value = results.some((r) => r.row.stats !== null) ? 'ready' : 'empty'
+    inflightKey = unitKey
+    inflightRun = run
+    try {
+      await run
+    } finally {
+      // 只清自己那一份：被新粒度顶掉的那一轮结束时，在途标记可能已是新一轮的
+      if (inflightRun === run) {
+        inflightRun = null
+        inflightKey = ''
+      }
+    }
   }
 
   /** 登出 / 换项目时清空（缓存里的数字属于上一个会话） */
   function reset(): void {
     seq += 1
+    inflightRun = null
+    inflightKey = ''
     cache.clear()
     rows.value = []
     series.value = []

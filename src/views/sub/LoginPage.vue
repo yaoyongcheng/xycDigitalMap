@@ -28,7 +28,7 @@ const pwdVisible = ref(false)
  *
  * 不另拷一份到 `public/img`：同一颗图标只该有一份源，装了 PWA 的用户在桌面上
  * 看到的那张，与登录页上这张必须逐像素一致。路径走 `BASE_URL` 拼，
- * 线上部署在 `/xycDigitalMap/` 子目录下也不会 404。
+ * 线上部署在 `/xycMobileDigitalMap/` 子目录下也不会 404。
  */
 const logoSrc = `${import.meta.env.BASE_URL}pwa-192x192.png`
 

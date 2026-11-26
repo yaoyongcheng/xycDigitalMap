@@ -75,17 +75,18 @@ describe('阶段 5 · 真实数据', () => {
       // 点位固定，报警有没有都不影响监控页
       expect(useAlarmStore().liveAlarms).toEqual([])
       expect(cam.points).toHaveLength(9)
-      expect(cam.current.name).toBe('2#塔吊')
+      // 默认 = 首个点位；2026-11-26 设备设施调序后首位是 4#塔吊
+      expect(cam.current.name).toBe('4#塔吊')
       expect(cam.grouped.map((g) => [g.name, g.items.length])).toEqual([
         ['设备设施', 4],
         ['材料堆场', 1],
         ['出入口管控', 4],
       ])
       expect(cam.points.map((p) => p.name)).toEqual([
-        '2#塔吊',
         '4#塔吊',
         '地磅全景',
         '钢筋加工棚',
+        '2#塔吊',
         '材料堆场',
         '2#门监控1',
         '2#门监控2',

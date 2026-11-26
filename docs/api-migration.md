@@ -3996,6 +3996,7 @@ loadStations()    → loadStation(keep, airDate.value)      // 重进页面，�
 不参与排序，所以「置顶」只是数组第一位，没有额外的 CSS order。
 
 默认选中仍是 `CAM_POINTS[0]`，因此现在打开就是 **2#塔吊**（与设计稿一致）。
+（2026-11-26 设备设施调序后首位改为 4#塔吊，打开即 4#塔吊，见六点九十八。）
 
 ### 二、材料堆场这一路是实测过的，不是照抄通道表
 
@@ -5061,12 +5062,14 @@ const props = withDefaults(
 ### 失败时的提示（`utils/landscapeHint.ts` + `components/shell/LandscapeHint.vue`）
 
 一句 toast 在 iPhone 上等于没说：「请横转手机」在开了竖屏锁定、或在微信里打开时都办不到。
-所以换成一条**最简**提示 —— 深色胶囊两行字，无遮罩、无按钮：
+所以换成一条**最简**提示 —— 深色胶囊一行字，无遮罩、无按钮：
 
 ```
-把手机横过来看
-转不动就关掉系统的「竖屏锁定」
+横屏查看，请关闭「竖屏锁定」
 ```
+
+> 2026-11-26 调整：原为两行（`把手机横过来看` / `转不动就关掉系统的「竖屏锁定」`），
+> 现合成一句；位置也从整屏居中改为贴画面底边、说明文字上方。见六点九十九。
 
 4.2s 自动淡出，点一下也能立刻关；用户自己转过来（`resize` 里宽 > 高）也收掉。
 外层 `pointer-events: none`、层级 `z-index: 220`（压在地图层 80 / 监控层 90 / toast 210 之上），
@@ -5201,8 +5204,8 @@ mpegts 生命周期。把这层包进通用组件等于把两条播放链一起�
 2. 同一手势栈里 `documentElement.requestFullscreen()` → `orientation.lock('landscape')`；
 3. 等 320ms 转屏动画，用「视口宽 > 高」判成败：
    - Android Chromium（Chrome / 华为 / 小米 / vivo / OPPO）→ 真横屏，**不提示**；
-   - iOS 全系 / 微信内置 / 系统开了旋转锁定 → 仍是竖屏 → 摆出
-     「把手机横过来看 / 转不动就关掉系统的「竖屏锁定」」，4.2s 淡出，点一下即关；
+   - iOS 全系 / 微信内置 / 系统开了旋转锁定 → 仍是竖屏 → 在画面底部（说明文字上方）
+     摆出「横屏查看，请关闭『竖屏锁定』」，4.2s 淡出，点一下即关；
    - 桌面 → `isTouchDevice()` 为假，不申请全屏、不提示（与首页一致）。
 4. 再点「退出」/ 系统返回键 → 解锁方向 + 退全屏，画布回弹层内。
 
@@ -8247,6 +8250,9 @@ isHiddenDevice(name)  // 这一行还要不要在机组列表里出现
 
 ## 六点九十二、生产构建与 H5 服务器部署说明（2026-11-25）
 
+> ⚠️ 本条目里的 `/xycDigitalMap/` 是**当时**的 base；同日随后改为
+> `/xycMobileDigitalMap/`，现行口径见六点九十三。下文保留原样，不再回改。
+
 本次按要求跑了一遍真实的生产构建，并把部署口径写成 `docs/deploy-h5.md`。
 
 ### 构建结果
@@ -8275,3 +8281,583 @@ isHiddenDevice(name)  // 这一行还要不要在机组列表里出现
 
 另记：`sw.js` 与 `index.html` 必须 `no-cache`（否则 PWA 自动更新永远不生效），
 `assets/*` 可 `immutable`，`.webmanifest` 的 MIME 必须是 `application/manifest+json`。
+
+## 六点九十三、base 改为 /xycMobileDigitalMap/（2026-11-25）
+
+原前缀是仓库名派生出来的，现在站点要挂在 `/xycMobileDigitalMap/` 下，改 base
+**不是改一个字符串**：manifest 的 `id` / `start_url` / `scope` 与 Workbox 的
+`navigateFallback` 都各自写死了同一前缀，漏一处就出怪事（PWA 被当成另一个应用、
+桌面多出一个图标；SW 的导航回退 404 白屏）。
+
+### 改到的五处（`vite.config.ts`）
+
+| 位置 | 值 |
+|---|---|
+| `base` | `/xycMobileDigitalMap/` |
+| `manifest.id` | `/xycMobileDigitalMap/` |
+| `manifest.start_url` | `/xycMobileDigitalMap/?from=homescreen` |
+| `manifest.scope` | `/xycMobileDigitalMap/` |
+| `workbox.navigateFallback` | `/xycMobileDigitalMap/index.html` |
+
+### 同源的旧前缀（一并更新）
+
+| 文件 | 改动 |
+|---|---|
+| `server/serve.mjs` | `--base` 默认值 → `/xycMobileDigitalMap/`（否则自托管时 302 到的路径和产物前缀对不上） |
+| `server/mqttBridge.mjs` | 注释示例路径（逻辑按后缀匹配 `/mqtt`，未动） |
+| `src/utils/pwa.ts` / `src/views/sub/LoginPage.vue` | 注释里的示例路径（实际走 `BASE_URL`，代码未动） |
+| `.github/workflows/deploy.yml` | 站点地址注释，并加一句「Pages 路径由仓库名决定」的提醒 |
+| `tests/unit/diag.spec.ts` | 用例里模拟的站点 URL |
+| `README.md` / `docs/deploy-h5.md` | dev 地址、Pages 地址、`serve.mjs` 地址、nginx 配置、产物文件名 |
+
+### 构建与产物验证（本次实跑）
+
+`npm run build` 通过：242 模块 / 1.61s；`dist/` 61 个文件；precache 12 项 / 921.88 KiB。
+
+| 产物 | 检查结果 |
+|---|---|
+| `index.html` | 18 条 `src`/`href` 全部 `/xycMobileDigitalMap/…`，无相对路径 |
+| `manifest.webmanifest` | `id`/`start_url`/`scope` 三处均为新前缀 |
+| `sw.js` | `createHandlerBoundToURL("/xycMobileDigitalMap/index.html")` |
+| 全量 grep | `/xycDigitalMap` 命中 **0** 个文件；`/xycMobileDigitalMap/` 命中 32 次 |
+
+本地 `node server/serve.mjs --port 8099` 逐个 curl：页面 / `index.html` / 两个 `assets/*` /
+`sw.js` / `manifest.webmanifest` / 图标 / `startup/*.png` / `img/*.webp` / `data/scaffold.json`
+全 200 且 MIME 正确；`/` 302 → `/xycMobileDigitalMap/`；旧路径 `/xycDigitalMap/` 为 404（预期）。
+
+### ⚠️ 部署前提变了
+
+**GitHub Pages 的站点路径由仓库名决定**，不读 `base`。仓库仍叫 `xycDigitalMap` 时，
+Pages 上线地址还是 `https://yaoyongcheng.github.io/xycDigitalMap/`，而产物里写的是
+`/xycMobileDigitalMap/` —— 会整站 404。要么把仓库改名为 `xycMobileDigitalMap`，
+要么按 `docs/deploy-h5.md` 自托管到同名目录，二选一，否则先别发 Pages。
+
+> 构建产物已重新打包为 `xyc-digital-map-dist-20261125.zip`（4.80 MB，旧包同样是旧前缀，已覆盖）。
+
+## 六点九十四、Docker 部署落地（2026-11-25）
+
+把「nginx 反代 + /mqtt 桥」那套说法落成仓库里的四个文件，不再是口头方案。
+
+### 文件与职责
+
+| 文件 | 内容 |
+|---|---|
+| `Dockerfile` | 多阶段三 target：`builder`（`npm ci` + `npm run build`）、`web`（nginx）、`bridge`（Node） |
+| `deploy/nginx.conf.template` | 15 个 location：静态 + 缓存策略 + `/crane-api`、`/iot-api` 两段反代 + `/mqtt` 转发（**六点九十五**改成模板，上游可配） |
+| `docker-compose.yml` | `web` + `bridge`；端口 `${WEB_PORT:-8080}:80`、`depends_on: service_healthy`、双健康检查 |
+| `.dockerignore` | 排除 `node_modules`/`dist`/`legacy`/`.git`/`docs`/`*.zip`/`/*.png`；**保留 `.env`** |
+
+### 五个不能想当然的点
+
+1. **`web` 和 `bridge` 必须两个容器**。`/crane-api`、`/iot-api` 是普通 POST 反代，nginx 能做；
+   但 `/mqtt` 的上游不是现成 WS 服务（厂商 `:8084` 自 2026-11-12 起 502/404），是 Node 用
+   TCP 连 1883 再包成 WebSocket。nginx 无法把 TCP broker 变成 WS 端点。
+2. **`web` 必须等 `bridge` 健康**。nginx 启动时就要解析 `bridge` 这个域名，解析失败会直接退出
+   并反复重启；`depends_on.condition: service_healthy` + `restart: unless-stopped` 双保险。
+3. **`add_header` 不继承**：子 location 一旦自己写 `add_header`，server 级的头就全丢。
+   所以 server 级刻意不写任何 `add_header`，全部按 location 各自声明（注释里写明了）。
+4. **端口映射必须加引号**：YAML 会把未加引号的 `8080:80` 当六十进制数。
+5. **`bridge` 也带一份 `dist`**：`serve.mjs` 启动时校验 `<dir>/index.html` 存在，缺了直接
+   `exit 1`。顺带它单跑也是完整可用的（静态 + 两段反代 + `/mqtt`）。
+
+### 缓存策略落点
+
+| 路径 | Cache-Control |
+|---|---|
+| `assets/*`、`workbox-<hash>.js` | `public, max-age=31536000, immutable` |
+| `/xycMobileDigitalMap/`（目录）、`index.html`、`sw.js`、`manifest.webmanifest`、SPA 回退 | `no-cache` |
+| `img/`、`startup/` | `max-age=2592000`（30 天） |
+| 根级图标（png/ico/svg） | `max-age=604800`（7 天） |
+| 其余静态 | `max-age=3600` |
+
+SPA 回退单独用 `@xyc_fallback` named location 声明 `no-cache` —— 不能给回退出来的 HTML
+套上兜底的 1 小时缓存。
+
+### 验证方式（本机没有 docker / nginx）
+
+本机没有 `docker`、`docker compose`、`nginx` 二进制，WSL 也被安全策略拦，**无法执行
+`docker compose config` 与 `nginx -t`**。改用结构化解析做等价校验，共三轮：
+
+1. **结构校验 58 项全通过**：nginx 指令逐条闭合（跨行指令按 `;`/`{` 收尾聚合）、大括号平衡、
+   location 清单、三段 `proxy_pass` 目标与尾斜杠、`Upgrade`/`Connection` 头、七处缓存策略、
+   MIME、`server` 级无 `add_header`；compose 无 TAB / 缩进 / 引号配对 / 按父级路径判重的键树；
+   Dockerfile 阶段与 `COPY` 源存在性；`.dockerignore` 未误排除构建必需项。
+2. **负向用例 6 个全被抓住**：删 `/mqtt` 的 `Upgrade`、去掉 `/crane-api` 尾斜杠、把 `sw.js`
+   改成可缓存、少一个 `}`、删 `proxy_ssl_server_name`、compose 的 `target` 改成不存在的名字。
+   （证明校验器不是放水。）
+3. **跨文件一致性 12 项**：`vite base` = Dockerfile `COPY` 目标后缀 = nginx 的 15 处子路径 =
+   `serve.mjs` 的 `--base` 默认值 = manifest 的 `id/start_url/scope/navigateFallback` =
+   `dist/index.html` 的 18 条引用。
+
+### 仍需在真机上确认的三件事
+
+1. `docker compose config` 与 `docker compose build` 能否通过（尤其 `node:22-alpine` 上
+   `npm ci` 装 rolldown 原生 binding；builder 用的是 `bookworm-slim`，bridge 才是 alpine）；
+2. 容器内 `nginx -t` 是否通过；
+3. `bridge` 容器能否出网到 `115.159.67.12:1883`（`docker compose logs -f bridge` 看是否连上）。
+
+> 本轮**未跑 docker、未跑 vitest、未截图**；改动未提交。
+
+## 六点九十五、反代上游改成发布者可配的模板（2026-11-25）
+
+### 起因
+
+「发布者拿到什么配置才能自己部署」——原来的 `deploy/nginx.conf` 把
+`tciccs.cscec3bxjy.cn:30400`、`iot.cscec3b-iti.com`、`bridge:8080` 三处上游**写死在镜像里**，
+换环境必须改 nginx 语法再重新构建。发布者不懂 nginx，这条路走不通。
+
+### 做法：nginx 官方 envsubst 模板
+
+`deploy/nginx.conf` → **`deploy/nginx.conf.template`**，三处上游改成占位符：
+
+```nginx
+proxy_pass https://${CRANE_UPSTREAM}/;
+proxy_ssl_name   ${CRANE_HOST};
+proxy_set_header Host ${CRANE_HOST};
+proxy_pass https://${IOT_UPSTREAM}/;
+proxy_pass http://${MQTT_UPSTREAM};
+```
+
+Dockerfile 里 `COPY` 目标同步改成 `/etc/nginx/templates/default.conf.template`。
+镜像启动时 `/docker-entrypoint.d/20-envsubst-on-templates.sh` 渲染到
+`conf.d/default.conf` 再启动 nginx。
+
+**关键点：渲染后是纯文本，proxy_pass 里不存在变量。** 所以
+① 不需要 `resolver`（含变量的 `proxy_pass` 才会退化成运行时 DNS 解析）；
+② 域名仍在启动期解析一次，解析不到直接起不来，故障是显式的。
+
+### 五个变量，各带兜底
+
+| 变量 | 默认 | 用途 |
+|---|---|---|
+| `CRANE_UPSTREAM` | `tciccs.cscec3bxjy.cn:30400` | `proxy_pass`（要 host:port） |
+| `CRANE_HOST` | `tciccs.cscec3bxjy.cn` | TLS 的 SNI 与 `Host` 头（**只能纯域名**） |
+| `IOT_UPSTREAM` | `iot.cscec3b-iti.com` | 同上 |
+| `IOT_HOST` | `iot.cscec3b-iti.com` | 同上 |
+| `MQTT_UPSTREAM` | `bridge:8080` | 指向 compose 服务名 |
+
+拆成两个变量是因为 `proxy_ssl_name` / `Host` 带 `:30400` 会被上游拒。默认值写在
+`docker-compose.yml` 的 `environment` 里（`${X:-默认}`），**这层兜底不能删**：
+渲染时环境里没有该变量，占位符会原样留在配置里，nginx 报 `invalid URL prefix` 直接退出。
+
+### 配置只有一处
+
+`.env`（不是 `.env.local`），因为 compose 只自动读同目录 `.env`，而 Vite 构建时也读它，
+两边共用一份。`.env.example` 末尾补了 Docker 段，并写明两类变量的差别：
+
+- `VITE_*` —— 构建期写进 JS，改完必须 `--build`
+- `WEB_PORT` / `CRANE_*` / `IOT_*` / `MQTT_*` —— 运行期读，`up -d` 即可
+
+### 新增 `deploy/README.md`
+
+给发布者的一页纸：交付清单、三条命令、配置项表、5 条 `curl` 验收（含 MQTT 的 101）、
+故障对照表、三条硬约束、以及「服务器不能联网构建」时的 `docker save` 路径。
+
+### 校验
+
+未跑 docker/nginx（本机没有）。做静态等价校验：
+① 占位符只出现在 5 个白名单变量上，`$remote_addr`/`$uri`/`$host`/`$http_upgrade`
+等 nginx 小写变量**未加花括号**（envsubst 只换环境里存在的名字，小写不受影响）；
+② `template` / `compose.environment` / `.env.example` 三处变量名逐字一致，无遗漏无多余；
+③ Dockerfile `COPY` 源存在（`deploy/nginx.conf.template`）、旧文件名无残留引用；
+④ 渲染模拟：用默认值手工替换后，三条 `proxy_pass` 均为合法绝对 URL。
+
+> 需真机确认：`docker compose up -d --build` 启动后 `conf.d/default.conf` 是否已渲染、
+> 容器内 `nginx -t`、以及三条 `curl` 的实际状态码。
+
+## 六点九十六、`queryEvent` 的 400 与「电梯参数对齐 V2」修正（2026-11-26）
+
+### 1. 400 的真实成因（curl 实测，不是反代也不是令牌）
+
+`POST https://iot.cscec3b-iti.com/api/data/v1/tsdb/queryEvent` 这个端点**业务失败也回
+HTTP 400**，且 `status` 恒为 10 —— 单看状态码分不清是参数错、设备不认还是产品错，必须看
+`msg`：
+
+| HTTP | status | msg | 触发条件 |
+|---|---|---|---|
+| 200 | 0 | — | 正常（数字毫秒 + 有效 sn） |
+| **400** | 10 | `eventItems:待查询事件列表不能为空` | `eventItems` 空/缺 |
+| **400** | 10 | `startTime:查询起始时间戳必传` | `startTime` 缺或 `null`（JS 里 `NaN` 经 `JSON.stringify` 就是 `null`） |
+| **400** | 10 | `JSON parse error: Cannot deserialize value of type java.lang.Long …` | 时间传字符串（`'yyyy-MM-dd HH:mm:ss'`） |
+| **400** | 10 | `endTime大于0时，endTime 必须大于 startTime` | 区间倒置 |
+| **400** | 10 | `所选设备您无权操作` | **sn 空串/网关不认**，或 `productCode` 传错产品 |
+| 401 | 11 | `权限不足` | 令牌无效 |
+| **200** | 2 | `Content-Type错误` | 非 `application/json`（注意不是 4xx） |
+
+**本侧每轮必然产生 2 个 400**：`perSn` 逐台发，`32251222021` / `32251222023` 两台网关
+不认（`attr` 每 10s 2 个 + `today` 每 60s 2 个 ≈ 840/小时）。同一无效 sn 走
+`queryRealTimeDataV2` 是 **200 空数组**，所以 400 只出现在 `queryEvent`。
+V2 侧同样如此（`DeviceSnList` 就是这 4 个串，见下），**属现场设备未注册，不是代码缺陷**。
+
+### 2. 与 V2 的逐项核对（证据：`.workbuddy/tmp/v2dll/HotUpdateScripts.dll`）
+
+| 项 | V2 | 本侧 | 结论 |
+|---|---|---|---|
+| 换令牌 | `POST https://iot.cscec3b-iti.com/api/webgateway/v1/access/token`，body `{ak,sk}` | 同路径，走 `/iot-api` 反代 | 路径一致；**反代是浏览器 CORS 限制导致的有意差异** |
+| 实时数据 | `POST …/api/data/v1/tsdb/queryRealTimeDataV2` | 同 | ✅ |
+| 事件 | `POST …/api/data/v1/tsdb/queryEvent` | 同 | ✅ |
+| 登出 | `POST …/api/webgateway/v1/auth/api/appUser/logout`（`OnDestroy` 调） | **未实现** | 有意不移植：H5 关页无法保证请求完成，且会让共用同一 ak 的 V2 掉线 |
+| 方法 | 全部 POST + `application/json` | 同 | ✅ |
+| 鉴权 | `GetAuthHeader()` → `{tokenKey: tokenValue}`，即 `X-APP-USER: <token>`；token 空则**不发请求** | `[tk.tokenKey]: tk.tokenValue`；`requestToken` 拿不到值就抛 | ✅ |
+| 事件体 | `QueryEventRequest{startTime, endTime, eventItems}` | 同 | ✅ |
+| 事件项 | `EventItems{ProductCode, Sn, EventCode}`（全 string） | `{productCode, sn, eventCode}` | ✅（键名小驼峰，`sn` 为必填键：换 `deviceSn` 实测 400） |
+| 实时项 | `QueryListItem{ProductCode, Sn, Field, Code}` | 同 | ✅ |
+| 响应 | `IotResponse{status, msg, data}`，`status===0` 成功；行 `{timestamp, metricIndex, uuid, resultMap}` | 同 | ✅ |
+| 时间格式 | `long` Unix ms：`start` = 本地当日 0 点，`end` = **现在** | 同类型；`end` 取**当日 23:59:59.999** | 唯一参数差异，**刻意保留**（容忍设备时钟漂移；未来窗口实测不报错），已写进 `dayRange` 注释与用例 |
+| sn 来源 | `BuildingElevatorCage.sn` → `RebuildCageCache`（`IsNullOrEmpty` 跳空 + 字典去重，**不 trim**）→ `DeviceSnList` | `data/liftSn.ts` 4 个常量（UnityPy 二次复核逐字节一致） | ✅ |
+
+### 3. 本轮改动（只动电梯事件这条线）
+
+1. `api/iot.ts::EventQueryItem.productCode` **由可选改必填**，`eventBody` 删掉
+   `|| SCENE_CODE` 兜底 —— 项目码查电梯换回的是「所选设备您无权操作」，会把配置错误
+   伪装成设备故障（实测）。
+2. 新增 `usableSn()` / `usableEventItems()`：**空 sn 丢弃、重复 sn 只留第一条**
+   （对齐 `RebuildCageCache`），`fetchRealtimeData` / `fetchRealtimeRows` /
+   `fetchEvents` / `fetchEventRows` 四个入口统一过一遍；全被滤光就不发请求，直接空态。
+3. `iotJson` 上方补错误码对照表（上表），避免再把 400 当网络问题排查。
+4. `data/liftSn.ts`：末行「一次查完，不逐台打请求」是 11-13 之前的旧说法，已纠正；
+   补 2026-11-26 场景包复核结论与「V2 也会拿到同样 400」。
+5. 用例：`iot-weather.spec.ts` 的「缺 productCode 回落项目码」改为「不回落、不发请求」，
+   新增「空 sn / 重复 sn 被丢弃」；`lift.spec.ts` 一处 `fetchEventRows` 补 `productCode`。
+
+> 实时侧 `queryList` 的 `productCode || SCENE_CODE` 兜底**保留**（对塔机/大屏成立），
+> 只在事件侧收紧 —— 事件目前唯一消费方是电梯。
+>
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过（`index-aTk95Tdx.js`，precache 922.11 KiB）。
+> 未跑 vitest、未开浏览器；改动未提交。
+
+### 4. 那两个 400 已临时屏蔽（2026-11-26，TEMP-BLOCKED）
+
+现场确认这两台轿厢「数据尚未接入」，于是只摘掉**取数**，不摘**展示**：
+
+| 位置 | 改动 |
+|---|---|
+| `data/liftSn.ts::LiftCage.blocked` | 新增可选字段，`32251222021`（1-2）、`32251222023`（2-1）标 `true` |
+| `data/liftSn.ts::LIFT_SNS` | 由 `LIFT_CAGES.map(sn)` 改为 `LIFT_CAGES.filter(c => !c.blocked).map(sn)` |
+| `data/liftSn.ts::LIFT_BLOCKED_SNS` | 新增导出，只用于排查时看「谁没在查」，不参与请求 |
+| `api/lift.ts` 三处 `perSn` | 各加 `TEMP-BLOCKED` 注释，指明 400 的两个来源是 `EVENT_WORKDATA` / `EVENT_POST_ATTR` 两条 `queryEvent` |
+
+屏蔽的落点是**数据表上的一个字段**，不是散在各处的 `if`：
+
+- 三条线（`queryRealTimeDataV2` 在线 / `queryEvent`+`EVENT_WORKDATA` 今日 /
+  `queryEvent`+`EVENT_POST_ATTR` 工况）都读 `LIFT_SNS`，一处改动三处同时生效；
+- `LIFT_CAGES` 仍是 4 条 → 电梯子页 4 张卡、首页仍按「x/4」计，那两格照旧「—」；
+- 每轮请求数 12 → 6（3 接口 × 2 台），控制台那两条 400 消失；
+- **恢复 = 删掉对应那条的 `blocked: true`**，其余代码一行不用动
+  （测试断言用的是 `LIFT_SNS.length`，跟着自动变）。
+
+> 恢复前先确认网关侧已注册，否则等于把 400 放回来。
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过（`index-DU-7oRNQ.js`，precache 922.19 KiB）。
+> 未跑 vitest、未开浏览器；改动未提交。
+
+## 六点九十七、电梯横幅「重试」的重连语义（2026-11-26）
+
+截图那条「电梯物联网网关未恢复，请稍后再试 + 重试」的按钮，之前只是
+`void lift.relogin()`：`relogin` 里 `load(true)` 一进来就撞上 `if (inflight) return inflight`，
+**把「重连前那一轮」原样复用**，一个请求都没重发；按钮没有加载态，连点会打多轮；
+在途的旧请求回来还会把旧数据写回。本轮补齐这四件事。
+
+### 1. 一次「重试」到底做了什么（`stores/lift.ts::relogin`）
+
+顺序不能换，四步对应四个问题：
+
+| 步 | 动作 | 挡的是什么 |
+|---|---|---|
+| ① | `epoch += 1` | 在途的 `load` / `pollOnce` 回来时对不上代次 → 结果直接丢弃，不许写回 `online/today/attr` |
+| ② | `inflight = null` | 否则 `load(true)` 复用旧轮（旧实现在这里等于什么都没做） |
+| ③ | `clearToken()` + `clearLiftAuthFailure()` | 缓存令牌、在途令牌请求、失败痕迹一起作废 |
+| ④ | `load(true)` | 真发三个接口（在线 / 今日 / 工况） |
+
+`reconnectTask` 单飞：连点只会有一次真实连接，后到的调用复用同一个 Promise。
+`reconnecting` 为真期间页面禁用按钮（`goRetry` 里再挡一次，防辅助技术绕过 `disabled`）。
+
+### 2. 「旧连接残留」在三层各挡一次
+
+| 层 | 机制 | 场景 |
+|---|---|---|
+| 令牌 | `api/iot.ts` 新增 `generation`；`clearToken()` 时 +1，`ensureToken` 的在途请求回来先比对代次，不符就丢弃并抛 `ApiError(0)`，**不写回 `token`** | 重连瞬间还有一次换令牌在飞，回来后把旧令牌写进缓存 → 新一轮见「有令牌未过期」直接复用，点了等于没点 |
+| 数据 | `stores/lift.ts` 的 `epoch`，`load` / `pollOnce` 写回前校验 | 旧一轮迟到的空数据把新一轮的结果盖掉（页面「闪一下又变回横杠」） |
+| 引用 | `inflight === run` / `if (inflight === run)` 才置 null | 旧轮结束时把**新一轮**的 `inflight` 清掉，导致下一轮叠发 |
+
+### 3. 页面（`views/sub/DevicePage.vue`）
+
+原来两块横幅（`gatewayLost` / `needsRetry`）合成一块，四种＋一种文案：
+
+| 状态 | 文案 | 按钮 |
+|---|---|---|
+| `reconnecting` | 正在重新连接电梯网关… | 「重连中」，禁用，左侧转圈 `.dev-auth-spin` |
+| `gatewayUnreachable` | 电梯网关没连上 —— 部署环境缺「/iot-api」反代，或服务器无法出网 | 「重试」（`is-warn` 警示色） |
+| `reconnectFailed` | 电梯网关暂时连不上，请稍后再试 | 「重试」 |
+| `gatewayStale` | 电梯物联网网关未恢复，请稍后再试（截图原文） | 「重试」 |
+| `authLost` | 电梯物联网网关凭证失效，请稍后重试 | 「重试」 |
+
+- **重连中横幅不撤**：点下去第一件事是清 `authLost`，若只看它，横幅会在点击瞬间消失，屏幕上既没转圈也没说明。
+- **失败必留入口**：新增 `reconnectFailed`，专门接「超时 / 5xx / 空响应」这类三种已知原因之外的情况 —— 否则 `authLost` 等全为 false，横幅消失，用户连再点的入口都没有。它在 `load` / `pollOnce` 真拿到数据时自动清掉（轮询自己恢复也会撤），不会长期挂着。
+- 模板 `role` 随状态切 `status` / `alert`，重连中带 `aria-busy`。
+
+### 4. 影响面
+
+只动 IOT 令牌与 `stores/lift`：`clearToken()` 只清 `iot.cscec3b-iti.com` 这张令牌，不碰业务 Bearer（`:8081`），
+塔机 / 抓拍 / 智眸 / 无人机 / 天气预报 / 台账全部不受影响。电梯卡片仍走 `:8084` 台账，重连期间照常显示（只是格子「—」）。
+
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过（`index-Cqqgk0sI.js`，precache 923.33 KiB）。
+> 未跑 vitest、未开浏览器；改动未提交。
+
+## 六点九十八、「设备设施」塔吊调序（2026-11-26）
+
+现场要求：`4#塔吊` 提到设备设施第一位、`2#塔吊` 挪到该组最后，中间两台相对位置不动，
+其余两组（材料堆场、出入口管控）一条不动。
+
+### 1. 改动只有一处数组
+
+`data/cams.ts::CAM_POINTS` 的这四条换了位置（`channelId` 与 `name` 逐字不动，只动行序）：
+
+| 位置 | 改前 | 改后 |
+|---|---|---|
+| 1 | 2#塔吊 `…17` | **4#塔吊 `…16`** |
+| 2 | 4#塔吊 `…16` | 地磅全景 `…0003` |
+| 3 | 地磅全景 `…0003` | 钢筋加工棚 `…0014` |
+| 4 | 钢筋加工棚 `…0014` | **2#塔吊 `…17`** |
+
+组名、组顺序（`CAM_GROUPS`）、芯片样式、分组计数（4 / 1 / 4）都不变；
+组件是 `v-for` 直出，没有二次排序，也没有 CSS `order`，所以改数组就等于改页面。
+
+### 2. 唯一的连带效果：默认打开点位变成 4#塔吊
+
+`stores/cam.ts` 的 `camId` 初值是 `CAM_POINTS[0].channelId`，`current` 的回退也是它 ——
+按「默认 = 第一个」这条既定规则，打开监控层现在停在 **4#塔吊**（原 2#塔吊）。
+没有为「2#塔吊 默认」另写常量：那会让首颗芯片是 4#塔吊、高亮的却是末颗，反而更怪。
+顺带一提，`cctv.ts` 里 4#塔吊 2026-11-18 实测 `flv: true`、2#塔吊 `flv: false`，
+首屏落在有流的那一路上。
+
+### 3. 没动的两处容易误改
+
+- `CRANE_SHOTS`（智眸设备设施那两张塔吊抓拍）的顺序是**字面量 `['2#塔吊','4#塔吊']`**，
+  再按名字去 `CAM_POINTS` 取 channelId，所以**不跟着 CAM_POINTS 变** —— 智眸那边仍是
+  2# 在前，本轮保持原样。
+- `GATE_SHOTS` 只按名字取通道号，与顺序无关。
+
+### 4. 跟着改的用例（都是断言顺序/默认值的，不改就红）
+
+| 文件 | 改了什么 |
+|---|---|
+| `tests/unit/stage5.spec.ts` | 9 个点位名数组改成新序；默认点位 `2#塔吊` → `4#塔吊` |
+| `tests/unit/stores.spec.ts` | 默认点位同上（注释同步） |
+| `tests/unit/cam-player.spec.ts` | 芯片文案数组改成新序；`A`/`B` 注释更新；「切点位」用例点第 2 颗（地磅全景）时索引 2 → 1 |
+
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过。
+> 未跑 vitest、未开浏览器；改动未提交。
+
+## 六点九十九、全景横屏提示：文案与位置（2026-11-26）
+
+截图这条「把手机横过来看 / 转不动就关掉系统的『竖屏锁定』」是整屏居中的两行胶囊，
+正好压在球面画面的视线焦点上。改成**一句话、贴底边**。
+
+### 1. 文案
+
+| | 改前 | 改后 |
+|---|---|---|
+| 行数 | 两行（`land-hint-title` + `land-hint-sub`） | 一行 |
+| 内容 | `把手机横过来看` / `转不动就关掉系统的「竖屏锁定」` | **`横屏查看，请关闭「竖屏锁定」`** |
+
+`.land-hint-sub` 这条样式随之删掉（全项目只在这里用过）。语义没变：还是
+「为什么还竖着 + 关什么」，只是不再先让人竖着读一句废话。
+
+### 2. 位置：从整屏居中改为贴画面底边
+
+`.land-hint`（`components/shell/LandscapeHint.vue` 的外层）：
+
+| 属性 | 改前 | 改后 |
+|---|---|---|
+| `position` | `absolute` | **`fixed`** |
+| `align-items` | `center` | **`flex-end`** |
+| `padding` | `0 24px` | **`0 24px 60px`** |
+| `justify-content` | `center`（不变） | `center` |
+
+`60px` 是这样算的：`.pano-hint` = 上 padding 18 + 一行 `--fs-11`（13px，行高≈20）
++ 下 padding 8 ≈ **46px**，取 60 → 净间距约 14px，**不压「拖动环视…」那行字**，
+也不影响它的位置（`pano-hint` 仍是 `position: absolute; bottom: 0`，一个字没动）。
+卡片是浮层、`pointer-events: none`（卡本身 `auto` 只为点击关闭），
+**不占布局、不挤压任何文字**，其它交互（4.2s 自动淡、点一下关、转屏即收）全未改。
+
+### 3. 为什么 `fixed` 而不是沿用 `absolute`
+
+铺满时画布是 `.pano-stage.is-land`（`position: fixed; inset: 0`）；卡原先挂在
+`.phone-screen` 里按 `absolute` 定位。手机上两者同框，看不出差别；但在大屏 /
+平板上手机壳（`.phone` 是 390 宽的居中卡片）比视口矮，卡会落在壳底、比画布底边
+高约 40px —— 而说明条是贴画布底边的，两者正好压在一起。祖先链
+`.phone` → `.phone-screen` → `.land-hint` 没有任何 `transform`，所以 `fixed` 不会被
+包含块改写，卡与画布严格同框。（这也是面板里必须 Teleport 的原因，见 PatrolSheet 注释。）
+
+### 4. 触发范围未变
+
+仍然只有 **智眸 → VR 360 环视 → 项目全景 → 全屏** 一处（`panoLand` 带 `hint: true`），
+首页全屏地图 / 监控 / 抓拍大图 / 航拍全景 / 平面照片都不弹。顺带把 5 处
+「不再弹『把手机横过来看』」的注释改成「不再弹横屏引导」—— 旧文案已不存在，
+留着会让人搜不到。
+
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过（precache 923.21 KiB）。
+> 未跑 vitest、未开浏览器；改动未提交。真机待看：竖屏锁定状态下进全景全屏，
+> 卡是否贴在「拖动环视 · 双指缩放 · 点『退出』回竖屏」上方、居中、不压字。
+
+## 六点一百、电梯「重试」改为整屏重取：台账 + IOT 三路，全通才撤按钮（2026-11-26）
+
+### 1. 现场现象
+
+电梯详情页点「重试」后，Network 里**只多了一条**
+`/iot-api/api/webgateway/v1/access/token`，在线 / 今日作业 / 当前工况一条都没发，
+页面依旧四张「—」；而且无论成功与否，横幅与按钮的表现都不对。
+
+### 2. 两条独立的成因（都不是「按钮没接上」）
+
+**① 只重连了 IOT，没重取台账。**
+原 `goRetry()` 只调 `lift.relogin()`。而这一屏初始化走的是两条线：
+台账 `:8084`（`ledger.load`，提供卡片标题、楼栋归属、「设备信息」入口）
++ IOT 三路（`fetchLiftOnline` / `fetchLiftToday` / `fetchLiftAttr`）。
+台账那次失败的话，IOT 刷新成功也还是一屏缺档案的卡片。
+
+**② 三路数据被「废牌自检」短路。**
+`api/iot.ts::ensureToken` 有一道自检：换回来的令牌若与被判 401 的那张逐字节相同，
+就抛 `IotStaleTokenError`，**6 个数据请求一个都不发**。这正是「只看到 token 请求」
+的直接原因 —— 用户主动重试时它不该拦。
+
+### 3. 改动
+
+| 位置 | 改动 |
+|---|---|
+| `api/iot.ts` | 新增 `releaseStaleGuard()`：只清 `rejectedValue` / `lastAuthFailAt`，放开废牌自检，不动 `token` / `inflight` / `generation` |
+| `stores/lift.ts` | 新增 `fullyLoaded`（在线+今日+工况**三路都回**，空表也算回）；`load` 写它；`pollOnce` 只在「三路齐查那一轮（每 6 轮）」都回来时才置真；`relogin` 调 `releaseStaleGuard()`，失败判据由 `state === 'error'` 改为 `!fullyLoaded` |
+| `views/sub/DevicePage.vue` | 新增 `loadElevator(force)`（**唯一取数入口**，首屏与重试共用）：台账 + 三路并行；`retrying` / `busy` 覆盖「台账 + 重连」全过程；新增 `retryFailed`（刷新不完整时保住横幅与按钮）；`authText` 区分「台账缺」与「IOT 缺」两条排查线 |
+| 空态「重试」 | 电梯也走 `loadElevator(true)`（原先只重取台账） |
+
+**成功判定**：`lift.fullyLoaded && ledgerReady`（台账 `state === 'ok'`，未登录时不计）。
+缺任何一路 → `retryFailed` 为真 → 横幅与按钮保留，可反复点。
+
+### 4. 副作用与边界
+
+- `reconnectFailed` 的清除条件同步收紧：以前「拿到一路就清」，会把「还有两格横杠」
+  说成已恢复；现在只有三路全通才清。
+- `pollOnce` 恢复（60 秒一次三路齐查）也会把 `fullyLoaded` 置真 → 横幅自动消失。
+- 废牌自检在**自动自愈**路径（`refreshToken`）上仍然生效，只是用户显式重试时不拦。
+- 重试仍只影响电梯：`clearToken` 只动 IOT 令牌，不碰业务 Bearer 与其它模块。
+
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过（precache 923.74 KiB）。
+> 未跑 vitest、未开浏览器；改动未提交。真机待看：点「重试」后 Network 应出现
+> 1 条 token + 6 条数据（2 台 × 3 路，另 2 台仍临时屏蔽）；三路全通时横幅消失，
+> 缺一路时横幅留着且按钮可再点。
+
+## 六点一百零一、电梯「重试」后多出塔机请求：跨机种触发 + 在途未复用（2026-11-26）
+
+### 1. 现象
+
+电梯详情页点「重试」，Network 里除了 `token` / 台账两条 / 电梯 6 条（2 台 × 3 路），
+还多出 **3 条 `getWorkCycleInfoHis`**（`towerCrane.ts:241`，即塔机作业报表），
+用户读作「重试把塔机也带出来了」。
+
+### 2. 唯一入口
+
+全项目 `getWorkCycleInfoHis` 只有一条链路：
+
+```
+DeviceReport.vue  watch(机组 id 串) → report.load()
+  → stores/craneReport.ts::load() → api/towerCrane.ts::fetchCraneWorkCycles()
+```
+
+`DevicePage.vue` 的 `goRetry()` → `loadElevator(true)` 只碰 `ledger`（台账）与
+`lift`（IOT），**没有任何一行调报表**。所以不是「重试调了塔机」，而是报表侧被
+两件事触发了：
+
+**① 跨机种的 watch 触发（真问题）。**
+`DevicePage` 是塔机/电梯共用的同一个组件实例，两个页签共用一个 `DeviceReport`
+（`v-else-if="isCrane"`）。从塔机切到电梯时：`props.kind` 先变 → `set.units`
+跟着变成**电梯**机组 → 而 `DeviceReport` 要到同一次 patch 才卸载。watch 的
+pre 回调赶在卸载前跑，key 由「塔机 3 个 id」变成「电梯 2 个 id」，**变化即触发**，
+于是拿电梯机组又调了一次 `report.load()`。只要 `craneSnOf(楼栋号)` 能解出编号，
+就是一轮真实的 `getWorkCycleInfoHis`。
+
+**② 在途未复用（观感放大器）。**
+逐台 45s 的 `cache` 只对「已回来」的结果生效。报表页挂载即取数，用户在
+「实时状态 ↔ 作业报表」来回切、或点完重试回报表，几十毫秒内就会再叫一次
+`load()` —— 上一轮还在飞、`cache` 还没写入，于是同一批 3 条打两遍。
+
+### 3. 改动
+
+| 位置 | 改动 |
+|---|---|
+| `views/sub/DeviceReport.vue` | 取数 watch 的 key 加机种判断（`props.kind === 'crane'` 才算，否则恒为空串直接 return）；新增 `alive` + `onBeforeUnmount`，卸载后排队中的 flush 一律不再发请求；`picked` 那条 watch 同样加机种守卫（否则会拿电梯机组覆盖塔机选中态） |
+| `stores/craneReport.ts` | 新增 `inflightKey` / `inflightRun` 单飞：同一「区间 + 机组组合」在途时直接复用在途那一轮。**判定放在 `++seq` 之前** —— 复用不能再抬序号，否则会把在途那轮判成过期、结果全丢、页面停在骨架屏。`reset()` 一并清空 |
+
+### 4. 为什么不是「重试去重」
+
+重试刷新的是**整份台账**（`:8084` 一次返回塔机 + 电梯），无法只刷电梯。
+但台账刷新后 `setLiveUnits('crane', 新数组)` 只换数组引用，`toUnit` 的
+`id: String(row.id)` 是稳定的，`units.map(id).join(',')` 不变 → watch 不触发。
+所以「台账刷新」本身不会带出塔机请求，只有 ① 那种跨机种瞬间会。
+
+### 5. 边界
+
+- 首次进「作业报表」仍会打 3 条（这是它该做的事），但 45s 内来回切不再重打。
+- 切周期 / 选日期必打（区间变了，逐台 key 变化，单飞 key 也不同）。
+- 用户主动重试**不会**让已挂载的报表重取：机组 id 串与区间都没变。
+
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过（precache 924.00 KiB）。
+> 未跑 vitest、未开浏览器；改动未提交。真机待看：电梯页点「重试」→ Network 里
+> 只应有 `token` + `areas` + `deviceInfos` + 6 条电梯请求，**无 `getWorkCycleInfoHis`**；
+> 塔机页「实时状态 ↔ 作业报表」连切两次，第二次应命中缓存/在途复用，不再新增请求。
+
+> **更正（2026-11-26 二改）**：上面这一节的结论**只对了一半**。它修的是
+> 「跨机种 watch 触发」与「在途未复用」，那两条是真实隐患，但**不是**现场看到的
+> 那 3 条请求的来源 —— 电梯页里 `DeviceReport` 本来就已经卸载，那两处守卫对这条
+> 完全无效（截图复验仍是 3 条）。真因见下一节。
+
+## 六点一百零二、「重试」带出 3 条塔机请求的真因：台账顺带取塔机日指标（2026-11-26）
+
+### 1. 真因
+
+`stores/deviceLedger.ts::load()` 拿到台账后，会 fire-and-forget 调
+`loadCraneDay(list)`，给**每台塔机**打一条 `getWorkCycleInfoHis`
+（`stores/deviceLedger.ts:216`，3 台 = 3 条）：
+
+```
+DevicePage.goRetry() → loadElevator(true)
+  → ledger.load(token, true)                 // :8084 台账，1 条 deviceInfos + 1 条 areas
+      → syncLive()
+      → void loadCraneDay(list)              // ← 3 条 getWorkCycleInfoHis（fire-and-forget）
+  → lift.relogin()                           // IOT：token + 6 条数据
+```
+
+这条链路与「作业报表」无关，与 `DeviceReport` 无关，是**台账自己**的附带取数。
+它与截图时间线逐条吻合：`deviceInfos` 302~334ms 回来后，3 条塔机请求才发出
+（243 / 203 / 222ms），并排在第二个 `token` 之后。
+
+为什么要顺带取：首页智控卡（`equip` 的「今日吊重 / 今日吊次」）与塔机页每张
+卡片的今日指标都读它，`loadCraneDay` **一次请求两个口径**（`craneDay` 全场合计、
+`craneDayBySn` 逐台），是设计如此，不是 bug。问题只在于：**电梯页一条都用不上，
+却照样付这 3 条请求的账**。
+
+### 2. 改动
+
+| 位置 | 改动 |
+|---|---|
+| `stores/deviceLedger.ts` | `load(token, force, opts)` 新增第三参 `{ craneDay?: boolean }`，缺省 `true`（首页 / 塔机页 / 深链行为不变）；`opts.craneDay === false` 时**不调** `loadCraneDay`。新增 `craneDayAt` 时间戳 + 导出 `ensureCraneDay(maxAge = 5min)`；`loadCraneDay` 发请求前记 `craneDayAt`；`reset()` 一并清 |
+| `views/sub/DevicePage.vue` | `loadElevator()` → `ledger.load(token, force, { craneDay: false })`（电梯页永远不需要塔机日指标）；`onMounted` → `{ craneDay: isCrane.value }`；`watch(kind)` 切到 `crane` 时调 `ledger.ensureCraneDay()` 补取 |
+
+### 3. 为什么必须补 `ensureCraneDay`
+
+台账是单例。若只加「跳过」不补：先进电梯页（台账 ok、塔机指标没取）→ 再切塔机页，
+`load()` 因 `state === 'ok'` 直接返回 → 塔机卡片今日吊次/吊重整片变「—」，是回归。
+所以切到塔机页补一次，用 5 分钟窗口挡住「来回切页反复打 3 条」。
+
+### 4. 边界
+
+- 首页 `EquipPanel` 两处 `ledger.load` / `refresh` 均走缺省 `true`，智控卡数字不受影响。
+- 空态「重试」按机种分流：电梯走 `loadElevator(true)`（不带 craneDay），
+  其他机种走缺省（要 craneDay）。
+- 台账 `inflight` 复用优先级不变：如果首页那一轮正在飞，电梯页 force 会复用它
+  —— 那是首页自己的合法请求，不属于「重试带出来」。
+- 401（`status:11`）与本改动无关：那是 IOT 网关令牌侧问题，重试能做的只有重换令牌。
+
+> 验证：`vue-tsc --noEmit` 通过、`npm run build` 通过（precache 924.21 KiB）。
+> 未跑 vitest、未开浏览器；改动未提交。真机待看：电梯页点「重试」→ Network 只应有
+> `token` + `deviceInfos` + `areas` + 6 条电梯请求，**无 `getWorkCycleInfoHis`**；
+> 随后切到塔机页 → 应出现 3 条（补取），再切回电梯再切回塔机 → 5 分钟内不再新增。

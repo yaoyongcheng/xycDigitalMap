@@ -126,10 +126,19 @@ export const LIVE_ATTR_WINDOW = 3 * 60 * 1000
  *      一旦哪天改成整批拒绝，四台会一起变「—」；
  *   ② 混批只有一个总结果，出了事不知道是哪一台。
  *
- * 代价是请求数从 3 个变 12 个，所以这里**并发**发而不是像 V2 那样串行 await
- * （V2 串行是因为它每 5 秒轮询一次，不差那几百毫秒）。
+ * 代价是请求数从每台 1 个变 3 个（在线 / 今日 / 工况各一），所以这里**并发**
+ * 发而不是像 V2 那样串行 await（V2 串行是因为它每 5 秒轮询一次，不差那几百毫秒）。
+ * 当前实际在查的是 2 台（另 2 台 2026-11-26 起临时屏蔽，见下方 `perSn` 注）。
  *
  * 单台失败不影响别台；**全部失败**才抛给调用方（由它 catch 成 null）。
+ *
+ * 空编号与重复编号的过滤**不在这里做**：V2 是在建 `cageCache` 字典时就滤掉的
+ * （`RebuildCageCache` 的 `IsNullOrEmpty` + `ContainsKey`），对应到本侧是
+ * `api/iot.ts::usableSn` —— 那一层对所有查询项统一生效，包括将来别的产品。
+ *
+ * 2026-11-26 起多了一层：**临时屏蔽的台次**也不在这里判。传进来的 `LIFT_SNS`
+ * 已经是「未屏蔽」的名单（`data/liftSn.ts::LiftCage.blocked`），所以本函数
+ * 只管并发与容错，不需要知道谁被屏蔽了。
  */
 async function perSn<T>(sns: readonly string[], run: (sn: string) => Promise<T>): Promise<T[]> {
   const results = await Promise.allSettled(sns.map((sn) => run(sn)))
@@ -148,7 +157,22 @@ async function perSn<T>(sns: readonly string[], run: (sn: string) => Promise<T>)
   return out
 }
 
-/** 当天 00:00:00 ~ 23:59:59.999 的毫秒区间（本机时区，与现场口径一致） */
+/**
+ * 当天 00:00:00 ~ 23:59:59.999 的毫秒区间（本机时区，与现场口径一致）。
+ *
+ * **与 V2 的唯一参数差异，刻意保留**（2026-11-26 对照 `HotUpdateScripts.dll` 的
+ * `<FetchWorkCycleAsync>d__9` IL 确认）：
+ *
+ *   V2：`startMs = DateTimeOffset(DateTime.Now.Date)`（本地当日 0 点）
+ *       `endMs   = DateTimeOffset.UtcNow`（**此刻**）
+ *   本侧：`start` 同，`end` 取当日最后一毫秒
+ *
+ * 两者返回的行集在今天之内完全相同（未来的时刻本来就没有事件）。取「当日末」
+ * 是为了容忍设备/网关的时钟漂移 —— 若按 V2 用 `now`，一台快几分钟的轿厢
+ * 在 23:5x 上报的最后一两趟会被切掉；而 `endTime` 落在未来，网关照收
+ * （2026-11-26 实测：未来窗口返回 `status:0` + 空数组，不报错）。
+ * 这一点已有用例钉住（`tests/unit/lift.spec.ts` 的时间窗断言），要改需同步改用例。
+ */
 function dayRange(now: Date): { start: number; end: number } {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   return { start, end: start + DAY - 1 }
@@ -163,6 +187,9 @@ function dayRange(now: Date): { start: number; end: number } {
 export async function fetchLiftOnline(): Promise<Record<string, boolean> | null> {
   if (!LIFT_SNS.length) return null
   try {
+    // TEMP-BLOCKED(2026-11-26)：名单是 `LIFT_SNS`，被屏蔽的 2 台不在其中。
+    // 这条接口对无效 sn 本来回 200 空数组（不是 400），一并停掉只为省两个包；
+    // 恢复方式见 `data/liftSn.ts::LiftCage.blocked`。
     const groups = await perSn(LIFT_SNS, (sn) =>
       fetchRealtimeRows([
         { productCode: LIFT_PRODUCT, sn, field: 'online', code: 'EVENT_ON_OFF' },
@@ -194,6 +221,9 @@ export async function fetchLiftToday(now = new Date()): Promise<Record<string, L
   if (!LIFT_SNS.length) return null
   const { start, end } = dayRange(now)
   try {
+    // TEMP-BLOCKED(2026-11-26)：**这是 400 的两个来源之一**（`queryEvent` +
+    // `EVENT_WORKDATA`）。名单 `LIFT_SNS` 已排除网关不认的 `32251222021` /
+    // `32251222023`，这条调用不再为它们发包。恢复见 `data/liftSn.ts`。
     const groups = await perSn(LIFT_SNS, (sn) =>
       fetchEventRows(
         [{ productCode: LIFT_PRODUCT, sn, eventCode: 'EVENT_WORKDATA' }],
@@ -232,6 +262,9 @@ export async function fetchLiftToday(now = new Date()): Promise<Record<string, L
 export async function fetchLiftAttr(now = Date.now(), windowMs = ATTR_WINDOW): Promise<Record<string, LiftAttr> | null> {
   if (!LIFT_SNS.length) return null
   try {
+    // TEMP-BLOCKED(2026-11-26)：**这是 400 的两个来源之二**（`queryEvent` +
+    // `EVENT_POST_ATTR`）。每 10 秒一轮，是控制台刷屏最凶的一条；名单已排除那
+    // 两台，不再发包。恢复见 `data/liftSn.ts`。
     const groups = await perSn(LIFT_SNS, (sn) =>
       fetchEventRows(
         [{ productCode: LIFT_PRODUCT, sn, eventCode: 'EVENT_POST_ATTR' }],

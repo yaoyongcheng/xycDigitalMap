@@ -51,7 +51,7 @@ export function registerServiceWorker(): void {
   if (!import.meta.env.PROD) return
   if (!('serviceWorker' in navigator)) return
 
-  // BASE_URL 由 vite 的 base 配置注入（当前为 '/xycDigitalMap/'）。
+  // BASE_URL 由 vite 的 base 配置注入（当前为 '/xycMobileDigitalMap/'）。
   // swUrl 与 scope 必须一致，否则注册会落在错误路径下。
   const swUrl = `${import.meta.env.BASE_URL}sw.js`
   const scope = import.meta.env.BASE_URL

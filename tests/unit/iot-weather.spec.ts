@@ -202,15 +202,39 @@ describe('C 组换令牌', () => {
     expect(body.eventItems[0].code).toBeUndefined()
   })
 
-  it('事件查询项缺 productCode 时同样用项目码兜底', async () => {
+  it('事件查询项缺 productCode 时不再回落项目码，直接不发请求', async () => {
     applyToken({ tokenKey: 'X-APP-USER', tokenValue: 'V1', expiresAt: Date.now() + 60_000 })
     const f = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ status: 0, data: [] }))
     vi.stubGlobal('fetch', f)
 
-    await fetchEvents([{ sn: 'SN1', eventCode: 'EVENT_WORKDATA' }], 0, 1)
+    // V2 的 EventItems.ProductCode 恒被显式赋值；空产品码发出去只会换回
+    // 「所选设备您无权操作」，与「设备没接入」同码同文案，所以本侧直接丢弃。
+    // @ts-expect-error 刻意漏传：验证运行时也不会拿项目码顶上去
+    const rows = await fetchEvents([{ sn: 'SN1', eventCode: 'EVENT_WORKDATA' }], 0, 1)
+
+    expect(rows).toEqual([])
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('空 sn / 重复 sn 按 V2 口径丢弃（RebuildCageCache 的 IsNullOrEmpty + 去重）', async () => {
+    applyToken({ tokenKey: 'X-APP-USER', tokenValue: 'V1', expiresAt: Date.now() + 60_000 })
+    const f = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ status: 0, data: [] }))
+    vi.stubGlobal('fetch', f)
+
+    await fetchEvents(
+      [
+        { productCode: 'P000000076', sn: '', eventCode: 'EVENT_WORKDATA' },
+        { productCode: 'P000000076', sn: 'SN1', eventCode: 'EVENT_WORKDATA' },
+        { productCode: 'P000000076', sn: 'SN1', eventCode: 'EVENT_WORKDATA' },
+      ],
+      0,
+      1,
+    )
 
     const body = JSON.parse(String(f.mock.calls[0][1]?.body))
-    expect(body.eventItems[0].productCode).toBe('P000000076')
+    expect(body.eventItems).toEqual([
+      { productCode: 'P000000076', sn: 'SN1', eventCode: 'EVENT_WORKDATA' },
+    ])
   })
 })
 

@@ -66,8 +66,8 @@ import { clearShots } from '@/utils/shotArchive'
  *      连点不重复起流。
  */
 
-const A = CAM_POINTS[0].channelId // 2#塔吊
-const B = CAM_POINTS[1].channelId // 4#塔吊
+const A = CAM_POINTS[0].channelId // 4#塔吊（2026-11-26 起首位）
+const B = CAM_POINTS[1].channelId // 地磅全景
 
 /** 一张「图片」响应：够 api 层校验 content-type 与体积 */
 function imgResponse(size = 512): Response {
@@ -228,10 +228,10 @@ describe('components/overlays/CamPlayer', () => {
 
     const chips = wrapper.findAll('.cam-chip')
     expect(chips.map((c) => c.text())).toEqual([
-      '2#塔吊',
       '4#塔吊',
       '地磅全景',
       '钢筋加工棚',
+      '2#塔吊',
       '材料堆场',
       '2#门监控1',
       '2#门监控2',
@@ -247,7 +247,8 @@ describe('components/overlays/CamPlayer', () => {
     expect(wrapper.find('#camPlayerName').text()).toBe(CAM_POINTS[0].name)
     expect(wrapper.find('.cam-chip.on').text()).toBe(CAM_POINTS[0].name)
 
-    await wrapper.findAll('.cam-chip')[2].trigger('click')
+    // 设备设施第二位是地磅全景（2026-11-26 调序后 4#塔吊在首位）
+    await wrapper.findAll('.cam-chip')[1].trigger('click')
     await flushPromises()
 
     expect(wrapper.find('#camPlayerName').text()).toBe('地磅全景')

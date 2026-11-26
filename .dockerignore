@@ -1,0 +1,29 @@
+# 构建上下文裁剪：镜像里需要的东西是「源码 + 构建配置」，其余都别带进去。
+# 注意 public/ 下的图片是业务资源，不能排除 —— 只排根目录的临时截图。
+
+# 依赖与产物（镜像内重新安装 / 重新构建）
+node_modules
+dist
+dev-dist
+coverage
+
+# 版本库与本工具数据
+.git
+.github
+.workbuddy
+.spec-workflow
+.playwright-mcp
+
+# 冻结的旧版、压缩包（构建用不到，体积大）
+legacy
+*.zip
+
+# 根目录临时截图（不影响 public/ 里的图片）
+/*.png
+
+# 文档：不影响构建
+docs
+README.md
+
+# 显式保留：不要在这里排除 .env
+# 现场接口地址靠 VITE_* 在构建期写入，排除掉就会用默认地址构建。

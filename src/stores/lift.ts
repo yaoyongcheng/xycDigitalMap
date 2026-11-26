@@ -2,6 +2,7 @@ import { computed, onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
+  clearLiftAuthFailure,
   fetchLiftAttr,
   fetchLiftOnline,
   fetchLiftToday,
@@ -10,7 +11,7 @@ import {
   liftGatewayStale,
   liftGatewayUnreachable,
 } from '@/api/lift'
-import { clearToken } from '@/api/iot'
+import { clearToken, releaseStaleGuard } from '@/api/iot'
 import type { LiftAttr, LiftToday } from '@/utils/lift'
 
 /**
@@ -108,6 +109,53 @@ export const useLiftStore = defineStore('lift', () => {
 
   let lastFailAt = 0
   let inflight: Promise<void> | null = null
+
+  /**
+   * 「正在重新连接」（用户点了横幅上的「重试」）。
+   *
+   * 页面据此：横幅不撤（否则重连期间屏幕上什么都没有）、按钮换成「重连中」
+   * 并禁用。与 `state === 'loading'` 分开是因为两者含义不同 —— 后者也包括
+   * 首屏加载与轮询，页面只在「人主动点的这一下」显示转圈。
+   */
+  const reconnecting = ref(false)
+
+  /** 重连的单飞任务：连点只会有一次真实连接，其余调用复用同一个 Promise */
+  let reconnectTask: Promise<void> | null = null
+
+  /**
+   * 最近一次「重试」没连上（2026-11-26 补）。
+   *
+   * 三种已知原因各有自己的 ref（401 / 令牌不通 / 网关未轮换），但**超时、5xx、
+   * 一条数据都没回**这些不属于三者：`authLost` 等全是 false，横幅会跟着消失，
+   * 用户刚点完重试，屏幕上却什么都没了，连「再点一次」的入口也没有 ——
+   * 正好是需求里「失败时要保留可重试」那一条要挡的情况。
+   *
+   * 只由 `relogin()` 写：它以「这轮是不是 abort 了」为准（`state === 'error'`），
+   * 与首屏加载失败区分开 —— 首屏失败不该冒出一句「重连失败」。
+   */
+  const reconnectFailed = ref(false)
+
+  /**
+   * 这一轮是不是**完整**拿到了：在线、今日、工况三路都回来了（空表也算回来了）。
+   *
+   * 与 `state === 'ok'` 的区别是这次改造的核心：`ok` 只要三路里**有一路**回来
+   * 就算（它是给卡片用的，数据缺一块也要显示其余部分），而页面上的「重试」
+   * 只有在**三路全通**之后才该撤掉 —— 否则点了重试，楼层刷新了、当前载重还是
+   * 「—」，按钮却没了，等于把问题藏起来。
+   *
+   * 由 `load`（首屏 / 重试）与 `pollOnce`（三路齐查的那一轮，60 秒一次）写。
+   */
+  const fullyLoaded = ref(false)
+
+  /**
+   * 「取数代次」—— 每点一次「重试」就 +1，用来**作废在途的旧结果**。
+   *
+   * `load` / `pollOnce` 在发请求前记下当时的代次，数据回来先对一次：
+   * 对不上说明用户已经重新发起连接，这一轮的结果（可能是拿旧令牌换来的空数据）
+   * 直接丢弃，不许写回 `online/today/attr`。没有这一层，「重试」就会出现
+   * 「新的一轮已经成功、旧的一轮迟到把数据又清成空」的抖动。
+   */
+  let epoch = 0
 
   /* ---------- 实时刷新 ---------- */
 
@@ -255,13 +303,21 @@ export const useLiftStore = defineStore('lift', () => {
     if (!force && state.value === 'ok') return
     if (!force && state.value === 'error' && Date.now() - lastFailAt < RETRY_GAP) return
 
+    const gen = epoch
     state.value = 'loading'
-    inflight = (async () => {
+    const run = (async () => {
       const [on, day, live] = await Promise.all([
         fetchLiftOnline(),
         fetchLiftToday(),
         fetchLiftAttr(),
       ])
+
+      // 这一轮已被「重试」作废：一个字都不写回，state 交给新一代决定
+      if (gen !== epoch) return
+
+      // 三路都回来了才算「完整」：`null` 是这一路的失败（`{}` 是「查了，没有记录」）
+      const complete = on !== null && day !== null && live !== null
+      fullyLoaded.value = complete
 
       // 逐块替换：某块失败时保住上一次的值，不让它连带清空别块 —— **在线状态例外**。
       // 它是唯一会被读成「设备一切正常」的读数：网关已经连不上了还留着上一轮的
@@ -279,13 +335,26 @@ export const useLiftStore = defineStore('lift', () => {
       if (on || day || live) {
         state.value = 'ok'
         updatedAt.value = stamp()
+        /*
+         * 「上次重连失败」只在本轮**完整**时才算过期。
+         *
+         * 以前是「只要拿到东西就清」—— 但三路里回来一路也算「拿到东西」，
+         * 会把「还有两格是横杠」的状态一起说成已恢复，横幅和按钮同时消失。
+         */
+        if (complete) reconnectFailed.value = false
       } else {
         state.value = 'error'
         lastFailAt = Date.now()
       }
-      inflight = null
     })()
-    return inflight
+    inflight = run
+    try {
+      await run
+    } finally {
+      // 只清自己那一份：被作废的旧轮结束时，`inflight` 可能已是新一轮的
+      if (inflight === run) inflight = null
+    }
+    return run
   }
 
   /**
@@ -312,9 +381,10 @@ export const useLiftStore = defineStore('lift', () => {
   async function pollOnce(): Promise<void> {
     if (document.visibilityState === 'hidden') return
     if (authLost.value) return
-    // 首次加载还没回来时不叠一轮，免得同一批数据打两遍
-    if (inflight) return
+    // 首次加载 / 重连还没回来时不叠一轮，免得同一批数据打两遍
+    if (inflight || reconnecting.value) return
 
+    const gen = epoch
     liveTicks += 1
     // 节流：这两路不是每轮都查。`due*` 必须留着，否则「没查」会被当成「查了没结果」
     const dueOnline = liveTicks % ONLINE_EVERY === 0
@@ -325,6 +395,9 @@ export const useLiftStore = defineStore('lift', () => {
       dueOnline ? fetchLiftOnline() : Promise.resolve(null),
       dueToday ? fetchLiftToday() : Promise.resolve(null),
     ])
+
+    // 这一轮是在「重试」之前发出的 → 作废，别拿旧数据盖掉新一轮的结果
+    if (gen !== epoch) return
 
     // 静止的轿厢窗口内没有新帧 → **保留上一次读数**。清空会让「5F」在电梯
     // 停下三分钟后突然变成「—」，看着像坏了；旧读数自带时间戳，不会骗人。
@@ -341,6 +414,19 @@ export const useLiftStore = defineStore('lift', () => {
     if (liveAttr || on || day) {
       state.value = 'ok'
       updatedAt.value = stamp()
+    }
+
+    /*
+     * 「三路齐查」的那一轮（每 6 轮 = 60 秒一次）如果三路都回来了，这一轮才算
+     * 完整 —— 用户没再点「重试」、界面自己恢复了，按钮也该跟着撤掉。
+     *
+     * 只有三路都**真的查过**（`due*`）才能判：没查的那两路是 `null`，与「查了
+     * 但失败」同形，直接比较会把每 10 秒的常规轮询误判成失败。
+     */
+    const complete = liveAttr !== null && dueOnline && on !== null && dueToday && day !== null
+    if (complete) {
+      fullyLoaded.value = true
+      reconnectFailed.value = false
     }
   }
 
@@ -383,16 +469,79 @@ export const useLiftStore = defineStore('lift', () => {
    *
    * 名字沿用 `relogin` 是因为它确实「重新登录到 IOT 网关」，但页面上叫「重试」，
    * 免得用户以为要去业务登录页。顺带清掉失败冷却，让这一下是真的在重取。
+   *
+   * ## 重连语义（2026-11-26 补齐）
+   *
+   * 一次「重试」= 把上一轮彻底作废再连：在途请求的结果丢弃（`epoch`）、
+   * 缓存与在途的令牌都清掉（`clearToken` 里的 `generation`）、失败痕迹清空、
+   * 期间 `reconnecting` 为真（页面显示「重连中」并禁用按钮）。重复点击由
+   * `reconnectTask` 单飞挡住，不会打出多轮。失败时 `load` 会把 `authLost` /
+   * `gatewayStale` / `gatewayUnreachable` 重新算回来，横幅与按钮原样保留，
+   * 用户可以再点 —— 这一整套只影响电梯，`clearToken` 也只动 IOT 令牌，
+   * 不碰业务 Bearer 与其它模块。
    */
   async function relogin(): Promise<void> {
-    clearToken()
-    authLost.value = false
-    lastFailAt = 0
-    await load(true)
+    // 单飞：连点只会真的连一次，后到的调用复用同一个 Promise（页面按钮也禁用）
+    if (reconnectTask) return reconnectTask
+
+    reconnecting.value = true
+    reconnectTask = (async () => {
+      try {
+        /*
+         * 顺序是有意义的，别调换：
+         * ① 先换代次 —— 从这一刻起，所有在途的旧请求回来都会被 `load` / `pollOnce`
+         *    丢掉，不会把「旧令牌换来的空数据」写回页面；
+         * ② 再放掉 `inflight` —— 否则下面 `load(true)` 会直接复用「重连前那一轮」，
+         *    等于什么都没做（旧实现就是这样：点了重试，请求一次都没重发）；
+         * ③ 清令牌 + 清失败痕迹 —— 缓存的那张、在途的那张一起作废，提示条先撤掉；
+         * ④ 最后才真去连。
+         */
+        epoch += 1
+        inflight = null
+        clearToken()
+        /*
+         * 放开「废牌自检」（2026-11-26）。
+         *
+         * 不放的话，网关仍返回同一张令牌时 `ensureToken` 会直接抛错，**三路数据
+         * 请求一个都不发** —— 现场看到的就是「点了重试，Network 里只多了一条
+         * `/access/token`，页面一点没变」。用户主动点这一下，就该真的把三路
+         * 打一遍，结果由它们自己说。
+         */
+        releaseStaleGuard()
+        clearLiftAuthFailure()
+        fullyLoaded.value = false
+        authLost.value = false
+        gatewayStale.value = false
+        gatewayUnreachable.value = false
+        reconnectFailed.value = false
+        lastFailAt = 0
+        await load(true)
+        /*
+         * 三路没有**全部**回来（超时 / 5xx / 只回了一两路）→ 记一笔，
+         * 让横幅与按钮留下，用户可以再点。
+         *
+         * 判据从 `state === 'error'` 改成 `!fullyLoaded`：只要有一路回来，
+         * `state` 就是 `ok`，旧判据会把「两格横杠」当成已经恢复。
+         */
+        if (!fullyLoaded.value) reconnectFailed.value = true
+      } finally {
+        // 成功或失败都要复位：失败时按钮要能再点一次
+        reconnecting.value = false
+        reconnectTask = null
+      }
+    })()
+    return reconnectTask
   }
 
   /** 清空（换项目 / 强制重取时用；IOT 与登录账号无关，登出不清） */
   function reset(): void {
+    // 换代次 + 放掉在途引用：清空之后旧请求回来不许再写数据
+    epoch += 1
+    inflight = null
+    reconnectTask = null
+    reconnecting.value = false
+    reconnectFailed.value = false
+    fullyLoaded.value = false
     online.value = {}
     today.value = {}
     attr.value = {}
@@ -431,6 +580,15 @@ export const useLiftStore = defineStore('lift', () => {
     authLost,
     gatewayStale,
     gatewayUnreachable,
+    /** 「重试」正在进行中（横幅显示「重连中」、按钮禁用） */
+    reconnecting,
+    /** 最近一次「重试」没连上（横幅据此保留文案与按钮） */
+    reconnectFailed,
+    /**
+     * 最近一轮是否**三路全通**（在线 / 今日 / 工况都回来了）。
+     * 页面上的「重试」只看这一条 —— 缺任何一路都不撤按钮。
+     */
+    fullyLoaded,
     hasData,
     totalSeconds,
     onlineKnown,

@@ -65,17 +65,89 @@ const pageTab = ref<'live' | 'report'>('live')
 /** 慢请求才显示骨架：台账通常一两百毫秒就回来了，快请求不该闪灰条 */
 const showSkel = useSlowLoading(() => !set.value.units.length && ledger.state === 'loading')
 
-/** 切塔机 ↔ 电梯时回到实时页，避免停在塔机报表看另一个模块的空报表 */
+/* ---------- 这一屏的统一取数入口（2026-11-26） ---------- */
+
+/**
+ * 「重试」进行中 —— 从点下到**台账 + IOT 三路**都落地，整段时间都算。
+ *
+ * store 里的 `reconnecting` 只覆盖 `relogin()` 内部（换令牌 + 三路），而这一屏
+ * 还需要同时重取台账，两段时间不一定重合。页面自己再包一层，按钮的禁用态、
+ * 转圈、文案才不会在中间闪一下「已恢复」。
+ */
+const retrying = ref(false)
+
+/**
+ * 最近一次「重试」没有把这一屏刷新**完整**。
+ *
+ * 与 store 那三个原因不是一回事：那三条说的是「为什么连不上」，这一条说的是
+ * 「连上了，但这一屏要的数据没到齐」—— 台账（`:8084`，卡片标题与「设备信息」
+ * 入口靠它）或 IOT 三路里缺了任何一路，按钮都不该撤掉。
+ */
+const retryFailed = ref(false)
+
+/** 台账是否就绪；未登录时不看它（此时连卡片都不渲染） */
+const ledgerReady = computed(() => !auth.token || ledger.state === 'ok')
+
+/** 重试按钮的忙碌态：页面这层正在跑，或 store 内部正在重连 */
+const busy = computed(() => retrying.value || lift.reconnecting)
+
+/**
+ * 这一屏**唯一**的取数入口：首屏初始化与「重试」共用（2026-11-26）。
+ *
+ * 为什么必须统一：初始化要的不只是 IOT 三路（在线 / 今日作业 / 当前工况），
+ * 还有台账 —— 电梯四张卡的标题、所属楼栋、「设备信息」入口全部取自 `:8084`
+ * 的两行档案。以前「重试」只调 `lift.relogin()`，台账那条根本没重取：台账那次
+ * 失败的话，就算 IOT 刷新成功，页面还是一屏缺档案的卡片，而且按钮已经消失了。
+ *
+ * `force = true`（用户点「重试」）：
+ *   · 台账走 `load(token, true)` —— 绕过「已是 ok 就不再拉」，真的重取；
+ *   · IOT 走 `relogin()` —— 丢旧令牌重换、作废在途、放开废牌自检，三路重打。
+ *
+ * 判定：**台账就绪 + IOT 三路全通**才算这一轮成功，否则保留横幅与按钮。
+ */
+async function loadElevator(force = false): Promise<void> {
+  // 连点保护：入口这一层挡住，store 里的单飞是第二道
+  if (force && retrying.value) return
+  if (force) {
+    retrying.value = true
+    retryFailed.value = false
+  }
+  try {
+    const tasks: Promise<unknown>[] = []
+    // `craneDay: false` —— 电梯页只用台账行里的楼栋与档案，塔机的今日吊次/吊重
+    // 一个都不展示。不写这一句，台账一回来就会 fire-and-forget 给 3 台塔机各打
+    // 一条 `getWorkCycleInfoHis`：用户点「重试」就会莫名多出 3 条塔机请求。
+    if (auth.token) tasks.push(ledger.load(auth.token, force, { craneDay: false }))
+    tasks.push(force ? lift.relogin() : lift.refresh())
+    // 两条都是「永不 throw」：失败各自收敛成 state / 标志，这里只等它们落地
+    await Promise.all(tasks)
+    retryFailed.value = !(lift.fullyLoaded && ledgerReady.value)
+  } finally {
+    if (force) retrying.value = false
+  }
+}
+
+/**
+ * 切塔机 ↔ 电梯时：回到实时页（避免停在塔机报表看另一个模块的空报表），
+ * 并给塔机侧补一次日指标。
+ *
+ * 为什么要补：电梯页刷台账时显式跳过了塔机日指标（`{ craneDay: false }`，
+ * 见 `loadElevator`）。而台账是单例，切到塔机页时 `load()` 会因为
+ * `state === 'ok'` 直接返回 —— 不补的话，那几张卡片的今日吊次/吊重会整片变成「—」。
+ * `ensureCraneDay()` 自带 5 分钟窗口，来回切页不会反复打那 3 条请求。
+ */
 watch(
   () => props.kind,
-  () => {
+  (k) => {
     pageTab.value = 'live'
+    if (k === 'crane') ledger.ensureCraneDay()
   },
 )
 
 /** 台账要 Bearer：直接深链进详情页时也要自己拉一次（首页可能没挂载过） */
 onMounted(() => {
-  if (auth.token) void ledger.load(auth.token)
+  // 塔机页才要塔机日指标；电梯页那条永远由 `loadElevator` 负责（且不带 craneDay）
+  if (auth.token) void ledger.load(auth.token, false, { craneDay: isCrane.value })
 })
 
 /**
@@ -85,6 +157,9 @@ onMounted(() => {
  * 不是页面的期待：用户盯着「当前楼层 / 当前载重」，一帧卡十分钟不动就像坏了。
  * 现在按 10 秒一轮刷新（`stores/lift.ts` 的 `pollOnce`，在线/今日各自再节流），
  * 只在电梯页 + 标签页可见时跑；切到塔机页立刻停表，别让它在背后空转。
+ *
+ * 首屏与「重试」共用 `loadElevator()`：台账与三路一起发，同一套代码，
+ * 两条路径的口径不会日后分叉（这次的问题正是「重试」漏了台账）。
  */
 watch(
   () => props.kind,
@@ -93,7 +168,7 @@ watch(
       lift.stopLive('device')
       return
     }
-    void lift.refresh()
+    void loadElevator(false)
     lift.startLive('device')
   },
   { immediate: true },
@@ -283,7 +358,17 @@ function tone(status: string): string {
   return 'is-off'
 }
 
+/**
+ * 空态里的「重试」（台账一行都没拿到时）。
+ *
+ * 电梯走统一入口：这类空态往往伴随 IOT 也没数据，只重取台账会半好半坏；
+ * 其余机种没有 IOT 侧，重取台账即可。
+ */
 function retry(): void {
+  if (props.kind === 'lift') {
+    if (auth.token) void loadElevator(true)
+    return
+  }
   if (auth.token) void ledger.load(auth.token, true)
 }
 
@@ -312,6 +397,44 @@ const needsRetry = computed(() => props.kind === 'lift' && lift.authLost)
 const gatewayLost = computed(() => props.kind === 'lift' && lift.gatewayUnreachable)
 
 /**
+ * 横幅是否显示 —— 三种原因 **加**「重连中」**加**「重试没刷新完整」。
+ *
+ * 重连中必须算进来：点「重试」的第一件事就是把 `authLost` 清掉（那是上一轮的
+ * 结论），若只看 `authLost`，横幅会在点击的瞬间消失，屏幕上既没有转圈也没有
+ * 说明，用户会以为点空了。所以「正在连」本身也要占住这个位置。
+ *
+ * `retryFailed` 是 2026-11-26 补的第四种：令牌能换、IOT 也回了一部分，但台账
+ * 或三路里仍缺一路 —— 旧逻辑此时 `state` 已是 `ok`，横幅会直接消失，按钮也没了。
+ */
+const authBar = computed(
+  () =>
+    props.kind === 'lift' &&
+    (busy.value || needsRetry.value || gatewayLost.value || lift.reconnectFailed || retryFailed.value),
+)
+
+/** 横幅配色：重连中走常规色，部署问题走警示色，凭证失效走危险色 */
+const authTone = computed<'info' | 'warn' | 'danger'>(() => {
+  if (busy.value) return 'info'
+  return lift.gatewayUnreachable ? 'warn' : 'danger'
+})
+
+/**
+ * 横幅文案。五种处境各一句，不合并 —— 用户要能一眼看出「再点有没有用」：
+ * 重连中（等一下）／部署缺反代（点了也没用，得改 nginx）／刷新没完整（可以再点）／
+ * 网关还没轮换（刚点过，稍后）／凭证失效（可以再点）。
+ */
+const authText = computed(() => {
+  if (busy.value) return '正在重新连接电梯网关…'
+  if (lift.gatewayUnreachable) return '电梯网关没连上 —— 部署环境缺「/iot-api」反代，或服务器无法出网'
+  // 台账缺 vs IOT 缺，是两条不同的排查线：前者查 :8084 / Bearer，后者查电梯网关
+  if (retryFailed.value) {
+    return ledgerReady.value ? '电梯网关暂时连不上，请稍后再试' : '设备台账刷新失败，请稍后再试'
+  }
+  if (lift.reconnectFailed) return '电梯网关暂时连不上，请稍后再试'
+  return lift.gatewayStale ? '电梯物联网网关未恢复，请稍后再试' : '电梯物联网网关凭证失效，请稍后重试'
+})
+
+/**
  * 「重试」—— **不是**「重新登录」。
  *
  * 这一点踩过坑：之前这里写的是「重新登录」，但登录页换到的是 `:8081` 的
@@ -319,11 +442,15 @@ const gatewayLost = computed(() => props.kind === 'lift' && lift.gatewayUnreacha
  * ak/sk 换出来的 `X-APP-USER` 令牌 —— **两套凭证不同源，登录根本换不到它**。
  * 结果就是用户登录成功了、回来提示还在，看起来像登录没生效。
  *
- * 真正要做的只有一件事：把 IOT 缓存的旧令牌丢掉重换一张
- * （`stores/lift.ts` 的 `relogin()`，名字沿用但语义是「重取数据」）。
+ * 2026-11-26 又修了一次「只重取一半」：这里原先只调 `lift.relogin()`，
+ * 于是 Network 里只多出一条 `/access/token`（网关回同一张牌时连三路数据都
+ * 被短路），台账那条也没重取。现在整屏走 `loadElevator(true)` ——
+ * 台账 + 在线 + 今日作业 + 当前工况，与首屏初始化同一套代码。
  */
 function goRetry(): void {
-  void lift.relogin()
+  // 按钮在忙碌态已禁用，这里再挡一次：某些输入法/辅助技术会绕过 disabled 派发点击
+  if (busy.value) return
+  void loadElevator(true)
 }
 
 </script>
@@ -346,21 +473,25 @@ function goRetry(): void {
     </div>
 
     <template v-else-if="!isCrane || pageTab === 'live'">
-      <!-- 换令牌那一跳没出去：多半是部署漏了 /iot-api 反代，点「重试」不管用也得给 -->
-      <section v-if="gatewayLost" class="dev-auth is-warn" role="alert">
-        <p>电梯网关没连上 —— 部署环境缺「/iot-api」反代，或服务器无法出网</p>
-        <button class="dev-auth-btn" type="button" @click="goRetry">重试</button>
-      </section>
-
-      <!-- 凭证失效：台账是好的，所以卡片还在，只是每一格「—」。不说明白用户只能反复下拉 -->
-      <section v-if="needsRetry" class="dev-auth" role="alert">
-        <!--
-          不写「重试可重新获取」：换令牌接口是幂等的，服务端没轮换之前重试确实
-          拿不到，那是过度承诺。`gatewayStale` 为真时说明刚点过、网关还是老样子，
-          换成一句更诚实的「还没恢复」。
-        -->
-        <p>{{ lift.gatewayStale ? '电梯物联网网关未恢复，请稍后再试' : '电梯物联网网关凭证失效，请稍后重试' }}</p>
-        <button class="dev-auth-btn" type="button" @click="goRetry">重试</button>
+      <!--
+        网关异常只有一条横幅，四种处境共用（文案见 `authText`）：
+          · 部署缺 /iot-api 反代 —— 点「重试」不管用，但按钮得给，现场要能自证；
+          · 凭证失效 / 网关还没轮换 —— 再点一次也**不承诺**立刻恢复，文案据实说；
+          · **重连中** —— 横幅不撤，换成转圈 +「重连中」，按钮禁用（防连点）。
+        台账走 :8084 是好的，所以卡片一直在，只是每一格「—」。
+      -->
+      <section
+        v-if="authBar"
+        class="dev-auth"
+        :class="{ 'is-warn': authTone === 'warn' }"
+        :role="busy ? 'status' : 'alert'"
+        :aria-busy="busy ? 'true' : undefined"
+      >
+        <span v-if="busy" class="dev-auth-spin" aria-hidden="true" />
+        <p>{{ authText }}</p>
+        <button class="dev-auth-btn" type="button" :disabled="busy" @click="goRetry">
+          {{ busy ? '重连中' : '重试' }}
+        </button>
       </section>
 
       <!-- 同步中：灰条铺在机组卡片的位置（卡头 + 台账四格），台账到手后原位回填 -->

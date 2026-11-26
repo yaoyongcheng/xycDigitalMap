@@ -14,7 +14,7 @@
  * 用法：
  *   node server/serve.mjs                    # 默认 8080，目录 dist
  *   node server/serve.mjs --port 80          # 80 端口（可能需管理员权限）
- *   node server/serve.mjs --dir dist --base /xycDigitalMap/
+ *   node server/serve.mjs --dir dist --base /xycMobileDigitalMap/
  *
  * 也可以 npm run serve:http / npm run deploy:http（先构建再起服务）。
  *
@@ -54,10 +54,10 @@ const HOST = arg('host', '0.0.0.0')
  * 站点挂载路径。
  *
  * 与 vite.config.ts 的 base 保持一致（构建产物里的资源引用写死了
- * /xycDigitalMap/），所以直接复用同一份 dist 即可，不需要为 HTTP 再构建一次。
+ * /xycMobileDigitalMap/），所以直接复用同一份 dist 即可，不需要为 HTTP 再构建一次。
  * 根路径 / 会 302 到这里。
  */
-const RAW_BASE = arg('base', '/xycDigitalMap/')
+const RAW_BASE = arg('base', '/xycMobileDigitalMap/')
 const BASE = `/${RAW_BASE.replace(/^\/+|\/+$/g, '')}/`
 
 const DIR = path.resolve(ROOT, arg('dir', 'dist'))

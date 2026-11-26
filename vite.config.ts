@@ -193,9 +193,12 @@ function mqttWsProxy(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  // GitHub Pages 项目站点部署在子路径下，必须与仓库名逐字符匹配（含大写）。
-  // 若改为根路径部署，把 base 换成 '/' 即可。
-  base: '/xycDigitalMap/',
+  // 子路径部署（2026-11-25 由 `/xycDigitalMap/` 改为 `/xycMobileDigitalMap/`）。
+  // 注意它不是「随手改的名字」：下面 manifest 的 id / start_url / scope 与
+  // workbox 的 navigateFallback 都写死了同一前缀，四处必须一起改，否则 PWA
+  // 会被系统当成另一个应用（桌面出现第二个图标）、SW 的导航回退也会 404。
+  // 若改为根路径部署，把这四处一起换成 '/'。
+  base: '/xycMobileDigitalMap/',
 
   plugins: [
     vue(),
@@ -265,14 +268,14 @@ export default defineConfig({
        * 查询参数路由，写了只会点到首页 —— 宁可不写，也不放死链接。
        */
       manifest: {
-        id: '/xycDigitalMap/',
+        id: '/xycMobileDigitalMap/',
         name: '数字地图',
         short_name: '数字地图',
         description: '向阳村项目智能建造管理平台 · 移动端',
         lang: 'zh-CN',
         dir: 'ltr',
-        start_url: '/xycDigitalMap/?from=homescreen',
-        scope: '/xycDigitalMap/',
+        start_url: '/xycMobileDigitalMap/?from=homescreen',
+        scope: '/xycMobileDigitalMap/',
         display: 'standalone',
         display_override: ['standalone', 'minimal-ui', 'browser'],
         orientation: 'any',
@@ -320,8 +323,8 @@ export default defineConfig({
         // 预缓存体积上限（默认 2 MB），留出余量
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
 
-        // 单页应用：所有导航请求回退到 index.html
-        navigateFallback: '/xycDigitalMap/index.html',
+        // 单页应用：所有导航请求回退到 index.html（必须与 base 同前缀）
+        navigateFallback: '/xycMobileDigitalMap/index.html',
 
         runtimeCaching: [
           {

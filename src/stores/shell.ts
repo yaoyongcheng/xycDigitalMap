@@ -174,7 +174,7 @@ export const useShellStore = defineStore('shell', () => {
      *
      * 必须在点击的同步栈里发起 —— `requestFullscreen` 要用户手势，
      * 隔一个 await 就没了。iOS 上这两步都拿不到，落定后仍是竖屏就只剩
-     * 「铺满视口」这一层：**不再弹「把手机横过来看」**（2026-11-24 口径，
+     * 「铺满视口」这一层：**不再弹横屏引导**（2026-11-24 口径，
      * 那句引导只留给智眸 VR 360 环视的全景全屏，见 utils/landscapeHint.ts）。
      */
     void enterNativeLandscape()

@@ -395,7 +395,7 @@ function onPanoReady(): void {
 
 /*
  * 航拍全景的全屏：只铺满视口 + 尽量锁横屏，**不带 `hint`**。
- * 「把手机横过来看」那句引导只属于智眸 VR 360 环视的全景全屏
+ * 横屏引导只属于智眸 VR 360 环视的全景全屏
  * （2026-11-24 口径，见 utils/landscapeHint.ts）。
  */
 const {

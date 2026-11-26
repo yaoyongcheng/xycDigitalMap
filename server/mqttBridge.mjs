@@ -20,7 +20,7 @@
  *
  * ## 边界
  *
- * · 只接管一个路径（默认 `/mqtt`，同时兼容带 base 的 `/xycDigitalMap/mqtt`）；
+ * · 只接管一个路径（默认 `/mqtt`，同时兼容带 base 的 `/xycMobileDigitalMap/mqtt`）；
  * · 握手后整条连接只做字节搬运，不解析 MQTT —— 桥不懂协议就不会坏在协议上；
  * · 不校验 Origin：它只在本机/内网网关后面跑，且订阅用的是一次性只读账号。
  *
@@ -156,7 +156,7 @@ function makeReader(onMessage, onControl) {
  */
 export function attachMqttBridge(httpServer, opts = {}) {
   const path = opts.path ?? '/mqtt'
-  const suffix = path // 兼容带 base 的路径（/xycDigitalMap/mqtt）
+  const suffix = path // 兼容带 base 的路径（/xycMobileDigitalMap/mqtt）
   const host = opts.host ?? DEFAULT_HOST
   const port = opts.port ?? DEFAULT_PORT
   const log = opts.log ?? (() => {})

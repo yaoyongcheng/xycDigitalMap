@@ -60,7 +60,7 @@ describe('utils/diag', () => {
 
     it('不带查询参数时不挂载，也不注册定时器', () => {
       const spy = vi.spyOn(window, 'setInterval')
-      setUrl('http://localhost/xycDigitalMap/')
+      setUrl('http://localhost/xycMobileDigitalMap/')
       mountDiag()
       expect(overlay()).toBeNull()
       expect(spy).not.toHaveBeenCalled()
