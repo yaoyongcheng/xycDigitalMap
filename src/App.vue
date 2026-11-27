@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, watch, watchEffect } from 'vue'
 
 import { useAirHazardStore } from '@/stores/airHazard'
 import { useAuthStore } from '@/stores/auth'
+import { useBottomSheetStore } from '@/stores/bottomSheet'
 import { useCamStore } from '@/stores/cam'
 import { useDroneAlarmStore } from '@/stores/droneAlarm'
 import { useShellStore } from '@/stores/shell'
@@ -11,6 +12,7 @@ import { setThemeColor, THEME_COLORS } from '@/utils/themeColor'
 import { onFullscreenExit, settleViewport } from '@/utils/orientation'
 import { useHistoryBack } from '@/utils/historyBack'
 import { useHorizontalGuard } from '@/utils/horizontalGuard'
+import { setReloadBlockers } from '@/utils/pwa'
 import { useSwipeBack } from '@/utils/swipeBack'
 import StatusBar from '@/components/shell/StatusBar.vue'
 import NavBar from '@/components/shell/NavBar.vue'
@@ -54,6 +56,7 @@ const air = useAirHazardStore()
 const sub = useSubpageStore()
 const auth = useAuthStore()
 const droneAlarm = useDroneAlarmStore()
+const sheet = useBottomSheetStore()
 
 /** 全局右滑返回手势（微信式）：见 utils/swipeBack.ts 的约束说明 */
 useSwipeBack()
@@ -88,6 +91,34 @@ useHorizontalGuard()
 onMounted(() => {
   if (!auth.isLoggedIn) sub.openLogin('当前未登录，请先登录后查看现场数据')
   else void droneAlarm.load()
+})
+
+/**
+ * PWA 换版时「现在能不能无声刷新」的判据（2026-11-27）。
+ *
+ * 只报状态、不做决策 —— 决策在 utils/pwa.ts 的 `canSilentReload`（纯函数，可单测）。
+ * 这里必须读 store 而不是查 DOM：同一帧里「状态已改、DOM 未提交」太常见，用 DOM
+ * 反推会给出错误答案（`historyBack` 的 `fireBack` 就是这么踩过的，见文档六点一百零六）。
+ *
+ * 动因见 utils/pwa.ts 文件头 ③：旧壳跑的是没有导航加固的旧 JS，会让线上「首次点
+ * 工作台 → 视频监控」跳回首页。换了壳这个故障就没有载体了。
+ */
+onMounted(() => {
+  setReloadBlockers(() => {
+    const el = document.activeElement as HTMLElement | null
+    return {
+      // 刷新后 activeTab 必回 'home'，停在别的 tab 时刷 = 把用户踢回首页
+      offHome: shell.activeTab !== 'home',
+      // 登录页排除在外：刷新后上面的 onMounted 会自动重新弹出，观感与没刷一样
+      subpage: sub.isOpen && sub.view.kind !== 'login',
+      cam: cam.isOpen,
+      air: air.isOpen,
+      hazard: air.hazardOpen,
+      sheet: sheet.isOpen,
+      land: shell.mapLandOpen,
+      typing: !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable),
+    }
+  })
 })
 
 /**

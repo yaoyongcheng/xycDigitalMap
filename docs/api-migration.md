@@ -8861,3 +8861,271 @@ DevicePage.goRetry() → loadElevator(true)
 > 未跑 vitest、未开浏览器；改动未提交。真机待看：电梯页点「重试」→ Network 只应有
 > `token` + `deviceInfos` + `areas` + 6 条电梯请求，**无 `getWorkCycleInfoHis`**；
 > 随后切到塔机页 → 应出现 3 条（补取），再切回电梯再切回塔机 → 5 分钟内不再新增。
+
+## 六点一百零六、首次打开「点工作台 → 视频监控」跳回首页：裁剪退穿了根条目（2026-11-27）
+
+### 1. 现象与性质
+
+首次打开首页 → 立刻点「工作台」→ 点「视频监控」→ 页面**跳回首页**。
+
+关键判据：这是**文档级返回 + 整页重载**，不是「覆盖层被关掉」——
+`activeTab` 回到 `shell.ts` 的初值 `'home'`，而全仓只有 `TabBar.vue:53` 一处写
+`activeTab`，页面里没有任何 `location.reload / href` 调用。所以「回首页」只能
+来自「文档重新加载」。
+
+### 2. 三条缺陷叠成一条链
+
+| # | 缺陷 | 位置 |
+|---|---|---|
+| ① | 裁剪没有下限：只看「条目比层数多」就 `go(-delta)`，退过自己第一条 = 文档级返回 | `sync()` 的 `history.go(-Math.min(delta, MAX_TRIM_DELTA))` |
+| ② | 层数会自证清白：`fireBack()` 用 DOM 判断「这层能不能退」，DOM 没提交时必然落空 → 兜底 `setLayer(depth.value)` 往当前条目写一个**比真实条目数更大**的层数 | `fireBack()` + `drive()` |
+| ③ | 层数读的是自己写的值：`pushNow()` 按 `history.state.wbLayer` 判断「够不够」，同一帧连开两层时读到滞后值 → 直接 return、不压条目 | `pushNow()` |
+
+链条：③ 让条目数少于层数 → ② 把偏大的层数写进条目 → ① 按它算 delta 并 `go()`
+→ 越过根条目 → 文档级返回 → 地址上的 302 重新加载 → `activeTab = 'home'`。
+
+为什么「首次打开 + 立刻操作」才复现：本站 `/xycMobileDigitalMap`（不带尾斜杠）
+与 `/` 都会被 **302** 到带尾斜杠版本（`server/serve.mjs:280-284`、
+`deploy/nginx.conf.template:68-69`），从外链进站同理 —— 历史里应用条目**之前**
+还躺着不属于本文档的条目，才给了「退穿」的空间；同时未登录时挂载即弹登录页，
+层数在 80ms 内 0→1→0→1 连跳三次，正好踩在 `scheduleSync` 的窗口上。
+
+### 3. 改动（`src/utils/historyBack.ts`）
+
+| 位置 | 改动 |
+|---|---|
+| `markRoot()` | 挂载时**把当前条目认定为根**：`owned = 1`，并 `replaceState` 打 `wbRoot` 标记。**不新压条目** |
+| `sync()` | `backable = max(0, owned - 1)`；`step = min(delta, MAX_TRIM_DELTA, backable)`；`backable <= 0` 时**不 go**，就地 `setLayer` |
+| `pushNow()` | 判据从 `history.state.wbLayer` 换成 `owned`（自己压过的条目数），不再被滞后的 state 骗 |
+| `fireBack()` | 返回三态 `done / pending / none`；判据来自 store，DOM 只是「点哪儿」，不是「能不能退」 |
+| `drive()` | `pending` → 隔 `BACK_RETRY_MS`(32ms) 重点，最多 `MAX_BACK_RETRIES`(3) 次；`none` → 收口，**兜底不再写 `setLayer(depth)`** |
+| `onPop()` ② | 用户退回 `n` 条时把 `owned` 减掉 `n`，否则账偏大、下次裁剪多退 |
+| `trim` 验证定时器 | `go` 被吞掉时把 `owned` 还原（`trimLast`），避免越扣越小、条目越积越多 |
+| `watch` 升层分支 | 层数「先降后升」时清掉降的那次裁剪状态（`trimTimer` / `trimTries`） |
+
+**为什么不在挂载时多压一条根条目**（分析里曾建议）：那会让首页的第一次浏览器
+返回被吞掉（要多按一下才离开站点），是用户可直接感觉到的行为变化。只记账不压
+条目同样能挡住越界，且首页返回手感逐帧不变。
+
+### 4. 验证（本轮已实际执行，与以往「只汇报」不同）
+
+`tests/unit/history-back.spec.ts` 新增 3 条用例（均置于「应用条目之前还有一条
+外部条目」的栈上）：
+
+| 用例 | 新代码 | 旧代码（HEAD） |
+|---|---|---|
+| 层数被写大（`wbLayer: 9`）时只退到挂载条目 | 通过（`go(-1)`，cursor 1） | **失败**（`go(-9/-6)` 越界） |
+| 返回按钮未渲染时不把层数写进条目 | 通过（无 `go`，条目无 `wbLayer`） | **失败**（`wbLayer: 1`） |
+| 未登录 → 工作台 → 视频监控 → 返回一次 → 关监控 | 通过（cursor 1） | **失败**（cursor 0 = 退到本文档之外） |
+
+- 单文件：16 条全通过。
+- 全量：新版 25 条失败 / 1267 通过；**HEAD 基线 28 条失败**（同一台机、同一时刻），
+  差的正是新增的 3 条。其余失败集中在 `cam-player*` / `device-page` / `patrol` /
+  `drone` / `lift` / `guards` / `motion-perf`，改动前就在失败，且每次跑数量抖动，
+  与导航无关。
+- `vue-tsc --noEmit` 通过；`npm run build` 通过（precache 924.71 KiB）。
+
+### 5. 上机验证清单（真机仍建议走一遍）
+
+| 场景 | 期望 |
+|---|---|
+| 首次打开（**不带尾斜杠**的地址或外链）→ 工作台 → 视频监控 | 监控层正常打开，不闪首页、不重载 |
+| 同上，但先等 1s 再操作 | 同上 |
+| 覆盖层里按浏览器返回 / 右滑 | 逐级关闭，语义不变（0.22s 滑出、theme-color 跟随） |
+| 首页（无覆盖层）按浏览器返回 | **仍然直接离开站点**（没有多压条目） |
+| 子页 → 详情 → 浏览器返回两次 | 先回列表、再回首页，不多退也不少退 |
+| 刷新页面 | 不会「跳走 / 重新加载」，顶栏与 tab 保持在首页 |
+
+> 验证：`vue-tsc --noEmit` + `npm run build` 通过（precache 924.71 KiB）；
+> `history-back.spec.ts` 16 条通过、全量无新增失败。未开浏览器、改动未提交。
+
+## 六点一百零七、线上「首次点视频监控跳首页」的最后一环：旧壳在内存里不换（2026-11-27 下午）
+
+### 1. 接六点一百零六：修复早就在线上，跑不到而已
+
+六点一百零六改的是「裁剪退穿根条目」，代码侧已闭环。但线上仍复现，且**三个入口
+全复现**（桌面 Chrome / iPhone Safari / 主屏书签）、本地 dev 不复现。逐项取证后
+定性为**旧壳**（内存里那个已经渲染完的旧文档），不是代码没上线、不是部署错、不是缓存策略错。
+
+| 取证项 | 实测结果 | 结论 |
+|---|---|---|
+| 线上主包身份 | `index-apDnYpli.js`，把唯一常量差异（CDN 基址 `/xyc-cdn` ↔ `120.26.34.95:9689`）归一化后与本地 `index-CDEZkonC.js` **逐字符相等**（506,544 字符），内含 `owned` 计数器与 `pushNow` 读回校验 | 代码已上线 |
+| 部署自洽性 | 线上 `sw.js` 里 `index.html` 的 `revision = a352dcc5821a4887ad999ab8f5a6eb21`，与线上 `index.html` 实际 md5 **完全一致** | 同批构建，不是手工拼装 |
+| 旧包残留 | 线上 `sw.js` 预缓存清单里 `index-E_yuS33G.js` 计数 **0**，只有 `index-apDnYpli.js` | 新 SW 已清掉旧壳的燃料 |
+| 缓存头 | `index.html` 是 `no-cache`，`assets/*` 是 `immutable` | 配置正确 |
+| dev 侧 | `pwa.ts` 里 `if (!import.meta.env.PROD) return` —— **dev 根本不注册 SW** | 本地永远最新源码，故不复现 |
+
+三项合起来：**新 SW 早已接管，只要文档重新加载一次，拿到的必然是新壳**。用户看到
+的复现，是「页面从没真正重载过」—— 桌面切 tab、iPhone 切回 Safari、从主屏书签
+resume，走的都是**内存恢复（resume）**，不是导航。旧 JS 一直在内存里跑。
+
+### 2. 为什么必须治「不换壳」而不是只治退栈
+
+退栈的加固在**新壳**里，旧壳里没有；而 SW 的 `skipWaiting` + `clientsClaim` 只保证
+新 SW 立刻接管，**改变不了当前这个已经渲染完的页面**。于是旧壳能活多久，取决于
+用户什么时候手动刷新 —— 现场用户不会刷新，一次会话可以开一整天。
+
+### 3. 改动
+
+| 文件 | 改动 |
+|---|---|
+| `src/utils/pwa.ts` | 新增 `ReloadBlockers` / `canSilentReload()`（纯函数）/ `setReloadBlockers()`；`controllerchange` 从「只广播」改为三分支：不可见 → 直接刷新；可见且无进行中操作 → 直接刷新；否则 → 只广播给 `UpdateBanner` |
+| `src/App.vue` | `onMounted` 注册状态快照读取器（读 store，**不查 DOM**） |
+| `src/components/shell/UpdateBanner.vue` | 只改注释：说明触发条件已收窄为「存在进行中的操作」 |
+| `tests/unit/pwa-update.spec.ts` | 新增 15 条 |
+
+**阻断项**（任一为真就不自动刷新，改走横幅）：
+
+| 字段 | 判据 | 刷新会丢什么 |
+|---|---|---|
+| `offHome` | `shell.activeTab !== 'home'` | 无路由，刷新必回 `'home'` —— 等于「又跳回首页」 |
+| `subpage` | `sub.isOpen && sub.view.kind !== 'login'` | 子页/详情/工序页的位置 |
+| `cam` / `air` / `hazard` | 三个播放器与隐患填报 | 正在播的画面、填了一半的表单 |
+| `sheet` | `sheet.isOpen` | 弹层里的选择 |
+| `land` | `shell.mapLandOpen` | 全屏与横屏态 |
+| `typing` | `document.activeElement` 是输入类 | 输入法里已输入的文字 |
+
+`login` 单独排除：刷新后 `App.vue` 的 `onMounted` 会按 `!isLoggedIn` 自动重新弹出，
+观感与没刷一样，而它恰好是「发版后第一次打开」最常见的画面。
+
+**为什么读 store 不读 DOM**：同一帧里「状态已改、DOM 未提交」太常见，用 DOM 反推
+会给出错误答案 —— 正是六点一百零六里 `fireBack()` 踩过的坑。
+
+### 4. 边界（必须说清）
+
+这段逻辑**在旧壳里不存在**，所以它救不了「当前正在跑的旧文档」—— 那一次仍需一次
+真正的重载（关掉标签页重开 / 下拉刷新 / 主屏书签上滑杀掉再开）。它保证的是**以后每
+次发版**：页面在安全窗口内会自己换壳，旧壳不会再长期存活。
+
+### 5. 验证
+
+| 项 | 结果 |
+|---|---|
+| `canSilentReload` 八个阻断项逐个为真 | 全部返回 false |
+| 瞬时不可见 / 可见且安全 | `location.reload()` 各调 1 次 |
+| 有进行中的操作 | 不 reload，`xyc:sw-updated` 广播 1 次 |
+| 首次安装（注册时无 controller） | 不挂监听，不刷新也不提示 |
+| 重复触发 | 只处理一次 |
+| 判别力 | 把两条分支临时改回「只广播」，3 条用例如期失败，已还原 |
+| 类型与构建 | `vue-tsc --noEmit` + `npm run build` 通过（precache 925.37 KiB，主包 `index-7FDWMh3s.js`） |
+
+> 验证：`pwa-update.spec.ts` 15 条 + `history-back.spec.ts` 17 条共 32 条通过。
+> 未开浏览器（SW 换代无法在 happy-dom 里端到端复现，只到单测与产物核对）。改动未提交、未发布。
+
+## 六点一百零八、登录页「记住密码」（2026-11-27）
+
+### 1. 需求与它真正的难点
+
+勾选后：下次打开登录页**仍是勾着的**、账号与口令都填好；取消勾选则一条都不留，
+不能出现「没勾却填好了」。**登出与登录失败都不清**（V2 口径，见下）。
+
+表面上是个 UI 开关，实际有两个坑：
+
+- **不能存明文**。现场手机是共用的，一台机器换班上号很常见；Unity 端把账号
+  密码明文写进 PlayerPrefs，那套不能沿用。
+- **不能存不可解的东西**。降级环境（隐私模式 / 没有 IndexedDB）里若还硬写
+  密文，下次解不开 —— 用户看到的就是「勾了但没记住」，比不勾更糟。
+
+### 1.1 与 V2（`UIViewLogin`）的逐条对照
+
+2026-11-27 从 `HotUpdateScripts.dll` 反出 V2 的三个方法，行为很干净：
+
+| V2 | 当前项目 | 状态 |
+|---|---|---|
+| `CheckLocalLoginState()`：`HasKey(Username) && HasKey(Password)` → `tgRecord.isOn = true` + 两栏回填，否则 `isOn = false` | `onMounted` 里 `loadCredential()`：解出来 → 勾上 + 回填 | ✅ 同 |
+| `CheckRecordPassword()`：**只在登录成功后**调用；`isOn` → 写两个 key，否则 `ClearRecordPassword()` | 登录成功分支：勾着 `saveCredential()`，没勾 `clearCredential()` | ✅ 同（本轮把「存账号」改成 `auth.username`，与 `CurLoginModel` 同口径） |
+| `ClearRecordPassword()`：`DeleteKey` 两个键 | `clearCredential()`：删密文 + 勾选意愿（**故意不删密钥**） | ✅ 结果同（都解不出东西） |
+| 登录失败：只 `loginFailCount++`，**不碰 PlayerPrefs** | 旧版按 `isCredentialRejected()` 清凭据 + 复位勾选 | ❌ → ✅ 本轮改为不动 |
+| `LoginOut`：只作废令牌，**不碰 PlayerPrefs** | 旧版 `logout()` 跟手 `clearCredential()` | ❌ → ✅ 本轮改为不动 |
+| 口令明文存 `PlayerPrefs` | RSA 密文（密钥 IndexedDB） | 有意保留的安全差异（上一轮要求） |
+
+**那两个 ❌ 就是「效果未达预期」的根因**：用户唯一能验收「记住密码」的路径是
+「登录 → 登出 → 再看登录页」，而旧版在这一步自己把凭据删了，于是怎么看都像
+没记住。另外错一次密码也清，手滑一下就得重输。
+
+### 2. 存储设计：密文与密钥分开存
+
+| 材料 | 存放位置 | 内容 |
+|---|---|---|
+| 密文 | `localStorage['xyc.auth.cred']` | `{ v:1, a:账号, c:口令密文 }` |
+| 勾选意愿 | `localStorage['xyc.auth.remember']` | `'1'`（见 §3，2026-11-27 补） |
+| 密钥 | IndexedDB `xyc-cred` / store `keys` / key `device` | `{ v, publicKey, privateKey }` |
+
+**为什么是 RSA（jsencrypt）不是 AES（`crypto.subtle`）**：`subtle` 只在安全上下文
+存在，现场跑的是 `http://115.159.67.12:8080` 与局域网 `http://192.168.x.x:5173`，
+`subtle` 直接是 `undefined`（同一个取舍见 `utils/sceneCache.ts` 不用 `subtle.digest`
+那一段）。jsencrypt 本来就在包里，纯 JS、不挑协议。做法是本机自签一对 1024 位
+密钥（PKCS#1 v1.5 单块上限 117 字节，塞得下任何端口令；实测生成 ~0.09s，2048 位
+要 1.5s，登录后卡 1 秒不值得）。
+
+**边界**：同源脚本本就能读 IndexedDB，这挡的是「明文可见 / 顺手被翻到 / 存储被
+导出」，挡不住页面里跑的恶意代码。要更强只能后端发 httpOnly Cookie 或系统钥匙串。
+
+**降级**：密钥进不了盘时**不写密文**，只在本会话内存里记着（当次可回填，刷新即
+失效），与 `utils/thumbCache.ts` 的口径一致；但勾选意愿照常落盘，否则连勾都会丢。
+
+### 3. 状态一致性：勾选意愿与密码数据分开存
+
+**2026-11-27 修正**。早先的实现用「盘上有没有密文」同时推导勾选态，结果是一条
+死路：取消勾选会立即删密文，而重新勾上只预热密钥、**什么都不写**。于是
+「取消 → 再勾 → 直接返回」之后，本页看着勾着，盘上早已空 —— 下次进来既不勾
+也不回填。用户报的就是这个。
+
+现在两个键各管一件事：
+
+| 键 | 内容 | 谁写 |
+|---|---|---|
+| `localStorage['xyc.auth.cred']` | `{ v:1, a:账号, c:口令密文 }` | 登录成功 / 用户勾选（表单完整时） |
+| `localStorage['xyc.auth.remember']` | `'1'` = 勾选意愿 | 勾选 / `saveCredential` |
+
+打开登录页的判定顺序（`onMounted`）：
+
+1. `loadCredential()` 解出账号口令 → **回填 + 勾上**（此刻不看意愿，数据优先）；
+2. 没有数据但 `isRemembered()` 为真（勾了却没登录成功过）→ **勾着、口令留空**；
+3. 两者都没有 → 不勾、空表单。
+
+| 时机 | 行为 | 理由 |
+|---|---|---|
+| 打开登录页 | 见上面三步 | 回填只在用户还没动过表单时做（`seededAccount` 守卫），且用 `hydrating` 抑制 watch，不把「程序勾的」当「用户勾的」 |
+| 勾选（表单完整） | `markRemembered(true)` + **立即 `saveCredential()`** | 用户勾上后往往直接返回，不该非得点一次登录；这也让「取消 → 再勾」能把刚删的那组找回来（口令框里还留着） |
+| 勾选（表单不全） | `markRemembered(true)` + 预热密钥 | 没有完整一组可存，先把 0.09~0.6s 的密钥生成挪到此处 |
+| 取消勾选 | **立即** `clearCredential()`（密文 + 意愿） | 不等提交：关了勾没登录就离开，下次不该又「勾着 + 填好」 |
+| 登录成功（勾着） | `await saveCredential()` | 必须 await：用户常登录后立刻划掉应用，写盘没落地就等于没记住 |
+| 登录成功（没勾） | `clearCredential()` | 连之前存过的一起清，不留半条 |
+| 存不下来（超长/写不进） | 勾选态复位 | 勾选 = 已保存，不能让它骗人（复位会触发 watch 再清一次，两个键一起干净） |
+| 登录失败（错口令 / 401 / 400） | **一个字都不动** | 对齐 V2：`CheckRecordPassword` 只在成功分支跑。手滑错一次不该把记好的删掉 |
+| 网络不通 / 5xx | 一个字都不动 | 环境问题不是凭据问题，别误删用户记好的口令 |
+| 主动登出 | **保留** | 对齐 V2：`LoginOut` 不碰 `PlayerPrefs`。共用手机的顾虑改由「用户主动取消勾选」兜底 |
+| 会话过期（`expire()`） | **保留** | 隔天再打开自动填好，正是「记住密码」要服务的场景 |
+| 读取时密钥打不开（IDB 故障/超时） | 只本次读不回，**不删密文、不删意愿** | 临时打不开 ≠ 永久失效；`openDb` 也不再缓存失败，下次还会重试 |
+| 密钥在手却解不开 | 清密文 + 清意愿 | 密钥真换了或密文损坏，留着只会每次白试 |
+| **`clearCredential()` 不删密钥** | 只删密文与意愿 | ①密钥不含用户信息，没有密文解不出任何东西；②删了下次勾选要重新生成；③删除是异步的，用户「取消 → 马上重勾」时迟到的 delete 会干掉刚重建的那对 —— 内存以为落了盘、冷启动却解不开 |
+
+> **与 V2 的两处有意偏离**（都是这一轮补的，也都有代价）：
+> ① V2 没有「勾选即保存」，只有登录成功才写；不这么做，「取消 → 再勾 → 返回」
+> 必然丢数据。② V2 的取消勾选不动数据（下次冷启动又复活），本项目取消即真删 ——
+> 遵循之前「避免不符合预期地自动回填」的要求。
+>
+> **还没对齐的一条**：V2 的 `OnReturnToLogin` 会把两栏清空、`isOn = false`
+> （登出回到登录页时是空表单），但下次冷启动 `CheckLocalLoginState` 又会回填。
+> 本项目每次打开登录页都是新挂载（等价于 V2 的 Start），所以登出后直接回填 ——
+> 更符合「记住密码」的直觉，不模拟 V2 那个中间态。
+
+### 4. 验证
+
+| 项 | 结果 |
+|---|---|
+| 密文不含明文 / 能解回 | `credential-vault.spec.ts` 11 条 |
+| 降级路径不写密文 | 同上，先看盘再读回 |
+| 读失败不销毁密文 | 同上，`密钥拿不到时` 一条 |
+| 意愿与数据同生共死 / 只勾未登录 | 同上，两条 |
+| 落盘路径 + 「关掉页面再进来」 | `credential-vault-idb.spec.ts` 6 条（fake-indexeddb + `vi.resetModules()` 模拟冷启动） |
+| 清除后密钥仍在（直接读 IDB 比公钥） | 同上，`清除只删密文` 一条 |
+| 页面决定（回填 / 勾选即存 / 取消即清 / 失败不动 / 登出不动 / 意愿还原） | `login-remember.spec.ts` 11 条 |
+| 判别力 | ① 去掉「没勾就清」② 降级分支改成写明文 ③ 不读盘上密钥 ④ 失败时 `remember=false` ⑤ 登出时清凭据 ⑥ 不看 `isRemembered` ⑦ 勾选只预热不保存 —— 七次临时退化，对应用例如期失败，已还原 |
+| 类型与构建 | `vue-tsc --noEmit` 通过；precache 929.11 KiB、主包 `index-D7Jy-IyF.js` |
+
+> 相关单测共 59 条（`credential-vault` 11 + `-idb` 6 + `login-remember` 11 + `auth` 18 +
+> `auth-guard` 7 + `tokens` 6）全部通过。`fake-indexeddb` 仅测试用，不进产物。
+> 未开真机：iOS「划掉应用再进」「刷新」「登出后再进」只能靠单测模拟，真机仍需复测。
+> 改动未提交、未发布。

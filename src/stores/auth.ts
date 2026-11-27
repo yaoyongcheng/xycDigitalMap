@@ -24,9 +24,12 @@ import { useUavStore } from './uav'
  * 关于持久化：
  *   服务端只发 access_token + expires_in，没有 refresh token 端点，本页又是纯静态
  *   PWA —— 不落盘就得每次刷新重登，现场用手套操作时几乎不可用。所以 token 存
- *   localStorage（键见 STORAGE_KEY），但**不存密码**（Unity 端把账号密码明文
- *   写进 PlayerPrefs，这里不沿用）。401 / 过期即清，登出即清。
- *   更严格的做法是服务端发 httpOnly + SameSite Cookie，那是后端的改造项。
+ *   localStorage（键见 STORAGE_KEY）。口令只在用户勾了「记住密码」时保存，且
+ *   存的是**密文**（`utils/credentialVault.ts`：密钥进 IndexedDB、密文进
+ *   localStorage，两处分离；Unity 端把账号密码明文写进 PlayerPrefs，这里不沿用）。
+ *   401 / 过期即清会话；**登出、登录失败都不动记住的口令** —— 对齐 V2
+ *   （`UIViewLogin` 只在登录成功后按勾选态写/删 `PlayerPrefs`）。更严格的做法是
+ *   服务端发 httpOnly + SameSite Cookie，那是后端的改造项。
  */
 
 const STORAGE_KEY = 'xyc.auth.session'
@@ -265,6 +268,11 @@ export const useAuthStore = defineStore('auth', () => {
   async function logout(): Promise<void> {
     const t = token.value
     clear()
+    // 刻意**不动**「记住密码」（2026-11-27 调整，对齐 V2：`LoginOut` 里只作废令牌，
+    // 从不碰 PlayerPrefs_Username / PlayerPrefs_Password）。
+    // 之前这里跟手 clearCredential()，后果是「登录 → 登出 → 再看登录页」永远是空
+    // 表单 —— 而这条恰好是用户唯一能验收「记住密码」的路径，于是怎么看都像没记住。
+    // 口令仍只在用户主动取消勾选时才清（见 LoginPage 的 watch）。
     if (!t) return
     try {
       await logoutRequest(t)

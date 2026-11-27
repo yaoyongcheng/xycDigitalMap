@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick } from 'vue'
 
 import { useBottomSheetStore } from '@/stores/bottomSheet'
+import { useCamStore } from '@/stores/cam'
 import { useSubpageStore } from '@/stores/subpage'
 import { resetBackSlot, takeBackSlot } from '@/utils/backAction'
 import { useHistoryBack } from '@/utils/historyBack'
@@ -396,5 +397,128 @@ describe('浏览器返回接管', () => {
     expect(go.mock.calls.length).toBeLessThanOrEqual(2)
     expect(cursor).toBe(1)
     expect(stack[1]?.wbLayer).toBeUndefined()
+  })
+
+  /*
+   * 首次打开「点工作台 → 点视频监控 → 跳回首页」的现场（2026-11-27）。
+   *
+   * 本站地址会被 302 到带尾斜杠的版本、从外链进来也一样 —— 历史里应用条目
+   * **之前**还躺着一条不属于本文档的条目。旧版裁剪只看「条目比层数多」就
+   * `go(-delta)`，没有任何下限；退过挂载条目就是一次**文档级返回**，整页重载，
+   * `shell.activeTab` 回到 `'home'`。下面三例分别钉住这次加的三道闸。
+   */
+  describe('首次打开不会退成文档级返回', () => {
+    /** 应用条目之前还有一条不属于本文档的条目（302 / 外链进站的形态） */
+    function seedForeignEntry(): void {
+      stack = [{}, null]
+      cursor = 1
+    }
+
+    it('挂载条目是下限：层数被写大也只退到它为止', async () => {
+      vi.useFakeTimers()
+      seedForeignEntry()
+      const sub = useSubpageStore()
+      wrapper = mount(Host)
+      await nextTick()
+
+      sub.openInspectList('today')
+      expect(cursor).toBe(2)
+
+      // 模拟「条目层数被写大了」（旧版 fireBack 兜底留下的那种残留）
+      stack[cursor] = { wbLayer: 9 }
+
+      sub.close()
+      await nextTick()
+      vi.advanceTimersByTime(1200)
+
+      // 真实只有 1 条可退：只退 1 步，停在挂载条目上，不碰它前面那条
+      expect(go).toHaveBeenCalledWith(-1)
+      expect(cursor).toBe(1)
+    })
+
+    it('返回按钮还没画出来时，不把层数写进条目', async () => {
+      vi.useFakeTimers()
+      seedForeignEntry()
+      const cam = useCamStore()
+      wrapper = mount(Host)
+      await nextTick()
+
+      cam.isOpen = true
+      await nextTick()
+      expect(cursor).toBe(2)
+
+      // 层开着但 DOM 还没提交（`.cam-player.open` 不存在）
+      travel(-1)
+      await nextTick()
+      vi.advanceTimersByTime(1200)
+
+      // 旧版在这里 setLayer(depth) 把层数写进条目，后面按它算 delta 就越界
+      expect(go).not.toHaveBeenCalled()
+      expect(stack[1]?.wbLayer).toBeUndefined()
+    })
+
+    it('pushState 被浏览器丢掉时账不虚高：关层不会多退一步', async () => {
+      vi.useFakeTimers()
+      seedForeignEntry()
+      const sub = useSubpageStore()
+      wrapper = mount(Host)
+      await nextTick()
+
+      // Safari 转场 / 后台 / 限流时会直接吞掉 pushState（本文件注释里记过）
+      push.mockImplementationOnce(() => {})
+      sub.openInspectList('today')
+      await nextTick()
+      expect(cursor).toBe(1)
+
+      // 再下钻一层：被吞掉的那条要重建成两条（层数 1 和 2），而不是只有一条
+      drillDown()
+      await nextTick()
+      expect(cursor).toBe(3)
+
+      // 底栏 dismiss：条目比层数多，要退 —— 但只能退到挂载条目，不能退穿
+      sub.dismiss()
+      await nextTick()
+      vi.advanceTimersByTime(1200)
+
+      expect(go).toHaveBeenCalledWith(-2)
+      expect(cursor).toBe(1)
+    })
+
+    it('未登录 → 工作台 → 视频监控 → 返回一次再关监控：不产生文档级返回', async () => {
+      vi.useFakeTimers()
+      seedForeignEntry()
+      const sub = useSubpageStore()
+      const cam = useCamStore()
+      wrapper = mount(Host)
+      await nextTick()
+
+      // 挂载即弹登录页（0 → 1）
+      sub.openLogin('登录后可查看现场监控')
+      await nextTick()
+      expect(cursor).toBe(2)
+
+      // 点「工作台」（1 → 0），紧接着点「视频监控」（0 → 1）
+      sub.dismiss()
+      cam.isOpen = true
+      await nextTick()
+      vi.advanceTimersByTime(1200)
+
+      expect(cursor).toBeGreaterThanOrEqual(1)
+      expect(cam.isOpen).toBe(true)
+      expect(stack[cursor]).toMatchObject({ wbLayer: 1 })
+
+      // 用户按浏览器返回，此时监控层还没画完（`.cam-player.open` 不存在）
+      travel(-1)
+      await nextTick()
+      vi.advanceTimersByTime(1200)
+
+      // 监控被关掉：条目对齐时**不许退过挂载条目**（旧版这里会退到 0 = 重载回首页）
+      cam.isOpen = false
+      await nextTick()
+      vi.advanceTimersByTime(1200)
+
+      expect(cursor).toBe(1)
+      expect(stack[1]?.wbLayer).toBeUndefined()
+    })
   })
 })

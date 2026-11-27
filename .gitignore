@@ -22,6 +22,8 @@ Desktop.ini
 node_modules/
 dist/
 dist-ssr/
+# 带日期的归档构建包（dist-20261126-1626 这类，保留旧包时用），不进仓库
+dist-*/
 *.local
 
 # 日志
